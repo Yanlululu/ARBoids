@@ -68,6 +68,8 @@ class Trial(ExperimentManager):
         if message is None:
             return
         stamp = message.header.stamp.sec + message.header.stamp.nanosec * 1e-9
+        if stamp < start_sim:
+            return
         if self.frames and stamp <= self.frames[-1]['gazebo_timestamp']:
             return
         channels = {'rgb8': 3, 'bgr8': 3, 'rgba8': 4, 'bgra8': 4}.get(message.encoding)
@@ -281,7 +283,8 @@ def main():
                     ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge', '/arboids/overview/image@sensor_msgs/msg/Image[gz.msgs.Image'],
                     env=launch_env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             while not (np.isfinite(trial.last_stamp).all() and
-                       all(p.get_subscription_count() > 0 for p in trial.publishers)):
+                       all(p.get_subscription_count() > 0 for p in trial.publishers) and
+                       (not args.capture_frames or trial.latest_image is not None)):
                 if process.poll() is not None:
                     raise RuntimeError(f'Gazebo launch exited ({process.returncode}); see gazebo.log')
                 if time.monotonic() - started > args.startup_timeout:
@@ -316,7 +319,9 @@ def main():
                               3: 'defender_capture', 4: 'defended_until_timeout'}
                     result.update(passed=True, outcome_code=code, outcome=labels[code],
                                   success=code > 2, simulation_seconds=elapsed,
-                                  attacker_max_displacement=distance)
+                                  attacker_max_displacement=distance,
+                                  terminal_positions=trial.curr_pos.tolist(),
+                                  terminal_yaw=trial.curr_phi.tolist())
                     break
                 if elapsed + 1e-6 >= next_action:
                     trial.control(elapsed)
@@ -324,8 +329,10 @@ def main():
                     if len(trial.rows) % 25 == 0:
                         print(f'[CONTROL] t={elapsed:.2f}s commands={len(trial.rows)}', flush=True)
                 if args.capture_frames and elapsed >= next_frame:
+                    previous_frames = len(trial.frames)
                     trial.save_frame(output, start_sim)
-                    next_frame = elapsed + 5.
+                    if len(trial.frames) > previous_frames:
+                        next_frame = elapsed + 5.
     except BaseException as error:
         result['error'] = f'{type(error).__name__}: {error}'
         traceback.print_exc()

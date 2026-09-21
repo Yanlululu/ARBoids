@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args()
+    torch.set_num_threads(1)
     if args.episodes <= 0 or args.agility <= 0 or args.duration <= 0:
         parser.error('episodes, agility and duration must be positive')
     args.output_dir.mkdir(parents=True, exist_ok=False)
