@@ -35,3 +35,5 @@ logs/
 experiments/
 *.log
 .DS_Store
+# Project-local Python runtime
+/.python/
