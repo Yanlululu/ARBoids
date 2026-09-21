@@ -34,6 +34,7 @@ class Trial(ExperimentManager):
         super().__init__(args.num_robots, False, device=args.device)
         self.args = args
         self.total_time = args.duration
+        self.defend_r = 5.0  # Published capture radius (the legacy VRX script used 5.5).
         self.node = rclpy.create_node('arboids_trial')
         self.last_stamp = np.full(args.num_robots, np.nan)
         self.last_received = np.zeros(args.num_robots)
@@ -250,6 +251,7 @@ def main():
     result = {'passed': False, 'seed': args.seed, 'setting': args.setting,
               'agility': args.agility, 'controller': args.controller, 'num_robots': args.num_robots,
               'duration_limit': args.duration, 'action_period': args.action_period,
+              'capture_radius': 5.0, 'target_radius': 15.0, 'collision_radius': 5.0,
               'checkpoint': args.checkpoint,
               'thruster_mapping': 'policy[0]->starboard; policy[1]->port (ENU yaw matching training)'}
     if args.checkpoint:

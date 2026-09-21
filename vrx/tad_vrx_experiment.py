@@ -516,7 +516,7 @@ class ExperimentManager:
             feature_dim = 14
         else:
             feature_dim = 6
-        observations = np.zeros((robot_num, feature_dim+2*robot_num))
+        observations = np.zeros((robot_num, feature_dim + 2 * (robot_num - 1)))
         for i, pos in enumerate(positions):
             theta = phis[i]
             observations[i, 0:2] = _calculate_dist_phi(-pos, theta)

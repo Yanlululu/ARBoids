@@ -178,6 +178,24 @@ The deployment adapter maps policy action 0 to the starboard thruster and action
 Gazebo's ENU coordinates. Trajectories retain both policy actions and the actual
 port/starboard commands. The training dynamics and algorithm are unchanged.
 The legacy `tad_vrx_experiment.py` command delegates to this same runner.
+Deployment observations contain 14 local features plus two values per actual
+teammate, matching the training input (18 values with three defenders).
+
+The final evaluation defaults are 60 simulation seconds, a 5 m capture radius,
+a 5 m defender collision threshold, and a 15 m target radius. These replace the
+legacy VRX script's 100 s / 5.5 m settings. Independent 2D evaluation also uses
+60 s by default; `--duration 80` reproduces the source environment's horizon.
+
+The published paper and released training code differ in two relevant settings:
+the source uses an 80 s training horizon and curriculum agility noise of ±0.25,
+whereas the paper describes 60 s and ±0.5. The current main training preserves
+the released code. Its in-training validation also uses 80 s. Independent 2D
+evaluation retains the source's early attacker-win rule when the attacker is
+closer to the target than every defender. VRX checks an actual target breach.
+Report these differences when comparing results with the paper; a single seed
+and the initial VRX batches do not reproduce the five-seed baseline/ablation suite.
+See [the paper's experimental setup](https://arxiv.org/html/2502.18549v3#S4.SS1).
+
 
 Run repeated trials with distinct evaluation seeds:
 

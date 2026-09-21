@@ -21,14 +21,16 @@ def main():
     parser.add_argument('--episodes', type=int, default=100)
     parser.add_argument('--seed', type=int, default=10000)
     parser.add_argument('--agility', type=float, default=2.0)
+    parser.add_argument('--duration', type=float, default=60., help='Evaluation horizon in simulation seconds; paper default is 60')
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args()
-    if args.episodes <= 0 or args.agility <= 0:
-        parser.error('episodes and agility must be positive')
+    if args.episodes <= 0 or args.agility <= 0 or args.duration <= 0:
+        parser.error('episodes, agility and duration must be positive')
     args.output_dir.mkdir(parents=True, exist_ok=False)
     cfg = load_config(str(args.config))
     env = TADEnv(cfg.agent.defender_num, cfg.agent.boid_state, cfg.agent.form_reward)
+    env.Total_T = args.duration
     action_dim = env.action_dim + int(cfg.agent.adaptive)
     agent = SAC(cfg, env.feature1_dim, env.feature2_dim, action_dim,
                 adaptive=cfg.agent.adaptive, device=torch.device(args.device))
@@ -69,6 +71,8 @@ def main():
     half = z*np.sqrt(p*(1-p)/n + z*z/(4*n*n)) / (1 + z*z/n)
     summary = dict(passed=True, episodes=n, successes=successes, success_rate=p,
                    wilson_95_interval=[center-half, center+half], agility=args.agility,
+                   duration_limit=env.Total_T, capture_radius=env.Defend_R,
+                   target_radius=env.Target_R, collision_radius=env.Collision_R,
                    first_seed=args.seed, checkpoint=str(args.checkpoint.resolve()),
                    checkpoint_sha256=hashlib.sha256(args.checkpoint.read_bytes()).hexdigest(),
                    mean_reward=float(np.mean([r['reward'] for r in rows])),

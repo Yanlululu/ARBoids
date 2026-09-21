@@ -38,6 +38,8 @@ fi
 "$venv/bin/python" -X utf8 -m pip install 'numpy==1.26.4'
 "$venv/bin/python" -X utf8 -m pip check
 cat > "$workspace/activate.bash" <<EOF
+_arboids_restore_nounset=
+case \$- in *u*) _arboids_restore_nounset=1; set +u ;; esac
 source /opt/ros/humble/setup.bash
 source "$workspace/install/setup.bash"
 source "$venv/bin/activate"
@@ -51,5 +53,7 @@ export ARBOIDS_RENDER_THREADS=8
 if [ -e /dev/dxg ]; then
   export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
 fi
+if [ "\$_arboids_restore_nounset" = 1 ]; then set -u; fi
+unset _arboids_restore_nounset
 EOF
 echo "ARBOIDS_VRX_BUILD_COMPLETE: source $workspace/activate.bash"
