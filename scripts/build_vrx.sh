@@ -24,6 +24,9 @@ cd "$workspace"
 export CMAKE_BUILD_PARALLEL_LEVEL="$jobs" MAKEFLAGS="-j$jobs"
 colcon build --symlink-install --parallel-workers 2 --cmake-args \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DPython3_EXECUTABLE=/usr/bin/python3
+mkdir -p "$workspace/runtime"
+g++ -std=c++14 -O2 -fPIC -shared -I/usr/include/OGRE-2.3 \
+  "$repo/scripts/ogre_thread_limit.cpp" -o "$workspace/runtime/libarboids_ogre_threads.so"
 if [ ! -x "$venv/bin/python" ]; then
   /usr/bin/python3 -m venv --system-site-packages "$venv"
 fi
@@ -39,5 +42,10 @@ export ROS_LOCALHOST_ONLY=1
 export ROS_DOMAIN_ID=86
 export GZ_FUEL_CACHE_PATH="$repo/.vrx-assets/fuel"
 export GZ_PARTITION=arboids
+export ARBOIDS_OGRE_PRELOAD="$workspace/runtime/libarboids_ogre_threads.so"
+export ARBOIDS_RENDER_THREADS=8
+if [ -e /dev/dxg ]; then
+  export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
+fi
 EOF
 echo "ARBOIDS_VRX_BUILD_COMPLETE: source $workspace/activate.bash"

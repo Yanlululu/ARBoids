@@ -6,14 +6,20 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import struct
 import time
 import traceback
 import uuid
+import xml.etree.ElementTree as ET
+import zlib
 
 import numpy as np
 import rclpy
 from std_msgs.msg import Float64
+from sensor_msgs.msg import Image
 from tf2_msgs.msg import TFMessage
+from rclpy.qos import qos_profile_sensor_data
+from ament_index_python.packages import get_package_share_directory
 import torch
 
 from models import ActorAdap, ActorSAC
@@ -39,6 +45,11 @@ class Trial(ExperimentManager):
             for i in range(args.num_robots)
         ]
         self.rows = []
+        self.latest_image = None
+        self.frames = []
+        if args.capture_frames:
+            self.image_subscription = self.node.create_subscription(
+                Image, '/arboids/overview/image', self.on_image, qos_profile_sensor_data)
         self.actor = None
         if args.controller != 'Boids':
             actor_type = ActorAdap if args.controller == 'AdaRes' else ActorSAC
@@ -46,6 +57,34 @@ class Trial(ExperimentManager):
             self.actor = actor_type(6, 8, action_dim, hidden_dim=512).to(self.device)
             self.actor.load(args.checkpoint)
             self.actor.eval()
+
+    def on_image(self, message):
+        self.latest_image = message
+
+    def save_frame(self, output, start_sim):
+        message = self.latest_image
+        if message is None:
+            return
+        stamp = message.header.stamp.sec + message.header.stamp.nanosec * 1e-9
+        if self.frames and stamp <= self.frames[-1]['gazebo_timestamp']:
+            return
+        channels = {'rgb8': 3, 'bgr8': 3, 'rgba8': 4, 'bgra8': 4}.get(message.encoding)
+        if channels is None:
+            raise RuntimeError(f'Unsupported camera encoding: {message.encoding}')
+        pixels = np.frombuffer(message.data, dtype=np.uint8).reshape(message.height, message.step)
+        pixels = pixels[:, :message.width*channels].reshape(message.height, message.width, channels)[:, :, :3]
+        if message.encoding.startswith('bgr'):
+            pixels = pixels[:, :, ::-1]
+        if np.ptp(pixels) < 10:
+            return
+        def chunk(tag, payload):
+            return struct.pack('!I', len(payload)) + tag + payload + struct.pack('!I', zlib.crc32(tag+payload) & 0xffffffff)
+        raw = b''.join(b'\0' + row.tobytes() for row in pixels)
+        png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!IIBBBBB', message.width, message.height, 8, 2, 0, 0, 0))
+               + chunk(b'IDAT', zlib.compress(raw, 3)) + chunk(b'IEND', b''))
+        path = output / f'frame-{len(self.frames):03d}.png'
+        path.write_bytes(png)
+        self.frames.append({'file': path.name, 'simulation_seconds': stamp-start_sim, 'gazebo_timestamp': stamp})
 
     def on_pose(self, message):
         for tf in message.transforms:
@@ -93,7 +132,11 @@ class Trial(ExperimentManager):
                                           self.args.controller, self.device)
         if not all(np.isfinite(x).all() for x in (actions, self.curr_pos, self.curr_vel)):
             raise FloatingPointError('Non-finite state or thrust command')
-        for publisher, thrust in zip(self.publishers, actions.flat):
+        # The training dynamics apply positive yaw for action[0] > action[1].
+        # Gazebo's port thruster is at +y and produces negative ENU yaw, so
+        # map training action[0] to starboard and action[1] to port.
+        physical_actions = actions[:, ::-1]
+        for publisher, thrust in zip(self.publishers, physical_actions.flat):
             publisher.publish(Float64(data=float(thrust)))
         self.rows.append({
             'timestamp': float(elapsed), 'AttPos': self.curr_pos[0].copy(),
@@ -101,6 +144,7 @@ class Trial(ExperimentManager):
             'AttAct': actions[0].copy(), 'DefPos': self.curr_pos[1:].flatten().copy(),
             'DefPhi': self.curr_phi[1:].copy(), 'DefVel': self.curr_vel[1:].flatten().copy(),
             'DefAct': actions[1:].flatten().copy(),
+            'PhysicalThrust': physical_actions.flatten().copy(),
         })
 
 
@@ -123,6 +167,30 @@ def stop_process(process):
             process.wait(timeout=10)
 
 
+def camera_world(world, origin, output):
+    source = Path(get_package_share_directory('vrx_gz')) / 'worlds' / f'{world}.sdf'
+    tree = ET.parse(source)
+    model = ET.SubElement(tree.getroot().find('world'), 'model', name='arboids_overview')
+    ET.SubElement(model, 'static').text = 'true'
+    ET.SubElement(model, 'pose').text = f'{origin[0]} {origin[1]} 120 0 1.5707963267948966 0'
+    link = ET.SubElement(model, 'link', name='camera_link')
+    sensor = ET.SubElement(link, 'sensor', name='overview', type='camera')
+    ET.SubElement(sensor, 'always_on').text = 'true'
+    ET.SubElement(sensor, 'update_rate').text = '1'
+    ET.SubElement(sensor, 'topic').text = '/arboids/overview/image'
+    camera = ET.SubElement(sensor, 'camera')
+    ET.SubElement(camera, 'horizontal_fov').text = '1.4'
+    image = ET.SubElement(camera, 'image')
+    for name, value in (('width', '1280'), ('height', '960'), ('format', 'R8G8B8')):
+        ET.SubElement(image, name).text = value
+    clip = ET.SubElement(camera, 'clip')
+    ET.SubElement(clip, 'near').text = '0.1'
+    ET.SubElement(clip, 'far').text = '1000'
+    path = output / 'world_capture.sdf'
+    tree.write(path, encoding='utf-8', xml_declaration=True)
+    return str(path)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', '--modelname', dest='checkpoint')
@@ -133,6 +201,7 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--headless', action='store_true')
+    parser.add_argument('--capture-frames', action='store_true', help='Save real Gazebo overview camera frames every five simulation seconds')
     parser.add_argument('--duration', type=float, default=60.)
     parser.add_argument('--action-period', type=float, default=0.2)
     parser.add_argument('--startup-timeout', type=float, default=180.)
@@ -157,10 +226,11 @@ def main():
     result = {'passed': False, 'seed': args.seed, 'setting': args.setting,
               'agility': args.agility, 'controller': args.controller, 'num_robots': args.num_robots,
               'duration_limit': args.duration, 'action_period': args.action_period,
-              'checkpoint': args.checkpoint}
+              'checkpoint': args.checkpoint,
+              'thruster_mapping': 'policy[0]->starboard; policy[1]->port (ENU yaw matching training)'}
     if args.checkpoint:
         result['checkpoint_sha256'] = hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest()
-    process = trial = None
+    process = image_bridge = trial = None
     started = time.monotonic()
     rclpy.init()
     try:
@@ -168,12 +238,21 @@ def main():
         poses = trial.generate_init_info(args.agility, args.setting)
         result['initial_poses'] = poses
         world = 'sydney_regatta_original' + ('1' if args.setting == 1 else '')
+        if args.capture_frames:
+            world = camera_world(world, trial.origin, output)
         command = ['ros2', 'launch', 'vrx_gz', 'tad.launch.py', f'init_poses:={poses}',
                    f'world:={world}', f'headless:={str(args.headless).lower()}']
         if args.headless:
             command += ['extra_gz_args:=--headless-rendering']
+        launch_env = dict(os.environ)
+        if preload := launch_env.get('ARBOIDS_OGRE_PRELOAD'):
+            launch_env['LD_PRELOAD'] = preload + (':' + launch_env['LD_PRELOAD'] if launch_env.get('LD_PRELOAD') else '')
         with (output / 'gazebo.log').open('w', encoding='utf-8') as log:
-            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            process = subprocess.Popen(command, env=launch_env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            if args.capture_frames:
+                image_bridge = subprocess.Popen(
+                    ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge', '/arboids/overview/image@sensor_msgs/msg/Image[gz.msgs.Image'],
+                    env=launch_env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             while not (np.isfinite(trial.last_stamp).all() and
                        all(p.get_subscription_count() > 0 for p in trial.publishers)):
                 if process.poll() is not None:
@@ -183,6 +262,7 @@ def main():
                 rclpy.spin_once(trial.node, timeout_sec=0.05)
             start_sim = float(np.min(trial.last_stamp))
             next_action = 0.
+            next_frame = 0.
             print(f'[READY] all {args.num_robots} vessels and thrust bridges at t={start_sim:.3f}', flush=True)
             while True:
                 rclpy.spin_once(trial.node, timeout_sec=0.01)
@@ -195,6 +275,10 @@ def main():
                 elapsed = float(np.min(trial.last_stamp) - start_sim)
                 code = trial.outcome(elapsed)
                 if code:
+                    if args.capture_frames:
+                        trial.save_frame(output, start_sim)
+                        if not trial.frames:
+                            raise RuntimeError('No valid overview camera frames received')
                     if not trial.rows:
                         raise RuntimeError('Task ended before the controller produced a command')
                     attacker_positions = np.array([row['AttPos'] for row in trial.rows])
@@ -212,14 +296,19 @@ def main():
                     next_action = elapsed + args.action_period
                     if len(trial.rows) % 25 == 0:
                         print(f'[CONTROL] t={elapsed:.2f}s commands={len(trial.rows)}', flush=True)
+                if args.capture_frames and elapsed >= next_frame:
+                    trial.save_frame(output, start_sim)
+                    next_frame = elapsed + 5.
     except BaseException as error:
         result['error'] = f'{type(error).__name__}: {error}'
         traceback.print_exc()
     finally:
+        stop_process(image_bridge)
         stop_process(process)
         result['wall_seconds'] = time.monotonic() - started
         if trial is not None:
             result['control_steps'] = len(trial.rows)
+            result['frames'] = trial.frames
             if trial.rows:
                 arrays = {key: np.asarray([row[key] for row in trial.rows]) for key in trial.rows[0]}
                 path = args.save_file or output / 'trajectory.npz'

@@ -28,7 +28,7 @@ apt-cache policy gz-garden ros-humble-ros-gzgarden python3-sdformat13
 apt-get "${apt_options[@]}" install -y --no-install-recommends \
   ros-humble-ros-base ros-humble-ros-gzgarden ros-humble-xacro \
   ros-humble-tf-transformations gz-garden python3-sdformat13 \
-  python3-colcon-common-extensions python3-rosdep python3-venv python3-dev \
+  python3-colcon-common-extensions python3-rosdep python3-venv python3-dev python3-cairo \
   build-essential cmake git libeigen3-dev mesa-utils xvfb xauth \
   libgl1-mesa-dri libegl1 libglib2.0-0
 echo 'ARBOIDS_VRX_DEPENDENCIES_INSTALLED'

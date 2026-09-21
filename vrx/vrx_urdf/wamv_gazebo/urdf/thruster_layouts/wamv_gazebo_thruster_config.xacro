@@ -17,6 +17,7 @@
       <velocity_control>true</velocity_control>
       <!-- max total thrust / 2 -->
       <max_thrust_cmd>${((x_u + x_uu * max_velocity_mps) * max_velocity_mps)/ 2}</max_thrust_cmd>
+      <min_thrust_cmd>-${((x_u + x_uu * max_velocity_mps) * max_velocity_mps)/ 2}</min_thrust_cmd>
       <namespace>${namespace}</namespace>
       <topic>thrusters/${name}/thrust</topic>
       <!-- Not used by Gazebo but used to run the bridge easily -->
