@@ -149,27 +149,51 @@ class Trial(ExperimentManager):
 
 
 def stop_process(process):
-    """Stop only the launch process group created by this trial."""
+    """Stop the whole owned group, including children surviving ROS launch."""
     if process is None:
         return
-    try:
-        os.killpg(process.pid, signal.SIGINT)
-    except ProcessLookupError:
-        return
-    try:
-        process.wait(timeout=20)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGTERM)
+    def group_alive():
+        process.poll()
+        for stat in Path('/proc').glob('[0-9]*/stat'):
+            try:
+                fields = stat.read_text().rsplit(')', 1)[1].split()
+                if int(fields[2]) == process.pid and fields[0] != 'Z':
+                    return True
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+        return False
+    for sig, limit in ((signal.SIGINT, 8), (signal.SIGTERM, 5), (signal.SIGKILL, 3)):
+        if not group_alive():
+            break
         try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=10)
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            break
+        deadline = time.monotonic() + limit
+        while group_alive() and time.monotonic() < deadline:
+            time.sleep(.1)
+    process.wait(timeout=5)
+    if group_alive():
+        raise RuntimeError(f'Gazebo process group {process.pid} did not stop')
 
 
-def camera_world(world, origin, output):
+def prepare_world(world, origin, output, capture_frames):
     source = Path(get_package_share_directory('vrx_gz')) / 'worlds' / f'{world}.sdf'
     tree = ET.parse(source)
+    assets = Path(__file__).resolve().parents[1] / '.vrx-assets'
+    manifest = json.loads((assets / 'fuel-manifest.json').read_text(encoding='utf-8'))
+    models = {entry['url']: assets / 'resolved' / entry['directory'] for entry in manifest}
+    for uri in tree.findall('.//include/uri'):
+        if uri.text and uri.text.strip().startswith('https://fuel.gazebosim.org/'):
+            model_path = models.get(uri.text.strip())
+            if model_path is None or not (model_path / 'model.config').is_file():
+                raise FileNotFoundError(f'Run scripts/fetch_fuel_assets.py for {uri.text}')
+            # Resolve locally so evaluation never waits on Fuel network requests.
+            uri.text = str(model_path)
+    path = output / 'world.sdf'
+    if not capture_frames:
+        tree.write(path, encoding='utf-8', xml_declaration=True)
+        return str(path)
     model = ET.SubElement(tree.getroot().find('world'), 'model', name='arboids_overview')
     ET.SubElement(model, 'static').text = 'true'
     ET.SubElement(model, 'pose').text = f'{origin[0]} {origin[1]} 120 0 1.5707963267948966 0'
@@ -186,7 +210,6 @@ def camera_world(world, origin, output):
     clip = ET.SubElement(camera, 'clip')
     ET.SubElement(clip, 'near').text = '0.1'
     ET.SubElement(clip, 'far').text = '1000'
-    path = output / 'world_capture.sdf'
     tree.write(path, encoding='utf-8', xml_declaration=True)
     return str(path)
 
@@ -238,8 +261,7 @@ def main():
         poses = trial.generate_init_info(args.agility, args.setting)
         result['initial_poses'] = poses
         world = 'sydney_regatta_original' + ('1' if args.setting == 1 else '')
-        if args.capture_frames:
-            world = camera_world(world, trial.origin, output)
+        world = prepare_world(world, trial.origin, output, args.capture_frames)
         command = ['ros2', 'launch', 'vrx_gz', 'tad.launch.py', f'init_poses:={poses}',
                    f'world:={world}', f'headless:={str(args.headless).lower()}']
         if args.headless:

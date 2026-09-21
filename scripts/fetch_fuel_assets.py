@@ -3,6 +3,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import stat
 from urllib.request import urlopen
@@ -10,6 +11,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from download_ranges import download
+
+MODEL_URL = re.compile(r'(https://fuel\.(?:gazebosim\.org|ignitionrobotics\.org)/1\.0/[^/]+/models/[^/]+)(?:/.*)?')
 
 
 def main():
@@ -56,11 +59,22 @@ def main():
             if not (destination / sdf.text.strip()).is_file():
                 raise RuntimeError(f'Missing SDF in Fuel model: {url}')
         print(f'[FUEL] {name}, version {version}', flush=True)
+        dependencies = set()
+        for sdf in destination.glob('*.sdf'):
+            for element in ET.parse(sdf).iter():
+                if element.text and (match := MODEL_URL.fullmatch(element.text.strip())):
+                    dependencies.add(match[1].replace('fuel.ignitionrobotics.org', 'fuel.gazebosim.org'))
         return {'url': url, 'version': version, 'directory': str(destination.relative_to(cache)),
-                'license': metadata.get('license_name'), 'license_url': metadata.get('license_url')}
+                'license': metadata.get('license_name'), 'license_url': metadata.get('license_url'),
+                'dependencies': sorted(dependencies)}
 
+    fetched = {}
     with ThreadPoolExecutor(max_workers=3) as pool:
-        manifest = list(pool.map(fetch, sorted(urls)))
+        while pending := sorted(urls - fetched.keys()):
+            for entry in pool.map(fetch, pending):
+                fetched[entry['url']] = entry
+                urls.update(entry['dependencies'])
+    manifest = sorted(fetched.values(), key=lambda entry: entry['url'])
     (repo / '.vrx-assets/fuel-manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     print(f'[DONE] {len(manifest)} Fuel models cached and checked', flush=True)
 

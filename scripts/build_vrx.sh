@@ -13,6 +13,10 @@ fi
 if [ ! -f "$repo/.vrx-assets/manifest.json" ]; then
   /usr/bin/python3 -X utf8 "$repo/scripts/fetch_vrx_assets.py" --repo "$repo"
 fi
+if [ ! -f "$repo/.vrx-assets/fuel-manifest.json" ]; then
+  /usr/bin/python3 -X utf8 "$repo/scripts/fetch_fuel_assets.py" --repo "$repo"
+fi
+/usr/bin/python3 -X utf8 "$repo/scripts/resolve_fuel_assets.py" --repo "$repo"
 mkdir -p "$workspace/src"
 if [ ! -e "$workspace/src/arboids_vrx" ]; then
   ln -s "$repo/vrx" "$workspace/src/arboids_vrx"
