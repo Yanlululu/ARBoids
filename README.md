@@ -194,7 +194,9 @@ evaluation retains the source's early attacker-win rule when the attacker is
 closer to the target than every defender. VRX checks an actual target breach.
 Report these differences when comparing results with the paper; a single seed
 and the initial VRX batches do not reproduce the five-seed baseline/ablation suite.
-See [the paper's experimental setup](https://arxiv.org/html/2502.18549v3#S4.SS1).
+These settings were also checked against Eq. (18) and Section IV-A on p. 3641
+of the [published IEEE paper](https://doi.org/10.1109/LRA.2026.3662620).
+See the [online preprint](https://arxiv.org/html/2502.18549v3#S4.SS1) for accessible text.
 
 
 Run repeated trials with distinct evaluation seeds:
@@ -216,6 +218,22 @@ environment instead:
   --episodes 100 --seed 10000 --agility 2.25 \
   --output-dir train/experiments/<run>/eval-agility2.25
 ```
+
+
+To queue both 100-episode 2D evaluations behind a training run that writes an
+`exit_code` file, run:
+
+```bash
+bash scripts/finish_main_evaluation.sh train/experiments/<run> 100
+```
+
+The two agility settings (2.0 and 2.25) run in separate single-threaded CPU
+processes with seeds 10000–10099 and separate output directories. The final
+checkpoint is read-only and its hash is checked before and after evaluation.
+The script waits for both jobs and writes `evaluation.exit`. This concurrency
+does not change the main training update order. Keep the VRX trials sequential
+to avoid simulator/control timing changes from competing simulation processes.
+
 
 ## 📁 Project Structure
 
