@@ -1,0 +1,8 @@
+# Tested core dependencies for Python 3.12.
+# Install the CUDA 13.0 torch build first; see README.
+numpy==1.26.4
+matplotlib==3.11.0
+scipy==1.17.1
+pandas==3.0.6
+pyyaml==6.0.3
+torch==2.12.1

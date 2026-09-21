@@ -1,48 +1,36 @@
 import argparse
+from datetime import datetime
+from pathlib import Path
+import shlex
 import subprocess
 import sys
-import os
 
-def run_command(cmd):
-    print(f"[Loop] Running: {cmd}")
-    try:
-        subprocess.run(cmd, shell=True, check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"[Error] Command failed with exit code {e.returncode}")
-        sys.exit(e.returncode)
 
 def main():
+    script_dir = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description="Run Adversarial Learning Loop")
-    parser.add_argument("--rounds", type=int, default=3, help="Total number of rounds to run")
-    parser.add_argument("--config", type=str, default="configs/adversarial.yaml", help="Path to configuration file")
-    parser.add_argument("--device", type=str, default="cuda:0", help="Device to use")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    
+    parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument("--config", default=str(script_dir / "configs/adversarial.yaml"))
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--run-id", default=None, help="Shared experiment name; default: a new timestamped run")
+    parser.add_argument("--output-dir", default=str(script_dir / "experiments"))
     args = parser.parse_args()
-    
-    python_exec = sys.executable
-    script_path = "adversarial-learning.py"
-    
-    if not os.path.exists(script_path):
-        print(f"[Error] Script {script_path} not found in current directory. Please run this script from the 'train' folder.")
-        sys.exit(1)
+    if args.rounds < 1:
+        parser.error("--rounds must be positive")
+    run_id = args.run_id or datetime.now().strftime("adversarial_%Y-%m-%d_%H-%M-%S")
+    for round_num in range(1, args.rounds + 1):
+        for side in ("Def", "Att"):
+            command = [
+                sys.executable, "-X", "utf8", "-u", str(script_dir / "adversarial-learning.py"),
+                "--config", args.config, "--device", args.device,
+                "--seed", str(args.seed), "--round", str(round_num), "--side", side,
+                "--run-id", run_id, "--output-dir", args.output_dir,
+            ]
+            print(f"[Loop] Round {round_num} {side}: {shlex.join(command)}", flush=True)
+            subprocess.run(command, check=True)
+    print("[Success] All rounds completed!", flush=True)
 
-    print(f"Starting Adversarial Learning Loop for {args.rounds} rounds...")
-    
-    for r in range(1, args.rounds + 1):
-        print(f"\n{'='*20} Round {r} {'='*20}")
-        
-        # 1. Train Defender
-        print(f"\n--- Training Defender (Round {r}) ---")
-        cmd_def = f"{python_exec} {script_path} --config {args.config} --device {args.device} --seed {args.seed} --round {r} --side Def"
-        run_command(cmd_def)
-        
-        # 2. Train Attacker
-        print(f"\n--- Training Attacker (Round {r}) ---")
-        cmd_att = f"{python_exec} {script_path} --config {args.config} --device {args.device} --seed {args.seed} --round {r} --side Att"
-        run_command(cmd_att)
-        
-    print("\n[Success] All rounds completed!")
 
 if __name__ == "__main__":
     main()

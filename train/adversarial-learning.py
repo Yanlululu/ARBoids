@@ -2,6 +2,9 @@ import torch
 import os
 import numpy as np
 import argparse
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
 from policy.SAC import SAC, ReplayBuffer
 from envs.TADgame import TADEnv
 from utils.config import load_config
@@ -13,6 +16,7 @@ def evaluate(def_agent,
              Round: int = 1,
              defender_num : int = 3, 
              agility : float = 2.0,
+             episodes: int = 50,
              ):
     '''
         Evaluate current policies of the defenders and attacker
@@ -28,7 +32,7 @@ def evaluate(def_agent,
         att_win_num = 0
         def_col_num = 0
         reward = 0.0
-        n = 50
+        n = episodes
 
         for _ in range(n):
             def_s, att_s = env.reset(agility, noisy_agility=False)
@@ -69,6 +73,9 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
     warm_steps = cfg.training.warm_steps
     total_steps = cfg.training.total_steps
     eval_interval = cfg.training.eval_interval
+    eval_episodes = getattr(cfg.training, "eval_episodes", 50)
+    if not (0 < warm_steps < total_steps and eval_interval > 0 and eval_episodes > 0):
+        raise ValueError("Require 0 < warm_steps < total_steps and positive evaluation settings.")
 
     agility = 2.0
     
@@ -177,12 +184,14 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
                 else:
                     att_agent.learn(replay_buffer)
 
-                if train_steps % eval_interval == 0:
+                if train_steps % eval_interval == 0 or train_steps == total_steps:
                     eval_num += 1
                     def_sr, def_col, att_sr, reward = evaluate(
-                        def_agent, att_agent, LearningSide, Round, defender_num, agility)
+                        def_agent, att_agent, LearningSide, Round, defender_num, agility, eval_episodes)
+                    if not np.isfinite([def_sr, def_col, att_sr, reward]).all():
+                        raise FloatingPointError("Evaluation returned non-finite metrics.")
                     
-                    exp.record_metrics(num=eval_num, 
+                    exp.record_metrics(num=eval_num, step=train_steps,
                                        LearningSide=LearningSide,
                                        Round=Round,
                                        Def_SR=def_sr,
@@ -196,14 +205,19 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
                     else:
                         att_agent.save_all(dir_actor, dir_critic, dir_critic_target)
 
+            if train_steps >= total_steps:
+                break
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train ARBoids Adversarial Model")
-    parser.add_argument("--config", type=str, default="configs/adversarial.yaml", help="Path to configuration file")
+    parser.add_argument("--config", type=str, default=str(SCRIPT_DIR / "configs/adversarial.yaml"), help="Path to configuration file")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="Device to use (e.g., cpu, cuda:0)")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
     parser.add_argument("--round", type=int, default=None, help="Round number (overrides config)")
     parser.add_argument("--side", type=str, default=None, choices=['Def', 'Att'], help="Learning side (overrides config)")
+    parser.add_argument("--run-id", default="al-exp", help="Shared experiment name for all alternating phases")
+    parser.add_argument("--output-dir", default=str(SCRIPT_DIR / "experiments"), help="Parent experiment directory")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -218,8 +232,8 @@ if __name__ == "__main__":
 
     exp = ExperimentManager(
                     cfg, 
-                    base_dir='experiments',
-                    run_id='al-exp',
+                    base_dir=args.output_dir,
+                    run_id=args.run_id,
                     repeat_idx=None
                     )
     device = torch.device(args.device)

@@ -106,7 +106,7 @@ class ExperimentManager:
             print(f"[INFO] saved model -> {save_path}")  
 
         except Exception as e:
-            print(f"[WARN] failed to save model: {e}")
+            raise RuntimeError(f"Failed to save model to {save_path}") from e
     
     def load_model(self, model, filename):
         load_path = os.path.join(self.exp_dir, filename)

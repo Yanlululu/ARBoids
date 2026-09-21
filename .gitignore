@@ -37,3 +37,4 @@ experiments/
 .DS_Store
 # Project-local Python runtime
 /.python/
+/work/

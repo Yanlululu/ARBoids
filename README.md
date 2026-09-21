@@ -25,6 +25,63 @@ Install dependencies:
    pip install -r requirements.txt
    ```
 
+### Independent Python 3.12 training environments
+
+The training entry points support Python 3.12, PyTorch 2.12.1 with CUDA 13.0,
+and NumPy 1.26.4. The tested core versions are in `requirements-py312.txt`.
+Use a project-specific environment; install the CUDA build before the other dependencies:
+
+```bash
+python -m pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install -r requirements-py312.txt
+python -m pip check
+```
+
+The configured local environment is `D:\ARBoids\.venv` (Windows). The separate
+server environment is `/root/autodl-tmp/ARBoids/.venv` (Linux, activate with
+`conda activate /root/autodl-tmp/ARBoids/.venv`). Neither environment uses the
+other machine's installed packages.
+
+Run the main integration check from the repository root. It keeps the published
+512-unit networks, batch size 4096 and optimizer settings, with 512 warm-up steps,
+2,000 total steps and two evaluations of 10 episodes each. This checks execution
+and checkpoint generation; it is not a convergence or paper-result experiment.
+
+Windows PowerShell:
+
+```powershell
+cd D:\ARBoids
+$env:OMP_NUM_THREADS = '1'
+$env:MKL_NUM_THREADS = '1'
+$env:MPLBACKEND = 'Agg'
+.\.venv\Scripts\python.exe -X utf8 -u train/train.py --config train/configs/smoke.yaml --device cuda:0 --seed 42
+```
+
+Linux:
+
+```bash
+cd /root/autodl-tmp/ARBoids
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 MPLBACKEND=Agg .venv/bin/python -X utf8 -u train/train.py --config train/configs/smoke.yaml --device cuda:0 --seed 42
+```
+
+For a short alternating defender/attacker check, use the same environment:
+
+```bash
+python -X utf8 -u train/run_adversarial_loop.py --config train/configs/adversarial-smoke.yaml --device cuda:0 --rounds 2 --seed 42
+```
+
+Main and loop runs create timestamped directories under `train/experiments/`.
+Use `--run-id` to select a name and `--output-dir` to select a parent directory.
+The alternating loop shares one run directory across its phases. Reusing a run
+name appends metrics and replaces checkpoints, so use a new name for a fresh run.
+The final training step is evaluated and saved even when it is not a multiple
+of `eval_interval`. Checkpoint-save failures stop the process with an error.
+
+For the full training schedule, replace the smoke config with `train/configs/train.yaml`.
+The original full-training parameters are unchanged. VRX still requires the
+separate ROS 2/Gazebo setup below; loading weights into its policy network does
+not by itself test a VRX simulation.
+
 ### 3. Build VRX Environment:
 The Gazebo based simulator [VRX repository](https://github.com/osrf/vrx) is recommended for running the evaluation. We followed the installation guide from [Distributional_RL_Decision_and_Control](https://github.com/RobustFieldAutonomyLab/Distributional_RL_Decision_and_Control) with some modifications to set up the VRX environment.
 

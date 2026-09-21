@@ -1,6 +1,10 @@
 import torch
 import numpy as np
 import argparse
+import time
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
 from policy.SAC import SAC, ReplayBuffer
 from envs.TADgame import TADEnv
 from utils.config import load_config
@@ -10,14 +14,15 @@ def evaluate(agent,
              defender_num=3, 
              agility=2.0,
              boid_state=True,
-             controller='Res'):
+             controller='Res',
+             episodes=50):
     with torch.no_grad():
         env = TADEnv(defender_num,
                     boid_state)
         
         def_win_num = 0
         reward = 0.0
-        n = 50
+        n = episodes
         for _ in range(n):
             s, _ = env.reset(agility, noisy_agility=False)
             done = False
@@ -44,6 +49,10 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
     warm_steps = cfg.training.warm_steps
     total_steps = cfg.training.total_steps
     eval_interval = cfg.training.eval_interval
+    eval_episodes = getattr(cfg.training, "eval_episodes", 50)
+    log_interval = getattr(cfg.training, "log_interval", 1000)
+    if not (0 < warm_steps < total_steps and eval_interval > 0 and eval_episodes > 0 and log_interval > 0):
+        raise ValueError("Require 0 < warm_steps < total_steps and positive evaluation/log intervals.")
 
     # Curriculum learning
     init_agility = cfg.curriculum.init_agility
@@ -74,6 +83,8 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
     print('[INFO] Controller type is', controller)
 
     train_steps, eval_num = 0, 0
+    started = time.perf_counter()
+    print(f"[INFO] device={device}, steps={total_steps}, warm_steps={warm_steps}, batch_size={cfg.rl.batch_size}", flush=True)
     while train_steps < total_steps:
         if curriculum:
             agility = int(4 * train_steps / total_steps) * ind_agility + init_agility
@@ -104,20 +115,29 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
             if train_steps >= warm_steps:
                 agent.learn(replay_buffer)
 
-                if train_steps % eval_interval == 0:
+                if train_steps % eval_interval == 0 or train_steps == total_steps:
                     eval_num += 1
-                    def_sr, reward = evaluate(agent, defender_num, eva_agility, boid_state, controller)
-                    exp.record_metrics(num=eval_num, def_sr=def_sr, reward=reward)
+                    def_sr, reward = evaluate(agent, defender_num, eva_agility, boid_state, controller, eval_episodes)
+                    if not np.isfinite([def_sr, reward]).all():
+                        raise FloatingPointError("Evaluation returned non-finite metrics.")
+                    exp.record_metrics(num=eval_num, step=train_steps, def_sr=def_sr, reward=reward)
+                    print(f"[EVAL] step={train_steps} success_rate={def_sr:.3f} reward={reward:.3f}", flush=True)
                     exp.save_model(agent, model_name)
             
+            if train_steps % log_interval == 0 or train_steps == total_steps:
+                updates = max(0, train_steps - warm_steps + 1)
+                print(f"[PROGRESS] step={train_steps}/{total_steps} updates={updates} elapsed={time.perf_counter() - started:.1f}s", flush=True)
+
             if train_steps >= total_steps:
                 break
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train ARBoids Model")
-    parser.add_argument("--config", type=str, default="configs/train.yaml", help="Path to configuration file")
+    parser.add_argument("--config", type=str, default=str(SCRIPT_DIR / "configs/train.yaml"), help="Path to configuration file")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="Device to use (e.g., cpu, cuda:0)")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+    parser.add_argument("--run-id", default=None, help="Experiment folder name; default: a new timestamped run")
+    parser.add_argument("--output-dir", default=str(SCRIPT_DIR / "experiments"), help="Parent experiment directory")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -127,8 +147,8 @@ if __name__ == "__main__":
 
     exp = ExperimentManager(
                     cfg, 
-                    base_dir='experiments',
-                    run_id='arboids',
+                    base_dir=args.output_dir,
+                    run_id=args.run_id,
                     repeat_idx=1
                     )
     device = torch.device(args.device)
