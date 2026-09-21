@@ -38,3 +38,19 @@ experiments/
 # Project-local Python runtime
 /.python/
 /work/
+
+/.vrx-assets/
+
+/.vrx-venv/
+
+/vrx_ws/
+
+/vrx/results/
+
+/vrx/vrx_gz/models/
+
+/vrx/vrx_urdf/wamv_description/models/
+
+/vrx/vrx_urdf/wamv_gazebo/models/
+
+/vrx/vrx_urdf/vrx_gazebo/models/

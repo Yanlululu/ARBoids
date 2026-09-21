@@ -89,7 +89,8 @@ class Model:
                 vrx_gz.bridges.cmd_vel(self.model_name)
             ])
         elif self.is_USV():
-            pass
+            bridges.extend(vrx_gz.bridges.thrust(self.model_name, side)
+                           for side in ('left', 'right'))
 
         return [bridges, nodes, custom_launches]
 
@@ -240,8 +241,10 @@ class Model:
         xacro_process = subprocess.Popen(xacro_command,
                                          stdout=subprocess.PIPE,
                                          stderr=subprocess.PIPE)
-        stdout = xacro_process.communicate()[0]
-        urdf_str = codecs.getdecoder('unicode_escape')(stdout)[0]
+        stdout, stderr = xacro_process.communicate()
+        if xacro_process.returncode:
+            raise RuntimeError(stderr.decode('utf-8', errors='replace'))
+        urdf_str = stdout.decode('utf-8')
         print(xacro_command)
 
         # run gz sdf print to generate sdf file
@@ -267,14 +270,15 @@ class Model:
                                    stderr=subprocess.PIPE)
 
         # evaluate error output for the xacro process
-        stderr = process.communicate()[1]
-        err_output = codecs.getdecoder('unicode_escape')(stderr)[0]
+        stdout, stderr = process.communicate()
+        if process.returncode:
+            raise RuntimeError(stderr.decode('utf-8', errors='replace'))
+        err_output = stderr.decode('utf-8', errors='replace')
         for line in err_output.splitlines():
             if line.find('undefined local') > 0:
                 raise RuntimeError(line)
 
-        stdout = process.communicate()[0]
-        model_sdf = codecs.getdecoder('unicode_escape')(stdout)[0]
+        model_sdf = stdout.decode('utf-8')
 
         # parse sdf for payloads if model is urdf
         if self.urdf != '':

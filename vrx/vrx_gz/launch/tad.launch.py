@@ -18,6 +18,8 @@ from launch.actions import DeclareLaunchArgument
 from launch.actions import OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 import os
+import xml.etree.ElementTree as ET
+from ament_index_python.packages import get_package_share_directory
 import vrx_gz.launch
 from vrx_gz.model import Model
 
@@ -51,7 +53,8 @@ def launch(context, *args, **kwargs):
 
     launch_processes.extend(vrx_gz.launch.simulation(world_name, headless, gz_paused, extra_gz_args))
 
-    world_name_base = os.path.basename(world_name)
+    world_path = os.path.join(get_package_share_directory('vrx_gz'), 'worlds', world_name + '.sdf')
+    world_name_base = ET.parse(world_path).getroot().find('world').attrib['name']
     launch_processes.extend(vrx_gz.launch.spawn(sim_mode, world_name_base, models, robot))
 
     if (sim_mode == 'bridge' or sim_mode == 'full') and bridge_competition_topics:

@@ -213,3 +213,11 @@ def usv_wind_direction():
         gz_type='ignition.msgs.Float',
         ros_type='std_msgs/msg/Float32',
         direction=BridgeDirection.GZ_TO_ROS)
+
+def thrust(model_name, side):
+    return Bridge(
+        gz_topic=f'/model/{model_name}/thrusters/{side}/thrust',
+        ros_topic=f'thrusters/{side}/thrust',
+        gz_type='gz.msgs.Double',
+        ros_type='std_msgs/msg/Float64',
+        direction=BridgeDirection.ROS_TO_GZ)
