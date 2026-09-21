@@ -59,6 +59,9 @@ class vrx::WaveVisualPrivate
   /// \brief Connection to pre-render event callback
   public: common::ConnectionPtr connection{nullptr};
 
+  /// \brief Release rendering objects before the render engine is unloaded.
+  public: common::ConnectionPtr teardownConnection{nullptr};
+
   /// \brief Name of visual this plugin is attached to
   public: std::string visualName;
 
@@ -113,6 +116,8 @@ class vrx::WaveVisualPrivate
   /// \brief All rendering operations must happen within this call
   public: void OnUpdate();
 
+  public: void OnRenderTeardown();
+
   /// \brief Callback for receiving wave field updates.
   /// \param[in] _msg The message containing all the wave field parameters.
   public: void OnWavefield(const msgs::Param &_msg);
@@ -127,6 +132,8 @@ WaveVisual::WaveVisual()
 /////////////////////////////////////////////////
 WaveVisual::~WaveVisual()
 {
+  this->dataPtr->connection.reset();
+  this->dataPtr->teardownConnection.reset();
 }
 
 /////////////////////////////////////////////////
@@ -225,6 +232,10 @@ void WaveVisual::Configure(const sim::Entity &_entity,
       _eventMgr.Connect<sim::events::SceneUpdate>(
       std::bind(&WaveVisualPrivate::OnUpdate, this->dataPtr.get()));
 
+  this->dataPtr->teardownConnection =
+      _eventMgr.Connect<sim::events::RenderTeardown>(
+          std::bind(&WaveVisualPrivate::OnRenderTeardown, this->dataPtr.get()));
+
   // Subscribe to receive the wavefield parameters.
   this->dataPtr->node.Subscribe(this->dataPtr->wavefield.Topic(),
     &WaveVisualPrivate::OnWavefield, this->dataPtr.get());
@@ -241,6 +252,16 @@ void WaveVisual::PreUpdate(
 }
 
 //////////////////////////////////////////////////
+void WaveVisualPrivate::OnRenderTeardown()
+{
+  // Runs in the rendering thread while Ogre objects and their vtables exist.
+  this->connection.reset();
+  this->material.reset();
+  this->visual.reset();
+  this->scene.reset();
+}
+
+/////////////////////////////////////////////////
 void WaveVisualPrivate::OnUpdate()
 {
   if (this->visualName.empty())

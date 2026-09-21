@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--duration', type=float, default=60.)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--gui', action='store_true')
+    parser.add_argument('--capture-first', action='store_true', help='Save real camera frames for the first episode')
     args = parser.parse_args()
     if args.episodes <= 0:
         parser.error('episodes must be positive')
@@ -33,6 +34,8 @@ def main():
                    '--run-id', run_id]
         if not args.gui:
             command.append('--headless')
+        if args.capture_first and i == 0:
+            command.append('--capture-frames')
         env = dict(os.environ, GZ_PARTITION=f'arboids-{os.getpid()}-{i}')
         with (args.output_dir / f'{run_id}.log').open('w', encoding='utf-8') as log:
             completed = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)

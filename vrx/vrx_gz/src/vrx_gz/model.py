@@ -28,6 +28,7 @@ from launch_ros.actions import Node
 import vrx_gz.bridges
 import vrx_gz.payload_bridges
 import pathlib
+import xml.etree.ElementTree as ET
 import re
 import shutil
 import yaml
@@ -245,6 +246,23 @@ class Model:
         if xacro_process.returncode:
             raise RuntimeError(stderr.decode('utf-8', errors='replace'))
         urdf_str = stdout.decode('utf-8')
+        # Gazebo converts package:// to model:// but ament package prefixes
+        # are not all on its model path. Resolve and verify meshes explicitly.
+        robot = ET.fromstring(urdf_str)
+        def resolve_resource(uri):
+            if uri.startswith(('package://', 'model://')):
+                package, relative = uri.split('://', 1)[1].split('/', 1)
+                resource = pathlib.Path(get_package_share_directory(package)) / relative
+                if not resource.exists():
+                    raise FileNotFoundError(f'Missing robot resource: {resource}')
+                return resource.as_uri()
+            return uri
+        for element in robot.iter():
+            if 'filename' in element.attrib:
+                element.set('filename', resolve_resource(element.get('filename')))
+            if element.text:
+                element.text = resolve_resource(element.text.strip())
+        urdf_str = ET.tostring(robot, encoding='unicode')
         print(xacro_command)
 
         # run gz sdf print to generate sdf file

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import struct
@@ -267,6 +268,8 @@ def main():
         if args.headless:
             command += ['extra_gz_args:=--headless-rendering']
         launch_env = dict(os.environ)
+        launch_env['GZ_PARTITION'] = f'arboids-{os.getpid()}-{uuid.uuid4().hex[:8]}'
+        result['gazebo_partition'] = launch_env['GZ_PARTITION']
         if preload := launch_env.get('ARBOIDS_OGRE_PRELOAD'):
             launch_env['LD_PRELOAD'] = preload + (':' + launch_env['LD_PRELOAD'] if launch_env.get('LD_PRELOAD') else '')
         with (output / 'gazebo.log').open('w', encoding='utf-8') as log:
@@ -327,6 +330,14 @@ def main():
     finally:
         stop_process(image_bridge)
         stop_process(process)
+        log_path = output / 'gazebo.log'
+        if log_path.exists():
+            log_text = re.sub(r'\x1b\[[0-9;]*m', '', log_path.read_text(encoding='utf-8', errors='replace'))
+            diagnostics = [line for line in log_text.splitlines()
+                           if any(message in line for message in ('[Err]', 'Segmentation fault', 'Assertion'))]
+            if diagnostics:
+                result.update(passed=False, error='Gazebo reported errors; see gazebo.log',
+                              gazebo_errors=diagnostics[:20])
         result['wall_seconds'] = time.monotonic() - started
         if trial is not None:
             result['control_steps'] = len(trial.rows)

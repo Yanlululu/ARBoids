@@ -593,33 +593,6 @@ class ExperimentManager:
         rclpy.shutdown()
 
 if __name__ == "__main__":
-    rclpy.init()
-
-    parser = argparse.ArgumentParser(description="Run VRX Experiment")
-    parser.add_argument("--setting", type=int, default=1, choices=[0, 1], help="World setting: 0 for ocean, 1 for dock")
-    parser.add_argument("--agility", type=float, default=2.25, help="Attacker agility")
-    parser.add_argument("--num_robots", type=int, default=4, help="Total number of robots (1 attacker + defenders)")
-    parser.add_argument("--save_traj", action="store_true", help="Whether to save trajectory")
-    parser.add_argument("--save_file", type=str, default="results/exp_traj1.npz", help="Path to save trajectory file")
-    parser.add_argument("--headless", action="store_true", help="Run simulation in headless mode")
-    parser.add_argument("--controller", type=str, default="RL", choices=['RL', 'AdaRes', 'Res', 'Boids'], help="Controller type")
-    parser.add_argument("--modelname", type=str, default="checkpoints/rl-iapf1.pth", help="Path to model file")
-    parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="Device to use")
-
-    args = parser.parse_args()
-
-    ''' Experiment Args'''
-    if args.setting == 0:
-        world_name = "sydney_regatta_original"
-    elif args.setting == 1:
-        world_name = "sydney_regatta_original1"
-
-    # Ensure directories exist
-    os.makedirs(os.path.dirname(args.save_file), exist_ok=True)
-    os.makedirs(os.path.dirname(args.modelname), exist_ok=True)
-    
-    exp_manager = ExperimentManager(args.num_robots, args.save_traj, args.save_file, args.device)
-
-    init_poses = exp_manager.generate_init_info(agility=args.agility, setting=args.setting)
-    exp_manager.launch_simulation(init_poses, world_name, args.headless, args.controller, args.modelname)
-
+    # Keep the published command usable with the validated simulation runner.
+    from run_experiment import main
+    raise SystemExit(main())

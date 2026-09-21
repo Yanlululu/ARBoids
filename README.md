@@ -82,26 +82,40 @@ The original full-training parameters are unchanged. VRX still requires the
 separate ROS 2/Gazebo setup below; loading weights into its policy network does
 not by itself test a VRX simulation.
 
-### 3. Build VRX Environment:
-The Gazebo based simulator [VRX repository](https://github.com/osrf/vrx) is recommended for running the evaluation. We followed the installation guide from [Distributional_RL_Decision_and_Control](https://github.com/RobustFieldAutonomyLab/Distributional_RL_Decision_and_Control) with some modifications to set up the VRX environment.
+### 3. Build VRX Environment
 
-Install [ROS 2 Humble](https://docs.ros.org/en/humble/Installation.html) and [Gazebo Garden](https://gazebosim.org/docs/garden/installation) following the official guide. Then install additional dependencies by running:
-
-```bash
-sudo apt install python3-sdformat13 ros-humble-ros-gzgarden ros-humble-xacro
-```
-
-Navigate to the root directory and run the following commands:
+Use Ubuntu 22.04 with ROS 2 Humble and Gazebo Garden. ROS uses the system
+Python 3.10 ABI; keep its environment separate from Python 3.12 training.
+The scripts install the simulator, fetch the missing official VRX/Fuel models,
+and build five ROS packages. Run from the repository root:
 
 ```bash
-mkdir -p vrx_ws/src
-cp -r vrx/* vrx_ws/src/
-cd vrx_ws
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install
-. install/setup.bash
+sudo bash scripts/setup_vrx_ubuntu.sh
+python3 -X utf8 scripts/fetch_vrx_assets.py
+python3 -X utf8 scripts/fetch_fuel_assets.py
+bash scripts/build_vrx.sh
+source vrx_ws/activate.bash
 ```
 
+`build_vrx.sh` creates `.vrx-venv` with system ROS packages, CPU PyTorch 2.12.1,
+and NumPy 1.26.4. CPU policy inference leaves the GPU available for training and
+Gazebo rendering. Assets are cached under `.vrx-assets`; the asset manifests
+record upstream versions and licenses. Keep these directories for offline use.
+
+The local Windows installation uses the dedicated `ARBoids-22.04` WSL 2 distro
+stored in `D:\ARBoids-WSL`. It shares `D:\ARBoids` as `/mnt/d/ARBoids`.
+Its Linux build and Python environment live in `/opt/arboids-runtime`:
+
+```bash
+ARBOIDS_VRX_WS=/opt/arboids-runtime/vrx_ws \
+ARBOIDS_VRX_VENV=/opt/arboids-runtime/venv bash scripts/build_vrx.sh
+source /opt/arboids-runtime/vrx_ws/activate.bash
+```
+
+WSLg supplies the local GUI and D3D12 rendering on the NVIDIA adapter. On the
+server, use `--headless` for EGL rendering. The launcher loads a project-scoped
+Ogre shim that limits rendering workers to eight; this avoids the Ogre 2.3
+thread-count assertion on hosts exposing more than 127 CPU cores.
 
 ## 🚀 Training ARBoids Model
 
@@ -135,18 +149,54 @@ python adversarial-learning.py --round 1 --side Att
 
 ## 🌊 VRX Simulation
 
-Ensure you have successfully built the VRX environment as described in the installation guide.
+Run from the repository root after sourcing `vrx_ws/activate.bash` on Linux,
+or `/opt/arboids-runtime/vrx_ws/activate.bash` inside the local WSL distro:
 
-Source the ROS 2 environment and the VRX workspace:
 ```bash
-source /opt/ros/humble/setup.bash
-source vrx_ws/install/setup.bash
+python -X utf8 -u vrx/run_experiment.py \
+  --checkpoint train/experiments/<run>/adares1.pth \
+  --controller AdaRes --setting 0 --agility 2.25 --seed 42 \
+  --headless --capture-frames
 ```
 
-Navigate to the `vrx` directory and run the experiment (requires a pretrained model checkpoint). You can specify additional arguments such as model path, controller type, and device. The model checkpoint should be placed at the path specified by `--modelname`:
+Setting `0` is the open-water scenario; `1` is the dock scenario. Omit
+`--headless` for the local interactive Gazebo window. Windows PowerShell:
+
+```powershell
+cd D:\ARBoids
+.\scripts\run_vrx.ps1 -Checkpoint 'train\experiments\<run>\adares1.pth' -Setting 1 -CaptureFrames
+```
+
+Each run writes `result.json`, `trajectory.npz`, and `gazebo.log` to a unique
+directory under `vrx/results`. `--capture-frames` adds a fixed overview camera
+and saves actual Gazebo PNG frames. A valid task failure still has `passed=true`
+and `success=false`; missing feedback, failed bridges or simulator crashes have
+`passed=false` and a nonzero exit code. Timeouts use simulation time (60 seconds).
+
+The deployment adapter maps policy action 0 to the starboard thruster and action
+1 to port. This matches the yaw sign of the original 2D training dynamics with
+Gazebo's ENU coordinates. Trajectories retain both policy actions and the actual
+port/starboard commands. The training dynamics and algorithm are unchanged.
+The legacy `tad_vrx_experiment.py` command delegates to this same runner.
+
+Run repeated trials with distinct evaluation seeds:
+
 ```bash
-cd vrx
-python tad_vrx_experiment.py --modelname checkpoints/adares1.pth --controller AdaRes --device cuda:0 --setting 1
+python -X utf8 -u vrx/run_batch.py \
+  --checkpoint train/experiments/<run>/adares1.pth \
+  --setting 0 --episodes 10 --seed 20000 --agility 2.25 \
+  --output-dir vrx/results/<new-batch-name>
+```
+
+The batch retains every trial and stops on an infrastructure failure. Use a
+new output name for a new batch. Independent 2D evaluation uses the training
+environment instead:
+
+```bash
+.venv/bin/python -X utf8 -u train/evaluate_policy.py \
+  --checkpoint train/experiments/<run>/adares1.pth \
+  --episodes 100 --seed 10000 --agility 2.25 \
+  --output-dir train/experiments/<run>/eval-agility2.25
 ```
 
 ## 📁 Project Structure
@@ -166,7 +216,9 @@ ARBoids/
 │   ├── vrx_ros/           # ROS nodes
 │   ├── vrx_urdf/          # Robot descriptions (URDF/Xacro)
 │   ├── models.py          # Policy networks for VRX
-│   ├── tad_vrx_experiment.py # Main VRX experiment script
+│   ├── run_experiment.py  # Bounded ROS/Gazebo experiment
+│   ├── run_batch.py       # Repeated VRX evaluation
+│   ├── tad_vrx_experiment.py # Original controller helpers / legacy entry point
 │   └── utils.py           # Utility functions for VRX
 ├── LICENSE
 ├── README.md
