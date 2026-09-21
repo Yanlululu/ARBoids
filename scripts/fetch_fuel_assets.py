@@ -20,6 +20,9 @@ def main():
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
     repo = args.repo.resolve()
+    lock_path = repo / 'vrx/fuel-models.json'
+    locked_models = ({entry['url']: entry for entry in json.loads(lock_path.read_text(encoding='utf-8'))}
+                     if lock_path.exists() else None)
     cache = repo / '.vrx-assets/fuel'
     cache.mkdir(parents=True, exist_ok=True)
     urls = set()
@@ -28,8 +31,13 @@ def main():
         urls.update(e.text.strip() for e in tree.findall('.//include/uri')
                     if e.text and e.text.strip().startswith('https://fuel.gazebosim.org/'))
     def fetch(url):
-        with urlopen(url, timeout=30) as response:
-            metadata = json.load(response)
+        if locked_models is not None:
+            if url not in locked_models:
+                raise RuntimeError(f'Model is absent from vrx/fuel-models.json: {url}')
+            metadata = locked_models[url]
+        else:
+            with urlopen(url, timeout=30) as response:
+                metadata = json.load(response)
         name, version = metadata['name'], str(metadata['version'])
         destination = cache / 'fuel.gazebosim.org' / metadata['owner'].lower() / 'models' / name.lower() / version
         if not (destination/'model.config').is_file():

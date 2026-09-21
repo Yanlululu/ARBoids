@@ -1,0 +1,106 @@
+[
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/antenna",
+    "owner": "openrobotics",
+    "name": "antenna",
+    "version": "5",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/foldable_chair",
+    "owner": "openrobotics",
+    "name": "foldable_chair",
+    "version": "3",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/foldable_table",
+    "owner": "openrobotics",
+    "name": "foldable_table",
+    "version": "4",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/ground_station",
+    "owner": "openrobotics",
+    "name": "ground_station",
+    "version": "7",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/mb_marker_buoy_black",
+    "owner": "openrobotics",
+    "name": "mb_marker_buoy_black",
+    "version": "7",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/mb_marker_buoy_green",
+    "owner": "openrobotics",
+    "name": "mb_marker_buoy_green",
+    "version": "4",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/mb_marker_buoy_red",
+    "owner": "openrobotics",
+    "name": "mb_marker_buoy_red",
+    "version": "5",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/mb_marker_buoy_white",
+    "owner": "openrobotics",
+    "name": "mb_marker_buoy_white",
+    "version": "4",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/mb_round_buoy_black",
+    "owner": "openrobotics",
+    "name": "mb_round_buoy_black",
+    "version": "4",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/mb_round_buoy_orange",
+    "owner": "openrobotics",
+    "name": "mb_round_buoy_orange",
+    "version": "5",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/post",
+    "owner": "openrobotics",
+    "name": "post",
+    "version": "4",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/sydney_regatta",
+    "owner": "openrobotics",
+    "name": "sydney_regatta",
+    "version": "3",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  },
+  {
+    "url": "https://fuel.gazebosim.org/1.0/openrobotics/models/tent",
+    "owner": "openrobotics",
+    "name": "tent",
+    "version": "4",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/"
+  }
+]
