@@ -235,6 +235,15 @@ does not change the main training update order. Keep the VRX trials sequential
 to avoid simulator/control timing changes from competing simulation processes.
 
 
+## Published-parameter rerun
+
+The preserved `main-seed42-20260921` run uses the released-code settings.
+A separate `train/configs/paper-parameters.yaml` enables the explicitly
+published training parameters, reward rules and termination conditions.
+See [the parameter comparison and retained implementation details](docs/paper-parameters.md)
+before comparing this run with the paper. The new run does not overwrite the
+original results. Its queue is `scripts/run_paper_reproduction.sh`.
+
 ## 📁 Project Structure
 
 ```bash
