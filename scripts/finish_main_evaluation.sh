@@ -19,7 +19,7 @@ agilities=(2.0 2.25)
 pids=()
 for agility in "${agilities[@]}"; do
   .venv/bin/python -X utf8 -u train/evaluate_policy.py \
-    --checkpoint "$checkpoint" --episodes "$episodes" --seed 10000 \
+    --checkpoint "$checkpoint" --config "$run/config.yaml" --episodes "$episodes" --seed 10000 \
     --agility "$agility" --duration 60 --device cpu \
     --output-dir "$run/eval-agility$agility" > "$run/eval-agility$agility.log" 2>&1 &
   pids+=("$!")

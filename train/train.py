@@ -9,16 +9,19 @@ from policy.SAC import SAC, ReplayBuffer
 from envs.TADgame import TADEnv
 from utils.config import load_config
 from utils.manager import ExperimentManager, set_seed
+from utils.protocol import environment_kwargs, apply_adapter_exploration
 
 def evaluate(agent, 
              defender_num=3, 
              agility=2.0,
              boid_state=True,
              controller='Res',
-             episodes=50):
+             episodes=50,
+             env_options=None):
     with torch.no_grad():
         env = TADEnv(defender_num,
-                    boid_state)
+                    boid_state,
+                    **(env_options or {}))
         
         def_win_num = 0
         reward = 0.0
@@ -59,9 +62,12 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
     eva_agility = cfg.curriculum.eva_agility
     ind_agility = cfg.curriculum.ind_agility
 
+    env_options = environment_kwargs(cfg)
     env = TADEnv(defender_num,
                  boid_state,
-                 form_reward)
+                 form_reward,
+                 **env_options)
+    print(f"[PROTOCOL] environment={env_options or {'protocol': 'source'}}; adapter_noise={getattr(cfg.training, 'adapter_noise_distribution', 'uniform')}", flush=True)
 
     state_dim = env.state_dim
     action_dim = env.action_dim
@@ -103,7 +109,7 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
                 action = agent.choose_action(s, False)
                 action = action.reshape(env.defender_num, action_dim)
                 if adaptive:
-                    action[:, -1] = np.clip(action[:, -1] + np.random.uniform(-0.1, 0.1), 0.0, 1.0)
+                    action = apply_adapter_exploration(action, cfg.training)
             
             s_, r, done, _ = env.step(action, controller)
 
@@ -117,7 +123,7 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
 
                 if train_steps % eval_interval == 0 or train_steps == total_steps:
                     eval_num += 1
-                    def_sr, reward = evaluate(agent, defender_num, eva_agility, boid_state, controller, eval_episodes)
+                    def_sr, reward = evaluate(agent, defender_num, eva_agility, boid_state, controller, eval_episodes, env_options)
                     if not np.isfinite([def_sr, reward]).all():
                         raise FloatingPointError("Evaluation returned non-finite metrics.")
                     exp.record_metrics(num=eval_num, step=train_steps, def_sr=def_sr, reward=reward)

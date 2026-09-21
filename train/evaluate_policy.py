@@ -12,6 +12,7 @@ from envs.TADgame import TADEnv
 from policy.SAC import SAC
 from utils.config import load_config
 from utils.manager import set_seed
+from utils.protocol import environment_kwargs
 
 
 def main():
@@ -30,7 +31,7 @@ def main():
         parser.error('episodes, agility and duration must be positive')
     args.output_dir.mkdir(parents=True, exist_ok=False)
     cfg = load_config(str(args.config))
-    env = TADEnv(cfg.agent.defender_num, cfg.agent.boid_state, cfg.agent.form_reward)
+    env = TADEnv(cfg.agent.defender_num, cfg.agent.boid_state, cfg.agent.form_reward, **environment_kwargs(cfg))
     env.Total_T = args.duration
     action_dim = env.action_dim + int(cfg.agent.adaptive)
     agent = SAC(cfg, env.feature1_dim, env.feature2_dim, action_dim,
@@ -72,6 +73,9 @@ def main():
     half = z*np.sqrt(p*(1-p)/n + z*z/(4*n*n)) / (1 + z*z/n)
     summary = dict(passed=True, episodes=n, successes=successes, success_rate=p,
                    wilson_95_interval=[center-half, center+half], agility=args.agility,
+                   protocol=env.protocol, early_attacker_win=env.early_attacker_win,
+                   agility_noise_half_width=env.agility_noise_half_width,
+                   config_sha256=hashlib.sha256(args.config.read_bytes()).hexdigest(),
                    duration_limit=env.Total_T, capture_radius=env.Defend_R,
                    target_radius=env.Target_R, collision_radius=env.Collision_R,
                    first_seed=args.seed, checkpoint=str(args.checkpoint.resolve()),

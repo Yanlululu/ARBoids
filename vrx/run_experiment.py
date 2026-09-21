@@ -109,12 +109,15 @@ class Trial(ExperimentManager):
             self.last_received[index] = time.monotonic()
 
     def outcome(self, elapsed):
-        if np.linalg.norm(self.curr_pos[0]) < self.target_r:
+        paper = getattr(self.args, 'termination_rule', 'source') == 'paper'
+        breached = np.linalg.norm(self.curr_pos[0]) <= self.target_r if paper else np.linalg.norm(self.curr_pos[0]) < self.target_r
+        if breached:
             return 1
         defenders = self.curr_pos[1:]
         distances = np.linalg.norm(defenders[:, None] - defenders[None, :], axis=-1)
         np.fill_diagonal(distances, np.inf)
-        if np.any(distances < self.collision_r):
+        colliding = distances <= self.collision_r if paper else distances < self.collision_r
+        if np.any(colliding):
             return 2
         if np.any(np.linalg.norm(defenders - self.curr_pos[0], axis=1) < self.defend_r):
             return 3
@@ -230,6 +233,7 @@ def main():
     parser.add_argument('--headless', action='store_true')
     parser.add_argument('--capture-frames', action='store_true', help='Save real Gazebo overview camera frames every five simulation seconds')
     parser.add_argument('--duration', type=float, default=60.)
+    parser.add_argument('--termination-rule', choices=['source', 'paper'], default='source')
     parser.add_argument('--action-period', type=float, default=0.2)
     parser.add_argument('--startup-timeout', type=float, default=180.)
     parser.add_argument('--wall-timeout', type=float, default=900.)
@@ -253,6 +257,7 @@ def main():
     result = {'passed': False, 'seed': args.seed, 'setting': args.setting,
               'agility': args.agility, 'controller': args.controller, 'num_robots': args.num_robots,
               'duration_limit': args.duration, 'action_period': args.action_period,
+              'termination_rule': args.termination_rule,
               'capture_radius': 5.0, 'target_radius': 15.0, 'collision_radius': 5.0,
               'checkpoint': args.checkpoint,
               'thruster_mapping': 'policy[0]->starboard; policy[1]->port (ENU yaw matching training)'}

@@ -11,7 +11,21 @@ class TADEnv():
                  boid_state=True,
                  form_reward=True,
                  LearningSide='Def',
+                 *,
+                 protocol='source',
+                 total_time=None,
+                 agility_noise_half_width=None,
                  ):
+
+        if protocol not in ('source', 'paper-parameters-v1'):
+            raise ValueError(f'Unknown environment protocol: {protocol}')
+        self.protocol = protocol
+        paper = protocol == 'paper-parameters-v1'
+        self.early_attacker_win = not paper
+        self.agility_noise_half_width = float(
+            (0.5 if paper else 0.25) if agility_noise_half_width is None else agility_noise_half_width)
+        if not np.isfinite(self.agility_noise_half_width) or self.agility_noise_half_width < 0:
+            raise ValueError('agility_noise_half_width must be finite and nonnegative')
 
         # TAD Parameters
         self.Target_R = 15.0
@@ -21,7 +35,9 @@ class TADEnv():
         self.Att_Sensing_R = 15.0
 
         # Simulation Parameters
-        self.Total_T = 80.0
+        self.Total_T = float((60.0 if paper else 80.0) if total_time is None else total_time)
+        if not np.isfinite(self.Total_T) or self.Total_T <= 0:
+            raise ValueError('total_time must be finite and positive')
         self.Action_T = 0.2
         self.Current_T = 0.0
         self.LearningSide = LearningSide
@@ -64,7 +80,7 @@ class TADEnv():
         # Reset attacker
         init_pos = init_radius * np.array([np.cos(init_theta), np.sin(init_theta)])
         if noisy_agility:
-            agility = np.random.uniform(agility - 0.25, agility + 0.25)
+            agility = np.random.uniform(agility - self.agility_noise_half_width, agility + self.agility_noise_half_width)
         self.attacker.agility = agility
         self.attacker.reset(init_pos, -init_theta)
         self.att_action = np.zeros(2)
@@ -278,6 +294,15 @@ class TADEnv():
                 4: time out
         '''
         att_tar_dist = np.linalg.norm(self.attacker.pos)
+        if self.protocol == 'paper-parameters-v1':
+            # Published Section II-B: actual target breach, collision, capture or timeout.
+            if att_tar_dist <= self.Target_R:
+                return 1
+            if (self.def_def_dists <= self.Collision_R).any():
+                return 2
+            if (self.def_att_dists < self.Defend_R).any():
+                return 3
+            return 4 if self.Current_T > self.Total_T - 1e-5 else 0
         def_tar_dists = [np.linalg.norm(defender.pos) for defender in self.defender_list]
         # Since the attacker has superior maneuverability over the defenders, once the attacker
         # is closer to the target than all defenders, the defenders can no longer intercept it
@@ -296,6 +321,26 @@ class TADEnv():
         else:
             return 0
 
+    def _get_paper_rewards(self):
+        """Published Eqs. (15)-(17), including rewards on terminal transitions."""
+        positions = np.array([defender.pos for defender in self.defender_list])
+        vectors = self.attacker.pos - positions
+        distances = np.linalg.norm(vectors, axis=1)
+        rewards = np.zeros(self.defender_num)
+        if np.linalg.norm(self.attacker.pos) <= self.Target_R:
+            rewards.fill(-100.0)
+        elif (distances <= self.Defend_R).any():
+            rewards = np.where(distances <= self.Defend_R, 100.0,
+                               np.where(distances <= 3*self.Defend_R, 50.0, 0.0))
+        # One -50 penalty for each colliding agent, not once per collision partner.
+        rewards -= 50.0 * (self.def_def_dists <= self.Collision_R).any(axis=1)
+        if self.form_reward:
+            target_direction = self.attacker.pos / max(np.linalg.norm(self.attacker.pos), 1e-6)
+            direction_sum = (vectors / np.maximum(distances[:, None], 1e-6)).sum(axis=0)
+            norm = np.linalg.norm(direction_sum)
+            rewards += 0.5*np.dot(target_direction, direction_sum/max(norm, 1e-6)) - norm/self.defender_num
+        return rewards
+
     def _get_rewards(self, done):
         '''
             Reward Function
@@ -303,6 +348,8 @@ class TADEnv():
             Args:
                 done: isTerminate
         '''
+        if self.protocol == 'paper-parameters-v1' and self.LearningSide == 'Def':
+            return self._get_paper_rewards()
         rewards = np.zeros(self.defender_num)
         defender_pos = np.array([defender.pos for defender in self.defender_list])
         def_att_vec = self.attacker.pos - defender_pos

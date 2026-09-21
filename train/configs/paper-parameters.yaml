@@ -1,0 +1,31 @@
+# Published numerical parameters and reward/termination rules; see docs/paper-parameters.md.
+rl:
+  hidden_dim: 512
+  batch_size: 4096
+  learning_rate: 0.0001
+  GAMMA: 0.99
+  TAU: 0.005
+training:
+  model_name: adares.pth
+  warm_steps: 50000
+  total_steps: 1000000
+  eval_interval: 5000
+  eval_episodes: 100
+  log_interval: 1000
+  adapter_noise_distribution: normal
+  adapter_noise_scale: 0.1
+agent:
+  defender_num: 3
+  curriculum: true
+  residual: true
+  adaptive: true
+  boid_state: true
+  form_reward: true
+curriculum:
+  init_agility: 2.0
+  eva_agility: 2.0
+  ind_agility: 0.25
+environment:
+  protocol: paper-parameters-v1
+  total_time: 60.0
+  agility_noise_half_width: 0.5
