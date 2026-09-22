@@ -12,6 +12,7 @@ import time
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', type=Path, required=True)
+    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids', 'ChannelMAPPO'], default='AdaRes')
     parser.add_argument('--episodes', type=int, default=10)
     parser.add_argument('--setting', type=int, choices=[0, 1], default=1)
     parser.add_argument('--seed', type=int, default=20000)
@@ -30,6 +31,7 @@ def main():
         run_id = f'episode-{i:03d}'
         command = [sys.executable, '-X', 'utf8', '-u', str(Path(__file__).with_name('run_experiment.py')),
                    '--checkpoint', str(args.checkpoint.resolve()), '--setting', str(args.setting),
+                   '--controller', args.controller,
                    '--seed', str(args.seed+i), '--agility', str(args.agility),
                    '--duration', str(args.duration), '--termination-rule', args.termination_rule,
                    '--output-dir', str(args.output_dir.resolve()),

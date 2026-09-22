@@ -119,6 +119,14 @@ thread-count assertion on hosts exposing more than 127 CPU cores.
 
 ## 🚀 Training ARBoids Model
 
+The `innovation/arboids` implementation adds a two-stage, channel-gated MAPPO
+policy with candidate exchange and verified team-value guidance. See
+[the implementation and run guide](docs/channel-mappo.md). Use
+`train/configs/channel-mappo-smoke.yaml` for an integration run and
+`train/configs/channel-mappo.yaml` for the full schedule. The training entry point
+selects it with `algorithm: channel_mappo`; existing SAC configurations retain
+their behavior. VRX selects the shared actor with `--controller ChannelMAPPO`.
+
 Navigate to the `train` directory before running any training scripts:
 ```bash
 cd train

@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Checkpoint,
     [ValidateSet(0, 1)][int]$Setting = 1,
     [int]$Seed = 42,
+    [ValidateSet('AdaRes', 'Res', 'RL', 'Boids', 'ChannelMAPPO')][string]$Controller = 'AdaRes',
     [ValidateSet('source', 'paper')][string]$TerminationRule = 'source',
     [string]$Distribution = 'ARBoids-22.04',
     [switch]$Headless,
@@ -18,6 +19,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot access the ARBoids WSL environment.' }
 $linuxCheckpoint = & wsl.exe -d $Distribution -u root --exec wslpath -a -u $checkpointPath
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the checkpoint in WSL.' }
 $trialArgs = @('vrx/run_experiment.py', '--checkpoint', $linuxCheckpoint.Trim(),
+               '--controller', $Controller,
                '--setting', [string]$Setting, '--seed', [string]$Seed,
                '--termination-rule', $TerminationRule)
 if ($Headless) { $trialArgs += '--headless' }

@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from envs.TADgame import TADEnv
 from policy.SAC import SAC
-from utils.config import load_config
+from utils.config import load_config, _namespace_to_dict
 from utils.manager import set_seed
 from utils.protocol import environment_kwargs
 
@@ -24,13 +24,24 @@ def main():
     parser.add_argument('--agility', type=float, default=2.0)
     parser.add_argument('--duration', type=float, default=60., help='Evaluation horizon in simulation seconds; paper default is 60')
     parser.add_argument('--device', default='cpu')
+    parser.add_argument('--defenders', type=int, default=None, help='Override team size for generalization evaluation')
+    parser.add_argument('--teacher-search', action='store_true', help='ChannelMAPPO centralized teacher diagnostic only')
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args()
     torch.set_num_threads(1)
     if args.episodes <= 0 or args.agility <= 0 or args.duration <= 0:
         parser.error('episodes, agility and duration must be positive')
+    if args.defenders is not None and args.defenders < 1:
+        parser.error('--defenders must be positive')
     args.output_dir.mkdir(parents=True, exist_ok=False)
     cfg = load_config(str(args.config))
+    if getattr(cfg, 'algorithm', 'sac') == 'channel_mappo':
+        from train_mappo import evaluate_checkpoint
+        return evaluate_checkpoint(args, _namespace_to_dict(cfg))
+    if args.teacher_search:
+        parser.error('--teacher-search requires a ChannelMAPPO configuration')
+    if args.defenders is not None:
+        cfg.agent.defender_num = args.defenders
     env = TADEnv(cfg.agent.defender_num, cfg.agent.boid_state, cfg.agent.form_reward, **environment_kwargs(cfg))
     env.Total_T = args.duration
     action_dim = env.action_dim + int(cfg.agent.adaptive)

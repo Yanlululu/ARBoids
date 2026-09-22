@@ -41,6 +41,13 @@ def evaluate(agent,
 
 def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
 
+    algorithm = getattr(cfg, 'algorithm', 'sac')
+    if algorithm == 'channel_mappo':
+        from train_mappo import main as train_mappo
+        return train_mappo(cfg, exp, device)
+    if algorithm != 'sac':
+        raise ValueError(f'Unknown training algorithm: {algorithm}')
+
     defender_num = cfg.agent.defender_num
     adaptive = cfg.agent.adaptive
     residual = cfg.agent.residual
@@ -160,4 +167,3 @@ if __name__ == "__main__":
     device = torch.device(args.device)
 
     main(cfg, exp, device)
-

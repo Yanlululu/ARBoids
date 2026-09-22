@@ -1,4 +1,5 @@
 import numpy as np
+import copy
 import matplotlib.pyplot as plt
 import scipy.io
 from envs.modules import Obstacle, WAMV
@@ -15,11 +16,19 @@ class TADEnv():
                  protocol='source',
                  total_time=None,
                  agility_noise_half_width=None,
+                 initial_min_spacing=None,
+                 canonical_agent_order=False,
                  ):
 
         if protocol not in ('source', 'paper-parameters-v1'):
             raise ValueError(f'Unknown environment protocol: {protocol}')
         self.protocol = protocol
+        if defender_num < 1:
+            raise ValueError('defender_num must be positive')
+        self.initial_min_spacing = initial_min_spacing
+        if initial_min_spacing is not None and (not np.isfinite(initial_min_spacing) or initial_min_spacing <= 5.):
+            raise ValueError('initial_min_spacing must exceed the 5 m collision threshold')
+        self.canonical_agent_order = canonical_agent_order
         paper = protocol == 'paper-parameters-v1'
         self.early_attacker_win = not paper
         self.agility_noise_half_width = float(
@@ -89,8 +98,11 @@ class TADEnv():
         init_theta = np.random.uniform(-np.pi, np.pi)
         index = 2.0 * np.pi / self.defender_num
         heading = np.random.uniform(-np.pi, np.pi)
+        radius_floor = 7.0
+        if self.initial_min_spacing is not None and self.defender_num > 1:
+            radius_floor = max(radius_floor, self.initial_min_spacing / (2 * np.sin(np.pi / self.defender_num)))
         for i, defender in enumerate(self.defender_list):
-            radius = np.random.uniform(7.0, 8.0)
+            radius = np.random.uniform(radius_floor, radius_floor + 1.0)
             theta = init_theta + index * i
             init_pos = radius * np.array([np.cos(theta), np.sin(theta)])
             defender.reset(init_pos, heading + np.random.uniform(-np.pi / 3, np.pi / 3))
@@ -124,6 +136,7 @@ class TADEnv():
         
         observations, observation = self._get_obs()
         self.Rewards = self._get_rewards(done=0)
+        self.last_executed_thrust = np.zeros((self.defender_num, 2))
 
         return observations, observation
 
@@ -152,10 +165,31 @@ class TADEnv():
         else:
             actions = self.boids_actions
 
+        return self._advance(actions, att_action)
+
+    def step_thrust(self, thrust, att_action=None):
+        """Execute physical N directly; no action scaling or second fusion.
+
+        Legacy step() retains its four-value return contract. This explicit
+        interface returns execution metadata in the fourth position instead.
+        All four nonzero outcome codes are true task terminals, including
+        finite-horizon denial (4); rollout boundaries are handled by the trainer.
+        """
+        thrust = np.asarray(thrust, dtype=np.float64)
+        if thrust.shape != (self.defender_num, 2) or not np.isfinite(thrust).all():
+            raise ValueError('Expected finite physical thrust [defender_num, 2]')
+        obs, reward, outcome, attacker_obs = self._advance(thrust, att_action)
+        return obs, reward, outcome, dict(executed_thrust=self.last_executed_thrust.copy(),
+                                         terminated=bool(outcome), truncated=False,
+                                         outcome_code=int(outcome), attacker_obs=attacker_obs)
+
+    def _advance(self, actions, att_action=None):
         # Attacker Step
         goal = np.zeros(2)
         obstacles = [Obstacle(pos=defender.pos, radius=self.Obs_R) 
                     for defender in self.defender_list]
+        if self.canonical_agent_order:
+            obstacles.sort(key=lambda obs: (np.linalg.norm(obs.pos - self.attacker.pos), *obs.pos))
         pos_att = np.zeros(2 * self.attacker_num)
         phi_att = np.zeros(self.attacker_num)
         if att_action is None:
@@ -174,8 +208,14 @@ class TADEnv():
         pos_def = np.zeros(self.defender_num * 2)
         phi_def = np.zeros(self.defender_num)
             
+        order = list(range(self.defender_num))
+        if self.canonical_agent_order:
+            order.sort(key=lambda i: (*self.defender_list[i].pos, self.defender_list[i].theta))
+        currents = {i: self.generate_random_current() for i in order}
+        self.last_executed_thrust = np.zeros((self.defender_num, 2))
         for i, defender in enumerate(self.defender_list):
-            defender.step(actions[i], self.generate_random_current())
+            defender.step(actions[i], currents[i])
+            self.last_executed_thrust[i] = defender.left_thrust, defender.right_thrust
             pos_def[2*i : 2*i+2] = defender.pos
             phi_def[i] = defender.theta
         
@@ -204,6 +244,29 @@ class TADEnv():
         self.Rewards = np.vstack([self.Rewards, rewards])
         
         return observations, rewards, done, observation
+
+    def structured_frame(self, motion_features=True):
+        from RL.observations import build_frame
+        return build_frame(
+            np.array([d.pos for d in self.defender_list]),
+            np.array([d.vel for d in self.defender_list]),
+            np.array([d.theta for d in self.defender_list]),
+            np.array([d.velocity[2] for d in self.defender_list]),
+            self.attacker.pos, self.attacker.vel, self.boids_states, self.boids_actions,
+            max(0., 1. - self.Current_T / self.Total_T),
+            relative_velocities=np.array([d.velocity_r for d in self.defender_list]),
+            attacker_relative_velocity=self.attacker.velocity_r,
+            attacker_heading=self.attacker.theta, agility=self.attacker.agility,
+            motion_features=motion_features)
+
+    def snapshot(self):
+        """In-memory snapshot, including dynamics, caches, histories and noise."""
+        return dict(state=copy.deepcopy(self.__dict__), numpy_rng=copy.deepcopy(np.random.get_state()))
+
+    def restore(self, snapshot):
+        self.__dict__.clear()
+        self.__dict__.update(copy.deepcopy(snapshot['state']))
+        np.random.set_state(copy.deepcopy(snapshot['numpy_rng']))
     
     def generate_random_current(self,):
         '''
@@ -404,7 +467,10 @@ class TADEnv():
     
     def force_to_thrust(self, force, phi, robot='def'):
         """Convert potential field force to thruster output"""
-        force = force / np.linalg.norm(force)
+        norm = np.linalg.norm(force)
+        if norm < 1e-12:
+            return np.zeros(2)
+        force = force / norm
         rotation = np.array([
             [np.cos(phi), np.sin(phi)],
             [-np.sin(phi), np.cos(phi)]

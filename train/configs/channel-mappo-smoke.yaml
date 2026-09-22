@@ -1,0 +1,54 @@
+algorithm: channel_mappo
+policy:
+  hidden: 64
+  fusion: channels
+  aggregation: attention
+  share_candidates: true
+  motion_features: true
+mappo:
+  critic_hidden: 64
+  learning_rate: 0.0003
+  gamma: 0.99
+  gae_lambda: 0.95
+  epochs: 2
+  minibatch_steps: 16
+  clip_ratio: 0.2
+  entropy_coefficient: 0.01
+  max_grad_norm: 0.5
+  target_kl: 0.02
+  value_target_tau: 0.05
+guidance:
+  enabled: true
+  coefficient: 0.1
+  warm_steps: 32
+  samples_per_rollout: 3
+  search_mode: joint
+  search_step: 0.15
+  search_radius: 0.25
+  search_sweeps: 1
+  action_penalty: 0.01
+  branch_horizon: 2
+  validation_window: 16
+  min_validations: 4
+  min_validation_rate: 0.5
+training:
+  model_name: channel-mappo.pth
+  total_steps: 256
+  rollout_steps: 32
+  eval_interval: 128
+  eval_episodes: 2
+  eval_seed: 10000
+  cpu_threads: 1
+agent:
+  defender_num: 3
+  training_team_sizes: [1, 3, 4]
+  curriculum: false
+  form_reward: true
+curriculum:
+  eva_agility: 2.0
+environment:
+  protocol: paper-parameters-v1
+  total_time: 6.0
+  agility_noise_half_width: 0.5
+  initial_min_spacing: 6.0
+  canonical_agent_order: true

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import sys
 import subprocess
 import struct
 import time
@@ -28,6 +29,12 @@ from tad_vrx_experiment import (
     ExperimentManager, APF_navi_control, Boids_navi_control, RL_navi_control,
 )
 
+# Import the very same actor, physical features and fusion used in training.
+# Do this after the legacy VRX imports, which have their own utils module.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'train'))
+from RL.deployment import DeployedPolicy
+from RL.observations import build_frame
+
 
 class Trial(ExperimentManager):
     def __init__(self, args):
@@ -38,6 +45,7 @@ class Trial(ExperimentManager):
         self.node = rclpy.create_node('arboids_trial')
         self.last_stamp = np.full(args.num_robots, np.nan)
         self.last_received = np.zeros(args.num_robots)
+        self.curr_yaw_rate = np.zeros(args.num_robots)
         self.publishers = [
             self.node.create_publisher(Float64, f'/wamv{i + 1}/thrusters/{side}/thrust', 10)
             for i in range(args.num_robots) for side in ('left', 'right')
@@ -53,7 +61,11 @@ class Trial(ExperimentManager):
             self.image_subscription = self.node.create_subscription(
                 Image, '/arboids/overview/image', self.on_image, qos_profile_sensor_data)
         self.actor = None
-        if args.controller != 'Boids':
+        self.channel_policy = None
+        if args.controller == 'ChannelMAPPO':
+            self.channel_policy = DeployedPolicy.load(args.checkpoint, self.device)
+            self.initial_min_spacing = self.channel_policy.config.get('environment', {}).get('initial_min_spacing')
+        elif args.controller != 'Boids':
             actor_type = ActorAdap if args.controller == 'AdaRes' else ActorSAC
             action_dim = 3 if args.controller == 'AdaRes' else 2
             self.actor = actor_type(6, 8, action_dim, hidden_dim=512).to(self.device)
@@ -101,10 +113,13 @@ class Trial(ExperimentManager):
                 continue
             xyz, q = tf.transform.translation, tf.transform.rotation
             position = np.array([xyz.x, xyz.y]) - self.origin
+            heading = np.arctan2(2 * (q.w*q.z + q.x*q.y), 1 - 2 * (q.y*q.y + q.z*q.z))
             if np.isfinite(self.last_stamp[index]):
                 self.curr_vel[index] = (position - self.curr_pos[index]) / (stamp - self.last_stamp[index])
+                difference = np.arctan2(np.sin(heading - self.curr_phi[index]), np.cos(heading - self.curr_phi[index]))
+                self.curr_yaw_rate[index] = difference / (stamp - self.last_stamp[index])
             self.curr_pos[index] = position
-            self.curr_phi[index] = np.arctan2(2 * (q.w*q.z + q.x*q.y), 1 - 2 * (q.y*q.y + q.z*q.z))
+            self.curr_phi[index] = heading
             self.last_stamp[index] = stamp
             self.last_received[index] = time.monotonic()
 
@@ -126,11 +141,25 @@ class Trial(ExperimentManager):
     def control(self, elapsed):
         actions = np.zeros((self.num_robots, 2))
         limits = np.array([-500., 1000.]) * self.agility
-        actions[0] = APF_navi_control(self.curr_pos[0], np.zeros(2), self.curr_pos[1:],
+        obstacles = self.curr_pos[1:]
+        if self.channel_policy is not None and self.channel_policy.config.get('environment', {}).get('canonical_agent_order', False):
+            order = sorted(range(len(obstacles)), key=lambda i: (np.linalg.norm(obstacles[i] - self.curr_pos[0]), *obstacles[i]))
+            obstacles = obstacles[order]
+        actions[0] = APF_navi_control(self.curr_pos[0], np.zeros(2), obstacles,
                                       self.curr_phi[0], *limits)
         boids, states = Boids_navi_control(self.curr_pos[1:], self.curr_vel[1:],
                                           self.curr_phi[1:], self.curr_pos[0])
-        if self.args.controller == 'Boids':
+        decision = None
+        if self.channel_policy is not None:
+            if not np.isfinite(self.last_stamp).all() or np.ptp(self.last_stamp) > self.args.action_period:
+                raise RuntimeError('ChannelMAPPO requires fresh observations from one control cycle')
+            frame = build_frame(self.curr_pos[1:], self.curr_vel[1:], self.curr_phi[1:],
+                                self.curr_yaw_rate[1:], self.curr_pos[0], self.curr_vel[0],
+                                states, boids, max(0., 1. - elapsed / self.total_time),
+                                motion_features=self.channel_policy.actor.config['motion_features'])
+            decision = self.channel_policy.act(frame)
+            actions[1:] = decision['executed']
+        elif self.args.controller == 'Boids':
             actions[1:] = boids
         else:
             observation = self.get_observations(self.curr_pos[1:], self.curr_phi[1:],
@@ -153,6 +182,13 @@ class Trial(ExperimentManager):
             'DefAct': actions[1:].flatten().copy(),
             'PhysicalThrust': physical_actions.flatten().copy(),
         })
+        if decision is not None:
+            self.rows[-1].update(BoidsCandidate=boids.copy(),
+                                 LearnedCandidate=(decision['candidate'] * 750. + 250.).copy(),
+                                 ChannelGates=decision['gates'].copy(),
+                                 CandidateMessages=decision['messages'].copy(),
+                                 AttentionSurge=decision['attention_c'].copy(),
+                                 AttentionTurn=decision['attention_d'].copy())
 
 
 def stop_process(process):
@@ -224,7 +260,7 @@ def prepare_world(world, origin, output, capture_frames):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', '--modelname', dest='checkpoint')
-    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids'], default='AdaRes')
+    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids', 'ChannelMAPPO'], default='AdaRes')
     parser.add_argument('--setting', type=int, choices=[0, 1], default=1)
     parser.add_argument('--num-robots', '--num_robots', dest='num_robots', type=int, default=4)
     parser.add_argument('--agility', type=float, default=2.25)

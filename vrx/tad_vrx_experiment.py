@@ -21,7 +21,10 @@ from models import ActorSAC, ActorAdap
 from utils import NPZLogger
 
 def force_to_thruster(force, phi, is_attacker=True, min_thrust=-500.0, max_thrust=1000.0):
-    force = force / np.linalg.norm(force)
+    norm = np.linalg.norm(force)
+    if norm < 1e-12:
+        return np.zeros(2)
+    force = force / norm
     rotation = np.array([
         [np.cos(phi), np.sin(phi)],
         [-np.sin(phi), np.cos(phi)]
@@ -224,7 +227,11 @@ class ExperimentManager:
             index = 2 * np.pi / (self.num_robots - 1)
 
             for i in range(self.num_robots - 1):
-                radius = np.random.uniform(7.0, 8.0)
+                radius_floor = 7.0
+                spacing = getattr(self, 'initial_min_spacing', None)
+                if spacing is not None and self.num_robots > 2:
+                    radius_floor = max(radius_floor, spacing / (2 * np.sin(np.pi / (self.num_robots - 1))))
+                radius = np.random.uniform(radius_floor, radius_floor + 1.0)
                 theta = def_theta + index * i
 
                 positions[i] = radius * np.array([np.cos(theta), np.sin(theta)])
@@ -251,7 +258,11 @@ class ExperimentManager:
             index = 2 * np.pi / (self.num_robots - 1)
 
             for i in range(self.num_robots - 1):
-                radius = np.random.uniform(8.0, 9.0)
+                radius_floor = 8.0
+                spacing = getattr(self, 'initial_min_spacing', None)
+                if spacing is not None and self.num_robots > 2:
+                    radius_floor = max(radius_floor, spacing / (2 * np.sin(np.pi / (self.num_robots - 1))))
+                radius = np.random.uniform(radius_floor, radius_floor + 1.0)
                 theta = def_theta + index * i
 
                 positions[i] = radius * np.array([np.cos(theta), np.sin(theta)])
