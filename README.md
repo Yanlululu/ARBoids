@@ -119,6 +119,20 @@ thread-count assertion on hosts exposing more than 127 CPU cores.
 
 ## 🚀 Training ARBoids Model
 
+The prediction-conditioned two-stage MAPPO implementation has its own training
+entry point and configuration. It exchanges Boids/learned candidates, predicts
+their pairwise interactions, samples a stochastic Adapter gate, and learns with
+separate task/collision values and an adaptive collision multiplier. See
+[the implementation and run guide](docs/predictive-mappo.md).
+
+```bash
+python -X utf8 -u train/train_mappo.py --device cpu --seed 42 --max-updates 2 --episodes-per-update 2 --eval-episodes 2
+```
+
+Run this command from the repository root. It is an integration check; remove
+the update limit for training after setting the task's collision budget in
+`train/configs/mappo-prediction.yaml`. The SAC commands below remain available.
+
 Navigate to the `train` directory before running any training scripts:
 ```bash
 cd train

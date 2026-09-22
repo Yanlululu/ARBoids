@@ -38,6 +38,8 @@ class Trial(ExperimentManager):
         self.node = rclpy.create_node('arboids_trial')
         self.last_stamp = np.full(args.num_robots, np.nan)
         self.last_received = np.zeros(args.num_robots)
+        self.yaw_rates = np.zeros(args.num_robots)
+        self.collision_seen = False
         self.publishers = [
             self.node.create_publisher(Float64, f'/wamv{i + 1}/thrusters/{side}/thrust', 10)
             for i in range(args.num_robots) for side in ('left', 'right')
@@ -53,7 +55,12 @@ class Trial(ExperimentManager):
             self.image_subscription = self.node.create_subscription(
                 Image, '/arboids/overview/image', self.on_image, qos_profile_sensor_data)
         self.actor = None
-        if args.controller != 'Boids':
+        if args.controller == 'MAPPO':
+            from mappo_controller import MAPPOController
+            self.actor = MAPPOController(args.checkpoint, self.device)
+            if self.actor.agent.defender_num != args.num_robots - 1:
+                raise ValueError('Checkpoint defender count does not match VRX robot count.')
+        elif args.controller != 'Boids':
             actor_type = ActorAdap if args.controller == 'AdaRes' else ActorSAC
             action_dim = 3 if args.controller == 'AdaRes' else 2
             self.actor = actor_type(6, 8, action_dim, hidden_dim=512).to(self.device)
@@ -101,10 +108,13 @@ class Trial(ExperimentManager):
                 continue
             xyz, q = tf.transform.translation, tf.transform.rotation
             position = np.array([xyz.x, xyz.y]) - self.origin
+            yaw = np.arctan2(2 * (q.w*q.z + q.x*q.y), 1 - 2 * (q.y*q.y + q.z*q.z))
             if np.isfinite(self.last_stamp[index]):
                 self.curr_vel[index] = (position - self.curr_pos[index]) / (stamp - self.last_stamp[index])
+                angle_difference = np.arctan2(np.sin(yaw - self.curr_phi[index]), np.cos(yaw - self.curr_phi[index]))
+                self.yaw_rates[index] = angle_difference / (stamp - self.last_stamp[index])
             self.curr_pos[index] = position
-            self.curr_phi[index] = np.arctan2(2 * (q.w*q.z + q.x*q.y), 1 - 2 * (q.y*q.y + q.z*q.z))
+            self.curr_phi[index] = yaw
             self.last_stamp[index] = stamp
             self.last_received[index] = time.monotonic()
 
@@ -124,13 +134,23 @@ class Trial(ExperimentManager):
         return 4 if elapsed >= self.total_time else 0
 
     def control(self, elapsed):
+        control_started = time.monotonic()
+        feedback_skew = 0.
         actions = np.zeros((self.num_robots, 2))
         limits = np.array([-500., 1000.]) * self.agility
         actions[0] = APF_navi_control(self.curr_pos[0], np.zeros(2), self.curr_pos[1:],
                                       self.curr_phi[0], *limits)
         boids, states = Boids_navi_control(self.curr_pos[1:], self.curr_vel[1:],
                                           self.curr_phi[1:], self.curr_pos[0])
-        if self.args.controller == 'Boids':
+        if self.args.controller == 'MAPPO':
+            from mappo_controller import synchronize_kinematics
+            snapshot, stamp, feedback_skew = synchronize_kinematics(
+                self.curr_pos, self.curr_phi, self.curr_vel, self.yaw_rates, self.last_stamp)
+            positions, yaws, velocities = snapshot[:, :2], snapshot[:, 2], snapshot[:, 3:5]
+            boids, states = Boids_navi_control(positions[1:], velocities[1:], yaws[1:], positions[0])
+            observation = self.get_observations(positions[1:], yaws[1:], positions[0], velocities[0], states, boids)
+            actions[1:] = self.actor.control(observation, snapshot[1:], boids, stamp)
+        elif self.args.controller == 'Boids':
             actions[1:] = boids
         else:
             observation = self.get_observations(self.curr_pos[1:], self.curr_phi[1:],
@@ -152,6 +172,8 @@ class Trial(ExperimentManager):
             'DefPhi': self.curr_phi[1:].copy(), 'DefVel': self.curr_vel[1:].flatten().copy(),
             'DefAct': actions[1:].flatten().copy(),
             'PhysicalThrust': physical_actions.flatten().copy(),
+            'ControlWallSeconds': time.monotonic() - control_started,
+            'FeedbackSkewSeconds': feedback_skew,
         })
 
 
@@ -224,7 +246,7 @@ def prepare_world(world, origin, output, capture_frames):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', '--modelname', dest='checkpoint')
-    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids'], default='AdaRes')
+    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids', 'MAPPO'], default='AdaRes')
     parser.add_argument('--setting', type=int, choices=[0, 1], default=1)
     parser.add_argument('--num-robots', '--num_robots', dest='num_robots', type=int, default=4)
     parser.add_argument('--agility', type=float, default=2.25)
@@ -242,6 +264,8 @@ def main():
     parser.add_argument('--save_traj', action='store_true', help='Accepted for compatibility; trajectories are always saved')
     parser.add_argument('--save_file', type=Path, default=None)
     args = parser.parse_args()
+    if args.controller == 'MAPPO' and args.termination_rule != 'paper':
+        parser.error('The MAPPO checkpoint uses --termination-rule paper.')
     if args.num_robots < 3 or min(args.duration, args.action_period, args.agility) <= 0:
         parser.error('Use at least three robots and positive duration, action period and agility')
     if args.controller != 'Boids':
@@ -308,6 +332,11 @@ def main():
                 if np.any(time.monotonic() - trial.last_received > 15.):
                     raise TimeoutError('A vessel stopped publishing pose feedback')
                 elapsed = float(np.min(trial.last_stamp) - start_sim)
+                defender_distances = np.linalg.norm(trial.curr_pos[1:, None] - trial.curr_pos[None, 1:], axis=-1)
+                np.fill_diagonal(defender_distances, np.inf)
+                collision_now = (defender_distances <= trial.collision_r if args.termination_rule == 'paper'
+                                 else defender_distances < trial.collision_r)
+                trial.collision_seen |= bool(collision_now.any())
                 code = trial.outcome(elapsed)
                 if code:
                     if args.capture_frames:
@@ -324,6 +353,7 @@ def main():
                               3: 'defender_capture', 4: 'defended_until_timeout'}
                     result.update(passed=True, outcome_code=code, outcome=labels[code],
                                   success=code > 2, simulation_seconds=elapsed,
+                                  defender_collision=trial.collision_seen,
                                   attacker_max_displacement=distance,
                                   terminal_positions=trial.curr_pos.tolist(),
                                   terminal_yaw=trial.curr_phi.tolist())

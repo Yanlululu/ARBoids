@@ -323,6 +323,11 @@ class TADEnv():
 
     def _get_paper_rewards(self):
         """Published Eqs. (15)-(17), including rewards on terminal transitions."""
+        main, formation, collision = self.paper_reward_components()
+        return main + collision + formation
+
+    def paper_reward_components(self):
+        """Separate task components from the fixed SAC collision penalty."""
         positions = np.array([defender.pos for defender in self.defender_list])
         vectors = self.attacker.pos - positions
         distances = np.linalg.norm(vectors, axis=1)
@@ -333,13 +338,46 @@ class TADEnv():
             rewards = np.where(distances <= self.Defend_R, 100.0,
                                np.where(distances <= 3*self.Defend_R, 50.0, 0.0))
         # One -50 penalty for each colliding agent, not once per collision partner.
-        rewards -= 50.0 * (self.def_def_dists <= self.Collision_R).any(axis=1)
+        collision = -50.0 * (self.def_def_dists <= self.Collision_R).any(axis=1)
+        formation = np.zeros(self.defender_num)
         if self.form_reward:
             target_direction = self.attacker.pos / max(np.linalg.norm(self.attacker.pos), 1e-6)
             direction_sum = (vectors / np.maximum(distances[:, None], 1e-6)).sum(axis=0)
             norm = np.linalg.norm(direction_sum)
-            rewards += 0.5*np.dot(target_direction, direction_sum/max(norm, 1e-6)) - norm/self.defender_num
-        return rewards
+            formation[:] = 0.5*np.dot(target_direction, direction_sum/max(norm, 1e-6)) - norm/self.defender_num
+        return rewards, formation, collision
+
+    def physical_events(self):
+        """Independent events, including simultaneous breach and collision."""
+        positions = np.array([boat.pos for boat in self.defender_list])
+        distances = np.linalg.norm(positions[:, None] - positions[None, :], axis=-1)
+        np.fill_diagonal(distances, np.inf)
+        paper = self.protocol == 'paper-parameters-v1'
+        collision = distances <= self.Collision_R if paper else distances < self.Collision_R
+        target_distance = np.linalg.norm(self.attacker.pos)
+        return dict(
+            collision=bool(collision.any()),
+            breach=bool(target_distance <= self.Target_R if paper else target_distance < self.Target_R),
+            capture=bool((np.linalg.norm(positions - self.attacker.pos, axis=1) < self.Defend_R).any()),
+        )
+
+    def prediction_snapshot(self):
+        """Only present-time kinematics are made available to the predictor."""
+        return np.stack([boat.motion_state() for boat in self.defender_list])
+
+    def centralized_state(self):
+        """Privileged training state, before either stochastic action stage.
+
+        Relative velocities are the Markov dynamics state; future currents are
+        sampled independently. Fixed scales are shared by training and loading.
+        """
+        states = []
+        for boat in [*self.defender_list, self.attacker]:
+            states.extend([boat.pos[0]/60., boat.pos[1]/60.,
+                           np.sin(boat.theta), np.cos(boat.theta),
+                           boat.velocity_r[0]/5., boat.velocity_r[1]/5., boat.velocity_r[2]])
+        states.extend([self.attacker.agility/3., max(0., 1. - self.Current_T/self.Total_T)])
+        return np.asarray(states, dtype=np.float32)
 
     def _get_rewards(self, done):
         '''

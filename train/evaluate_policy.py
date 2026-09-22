@@ -30,6 +30,26 @@ def main():
     if args.episodes <= 0 or args.agility <= 0 or args.duration <= 0:
         parser.error('episodes, agility and duration must be positive')
     args.output_dir.mkdir(parents=True, exist_ok=False)
+    checkpoint_metadata = torch.load(args.checkpoint, map_location='cpu', weights_only=True)
+    if checkpoint_metadata.get('algorithm') == 'predictive-mappo':
+        from policy.mappo import PredictiveMAPPO
+        from train_mappo import evaluate
+        agent = PredictiveMAPPO.from_checkpoint(args.checkpoint, args.device)
+        metrics, rows = evaluate(agent, args.episodes, args.seed, args.agility, args.duration)
+        with (args.output_dir / 'episodes.csv').open('w', newline='', encoding='utf-8') as file:
+            writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        summary = dict(passed=True, algorithm=agent.algorithm, episodes=args.episodes,
+                       first_seed=args.seed, agility=args.agility, duration_limit=args.duration,
+                       protocol=agent.config['environment']['protocol'], config_source='checkpoint',
+                       checkpoint=str(args.checkpoint.resolve()),
+                       checkpoint_sha256=hashlib.sha256(args.checkpoint.read_bytes()).hexdigest(),
+                       collision_budget=agent.settings.collision_budget,
+                       lagrange=agent.lagrange.value, **metrics)
+        (args.output_dir / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+        print(json.dumps(summary), flush=True)
+        return
     cfg = load_config(str(args.config))
     env = TADEnv(cfg.agent.defender_num, cfg.agent.boid_state, cfg.agent.form_reward, **environment_kwargs(cfg))
     env.Total_T = args.duration

@@ -41,6 +41,11 @@ def evaluate(agent,
 
 def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
 
+    if getattr(cfg, 'algorithm', None) == 'predictive-mappo':
+        from train_mappo import run_training
+        from utils.config import _namespace_to_dict
+        return run_training(_namespace_to_dict(cfg), exp, device)
+
     defender_num = cfg.agent.defender_num
     adaptive = cfg.agent.adaptive
     residual = cfg.agent.residual

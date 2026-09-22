@@ -12,6 +12,7 @@ import time
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', type=Path, required=True)
+    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids', 'MAPPO'], default='AdaRes')
     parser.add_argument('--episodes', type=int, default=10)
     parser.add_argument('--setting', type=int, choices=[0, 1], default=1)
     parser.add_argument('--seed', type=int, default=20000)
@@ -30,6 +31,7 @@ def main():
         run_id = f'episode-{i:03d}'
         command = [sys.executable, '-X', 'utf8', '-u', str(Path(__file__).with_name('run_experiment.py')),
                    '--checkpoint', str(args.checkpoint.resolve()), '--setting', str(args.setting),
+                   '--controller', args.controller,
                    '--seed', str(args.seed+i), '--agility', str(args.agility),
                    '--duration', str(args.duration), '--termination-rule', args.termination_rule,
                    '--output-dir', str(args.output_dir.resolve()),
@@ -52,11 +54,16 @@ def main():
         time.sleep(1)
     summary = dict(passed=True, episodes=len(results), successes=sum(r['success'] for r in results),
                    success_rate=sum(r['success'] for r in results)/len(results), setting=args.setting,
+                   collision_rate=sum(bool(r.get('defender_collision')) for r in results)/len(results),
+                   capture_rate=sum(r.get('outcome_code') == 3 for r in results)/len(results),
+                   timeout_rate=sum(r.get('outcome_code') == 4 for r in results)/len(results),
+                   breach_rate=sum(r.get('outcome_code') == 1 for r in results)/len(results),
+                   controller=args.controller,
                    agility=args.agility, first_seed=args.seed, termination_rule=args.termination_rule,
                    checkpoint_sha256=results[0]['checkpoint_sha256'])
     (args.output_dir / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     with (args.output_dir / 'episodes.csv').open('w', newline='', encoding='utf-8') as file:
-        fields = ['seed', 'setting', 'agility', 'success', 'outcome', 'simulation_seconds', 'wall_seconds', 'control_steps']
+        fields = ['seed', 'setting', 'agility', 'success', 'outcome', 'defender_collision', 'simulation_seconds', 'wall_seconds', 'control_steps']
         writer = csv.DictWriter(file, fields, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(results)

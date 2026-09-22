@@ -102,6 +102,7 @@ class WAMV:
         self.theta = self.wrap_to_2pi(init_theta)
         self.pos = init_pos
         self.velocity_r = self.init_velocity_r
+        self.current_velocity = np.asarray(current_velocity, dtype=float).copy()
         self.update_velocity(current_velocity)
         self.left_pos = self.init_left_pos
         self.right_pos = self.init_right_pos
@@ -121,6 +122,7 @@ class WAMV:
         self.vel = self.velocity[0:2]
 
     def step(self, action, current_velocity=np.zeros(3)):
+        self.current_velocity = np.asarray(current_velocity, dtype=float).copy()
         # update thruster force
         self.left_thrust = np.clip(action[0], self.min_thrust, self.max_thrust)
         self.right_thrust = np.clip(action[1], self.min_thrust, self.max_thrust)
@@ -139,6 +141,15 @@ class WAMV:
             self.compute_motion()
 
         self.pos[0], self.pos[1] = self.x, self.y
+
+    def motion_state(self):
+        """Current measured [x, y, yaw, vx, vy, yaw_rate], without aliases.
+
+        The legacy ``velocity`` field precedes the last acceleration update.
+        Use the updated relative velocity plus the current disturbance here.
+        """
+        velocity = self.velocity_r + self.current_velocity
+        return np.array([*self.pos, self.theta, *velocity], dtype=float)
 
     def compute_motion(self):
         # use 3 DOF ship maneuvering model from chapter 6.5 in Fossen's book

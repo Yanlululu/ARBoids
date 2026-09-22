@@ -1,0 +1,41 @@
+# Two-stage, factor-clipped MAPPO with nominal interaction prediction.
+algorithm: predictive-mappo
+agent:
+  defender_num: 3
+  boid_state: true
+  form_reward: true
+environment:
+  protocol: paper-parameters-v1
+  total_time: 60.0
+  agility_noise_half_width: 0.5
+training:
+  total_steps: 1000000
+  episodes_per_update: 8
+  eval_interval: 10
+  eval_episodes: 20
+  agility: 2.0
+  noisy_agility: true
+  model_name: predictive-mappo.pth
+mappo:
+  hidden_dim: 512
+  relation_dim: 64
+  coordination_dim: 16
+  actor_lr: 0.0001
+  critic_lr: 0.0001
+  ppo_epochs: 5
+  minibatch_size: 128
+  clip_ratio: 0.2
+  entropy_coef: 0.001
+  max_grad_norm: 0.5
+  reward_gamma: 1.0
+  cost_gamma: 1.0
+  gae_lambda: 0.95
+  # Example budget, to be fixed from task requirements before result experiments.
+  collision_budget: 0.05
+  lagrange_init: 1.0
+  lagrange_lr: 1.0
+prediction:
+  horizon: 2.0
+  dt: 0.05
+  distance_scale: 5.0
+  speed_scale: 5.0
