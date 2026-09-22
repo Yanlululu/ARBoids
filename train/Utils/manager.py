@@ -3,8 +3,21 @@ import pandas as pd
 import yaml
 import time
 import torch
+import random
+import numpy as np
 from datetime import datetime
-from Utils.config import _namespace_to_dict
+from utils.config import _namespace_to_dict
+
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print(f"[INFO] Random seed set to {seed}")
 
 class ExperimentManager:
     def __init__(
@@ -47,7 +60,8 @@ class ExperimentManager:
     
         # CSV/pandas path
         self.config_path = os.path.join(self.exp_dir, "config.yaml")
-        self.csv_path = os.path.join(self.exp_dir, 'metrics' + str(repeat_idx) + '.csv')
+        suffix = str(repeat_idx) if repeat_idx is not None else ''
+        self.csv_path = os.path.join(self.exp_dir, 'metrics' + suffix + '.csv')
         self.git_hash = None
 
         # write files
@@ -92,7 +106,7 @@ class ExperimentManager:
             print(f"[INFO] saved model -> {save_path}")  
 
         except Exception as e:
-            print(f"[WARN] failed to save model: {e}")
+            raise RuntimeError(f"Failed to save model to {save_path}") from e
     
     def load_model(self, model, filename):
         load_path = os.path.join(self.exp_dir, filename)
