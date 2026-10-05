@@ -13,7 +13,6 @@ import yaml
 from envs.mappo_env import MAPPOEnv
 from policy.mappo import PredictiveMAPPO
 from policy.rollout_buffer import RolloutBuffer
-from utils.manager import ExperimentManager, set_seed
 
 ROOT = Path(__file__).resolve().parent
 
@@ -29,30 +28,102 @@ def make_env(config, duration=None):
 
 def play_episode(agent, env, agility, noisy_agility=False, deterministic=False):
     observation = env.reset(agility, noisy_agility)
+    return continue_episode(agent, env, observation, deterministic)
+
+
+def continue_episode(agent, env, observation, deterministic=False, gate_scale=1., gate_steps=0):
+    """Finish a live task, retaining its actual deadline and physical state."""
+    if env.finished:
+        raise ValueError('Continuation requires a live, nonterminal environment.')
     transitions, gates = [], []
-    max_steps = int(np.ceil(env.env.Total_T / env.env.Action_T)) + 1
+    max_steps = int(np.ceil((env.env.Total_T - env.env.Current_T) / env.env.Action_T)) + 1
     agent.actor.eval()
     agent.critic.eval()
     for _ in range(max_steps):
         state = env.env.centralized_state()
-        value_r, value_c = agent.values(state)
+        values = {name: float(value[0]) for name, value in agent.rollout_values([state]).items()}
+        active_scale = gate_scale if gate_steps <= 0 or len(transitions) < gate_steps else 1.
         action, record = agent.act(observation, env.env.prediction_snapshot(),
                                    env.env.thrust_to_action(env.env.boids_actions),
-                                   env.env.Current_T, deterministic)
+                                   env.env.Current_T, deterministic, gate_scale=active_scale)
         step = env.step(action)
-        record.update(state=state, value_r=value_r, value_c=value_c,
-                      reward=step.reward, cost=step.cost, terminated=step.terminated)
+        record.update(state=state, **values,
+                      reward=step.reward, cost=step.cost, terminated=step.terminated,
+                      executed_action=action.copy())
         transitions.append(record)
         gates.extend(action[:, 2].tolist())
         observation = step.observation
         if step.terminated:
-            summary = dict(success=int(step.outcome > 2), capture=int(step.outcome == 3),
-                           timeout=int(step.outcome == 4), breach=int(step.events['breach']),
-                           collision=int(env.collision_seen), outcome_code=step.outcome,
-                           steps=len(transitions), task_return=sum(t['reward'] for t in transitions),
-                           gate_mean=float(np.mean(gates)))
-            return transitions, summary
+            return transitions, episode_summary(env, step, transitions, gates)
     raise RuntimeError('Environment exceeded its finite task horizon.')
+
+
+def episode_summary(env, step, transitions, gates):
+    return dict(success=int(step.outcome > 2), capture=int(step.outcome == 3),
+                timeout=int(step.outcome == 4), breach=int(step.events['breach']),
+                collision=int(env.collision_seen), outcome_code=step.outcome,
+                steps=len(transitions), task_return=sum(t['reward'] for t in transitions),
+                gate_mean=float(np.mean(gates)))
+
+
+def play_episodes_batched(agent, seeds, agility, noisy_agility=False, batch_size=4):
+    """Batch policy/prediction work; preserve each world's physics and RNG stream."""
+    if batch_size < 1:
+        raise ValueError('World batch size must be positive.')
+    seeds = [int(seed) for seed in seeds]
+    output = [None] * len(seeds)
+    pending = iter(enumerate(seeds))
+    active = []
+    agent.actor.eval()
+    agent.critic.eval()
+
+    def fill_slots():
+        while len(active) < batch_size:
+            item = next(pending, None)
+            if item is None:
+                break
+            index, seed = item
+            np.random.seed(seed)
+            random.seed(seed)
+            env = make_env(agent.config)
+            observation = env.reset(agility, noisy_agility)
+            active.append(dict(index=index, seed=seed, env=env, obs=observation,
+                               numpy_rng=np.random.get_state(), python_rng=random.getstate(),
+                               generator=torch.Generator(device=agent.device).manual_seed(seed),
+                               transitions=[], gates=[]))
+
+    fill_slots()
+    while active:
+        states = [slot['env'].env.centralized_state() for slot in active]
+        values = agent.rollout_values(states)
+        actions, records = agent.act_batch(
+            [slot['obs'] for slot in active],
+            [slot['env'].env.prediction_snapshot() for slot in active],
+            [slot['env'].env.thrust_to_action(slot['env'].env.boids_actions) for slot in active],
+            [slot['env'].env.Current_T for slot in active], [slot['generator'] for slot in active])
+        following = []
+        for i, (slot, action, record) in enumerate(zip(active, actions, records)):
+            env = slot['env']
+            np.random.set_state(slot['numpy_rng'])
+            random.setstate(slot['python_rng'])
+            step = env.step(action)
+            record.update(state=states[i], **{name: float(value[i]) for name, value in values.items()},
+                          reward=step.reward, cost=step.cost, terminated=step.terminated,
+                          executed_action=action.copy())
+            slot['transitions'].append(record)
+            slot['gates'].extend(action[:, 2].tolist())
+            if step.terminated:
+                summary = episode_summary(env, step, slot['transitions'], slot['gates'])
+                summary['seed'] = slot['seed']
+                output[slot['index']] = (slot['transitions'], summary)
+            else:
+                if len(slot['transitions']) >= int(np.ceil(env.env.Total_T / env.env.Action_T)) + 1:
+                    raise RuntimeError('Batched world exceeded its finite task horizon.')
+                slot.update(obs=step.observation, numpy_rng=np.random.get_state(), python_rng=random.getstate())
+                following.append(slot)
+        active = following
+        fill_slots()
+    return output
 
 
 def collect_episodes(agent, env, episodes, agility, noisy_agility=False):
@@ -103,6 +174,8 @@ def evaluate(agent, episodes=20, first_seed=10000, agility=2., duration=None):
 
 def run_training(config, exp, device='cpu', agent=None, max_updates=None):
     training = config['training']
+    if training.get('collision_branches', 0) or training.get('breach_branches', 0):
+        raise ValueError('Resume collision curriculum with train_mappo_performance.py.')
     for name in ('total_steps', 'episodes_per_update', 'eval_interval', 'eval_episodes'):
         if not isinstance(training[name], int) or training[name] <= 0:
             raise ValueError(f'training.{name} must be a positive integer.')
@@ -125,7 +198,7 @@ def run_training(config, exp, device='cpu', agent=None, max_updates=None):
         if agent.updates % training['eval_interval'] == 0 or last:
             evaluation, _ = evaluate(agent, training['eval_episodes'], agility=training['agility'])
             metrics.update({'eval_' + k: v for k, v in evaluation.items()})
-        if not np.isfinite(list(metrics.values())).all():
+        if not np.isfinite([value for value in metrics.values() if value is not None]).all():
             raise FloatingPointError('Training produced non-finite metrics.')
         exp.record_metrics(**metrics)
         exp.save_model(agent, training.get('model_name', 'predictive-mappo.pth'))
@@ -135,6 +208,7 @@ def run_training(config, exp, device='cpu', agent=None, max_updates=None):
 
 
 def main():
+    from utils.manager import ExperimentManager, set_seed
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=None)
     parser.add_argument('--device', default='cuda:0' if torch.cuda.is_available() else 'cpu')

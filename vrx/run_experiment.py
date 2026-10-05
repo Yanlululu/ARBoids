@@ -57,7 +57,8 @@ class Trial(ExperimentManager):
         self.actor = None
         if args.controller == 'MAPPO':
             from mappo_controller import MAPPOController
-            self.actor = MAPPOController(args.checkpoint, self.device)
+            self.actor = MAPPOController(args.checkpoint, self.device,
+                getattr(args, 'message_delay_steps', 0), getattr(args, 'message_drop_probability', 0.), args.seed+12345)
             if self.actor.agent.defender_num != args.num_robots - 1:
                 raise ValueError('Checkpoint defender count does not match VRX robot count.')
         elif args.controller != 'Boids':
@@ -142,21 +143,30 @@ class Trial(ExperimentManager):
                                       self.curr_phi[0], *limits)
         boids, states = Boids_navi_control(self.curr_pos[1:], self.curr_vel[1:],
                                           self.curr_phi[1:], self.curr_pos[0])
-        if self.args.controller == 'MAPPO':
+        synchronized = self.args.controller == 'MAPPO' or getattr(self.args, 'synchronize_feedback', False)
+        if synchronized:
             from mappo_controller import synchronize_kinematics
             snapshot, stamp, feedback_skew = synchronize_kinematics(
                 self.curr_pos, self.curr_phi, self.curr_vel, self.yaw_rates, self.last_stamp)
             positions, yaws, velocities = snapshot[:, :2], snapshot[:, 2], snapshot[:, 3:5]
             boids, states = Boids_navi_control(positions[1:], velocities[1:], yaws[1:], positions[0])
             observation = self.get_observations(positions[1:], yaws[1:], positions[0], velocities[0], states, boids)
+        if self.args.controller == 'MAPPO':
+            inference_started = time.monotonic()
             actions[1:] = self.actor.control(observation, snapshot[1:], boids, stamp)
+            inference_seconds = time.monotonic() - inference_started
         elif self.args.controller == 'Boids':
+            inference_started = time.monotonic()
             actions[1:] = boids
+            inference_seconds = time.monotonic() - inference_started
         else:
-            observation = self.get_observations(self.curr_pos[1:], self.curr_phi[1:],
-                                                self.curr_pos[0], self.curr_vel[0], states, boids)
+            if not synchronized:
+                observation = self.get_observations(self.curr_pos[1:], self.curr_phi[1:],
+                                                    self.curr_pos[0], self.curr_vel[0], states, boids)
+            inference_started = time.monotonic()
             actions[1:] = RL_navi_control(self.actor, observation, boids,
                                           self.args.controller, self.device)
+            inference_seconds = time.monotonic() - inference_started
         if not all(np.isfinite(x).all() for x in (actions, self.curr_pos, self.curr_vel)):
             raise FloatingPointError('Non-finite state or thrust command')
         # The training dynamics apply positive yaw for action[0] > action[1].
@@ -173,6 +183,7 @@ class Trial(ExperimentManager):
             'DefAct': actions[1:].flatten().copy(),
             'PhysicalThrust': physical_actions.flatten().copy(),
             'ControlWallSeconds': time.monotonic() - control_started,
+            'PolicyWallSeconds': inference_seconds,
             'FeedbackSkewSeconds': feedback_skew,
         })
 
@@ -206,10 +217,10 @@ def stop_process(process):
         raise RuntimeError(f'Gazebo process group {process.pid} did not stop')
 
 
-def prepare_world(world, origin, output, capture_frames):
+def prepare_world(world, origin, output, capture_frames, assets_dir=None):
     source = Path(get_package_share_directory('vrx_gz')) / 'worlds' / f'{world}.sdf'
     tree = ET.parse(source)
-    assets = Path(__file__).resolve().parents[1] / '.vrx-assets'
+    assets = Path(assets_dir) if assets_dir else Path(__file__).resolve().parents[1] / '.vrx-assets'
     manifest = json.loads((assets / 'fuel-manifest.json').read_text(encoding='utf-8'))
     models = {entry['url']: assets / 'resolved' / entry['directory'] for entry in manifest}
     for uri in tree.findall('.//include/uri'):
@@ -257,6 +268,11 @@ def main():
     parser.add_argument('--duration', type=float, default=60.)
     parser.add_argument('--termination-rule', choices=['source', 'paper'], default='source')
     parser.add_argument('--action-period', type=float, default=0.2)
+    parser.add_argument('--assets-dir', type=Path, help='Read existing VRX assets without copying them into a worktree')
+    parser.add_argument('--synchronize-feedback', action='store_true',
+                        help='Apply the same timestamp alignment to both baseline and MAPPO observations')
+    parser.add_argument('--message-delay-steps', type=int, default=0)
+    parser.add_argument('--message-drop-probability', type=float, default=0.)
     parser.add_argument('--startup-timeout', type=float, default=180.)
     parser.add_argument('--wall-timeout', type=float, default=900.)
     parser.add_argument('--output-dir', type=Path, default=Path(__file__).resolve().parent / 'results')
@@ -268,6 +284,10 @@ def main():
         parser.error('The MAPPO checkpoint uses --termination-rule paper.')
     if args.num_robots < 3 or min(args.duration, args.action_period, args.agility) <= 0:
         parser.error('Use at least three robots and positive duration, action period and agility')
+    if args.message_delay_steps < 0 or not 0 <= args.message_drop_probability <= 1:
+        parser.error('Message delay must be nonnegative and loss probability in [0,1].')
+    if args.controller != 'MAPPO' and (args.message_delay_steps or args.message_drop_probability):
+        parser.error('Candidate-message impairment applies to the MAPPO communication path.')
     if args.controller != 'Boids':
         if not args.checkpoint or not Path(args.checkpoint).is_file():
             parser.error('A trained policy checkpoint is required')
@@ -282,6 +302,10 @@ def main():
               'agility': args.agility, 'controller': args.controller, 'num_robots': args.num_robots,
               'duration_limit': args.duration, 'action_period': args.action_period,
               'termination_rule': args.termination_rule,
+              'synchronize_feedback': bool(args.synchronize_feedback or args.controller == 'MAPPO'),
+              'message_delay_steps': args.message_delay_steps,
+              'message_drop_probability': args.message_drop_probability,
+              'communication_scope': 'local per-directed-link delay/loss emulation, not a physical network',
               'capture_radius': 5.0, 'target_radius': 15.0, 'collision_radius': 5.0,
               'checkpoint': args.checkpoint,
               'thruster_mapping': 'policy[0]->starboard; policy[1]->port (ENU yaw matching training)'}
@@ -295,7 +319,7 @@ def main():
         poses = trial.generate_init_info(args.agility, args.setting)
         result['initial_poses'] = poses
         world = 'sydney_regatta_original' + ('1' if args.setting == 1 else '')
-        world = prepare_world(world, trial.origin, output, args.capture_frames)
+        world = prepare_world(world, trial.origin, output, args.capture_frames, args.assets_dir)
         command = ['ros2', 'launch', 'vrx_gz', 'tad.launch.py', f'init_poses:={poses}',
                    f'world:={world}', f'headless:={str(args.headless).lower()}']
         if args.headless:
@@ -388,6 +412,17 @@ def main():
             result['frames'] = trial.frames
             if trial.rows:
                 arrays = {key: np.asarray([row[key] for row in trial.rows]) for key in trial.rows[0]}
+                for key, name in [('PolicyWallSeconds', 'inference_seconds'),
+                                  ('ControlWallSeconds', 'control_seconds'),
+                                  ('FeedbackSkewSeconds', 'feedback_skew_seconds')]:
+                    samples = arrays[key]
+                    result[name] = dict(mean=float(samples.mean()), median=float(np.median(samples)),
+                                        p95=float(np.quantile(samples, .95)), maximum=float(samples.max()))
+                result['control_deadline_misses'] = int((arrays['ControlWallSeconds'] > args.action_period).sum())
+                if args.controller == 'MAPPO':
+                    network = trial.actor.communication
+                    result.update(message_attempts=network.attempts, message_drops=network.drops,
+                                  maximum_message_age=network.maximum_age)
                 path = args.save_file or output / 'trajectory.npz'
                 path.parent.mkdir(parents=True, exist_ok=True)
                 np.savez_compressed(path, **arrays)

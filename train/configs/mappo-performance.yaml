@@ -1,0 +1,43 @@
+# Performance development only; inherited actor, PPO learning, unchanged task.
+algorithm: predictive-mappo
+agent:
+  defender_num: 3
+  boid_state: true
+  form_reward: true
+environment:
+  protocol: paper-parameters-v1
+  total_time: 60.0
+  agility_noise_half_width: 0.5
+training:
+  total_steps: 1000000
+  episodes_per_update: 32
+  eval_interval: 5
+  eval_episodes: 200
+  agility: 2.0
+  noisy_agility: true
+  model_name: predictive-mappo.pth
+mappo:
+  hidden_dim: 512
+  relation_dim: 64
+  coordination_dim: 16
+  actor_lr: 0.000001
+  critic_lr: 0.0003
+  ppo_epochs: 3
+  minibatch_size: 256
+  clip_ratio: 0.1
+  entropy_coef: 0.0001
+  max_grad_norm: 0.5
+  reward_gamma: 1.0
+  cost_gamma: 1.0
+  gae_lambda: 0.95
+  collision_budget: 0.05
+  lagrange_init: 50.0
+  lagrange_lr: 10.0
+  baseline_initialization: true
+  reward_value_scale: 100.0
+  target_kl: 0.01
+prediction:
+  horizon: 2.0
+  dt: 0.05
+  distance_scale: 5.0
+  speed_scale: 5.0

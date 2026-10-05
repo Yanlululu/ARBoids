@@ -10,14 +10,14 @@ import numpy as np
 import torch
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'train'))
-sys.path.insert(0, str(ROOT / 'vrx'))
 from envs.modules import WAMV
 from policy.interaction_prediction import InteractionPredictor, PredictionConfig, exchange_candidates
 from policy.mappo import PredictiveMAPPO, MAPPOConfig, LagrangeMultiplier
 from policy.rollout_buffer import RolloutBuffer, gae
 from train_mappo import make_env, collect_episodes, evaluate
-from mappo_controller import MAPPOController, synchronize_kinematics
+from vrx.mappo_controller import MAPPOController, synchronize_kinematics
 
 
 def small_config():

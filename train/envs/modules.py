@@ -95,6 +95,9 @@ class WAMV:
 
         self.D = -1.0 * np.matrix([[self.xU,0.0,0.0],[0.0,self.yV,self.yR],
                                    [0.0,self.nV,self.nR]])
+        # Preserve the original normal-equation operation order, once per model.
+        mass = self.M_RB + self.M_A
+        self.mass_solver = np.linalg.inv(mass.transpose()*mass)*mass.transpose()
 
     def reset(self, init_pos, init_theta, current_velocity=np.zeros(3)):
         # only called when resetting the environment
@@ -153,8 +156,11 @@ class WAMV:
 
     def compute_motion(self):
         # use 3 DOF ship maneuvering model from chapter 6.5 in Fossen's book
-        velocity_r_b = self.project_to_robot_frame(self.velocity_r[:2])
-        velocity_b = self.project_to_robot_frame(self.velocity[:2])
+        # The pose is fixed throughout this acceleration calculation.
+        R_wr, _ = self.get_robot_transform()
+        R_rw = R_wr.transpose()
+        velocity_r_b = np.asarray(R_rw * self.velocity_r[:2, None]).reshape(2)
+        velocity_b = np.asarray(R_rw * self.velocity[:2, None]).reshape(2)
         u_r = velocity_r_b[0]
         v_r = velocity_r_b[1]
         u = velocity_b[0]
@@ -185,17 +191,15 @@ class WAMV:
         tau_p = np.matrix([[F_x],[F_y],[M_n]])
 
         # compute accelerations
-        A = self.M_RB + self.M_A
         V = np.matrix([[u,v,r]]).transpose()
         V_r = np.matrix([[u_r,v_r,r]]).transpose()
         b = -C_RB*V - N*V_r + tau_p
-        acc = np.linalg.inv(A.transpose()*A)*A.transpose()*b
+        acc = self.mass_solver*b
 
         # apply accelerations to velocity
         V_r += acc * self.dt
 
         # project velocity to the world frame
-        R_wr,_ = self.get_robot_transform()
         V_r[:2,:] = R_wr * V_r[:2,:]
         self.velocity_r = np.squeeze(np.array(V_r))
 
