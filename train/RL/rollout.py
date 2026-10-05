@@ -29,14 +29,14 @@ class TeamRollout:
     def __init__(self):
         self.rows = []
 
-    def append(self, frame, next_frame, decision, rewards, outcome, value, next_value, snapshot=None):
+    def append(self, frame, next_frame, decision, rewards, outcome, value, next_value, snapshot=None, stream_id=0):
         self.rows.append(dict(frame=frame, next_frame=next_frame,
                               decision={k: decision[k].detach().cpu().numpy()[0].copy() for k in DECISION_KEYS},
                               rewards=np.asarray(rewards).copy(), reward=float(np.mean(rewards)),
                               terminal=bool(outcome), outcome=int(outcome), value=float(value),
-                              next_value=float(next_value), snapshot=snapshot))
+                              next_value=float(next_value), snapshot=snapshot, stream_id=int(stream_id)))
 
-    def batch(self, device, gamma, lam):
+    def batch(self, device, gamma, lam, cost_lam=.99):
         frames = collate_frames([r["frame"] for r in self.rows], device)
         next_frames = collate_frames([r["next_frame"] for r in self.rows], device)
         max_n = frames["mask"].shape[1]
@@ -54,11 +54,25 @@ class TeamRollout:
             decisions[key] = torch.as_tensor(array, device=device)
         rewards = [r["reward"] for r in self.rows]
         terminals = [r["terminal"] for r in self.rows]
-        advantage, returns = compute_gae(rewards, [r["value"] for r in self.rows],
-                                        [r["next_value"] for r in self.rows], terminals, gamma, lam)
+        advantage, returns = np.zeros(len(self.rows), dtype=np.float32), np.zeros(len(self.rows), dtype=np.float32)
+        cost_advantage, cost_returns = np.zeros_like(advantage), np.zeros_like(returns)
+        # Vector environments are interleaved in the buffer. GAE must follow
+        # each environment's own time axis, including its rollout bootstrap.
+        streams = np.asarray([r.get("stream_id", 0) for r in self.rows])
+        for stream in np.unique(streams):
+            indices = np.flatnonzero(streams == stream)
+            selected = [self.rows[i] for i in indices]
+            advantage[indices], returns[indices] = compute_gae(
+                [r["reward"] for r in selected], [r["value"] for r in selected],
+                [r["next_value"] for r in selected], [r["terminal"] for r in selected], gamma, lam)
+            cost_advantage[indices], cost_returns[indices] = compute_gae(
+                [float(r["outcome"] == 2) for r in selected], [r.get("cost_value", 0.) for r in selected],
+                [r.get("next_cost_value", 0.) for r in selected], [r["terminal"] for r in selected], 1., cost_lam)
         advantage = (advantage - advantage.mean()) / max(float(advantage.std()), 1e-8)
         return dict(frame=frames, next_frame=next_frames, decision=decisions,
                     reward=torch.tensor(rewards, device=device).unsqueeze(-1),
                     terminal=torch.tensor(terminals, device=device).unsqueeze(-1),
                     advantage=torch.tensor(advantage, device=device),
+                    cost_advantage=torch.tensor(cost_advantage, device=device),
+                    cost_returns=torch.tensor(cost_returns, device=device).unsqueeze(-1),
                     returns=torch.tensor(returns, device=device).unsqueeze(-1))

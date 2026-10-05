@@ -95,6 +95,10 @@ class WAMV:
 
         self.D = -1.0 * np.matrix([[self.xU,0.0,0.0],[0.0,self.yV,self.yR],
                                    [0.0,self.nV,self.nR]])
+        # Preserve the original least-squares operator and floating-point
+        # ordering, but compute the constant inverse once per parameter set.
+        mass = self.M_RB + self.M_A
+        self.acceleration_operator = np.asarray(np.linalg.inv(mass.T * mass) * mass.T)
 
     def reset(self, init_pos, init_theta, current_velocity=np.zeros(3)):
         # only called when resetting the environment
@@ -142,20 +146,22 @@ class WAMV:
 
     def compute_motion(self):
         # use 3 DOF ship maneuvering model from chapter 6.5 in Fossen's book
-        velocity_r_b = self.project_to_robot_frame(self.velocity_r[:2])
-        velocity_b = self.project_to_robot_frame(self.velocity[:2])
+        c, s = np.cos(self.theta), np.sin(self.theta)
+        rotation = np.array([[c, -s], [s, c]])
+        velocity_r_b = rotation.T @ self.velocity_r[:2]
+        velocity_b = rotation.T @ self.velocity[:2]
         u_r = velocity_r_b[0]
         v_r = velocity_r_b[1]
         u = velocity_b[0]
         v = velocity_b[1]
         r = self.velocity[2]
-        C_RB = np.matrix([[0.0,-self.m*r,0.0],[self.m*r,0.0,0.0],[0.0,0.0,0.0]])
-        C_A = np.matrix([[0.0,0.0,self.yDotV*v_r+self.yDotR*r],[0.0,0.0,-self.xDotU*u_r],
+        C_RB = np.array([[0.0,-self.m*r,0.0],[self.m*r,0.0,0.0],[0.0,0.0,0.0]])
+        C_A = np.array([[0.0,0.0,self.yDotV*v_r+self.yDotR*r],[0.0,0.0,-self.xDotU*u_r],
                          [-self.yDotV*v_r-self.yDotR*r,self.xDotU*u_r,0.0]])
-        D_n = -1.0 * np.matrix([[self.xUU*np.abs(u_r),0.0,0.0],
+        D_n = -1.0 * np.array([[self.xUU*np.abs(u_r),0.0,0.0],
                                 [0.0,self.yVV*np.abs(v_r)+self.yRV*np.abs(r),self.yVR*np.abs(v_r)+self.yRR*np.abs(r)],
                                 [0.0,self.nVV*np.abs(v_r)+self.nRV*np.abs(r),self.nVR*np.abs(v_r)+self.nRR*np.abs(r)]])
-        N = C_A + self.D + D_n
+        N = C_A + np.asarray(self.D) + D_n
 
         # compute propulsion forces and moment
         F_x_left = self.left_thrust * np.cos(self.left_pos)
@@ -171,22 +177,20 @@ class WAMV:
         F_x = F_x_left + F_x_right
         F_y = F_y_left + F_y_right
         M_n = M_x_left + M_y_left + M_x_right + M_y_right
-        tau_p = np.matrix([[F_x],[F_y],[M_n]])
+        tau_p = np.array([F_x, F_y, M_n])
 
         # compute accelerations
-        A = self.M_RB + self.M_A
-        V = np.matrix([[u,v,r]]).transpose()
-        V_r = np.matrix([[u_r,v_r,r]]).transpose()
-        b = -C_RB*V - N*V_r + tau_p
-        acc = np.linalg.inv(A.transpose()*A)*A.transpose()*b
+        V = np.array([u, v, r])
+        V_r = np.array([u_r, v_r, r])
+        b = -C_RB @ V - N @ V_r + tau_p
+        acc = self.acceleration_operator @ b
 
         # apply accelerations to velocity
         V_r += acc * self.dt
 
         # project velocity to the world frame
-        R_wr,_ = self.get_robot_transform()
-        V_r[:2,:] = R_wr * V_r[:2,:]
-        self.velocity_r = np.squeeze(np.array(V_r))
+        V_r[:2] = rotation @ V_r[:2]
+        self.velocity_r = V_r
 
     def project_to_robot_frame(self,x,is_vector=True):
         assert isinstance(x,np.ndarray), "the input needs to be an numpy array"

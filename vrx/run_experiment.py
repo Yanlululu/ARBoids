@@ -139,10 +139,14 @@ class Trial(ExperimentManager):
         return 4 if elapsed >= self.total_time else 0
 
     def control(self, elapsed):
+        if not np.isfinite(self.last_stamp).all() or np.ptp(self.last_stamp) > self.args.action_period:
+            raise RuntimeError('Control requires fresh observations from one control cycle')
         actions = np.zeros((self.num_robots, 2))
         limits = np.array([-500., 1000.]) * self.agility
         obstacles = self.curr_pos[1:]
-        if self.channel_policy is not None and self.channel_policy.config.get('environment', {}).get('canonical_agent_order', False):
+        canonical = (getattr(self.args, 'canonical_agent_order', False) or
+                     (self.channel_policy is not None and self.channel_policy.config.get('environment', {}).get('canonical_agent_order', False)))
+        if canonical:
             order = sorted(range(len(obstacles)), key=lambda i: (np.linalg.norm(obstacles[i] - self.curr_pos[0]), *obstacles[i]))
             obstacles = obstacles[order]
         actions[0] = APF_navi_control(self.curr_pos[0], np.zeros(2), obstacles,
@@ -151,8 +155,6 @@ class Trial(ExperimentManager):
                                           self.curr_phi[1:], self.curr_pos[0])
         decision = None
         if self.channel_policy is not None:
-            if not np.isfinite(self.last_stamp).all() or np.ptp(self.last_stamp) > self.args.action_period:
-                raise RuntimeError('ChannelMAPPO requires fresh observations from one control cycle')
             frame = build_frame(self.curr_pos[1:], self.curr_vel[1:], self.curr_phi[1:],
                                 self.curr_yaw_rate[1:], self.curr_pos[0], self.curr_vel[0],
                                 states, boids, max(0., 1. - elapsed / self.total_time),
@@ -223,7 +225,8 @@ def stop_process(process):
 def prepare_world(world, origin, output, capture_frames):
     source = Path(get_package_share_directory('vrx_gz')) / 'worlds' / f'{world}.sdf'
     tree = ET.parse(source)
-    assets = Path(__file__).resolve().parents[1] / '.vrx-assets'
+    assets = Path(os.environ.get('ARBOIDS_VRX_ASSETS',
+                                 Path(__file__).resolve().parents[1] / '.vrx-assets')).resolve()
     manifest = json.loads((assets / 'fuel-manifest.json').read_text(encoding='utf-8'))
     models = {entry['url']: assets / 'resolved' / entry['directory'] for entry in manifest}
     for uri in tree.findall('.//include/uri'):
@@ -271,6 +274,8 @@ def main():
     parser.add_argument('--duration', type=float, default=60.)
     parser.add_argument('--termination-rule', choices=['source', 'paper'], default='source')
     parser.add_argument('--action-period', type=float, default=0.2)
+    parser.add_argument('--canonical-agent-order', action='store_true',
+                        help='Use the same geometric attacker obstacle order for all policy comparisons')
     parser.add_argument('--startup-timeout', type=float, default=180.)
     parser.add_argument('--wall-timeout', type=float, default=900.)
     parser.add_argument('--output-dir', type=Path, default=Path(__file__).resolve().parent / 'results')
@@ -294,6 +299,8 @@ def main():
               'agility': args.agility, 'controller': args.controller, 'num_robots': args.num_robots,
               'duration_limit': args.duration, 'action_period': args.action_period,
               'termination_rule': args.termination_rule,
+              'canonical_agent_order_requested': args.canonical_agent_order,
+              'ros_domain_id': os.environ.get('ROS_DOMAIN_ID', '0'),
               'capture_radius': 5.0, 'target_radius': 15.0, 'collision_radius': 5.0,
               'checkpoint': args.checkpoint,
               'thruster_mapping': 'policy[0]->starboard; policy[1]->port (ENU yaw matching training)'}

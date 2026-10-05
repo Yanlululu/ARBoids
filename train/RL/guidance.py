@@ -122,6 +122,9 @@ class TeamGuidance:
         calibration = []
         if not opts.get("enabled", True) or agent.training_steps < int(opts.get("warm_steps", 4096)):
             return targets, weights, calibration, stats
+        if opts.get("require_terminal_calibration", False) and not agent.terminal_q_ready:
+            stats["guidance_suspended"] = 1
+            return targets, weights, calibration, stats
         eligible = [(i, r) for i, r in enumerate(rollout.rows) if r["snapshot"] is not None]
         scratch = copy.deepcopy(env)
         for index, row in eligible:

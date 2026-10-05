@@ -1,0 +1,81 @@
+# Fine-tune the demonstrated gate policy with conservative on-policy updates.
+algorithm: channel_mappo
+policy:
+  hidden: 128
+  fusion: channels
+  aggregation: attention
+  share_candidates: true
+  motion_features: true
+mappo:
+  critic_hidden: 128
+  value_normalization: true
+  critic_layer_norm: true
+  critic_learning_rate: 0.0003
+  learning_rate: 5.0e-06
+  gamma: 0.99
+  gae_lambda: 0.95
+  collision_cost_coefficient: 20.0
+  cost_gae_lambda: 0.99
+  epochs: 4
+  minibatch_steps: 256
+  actor_minibatch_steps: 8192
+  clip_ratio: 0.2
+  entropy_coefficient: 0.002
+  max_grad_norm: 0.5
+  target_kl: 0.005
+  value_target_tau: 0.05
+  terminal_q_updates: 32
+  terminal_q_interleave_weight: 0.25
+  terminal_q_full_probe: true
+  terminal_q_weight: 1.0
+  terminal_q_max_rmse: 10.0
+guidance:
+  enabled: true
+  coefficient: 10.0
+  batch_mode: validated
+  warm_steps: 1024
+  samples_per_rollout: 4
+  priority_samples_per_rollout: 12
+  search_mode: joint
+  search_step: 0.15
+  search_radius: 0.25
+  search_sweeps: 1
+  action_penalty: 0.1
+  min_predicted_gain: 0.0
+  branch_horizon: 12
+  min_branch_gain: 0.0
+  validation_window: 64
+  min_validations: 16
+  min_validation_rate: 0.5
+  require_terminal_calibration: true
+training:
+  model_name: channel-mappo.pth
+  total_steps: 1000000
+  num_envs: 8
+  collision_revisit_probability: 0.5
+  collision_revisit_capacity: 128
+  collision_revisit_solved_after: 3
+  rollout_steps: 8192
+  eval_interval: 8192
+  eval_episodes: 128
+  eval_seed: 610000
+  selection_objective: collision
+  selection_success_floor: 0.9375
+  eval_num_envs: 8
+  cpu_threads: 1
+agent:
+  defender_num: 3
+  training_team_sizes:
+  - 3
+  curriculum: true
+  form_reward: true
+curriculum:
+  init_agility: 2.0
+  eva_agility: 2.0
+  ind_agility: 0.25
+environment:
+  protocol: paper-parameters-v1
+  total_time: 60.0
+  agility_noise_half_width: 0.5
+  initial_min_spacing: 6.0
+  canonical_agent_order: true

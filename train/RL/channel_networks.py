@@ -8,8 +8,11 @@ from .control import candidate_features, fuse_thrust, to_thrust, to_action
 from .observations import LOCAL_DIM, EDGE_DIM, MESSAGE_DIM, NODE_DIM, GLOBAL_DIM
 
 
-def mlp(inputs, hidden, outputs):
-    return nn.Sequential(nn.Linear(inputs, hidden), nn.Tanh(), nn.Linear(hidden, outputs))
+def mlp(inputs, hidden, outputs, layer_norm=False):
+    layers = [nn.Linear(inputs, hidden)]
+    if layer_norm:
+        layers.append(nn.LayerNorm(hidden))
+    return nn.Sequential(*layers, nn.Tanh(), nn.Linear(hidden, outputs))
 
 
 def masked_mean(values, mask, dim):
@@ -135,16 +138,53 @@ class ChannelActor(nn.Module):
 
 
 class TeamCritic(nn.Module):
-    def __init__(self, hidden=128, action_conditioned=False):
+    def __init__(self, hidden=128, action_conditioned=False, normalize_value=False, layer_norm=False):
         super().__init__()
         self.action_conditioned = action_conditioned
-        self.node = mlp(NODE_DIM + (2 if action_conditioned else 0), hidden, hidden)
-        self.message = mlp(2 * hidden + EDGE_DIM, hidden, hidden)
-        self.update = mlp(2 * hidden, hidden, hidden)
-        self.global_encoder = mlp(GLOBAL_DIM, hidden, hidden)
-        self.readout = mlp(2 * hidden + 1, hidden, 1)
+        self.node = mlp(NODE_DIM + (2 if action_conditioned else 0), hidden, hidden, layer_norm)
+        self.message = mlp(2 * hidden + EDGE_DIM, hidden, hidden, layer_norm)
+        self.update = mlp(2 * hidden, hidden, hidden, layer_norm)
+        self.global_encoder = mlp(GLOBAL_DIM, hidden, hidden, layer_norm)
+        self.readout = mlp(2 * hidden + 1, hidden, 1, layer_norm)
+        self.normalize_value = normalize_value
+        if normalize_value:
+            self.register_buffer("output_mean", torch.zeros(()))
+            self.register_buffer("output_scale", torch.ones(()))
+            self.register_buffer("second_moment", torch.ones(()))
+            self.register_buffer("normalization_updates", torch.zeros((), dtype=torch.long))
 
-    def forward(self, frame, executed=None):
+    @torch.no_grad()
+    def rebase_output(self, mean, scale):
+        """Change normalized coordinates while preserving every raw value."""
+        head = self.readout[-1]
+        head.weight.mul_(self.output_scale / scale)
+        head.bias.copy_((self.output_scale * head.bias + self.output_mean - mean) / scale)
+        self.output_mean.copy_(mean)
+        self.output_scale.copy_(scale)
+
+    @torch.no_grad()
+    def update_normalization(self, targets, decay=.99):
+        if not self.normalize_value:
+            return
+        weight = decay if self.normalization_updates.item() else 0.
+        mean = weight * self.output_mean + (1 - weight) * targets.mean()
+        second = weight * self.second_moment + (1 - weight) * targets.square().mean()
+        scale = (second - mean.square()).clamp_min(1e-4).sqrt()
+        self.rebase_output(mean, scale)
+        self.second_moment.copy_(second)
+        self.normalization_updates.add_(1)
+
+    def normalize_targets(self, targets):
+        return (targets - self.output_mean) / self.output_scale if self.normalize_value else targets
+
+    @torch.no_grad()
+    def copy_normalization_from(self, other):
+        if self.normalize_value:
+            self.rebase_output(other.output_mean, other.output_scale)
+            self.second_moment.copy_(other.second_moment)
+            self.normalization_updates.copy_(other.normalization_updates)
+
+    def forward(self, frame, executed=None, normalized=False):
         nodes = frame["nodes"]
         if self.action_conditioned:
             if executed is None:
@@ -159,4 +199,7 @@ class TeamCritic(nn.Module):
         h = h + self.update(torch.cat((h, related), -1))
         pooled = masked_mean(h, frame["mask"], -2)
         count = frame["mask"].sum(-1, keepdim=True).to(h.dtype) / 8.
-        return self.readout(torch.cat((pooled, self.global_encoder(frame["global_state"]), count), -1))
+        prediction = self.readout(torch.cat((pooled, self.global_encoder(frame["global_state"]), count), -1))
+        if self.normalize_value and not normalized:
+            prediction = prediction * self.output_scale + self.output_mean
+        return prediction
