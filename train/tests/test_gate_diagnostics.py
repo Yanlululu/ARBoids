@@ -98,6 +98,28 @@ class GateDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result['trajectory_sha256'], trajectory_digest(original))
         self.assertEqual(result['outcome_code'], original._isTerminate())
 
+    def test_actual_collision_penalty_is_in_the_team_return(self):
+        seed_random(18)
+        env = TADEnv(protocol='paper-parameters-v1', total_time=.4)
+        env.reset()
+        for boat, pos, velocity in zip(env.defender_list,
+                ((0., 0.), (5.3, 0.), (0., 20.)), ((2., 0., 0.), (-2., 0., 0.), (0., 0., 0.))):
+            boat.reset(np.array(pos), 0.)
+            boat.velocity_r = np.array(velocity)
+        env.boids_actions[:] = 0.
+        observation, _ = env._get_obs()
+        self.assertGreater(minimum_distance(env), env.Collision_R)
+        case = GateCase(18, 0, 'collision', SimulationSnapshot.capture(env), observation, policy(observation))
+        _, rewards, done, _ = env.step(case.action, 'AdaRes')
+        self.assertEqual(done, 2)
+        main, formation, collision = env.paper_reward_components()
+        self.assertLess(collision.mean(), 0.)
+        result = run_branch(case, policy, case.theta)
+        self.assertEqual(result['steps'], 1)
+        self.assertEqual(result['collision'], 1)
+        self.assertEqual(result['team_return'], float(rewards.mean()))
+        self.assertAlmostEqual(result['team_return'], float((main + formation + collision).mean()))
+
     def test_branch_order_and_outer_rng_are_unchanged(self):
         case, _ = make_case()
         outer = RandomState.capture()
