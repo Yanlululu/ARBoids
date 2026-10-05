@@ -131,6 +131,8 @@ class TADEnv():
              rl_action:np.ndarray,
              controller='Boids',
              att_action=None,
+             *,
+             defender_thrust=None,
              ):
         '''
             Environment step function
@@ -151,6 +153,13 @@ class TADEnv():
                 actions[i] = adas[i] * actions[i] + (1 - adas[i]) * self.boids_actions[i]
         else:
             actions = self.boids_actions
+
+        # Offline model audits may hold physical thrust exactly, without an
+        # inverse action conversion or altering the cached Boids observation.
+        if defender_thrust is not None:
+            actions = np.asarray(defender_thrust).copy()
+            if actions.shape != (self.defender_num, 2) or not np.isfinite(actions).all():
+                raise ValueError('Expected finite physical defender thrust [N, 2].')
 
         # Attacker Step
         goal = np.zeros(2)
@@ -508,8 +517,12 @@ class TADEnv():
                 # if use closest point
                 influence_radius = distance
 
-        force = att_force + rep_force + np.random.normal(0.0, 0.3, 2)
+        force = att_force + rep_force + self._apf_force_noise()
         return self.force_to_thrust(force, phi, robot)
+
+    def _apf_force_noise(self):
+        """Separate the nominal model from the sampled execution environment."""
+        return np.random.normal(0.0, 0.3, 2)
     
     def _Boid_navi_step(self,
                         positions,
