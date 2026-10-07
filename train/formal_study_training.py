@@ -144,6 +144,7 @@ def sac_run(args):
     env = TADEnv(3, True, True, **config['environment'])
     end = counters['phase_start'] + args.steps
     started, start_step = time.perf_counter(), counters['steps']
+    prior_elapsed = counters.get('elapsed_seconds', 0.)
     next_save = counters['steps'] + args.save_interval
     next_log = counters['steps'] + 1000
     while counters['steps'] < end:
@@ -181,6 +182,7 @@ def sac_run(args):
         counters['episodes'] += 1
         counters['phase_episodes'] += 1
         if counters['steps'] >= next_save or counters['steps'] >= end:
+            counters['elapsed_seconds'] = prior_elapsed + time.perf_counter() - started
             save_sac(latest, agent, replay, config, counters)
             next_save = counters['steps'] + args.save_interval
     actor_file = directory/'actor.pth'

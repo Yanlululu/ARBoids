@@ -79,7 +79,7 @@ class Networks(unittest.TestCase):
         obs, motion = torch.as_tensor(p['obs'])[None], torch.as_tensor(p['motion'])[None]
         action, logp = actor(obs, motion, mask=torch.zeros(1, 3, dtype=torch.bool))
         self.assertTrue(torch.isfinite(action).all())
-        self.assertEqual(float(logp), 0.)
+        self.assertEqual(float(logp.detach()), 0.)
         action, _ = actor(obs, motion, deterministic=True)
         action[..., 2].sum().backward()
         self.assertGreater(float(actor.relations[0].weight.grad.abs().sum()), 0.)

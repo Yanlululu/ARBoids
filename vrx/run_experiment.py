@@ -307,7 +307,7 @@ def main():
               'agility': args.agility, 'controller': args.controller, 'num_robots': args.num_robots,
               'duration_limit': args.duration, 'action_period': args.action_period,
               'termination_rule': args.termination_rule,
-              'synchronize_feedback': bool(args.synchronize_feedback or args.controller == 'MAPPO'),
+              'synchronize_feedback': bool(args.synchronize_feedback or args.controller in ('MAPPO', 'IACRRL')),
               'message_delay_steps': args.message_delay_steps,
               'message_drop_probability': args.message_drop_probability,
               'communication_scope': 'local per-directed-link delay/loss emulation, not a physical network',

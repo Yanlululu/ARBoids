@@ -10,8 +10,7 @@ import os
 from pathlib import Path
 import sys
 
-_dependencies = Path(__file__).with_name(
-    '_study_dependencies' if os.name == 'nt' else '_study_dependencies_linux')
+from study_runtime import directory as _dependencies
 if _dependencies.exists():
     sys.path.insert(0, str(_dependencies))
 

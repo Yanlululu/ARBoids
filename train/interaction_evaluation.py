@@ -41,24 +41,30 @@ class BoidsPolicy:
         return np.zeros((len(packet['obs']), 3), dtype=np.float32), 0.
 
 
-def long_reference_episode(policy, seed, defenders, agility, trajectory=False):
+def long_reference_controller(policy, defenders):
     from adaptive_interval_rollout import AdaptiveIntervalController
     from jit_nominal_environment import JitNominalEnvironment
-    from feedback_joint_control import observe
 
     class PaperNominal(JitNominalEnvironment):
         def _isTerminate(self):
             self.protocol = 'paper-parameters-v1'
             return TADEnv._isTerminate(self)
 
+    controller = AdaptiveIntervalController(defenders, policy, blend=1., capture_margin=.5,
+        failure_cost='delay', tail_steps=100, tail_policy='candidate', agility_threshold=1.75)
+    controller.prediction_environment_class = PaperNominal
+    return controller
+
+
+def long_reference_episode(policy, seed, defenders, agility, trajectory=False):
+    from feedback_joint_control import observe
+
     with preserved_random_state():
         seed_random(seed)
         env = TADEnv(defenders, protocol='paper-parameters-v1')
         obs, _ = env.reset(agility)
+        controller = long_reference_controller(policy, defenders)
         np.random.seed(seed + 1_000_000)
-        controller = AdaptiveIntervalController(defenders, policy, blend=1., capture_margin=.5,
-            failure_cost='delay', tail_steps=100, tail_policy='candidate', agility_threshold=1.75)
-        controller.prediction_environment_class = PaperNominal
         done, history = 0, []
         while not done:
             thrust, info = controller.control(observe(env, obs))
@@ -200,9 +206,13 @@ def summarize(study):
             selected = [r for r in rows if r['arm'] == arm and r['cell'] == cell]
             if not selected:
                 continue
-            summaries.append(dict(arm=arm, cell=cell, episodes=len(selected),
+            summary = dict(arm=arm, cell=cell, episodes=len(selected),
                 trained_seeds=len({r['training_seed'] for r in selected}),
-                **{m: float(np.mean([float(r[m]) for r in selected])) for m in METRICS}))
+                **{m: float(np.mean([float(r[m]) for r in selected])) for m in METRICS})
+            groups = [[r for r in selected if int(r['training_seed']) == seed] for seed in SEEDS]
+            if all(len(g) == 200 for g in groups):
+                summary['ci95'] = {m: hierarchical_interval([[float(r[m]) for r in g] for g in groups],rng) for m in METRICS}
+            summaries.append(summary)
             if arm == 'full':
                 continue
             by_seed = []
@@ -217,18 +227,104 @@ def summarize(study):
                 difference = np.asarray([[float(b[metric])-float(a[metric]) for a, b in group] for group in by_seed])
                 pairs.append(dict(reference=arm, cell=cell, metric=metric, difference=float(difference.mean()),
                                   ci95=hierarchical_interval(difference, rng)))
-    result = dict(complete=len(rows) == 5 * 8 * 10 * 200, protocol='paper-parameters-v1',
+    expected = {(arm, seed, f'n{n}-a{agility:g}', 350000000+SEEDS.index(seed)*1000000+ci*10000+i)
+        for arm in ('full','same_info','arboids_cbf','model_value','short','boids','original','long_reference')
+        for seed in SEEDS for ci,(n,agility) in enumerate(CELLS) for i in range(200)}
+    result = dict(complete=len(rows)==len(lookup) and set(lookup)==expected, protocol='paper-parameters-v1',
                   summaries=summaries, paired_comparisons=pairs)
     atomic_json(study / 'analysis.json', result)
     return result
 
 
+def runtime(checkpoint, output, episodes=16):
+    policy = DeploymentPolicy(checkpoint)
+    rows = []
+    for n in (3, 6):
+        # Warm both network and the CBF specialization outside the timing sample.
+        env = TADEnv(n, protocol='paper-parameters-v1')
+        env.reset(2.25)
+        p = public_packet(env)
+        policy.control(p['obs'], p['motion'], env.boids_actions)
+        for i in range(episodes):
+            seed_random(400000000 + n*10000 + i)
+            obs, _ = env.reset(2.25)
+            done = 0
+            while not done:
+                started = time.perf_counter()
+                p = public_packet(env, obs)
+                force = policy.control(p['obs'], p['motion'], env.boids_actions, env.Current_T)
+                duration = time.perf_counter()-started
+                rows.append(dict(defenders=n, scene=i, seconds=duration))
+                obs, _, done, _ = env.step(policy.last_action, 'AdaRes', defender_thrust=force)
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    with (output/'calls.csv').open('w', newline='', encoding='utf-8') as f:
+        writer=csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader(); writer.writerows(rows)
+    summaries=[]
+    for n in (3,6):
+        values=np.asarray([r['seconds'] for r in rows if r['defenders']==n])
+        summaries.append(dict(defenders=n, calls=len(values), median=float(np.median(values)),
+            p95=float(np.quantile(values,.95)), p99=float(np.quantile(values,.99)),
+            maximum=float(values.max()), deadline_misses=int((values>.2).sum())))
+    atomic_json(output/'completed.json', dict(complete=True, summaries=summaries,
+        timing_scope='public observation adaptation, candidate exchange emulation, actor and common CBF; excludes external communication'))
+
+
+def runtime_matrix(study, output, episodes=16):
+    from feedback_joint_control import observe
+    study, output = Path(study), Path(output)
+    manifest = json.loads((study/'manifest.json').read_text(encoding='utf-8'))
+    inherited = manifest['inherited_pretraining'].get('pretrain-42')
+    pretrain = inherited['path'] if inherited else study/'pretrain/seed-42/actor.pth'
+    rows = []
+    for arm in ('full','same_info','arboids_cbf','short','model_value','boids','original','long_reference'):
+        if arm=='boids': policy=BoidsPolicy()
+        elif arm in ('original','long_reference'): policy=OriginalPolicy(pretrain)
+        else: policy=DeploymentPolicy(study/f'training/seed-42/{arm}/policy.pth')
+        for n in (3,6):
+            for i in range(-1,episodes):
+                seed_random(400000000+n*10000+i)
+                env=TADEnv(n,protocol='paper-parameters-v1')
+                obs,_=env.reset(2.25)
+                planner=long_reference_controller(policy,n) if arm=='long_reference' else None
+                done=0
+                while not done:
+                    start=time.perf_counter()
+                    packet=public_packet(env,obs)
+                    if planner:
+                        force,_=planner.control(observe(env,obs))
+                        action=policy(obs)
+                    elif arm in ('boids','original'):
+                        action,_=policy.choose_action(packet)
+                        force=action[:,2:3]*(750.*action[:,:2]+250.)+(1-action[:,2:3])*env.boids_actions
+                    else:
+                        force=policy.control(obs,packet['motion'],env.boids_actions)
+                        action=policy.last_action
+                    elapsed=time.perf_counter()-start
+                    if i>=0: rows.append(dict(arm=arm,defenders=n,scene=i,seconds=elapsed))
+                    obs,_,done,_=env.step(action,'AdaRes',defender_thrust=force)
+    output.mkdir(parents=True,exist_ok=True)
+    with (output/'calls.csv').open('w',newline='',encoding='utf-8') as f:
+        writer=csv.DictWriter(f,fieldnames=rows[0].keys());writer.writeheader();writer.writerows(rows)
+    summaries=[]
+    for arm in sorted({r['arm'] for r in rows}):
+        for n in (3,6):
+            x=np.array([r['seconds'] for r in rows if r['arm']==arm and r['defenders']==n])
+            summaries.append(dict(arm=arm,defenders=n,calls=len(x),median=float(np.median(x)),
+                p95=float(np.quantile(x,.95)),p99=float(np.quantile(x,.99)),maximum=float(x.max()),
+                deadline_misses=int((x>.2).sum())))
+    atomic_json(output/'completed.json',dict(complete=True,summaries=summaries,
+        timing_scope='CPU observation adapter and controller, including shared CBF when applicable; excludes external communication'))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['task', 'calibration', 'summarize'])
+    parser.add_argument('mode', choices=['task', 'calibration', 'summarize', 'runtime'])
     parser.add_argument('--checkpoint', type=Path)
     parser.add_argument('--pretrain', type=Path)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--study', type=Path)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--arm', default='full')
     parser.add_argument('--episodes', type=int, default=200)
@@ -240,6 +336,9 @@ def main():
         task_evaluation(args.checkpoint, args.output, args.seed, args.arm, args.episodes)
     elif args.mode == 'calibration':
         calibration(args.checkpoint, args.pretrain, args.output, args.seed, args.states, args.repetitions)
+    elif args.mode == 'runtime':
+        if args.study: runtime_matrix(args.study,args.output)
+        else: runtime(args.checkpoint,args.output)
     else:
         summarize(args.output)
 

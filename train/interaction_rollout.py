@@ -24,7 +24,10 @@ def public_packet(env, observations=None):
 @lru_cache(maxsize=8)
 def safety_controller(defenders):
     from cbf_source_baseline import CBFController
-    return CBFController(defenders)
+    # CBFpy validates a new specialization using random example states.
+    # A cold process (including resume) must not advance the training RNG.
+    with preserved_random_state():
+        return CBFController(defenders)
 
 
 def execute(env, packet, action, *, safety=True, attacker_action=None):
@@ -181,12 +184,15 @@ class InterventionSampler:
         self.workers = int(workers)
         self.executor = None
 
-    def generate(self, agent, pool, *, attacker=None):
+    def generate(self, agent, pool, *, attacker=None, step=0):
         config = agent.config['interaction']
         with preserved_random_state():
-            snapshots = pool.sample(config['pairs_per_batch'])
-            jobs = [(s, int(np.random.randint(2**31)), int(np.random.randint(2**31)),
-                     int(np.random.randint(s.environment.defender_num)), float(np.random.choice([0., .5, 1.])))
+            # Matched, independent seed stream across methods. Physical snapshots
+            # and continuations belong to each method's own current policy.
+            rng = np.random.default_rng([600000000, agent.config['training']['seed'], int(step)])
+            snapshots = [pool.items[i] for i in rng.integers(len(pool.items), size=config['pairs_per_batch'])]
+            jobs = [(s, int(rng.integers(1000000000,2000000000)), int(rng.integers(2000000000,3000000000)),
+                     int(rng.integers(s.environment.defender_num)), float(rng.choice([0., .5, 1.])))
                     for s in snapshots]
             payload = frozen_payload(agent, attacker=attacker)
             steps = config['horizon_steps']

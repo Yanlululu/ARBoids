@@ -37,9 +37,9 @@ def seed_random(seed):
         raise ValueError('Use an integer seed in [0, 2**32).')
     np.random.seed(int(seed))
     random.seed(int(seed))
-    torch.random.default_generator.manual_seed(int(seed))
-    if torch.cuda.is_initialized():
-        torch.cuda.manual_seed_all(int(seed))
+    # manual_seed also queues the CUDA seed before lazy CUDA initialization.
+    # Seeding only an already-initialized device makes fresh and resumed runs differ.
+    torch.manual_seed(int(seed))
 
 
 @contextmanager

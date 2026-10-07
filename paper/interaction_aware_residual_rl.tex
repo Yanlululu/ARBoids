@@ -1,0 +1,399 @@
+\documentclass[journal]{IEEEtran}
+\usepackage{amsmath,amssymb,booktabs,array,graphicx}
+\usepackage{tikz,pgfplots}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit}
+\usepgfplotslibrary{groupplots,fillbetween}
+\pgfplotsset{compat=1.18}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\ind}{\mathbb{I}}
+\newcommand{\sg}{\operatorname{sg}}
+\newcommand{\mean}{\operatorname{mean}}
+\newcommand{\our}{IA-CRRL}
+\definecolor{navy}{HTML}{204A68}
+\definecolor{teal}{HTML}{00857D}
+\definecolor{orange}{HTML}{D27A32}
+\definecolor{purple}{HTML}{7E5B9B}
+\tikzset{box/.style={draw=navy,rounded corners=2pt,align=center,font=\scriptsize,
+  fill=navy!4,inner sep=5pt},flow/.style={-{Stealth[length=1.6mm]},thick,draw=navy}}
+\title{Interaction-Aware Cooperative Residual Reinforcement Learning for Multi-USV Target Defense}
+\author{Manuscript in preparation}
+\begin{document}
+\maketitle
+\begin{abstract}
+We present interaction-aware cooperative residual reinforcement learning (\our) for multi-USV defense against agile intruders. The method addresses cooperative control composition: coordinating each defender's use of learned and rule-based control with its own state, concurrent teammate controls, and the team task. Its core mechanism couples candidate-control interaction-conditioned blending with composition-specific conditional value learning. A two-stage actor first generates control candidates and then encodes relations among its own and teammates' candidates to produce blending coefficients. A joint critic evaluates the resulting team composition. During training, paired closed-loop rollouts change one defender's current coefficient while fixing the initial state, candidate controls, and other coefficients; subsequent decisions follow each branch's evolved state. The resulting soft-return difference supervises the conditional value of that local composition change, alongside ordinary soft actor--critic learning from real transitions. Deployment uses the actor and a common control-barrier-function filter. The evaluation separates learning benefits, configuration matching and conditional interaction, and their translation into executed maneuvers and task outcomes. This manuscript currently specifies the implemented method and evaluation design; numerical claims about the new policy await completion of the fixed experiment matrix.
+\end{abstract}
+\begin{IEEEkeywords}
+Multi-robot systems, unmanned surface vehicles, cooperative control composition, residual reinforcement learning, conditional value learning.
+\end{IEEEkeywords}
+
+\section{Introduction}
+Multi-USV defense against an agile intruder requires sustained coordination of the team's motion around a protected region. When every defender combines a rule-based prior with learned control, each local composition must suit both the vessel's state and its teammates' concurrent maneuvers. We study cooperative control composition in this setting: how should the contributions of these control sources to local commands be coordinated through inter-vessel interactions to produce effective team defense? The blending coefficient parameterizes the local decision; the research object is how the team's control sources are used together.
+
+Marine autonomy connects perception, decision making, and control~\cite{qiao}. Territory guarding, distributed pursuit, reach--avoid games, and faster-evader pursuit provide complementary formulations of coordinated defense~\cite{fu,chen,yan,fang}; vessel dynamics and shared space couple the consequences of individual maneuvers~\cite{guo,zhou}. Reinforcement learning supports decentralized pursuit~\cite{souza}, aerial pursuit--evasion~\cite{zhang}, multi-USV hunting~\cite{xue}, and integrated marine decision making and control~\cite{lin}. Shared policies and mean embeddings accommodate variable-size teams~\cite{huttenrauch}, while joint values~\cite{rashid} and communication representations~\cite{ma,li} support learning from team interactions. These tools motivate representing the particular interaction relevant to composition: the relation between the control candidates available to different defenders at the same instant.
+
+Bayesian controller fusion~\cite{rana}, residual model predictive control~\cite{jeon}, and ARBoids~\cite{tao} combine structured control with learned adaptation. ARBoids already achieves cooperative defense through state-conditioned individual blending, teammate observations, the Boids prior, a shared policy, and task feedback. It learns when each defender should rely more on learned or rule-based control. We retain its control sources and 512-unit backbone, and further learn how local blending decisions should depend on concurrent candidate controls and their conditional long-term team consequences. The distinction is the explicit policy representation and value learning of composition interactions within an already cooperative system.
+
+PSAC-MATD3~\cite{wu} addresses multi-USV cooperative policy learning through policy sharing, phase-aware rewards, prioritized replay, and CBF correction of execution commands. Our mechanism acts on the composition of heterogeneous control sources and the value of changing that composition. Both approaches concern cooperative policy learning; their methodological emphasis lies at different points in the learning and control process.
+
+Two interactions must be distinguished. Candidate-control interaction is represented in the policy input and conditions the blending decision. Configuration interaction concerns whether the value of one defender's composition change depends on its teammates' composition choices. Team rewards evaluate the joint outcome, but do not directly isolate this conditional difference. Rollout evaluation~\cite{bhattacharya}, safe learning~\cite{brunke}, and trajectory prediction for USV cooperation~\cite{yu} motivate learning from future consequences. Counterfactual multi-agent learning~\cite{coma} motivates holding teammates' current choices fixed, and model-based value expansion~\cite{mve} motivates truncated rollouts with a learned tail. We apply these ideas specifically to the blending variable: candidate controls remain fixed at the intervention step, and all defenders subsequently resume closed-loop decisions in each branch.
+
+The main methodological contribution is a trainable mechanism that couples candidate-control interaction-conditioned blending with composition-specific conditional value learning. We formulate multi-USV target defense from the perspective of cooperative control composition, represent concurrent candidate relations in a two-stage residual actor, and supervise joint critics with the paired return difference induced by a local blending intervention. Earlier online-selection results motivate the importance of composition and sustained task evaluation (Section~\ref{sec:earlier}); the new experiments examine whether this information can be learned by the proposed policy. Learning controls, configuration diagnostics, and executed trajectories address distinct parts of that evidence chain.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[scale=.058,font=\scriptsize]
+\fill[navy!5] (-52,-33) rectangle (58,35);
+\draw[navy,fill=navy!15] (0,0) circle (15);
+\node[align=center] at (0,0) {Protected\\region};
+\foreach \x/\y/\a/\name in {21/18/120/1,31/0/165/2,20/-18/225/3}{
+\begin{scope}[shift={(\x,\y)},rotate=\a]
+\draw[fill=teal!70,draw=teal] (4,0)--(-3,2)--(-3,-2)--cycle;
+\end{scope}
+\node[above] at (\x,\y+3) {$D_{\name}$};}
+\draw[fill=orange!80,draw=orange] (50,4)--(57,6)--(57,2)--cycle;
+\node[above] at (52,9) {Agile intruder};
+\draw[->,orange,thick] (49,4) .. controls (40,15) and (36,12) .. (25,6);
+\draw[dashed,teal] (21,18)--(31,0)--(20,-18)--cycle;
+\node[align=left,anchor=west] at (-49,-27) {Dashed links: same-cycle candidate messages\\Schematic geometry; not an experimental trajectory};
+\end{tikzpicture}
+\caption{Cooperative control composition for target defense. Dashed links carry concurrent candidate-control information; the drawing assigns no fixed maneuver roles. Defense succeeds through capture or survival to the 60-s deadline, with region entry and defender collision recorded separately.}
+\label{fig:task}
+\end{figure}
+
+\section{Task and Control Model}
+\subsection{Dynamics, observations, and outcomes}
+Let $N$ homogeneous defenders protect a circular target region of radius $15$ m against one intruder. The numerical environment follows the released three-degree-of-freedom WAM-V model~\cite{tao},
+\begin{equation}
+ \dot\eta_i=R(\psi_i)\nu_i,\qquad
+ M\dot\nu_i+C(\nu_i)\nu_i+D(\nu_i)\nu_i=\tau_i,
+\end{equation}
+with the source current perturbations and a $0.05$-s integration step. A command is held for four integration steps, giving a $0.2$-s control period. Differential thrust lies in $[-500,1000]$ N per thruster; intruder agility scales its thrust bounds. Observations contain target-relative and intruder-relative geometry, measured intruder velocity, Boids features, and teammate distance--bearing pairs. Candidate messages add measured defender position, heading, translational velocity, yaw rate, and both current action candidates. No future disturbance, true intruder agility, or centralized training state is an actor input.
+
+We use \texttt{paper-parameters-v1}: a run terminates at actual target entry ($d_{AT}\leq15$ m), a defender separation at or below $5$ m, capture ($\min_i d_{iA}<5$ m), or $60$ s. This is also the priority order for simultaneous terminal events. Independent physical collision and breach flags are retained alongside that exclusive outcome. The deadline is an absorbing task termination, with zero bootstrap value.
+
+\subsection{Control sources and nominal composition}
+Boids supplies pursuit, separation, alignment, and cohesion forces using the released parameters. A shared learned candidate $\ell_i\in(-1,1)^2$ maps to physical thrust $u_i^L=750\ell_i+250$. The mixed nominal control is
+\begin{equation}
+ u_i^{\rm nom}=\theta_i u_i^L+(1-\theta_i)u_i^B,\qquad 0\leq\theta_i\leq1.
+ \label{eq:mix}
+\end{equation}
+We define \emph{control composition} as the state-dependent combination of these sources in the nominal command. The candidate controls and team composition configuration are
+\begin{equation}
+ \mathcal A=\bigl((u_i^L,u_i^B)\bigr)_{i=1}^{N},\qquad
+ \boldsymbol\Theta=(\theta_1,\ldots,\theta_N).
+ \label{eq:configuration}
+\end{equation}
+Cooperative control composition seeks to match these local choices to inter-vessel interactions and the team task. Each blending coefficient describes the relative contribution of two sources to one nominal command: $\theta_i+(1-\theta_i)=1$. There is no shared cross-vessel coefficient budget or constraint $\sum_i\theta_i=1$. Local control authority is an interpretation of this relative contribution, not a transfer of actuator permissions.
+
+For fixed candidate controls,
+\begin{equation}
+ \frac{\partial u_i^{\rm nom}}{\partial\theta_i}=u_i^L-u_i^B.
+ \label{eq:composition-sensitivity}
+\end{equation}
+Thus coefficient variation translates into command variation through candidate disagreement. Every primary learning method then uses the same existing second-order CBF filter, with a $7$-m barrier separation, the released relaxed quadratic-program settings, and identical physical saturation. Writing $\mathbf u$ for the stacked thrust commands, execution is
+\begin{equation}
+ \mathbf u^{\rm exec}=\mathcal F_{\rm CBF}(s,\mathbf u^{\rm nom}).
+ \label{eq:execution}
+\end{equation}
+The blending coefficient therefore characterizes nominal composition, not the final motion's proportional contribution from each source. Pursuit, lateral interception, and region maintenance are functions to identify in recorded trajectories. They are not roles assigned by large or small coefficients: Boids itself includes pursuit, and the learned branch receives task, formation, and collision feedback. Relaxed CBF feasibility is evaluated through measured collision outcomes.
+
+\subsection{Task reward}
+The defender reward retains the paper's task, formation, and collision terms. Target entry yields $-100$ to each defender; capture yields $100$ to a defender within the capture radius, $50$ within three capture radii, and zero task reward otherwise. Each colliding defender receives one $-50$ penalty. Writing $e_i=(p_A-p_i)/\|p_A-p_i\|$, $q=\sum_i e_i$, and $e_T=p_A/\|p_A\|$, the formation term is
+\begin{equation}
+ r_i^{\rm form}=\tfrac12 e_T^\top q/\max(\|q\|,\epsilon)-\|q\|/N.
+\end{equation}
+Terms are evaluated on terminal transitions too, with the exact released boundary comparisons retained in code. The joint learner uses $\bar r=N^{-1}\sum_i r_i$. Return, defense success, and capture time are distinct quantities throughout the evaluation.
+
+\section{Learning Cooperative Control Composition}
+\subsection{Candidate-control interaction-conditioned blending}
+The first stage independently generates learned candidates from the shared ARBoids observation encoder. Its task and Boids encoders and masked mean teammate embedding feed the retained 512-unit decision backbone. Reparameterized Gaussian samples are squashed by $\tanh$ to form $\ell_i$. The second stage exchanges candidates from the same control instant. For each directed pair, a shared two-layer, 128-unit encoder receives
+\begin{equation}
+  z_{ij}=(\delta p_{ij}^{i}/60,\sin\delta\psi_{ij},\cos\delta\psi_{ij},
+  \delta v_{ij}^{i}/5,\delta r_{ij},\ell_i,b_i,\ell_j,b_j),
+ \label{eq:candidate-relations}
+\end{equation}
+where $b_i=(u_i^B-250)/750$ and superscript $i$ denotes rotation into defender $i$'s heading frame. For valid non-self neighbors $\mathcal N_i$, the candidate-interaction message and conditional blending policy are
+\begin{equation}
+ m_i=\frac{1}{|\mathcal N_i|}\sum_{j\in\mathcal N_i}f_\kappa(z_{ij}),\qquad
+ \theta_i\sim\pi_\phi^g(\cdot\mid h_i,\ell_i,b_i,m_i).
+ \label{eq:composition-policy}
+\end{equation}
+An empty neighbor mask yields a zero message. This representation conditions composition on current candidate relations; it imposes no requirement that different defenders use different coefficients. The gate mean adds a message-dependent residual to the original adapter logit; the residual initializes at zero. A learned gate log standard deviation initializes at $\log(0.1)$.
+
+With $h_i$ the backbone feature and $\epsilon_i^g\sim\mathcal N(0,1)$,
+\begin{equation}
+ z_i^g=\mu_i^g(h_i,m_i,\ell_i,b_i)+\sigma_i^g(h_i,m_i)\epsilon_i^g,
+ \quad \theta_i=\frac{\tanh z_i^g+1}{2}.
+\end{equation}
+Thus the joint density factorizes into a proposal stage and a conditional gate stage,
+\begin{equation}
+  \Pi_\phi(\ell,\boldsymbol\Theta\mid o)=\prod_i\pi_\phi^L(\ell_i\mid o_i)
+ \prod_i\pi_\phi^g(\theta_i\mid h_i,m_i,\ell_i,b_i).
+\end{equation}
+The gate log density includes both transformations:
+\begin{equation}
+ \log\pi_i^g=\log\mathcal N(z_i^g;\mu_i^g,\sigma_i^g)
+ -\log(1-\tanh^2 z_i^g)+\log2.
+\end{equation}
+We evaluate the log-Jacobian in a stable softplus form. Gate losses backpropagate through the candidate messages when the proposal branch is unfrozen. Deterministic evaluation uses the transformed Gaussian means in both stages.
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[node distance=7mm and 10mm]
+\node[box] (obs) {Public observation\\512-unit backbone};
+\node[box,right=of obs] (cand) {Stage 1\\learned candidate $\ell_i$};
+\node[box,right=of cand] (rel) {Same-cycle pair encoding\\128 units + masked mean};
+\node[box,right=of rel] (gate) {Stage 2\\blending coefficient $\theta_i$};
+\node[box,right=of gate] (cbf) {Blend + common CBF\\executed physical thrust};
+\draw[flow] (obs)--(cand);\draw[flow] (cand)--(rel);\draw[flow] (rel)--(gate);\draw[flow] (gate)--(cbf);
+\node[box,below=of rel] (peer) {Peers' motion and candidates\\own and peer Boids commands};
+\draw[flow] (peer)--(rel);
+\node[box,below=16mm of cand] (roll) {Composition intervention\\paired feedback returns};
+\node[box,right=of roll] (critic) {Joint configuration value\\TD + conditional-difference loss};
+\draw[flow] (roll)--node[above,font=\scriptsize] {$G-G'$}(critic);
+\draw[flow,dashed] (critic.north east) to[bend right=18] node[right,font=\scriptsize] {SAC gradient} (gate.south);
+\node[draw=orange,dashed,fit=(roll)(critic),inner sep=5pt,label={[font=\scriptsize,text=orange]below:Training only: simulator and critics}] {};
+\end{tikzpicture}
+\caption{The coupled policy and learning mechanism. Candidate-control relations condition local blending; paired composition interventions supervise conditional differences in the joint configuration value. Actor--critic updates connect that evaluation to the policy. Deployment uses the actor and common CBF.}
+\label{fig:architecture}
+\end{figure*}
+
+\subsection{Joint configuration value and real-transition learning}
+For policy $\Pi$, let $\mathcal Q^\Pi(s,\mathcal A,\boldsymbol\Theta)$ denote the team's soft value conditioned on the current state, candidate controls, and complete composition configuration. Holding $\mathcal A$ fixed distinguishes a change in composition from an arbitrary replacement of the candidate controls. A local value can also be defined by averaging over teammates' coefficients under their policy. Retaining the full configuration enables the critic to represent differences across those teammate choices instead of only their average. This is value-level configuration interaction, distinct from the candidate-interaction message in~\eqref{eq:composition-policy}.
+
+In the implementation, $u_i^L$ is determined by $\ell_i$ and the Boids command by $s$, so the same value is represented as $Q^\Pi(s,a)$ with $a=(\ell,\boldsymbol\Theta)$. The transition includes the common CBF filter and subsequent vessel dynamics.
+
+Each of two critics encodes a node containing a defender's centralized kinematic state, proposal, gate, and Boids candidate. A symmetric pair encoder takes the sum and absolute difference of node embeddings and pair distance. Masked means pool nodes and non-self pairs. The critic head receives both pools, the intruder state, agility, remaining task time, and $N/7$, and outputs one team value. Shared encoders and symmetric aggregation give permutation invariance; the same networks accept two through seven defenders. Centralized information is restricted to critic training.
+
+One replay record represents one complete team control cycle: observations, public kinematics, centralized state, proposals, all blending coefficients, actual filtered thrust, individual and mean rewards, next observations and states, and the terminal flag. Critic actions are $(\ell,\boldsymbol\Theta)$; filtered thrust is recorded for audit.
+
+For $a=(\ell,\boldsymbol\Theta)$, soft actor--critic~\cite{sac} uses
+\begin{align}
+ y&=\bar r+\gamma(1-d)\left[\min_{k=1,2}\bar Q_k(s',a')-\alpha\log\Pi_\phi(a'\mid o')\right],\\
+ L_{\rm TD}&=\sum_k\E[(Q_k(s,a)-\sg(y))^2],\\
+ L_\pi&=\E[\alpha\log\Pi_\phi(a\mid o)-\min_kQ_k(s,a)].
+\end{align}
+Entropy is over the joint learned candidates and gates. We use $\gamma=0.99$, target smoothing $0.005$, Adam with learning rate $10^{-4}$, and minibatches of 4096 joint transitions. The primary joint critics use the same 512/128 widths across all four joint-learning arms.
+
+\subsection{Local composition intervention and conditional return difference}
+Let $\boldsymbol\Theta^{(i)}=(\vartheta_i,\boldsymbol\Theta_{-i})$ mean replacing component $i$ by a reference coefficient $\vartheta_i$ while retaining the original indexing. The conditional value difference of this local composition change is
+\begin{equation}
+ \begin{aligned}
+ \Delta_i^\Pi(s,\mathcal A,\boldsymbol\Theta;\vartheta_i)
+ &=\mathcal Q^\Pi(s,\mathcal A,\boldsymbol\Theta)\\
+ &\quad-\mathcal Q^\Pi(s,\mathcal A,\boldsymbol\Theta^{(i)}).
+ \end{aligned}
+ \label{eq:conditional-composition-value}
+\end{equation}
+For a captured training state, sample one common first joint action and a defender index $i$. Draw $\vartheta_i$ uniformly from $\{0,0.5,1\}$. The alternate first action $a^{(i)}$ fixes $s$, $\mathcal A$, and $\boldsymbol\Theta_{-i}$ and changes only $\theta_i$. Both branches start from separate complete copies of the same simulator state and share the same external random-number stream and policy sampling noise. From the second control cycle onward, every defender recomputes both policy stages using its own branch's evolved observations under the same frozen policy. The intervention is applied once; it does not fix the subsequent coefficients. The CBF, task reward, discount, and termination rules are identical in both branches.
+
+Let $H$ be the rollout horizon and $K\leq H$ the executed number of steps. Define
+\begin{align}
+ G_H(s,a)&=\sum_{k=0}^{K-1}\gamma^k\bar r_k
+ -\alpha\sum_{k=1}^{K-1}\gamma^k\log\Pi_\phi(a_k\mid o_k)\nonumber\\
+ &\quad+\ind[\text{not terminal at }K]\gamma^K\bar V(s_K),\\
+ \bar V(s_K)&=\min_j\bar Q_j(s_K,a_K)-\alpha\log\Pi_\phi(a_K\mid o_K).
+\end{align}
+The prescribed first action has no entropy contribution, consistent with the soft $Q$ convention. The subsequent action sample used for the tail is shared by noise across branches. The actor, temperature, and tail critic are frozen for an entire label batch, and the resulting targets stop gradients. A branch reaching the 60-s deadline receives no tail value. The sampled training target is
+\begin{equation}
+ \widehat{\Delta G}_{H,i}=G_H(s,a)-G_H(s,a^{(i)}).
+ \label{eq:paired-composition-target}
+\end{equation}
+It combines rewards from two closed-loop simulator continuations with a frozen value tail when the horizon is truncated. Thus the supervision contains simulated consequences of the composition change, rather than only a difference between the current critic's own predictions.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[node distance=6mm and 2mm]
+\node[box] (s) {Fixed state $s$ and candidates $\mathcal A$\\same initial configuration $\boldsymbol\Theta$};
+\node[box,below left=of s] (a) {Original composition\\$\boldsymbol\Theta$};
+\node[box,below right=of s] (b) {Local intervention\\$\theta_i\leftarrow\vartheta_i$};
+\node[box,below=of a] (fa) {Own-state feedback\\$\bar r_0,\bar r_1,\ldots,\bar V$};
+\node[box,below=of b] (fb) {Own-state feedback\\$\bar r'_0,\bar r'_1,\ldots,\bar V'$};
+\draw[flow] (s)--(a);\draw[flow] (s)--(b);\draw[flow] (a)--(fa);\draw[flow] (b)--(fb);
+\draw[<->,dashed,teal] (fa)--node[above,font=\scriptsize] {shared noise}(fb);
+\node[below=6mm of fa.south east,anchor=north,font=\small] {$\Delta G_H=G_H(s,a)-G_H(s,a^{(i)})$};
+\end{tikzpicture}
+\caption{A local composition intervention fixes the current state, both candidate controls of every defender, and all other current coefficients. Later actions follow the same policy on each branch's own state. The label estimates a conditional soft-return difference for the composition variable.}
+\label{fig:intervention}
+\end{figure}
+
+\subsection{Composition-specific conditional value supervision}
+The complete method adds
+\begin{equation}
+ L_\Delta=\sum_{j=1}^2\E\left[\left(Q_j(s,a)-Q_j(s,a^{(i)})-
+  \sg\{\widehat{\Delta G}_{H,i}\}\right)^2\right]
+\end{equation}
+to the real-transition loss: $L_Q=L_{\rm TD}+0.1L_\Delta$. The ordinary model-return control uses
+\begin{equation}
+ \begin{aligned}
+  L_G=\tfrac12\sum_j\E\bigl[&(Q_j(s,a)-\sg G_H(s,a))^2\\
+  &+(Q_j(s,a^{(i)})-\sg G_H(s,a^{(i)}))^2\bigr].
+ \end{aligned}
+\end{equation}
+Both objectives consume both branches. Each method generates labels under its own current frozen policy. The random-seed rule, snapshot sampling, intervention distribution, pair count, and horizon are matched; trajectories need not coincide after policies diverge. This avoids assigning another policy's continuation return to a method's own conditional value. Real transitions learn task value, paired consequences distinguish the conditional effect of local composition, and the actor objective transmits that evaluation to the blending policy. This supervision targets the composition variable and its closed-loop consequences within actor--critic learning; it does not introduce a separate role or responsibility allocator.
+
+The full and ordinary-return variants use $H=100$ control cycles (20 s); the short variant uses $H=10$ (2 s). Every 1000 real transitions produces 64 pairs drawn from a rolling pool of 256 snapshots sampled every 16 transitions. A new batch replaces the previous labels. No auxiliary rollout transition enters the ordinary replay. The first implementation uses the complete training simulator for labels; there is no approximate dynamics backend in this learning path.
+
+\subsection{Training stages, recovery, and deployment}
+Each seed first trains ARBoids with three defenders for one million real transitions. Every main arm starts from this same seed-specific actor. During the next 250000 transitions, the proposal branch remains frozen, agility is uniform over $2.25\pm0.5$, and temperature is fixed at $0.2$. Gates and critics update. Joint learning then runs one million transitions, with proposal parameters unfrozen and automatic temperature targeting $-3N$ for the joint policy. The four agility centers are $2.0,2.25,2.5,2.75$, each with half-width $0.5$ for 250000 transitions. ARBoids continuation retains its original individual critic, gate exploration, and entropy implementation, and is identified separately from the matched joint-SAC controls.
+
+Resumable checkpoints include model parameters, optimizers, temperature, phase, real replay, snapshot pool, auxiliary labels, environment, counters, and random states. Redundant consecutive next states are stored by exact references with boundary exceptions; reconstruction preserves every float. A separate deployment artifact contains the actor and configuration only. VRX aligns vessel feedback to one control timestamp, generates candidates and gates, and applies the same CBF. The numerical left/right action ordering is mapped to Gazebo starboard/port thrust so yaw signs agree.
+
+\section{Experimental Design and Results}
+\subsection{Learning mechanism: fixed endpoints and matched comparisons}
+Training seeds are $42,101,202,303,404$. Existing pretraining is reused only after protocol, complete configuration, seed, one-million-step endpoint, exit status, and provenance are verified. Five primary arms are fixed: ARBoids+CBF continuation, same-information joint SAC without auxiliary supervision, same-information ordinary model-return supervision, short conditional-value supervision, and complete long conditional-value supervision. Every main arm receives the common pretraining plus $1.25$ million additional transitions. Main evaluation uses the fixed training endpoint, rather than a selected best validation checkpoint.
+
+The complete method (Full) and Same-info share candidate information, the interaction encoder, blending-policy structure, joint critics, and the CBF. Same-info removes the conditional-return auxiliary objective and its rollout generation while retaining real-transition SAC. Their contrast tests the additional learning value of composition-specific supervision, with its simulation cost reported separately. The Model-return control matches the two-branch simulation protocol and budget but fits the absolute returns using $L_G$, isolating the difference objective from additional model exposure. Short uses the same difference objective with a shorter continuation. Same-info and the version without conditional-return supervision are one control, not two separately trained methods.
+
+The Same-info versus ARBoids+CBF contrast evaluates the overall extension to interaction-conditioned joint learning. Candidate messages, relation encoding, critic structure, and learning details change together, so this contrast cannot assign its entire effect to the candidate encoder. A supplementary No-candidate-interaction control is specified to isolate the actor's access to teammates' candidates: mask only $\ell_j$ and $b_j$ in~\eqref{eq:candidate-relations}, while retaining own candidates, relative kinematics, encoder and policy widths, joint critics, conditional-return supervision, safety filtering, initialization, and training budget. This additional training control remains to be implemented and is separate from the fixed five-arm study. No ordering of the methods' eventual performance is assumed.
+
+Learning curves evaluate 100 independent validation episodes every 5000 real transitions. Numerical tests use agility $1.5,2.0,2.5,3.0$ with $N=3$, and $N=2,\ldots,7$ at agility $2.25$. Each of these ten conditions uses 200 paired scenarios per training seed. Boids, the unfiltered pretrained ARBoids actor, and the existing adaptive long-horizon selector are supplementary references evaluated afresh under the same 60-s task protocol. The unfiltered and long-selector references use each seed's common pretraining weights, without additional learning; Boids has no learned weights. The long-selector reference executes its existing serial candidate loop with compiled nominal dynamics, and its reported latency refers to that implementation. The earlier five-process timing result remains associated with the original 80-s study.
+
+Execution uses four validation review points: the seed-42 gate endpoint, the seed-42 joint endpoint, the replicated gate endpoints, and the replicated joint endpoints. The pilot compares all five arms before spending the remaining replication budget. Each seed and stage receives the same 100 validation scenarios and, for joint critics, 32 separate validation intervention states with two paired full-episode continuations. These diagnostics include the pretrained actor with CBF as an initialization reference. We retain both stage endpoints, verify the frozen proposal parameters, and record a reasoned continuation or hold decision tied to the evidence hash. A single-seed result is a feasibility diagnostic; it does not establish robustness across training seeds. Validation intervals are descriptive and do not replace the independent final tests. All arms retain the prescribed scientific settings and fixed training endpoints. Diagnostic simulator steps and wall time are recorded separately from training and auxiliary supervision. The large numerical, VRX, and alternating-opponent matrix is released after the replicated joint review.
+
+\begin{table}[t]
+\caption{Fixed training and auxiliary settings}
+\centering\small
+\begin{tabular}{@{}lr@{}}\toprule
+Setting & Value\\\midrule
+Common pretraining per seed & $10^6$ steps\\
+Frozen-proposal stage per arm/seed & $2.5\times10^5$ steps\\
+Joint stage per arm/seed & $10^6$ steps\\
+Backbone / relation width & 512 / 128\\
+Batch size / learning rate & 4096 / $10^{-4}$\\
+Discount / target smoothing & 0.99 / 0.005\\
+Auxiliary weight / pair count & 0.1 / 64\\
+Label refresh interval & 1000 real steps\\
+Long / short horizon & 20 s / 2 s\\\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Configuration mechanism: conditional value, matching, and interaction}
+Mechanism tests use an independent set of 64 states per seed generated by the common pretrained actor. A single sampled root action is held fixed for each intervention test, and four paired full-environment continuations estimate its complete soft-return difference up to task termination. We report
+\begin{equation}
+ \begin{aligned}
+  \delta q_m&=\min_jQ_j(s_m,a_m)-\min_jQ_j(s_m,a_m^{(i)}),\\
+  E_\Delta&=\frac{1}{M}\sum_{m=1}^M\left|\delta q_m-\widehat{\Delta G}_m\right|.
+ \end{aligned}
+\end{equation}
+Its interpretation is paired with actual capture and efficiency outcomes. Evaluation states and future-noise seeds are disjoint from training labels and validation scenarios.
+
+Two supplementary diagnostics are specified on this independent state pool to distinguish configuration matching from conditional interaction. These diagnostics remain to be implemented; they do not alter the training objective or the five primary arms. At each state, freeze the evaluated policy and form its candidate controls and original configuration $\boldsymbol\Theta^C$ once. Hold the root candidates fixed, share disturbance and policy-noise streams across alternatives, and use four complete continuations per state. From the second control cycle onward, each alternative resumes that policy's own-state feedback. Coefficient replacements, vessel pairs, and permutations are chosen without reference to the resulting outcomes.
+
+\emph{Configuration matching.} Compare the original configuration with a uniform mean and a permutation of its coefficients:
+\begin{equation}
+ \boldsymbol\Theta^C,\qquad
+ \bar\theta\mathbf 1,\qquad P\boldsymbol\Theta^C,
+ \quad \bar\theta=\frac{1}{N}\sum_i\theta_i^C.
+ \label{eq:configuration-controls}
+\end{equation}
+Only the coefficient values are reassigned by $P$; vessel states, candidate controls, and identities remain fixed. The mean comparison tests the value of individualized composition. The permutation comparison preserves coefficient diversity and tests the value of matching coefficients to particular vessels and candidates. A loss under permutation can also arise from purely additive individual values, so it does not by itself establish non-additive interaction. This operation differs from relabeling all vessel data together, under which the critic is permutation invariant.
+
+\emph{Conditional configuration interaction.} For a defender pair $(i,j)$, use the original configuration and one replacement for each coefficient to construct four first-step configurations. With $s$, $\mathcal A$, and $\boldsymbol\Theta_{-\{i,j\}}$ suppressed, define the paired second-order finite difference
+\begin{equation}
+ \begin{aligned}
+ \widehat{\mathcal I}_{ij}
+ ={}&\widehat G(\theta_i,\theta_j)-\widehat G(\vartheta_i,\theta_j)\\
+ &-\widehat G(\theta_i,\vartheta_j)+\widehat G(\vartheta_i,\vartheta_j).
+ \end{aligned}
+ \label{eq:configuration-interaction}
+\end{equation}
+Here $\widehat G$ estimates the complete soft return under the common frozen continuation policy, using shared noise across all four branches and no truncated value tail. The contrast asks whether defender $i$'s composition-change value depends on defender $j$'s composition. For an additive conditional value $q_i(\theta_i)+q_j(\theta_j)+C$, its population counterpart is zero. Consistent differences relative to paired sampling uncertainty provide evidence of non-additive conditional interaction under the evaluated dynamics, safety filter, and feedback policy. They do not alone establish that the learned actor exploits that interaction; training controls and executed behavior address that question.
+
+\subsection{Behavior and task: composition to executed maneuvers}
+The behavioral analysis follows the complete control chain,
+\begin{equation}
+ (\mathcal A,\boldsymbol\Theta)\longrightarrow\mathbf u^{\rm nom}
+ \longrightarrow\mathbf u^{\rm exec}\longrightarrow\text{team trajectory}.
+ \label{eq:behavior-chain}
+\end{equation}
+Jointly showing candidate disagreement, blending coefficients, nominal commands, filtered thrust, and trajectories makes the mechanism in~\eqref{eq:composition-sensitivity} observable. Traces use common, prespecified scenario identities and are interpreted alongside all task outcomes. Functional descriptions such as pursuit, lateral interception, or region maintenance follow the observed geometry and motion; coefficient thresholds do not assign these roles. The supplementary configuration diagnostics compare their induced trajectories and task outcomes as well as return differences. Their complete command-chain analysis remains part of the pending mechanism evaluation.
+
+\begin{table*}[t]
+\caption{Evidence groups and the claims they address}
+\label{tab:evidence}\centering\small
+\begin{tabular}{@{}p{.16\textwidth}p{.39\textwidth}p{.39\textwidth}@{}}\toprule
+Evidence group & Comparisons or observations & Supported question\\\midrule
+Learning mechanism & Full, Same-info, Model-return, and Short; supplementary No-candidate-interaction & Does composition-specific conditional supervision improve learning beyond matched information and model exposure? Does peer-candidate input contribute under matched joint learning?\\
+Configuration mechanism & Conditional-value calibration; original, mean, and permuted configurations; four-branch interventions & Are coefficients usefully matched to vessels and candidates? Does one local composition change have a different value under another vessel's composition?\\
+Behavior and task & Candidates, coefficients, nominal and executed thrust, trajectories, and task outcomes & Do the learned composition choices translate into useful joint defense maneuvers?\\\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{VRX and learned opponents}
+VRX~\cite{vrx} compares the complete method, ARBoids+CBF, and same-information SAC in open water and dock settings with three and six defenders. Each of four conditions has 100 episodes per method, with 20 contributed by each training seed. A valid collision or breakthrough is a task failure and remains in the results. A missing simulator bridge, invalid trajectory, or simulator error is an execution failure and blocks completion until resolved.
+
+These three methods also enter five alternating defender/attacker phases of 500000 transitions each. Defender phases are 1, 3, and 5; attacker phases are 2 and 4. Each opponent switch clears incompatible replay and rollout caches. Defender policies are evaluated against the APF intruder and the same frozen attackers obtained from the ARBoids+CBF branch for that seed. Learning during a defender phase uses a fixed opposing policy.
+
+\subsection{Metrics, uncertainty, and computation}
+We report defense success, capture, physical collision, actual breach, and timeout rates. Capture time equals the capture time for captured runs and 60 s otherwise. This capped metric includes failures in its denominator. Confidence intervals use 10000 hierarchical bootstrap replicates: sample training seeds, then paired scenarios within each selected seed. Pairwise differences always match scenario and seed identities. For configuration contrasts, continuation repetitions are averaged within each state before resampling states within seeds. Curves aggregate seed means and do not treat validation episodes as independent training runs.
+
+Common pretraining, additional real interactions, auxiliary simulation steps, and wall time are recorded separately. Inference latency is measured only after concurrent experiment work ends, including the observation adapter, actor, and applicable safety filter. Network transport latency is outside this local measurement. Actual VRX control durations and deadline misses are also retained. Trajectory and gate figures use recorded executions of the corresponding policy; schematic figures are explicitly labeled.
+
+%% BEGIN GENERATED RESULTS
+\subsection{Execution status}
+The core learning implementation and bounded integration checks are complete; the fixed training and evaluation matrix has not yet produced its final results. The supplementary actor ablation, configuration controls, four-branch diagnostics, and complete command-chain analysis above are specified as pending work. Figures 4--7 and the primary numerical, calibration, VRX, and compute tables are generated from completed run artifacts. Integration checks verify execution and do not substitute for performance evidence.
+%% END GENERATED RESULTS
+
+\subsection{Earlier evidence under its original protocol}
+\label{sec:earlier}
+Earlier online-selection experiments motivate both the research object and the learning signal. Under the same instantaneous risk objective, independent and joint coefficient selection achieved 403/512 and 433/512 successes, respectively, with collisions decreasing from 55 to 29. The comparison shows that organizing the same local control sources differently can change team outcomes, motivating cooperative control composition.
+
+Table~\ref{tab:legacy} retains the preceding six-defender, 1024-scenario results under the 80-s source protocol. ARBoids+CBF, the matched short selector, and the adaptive long selector all recorded zero collisions, while their capped capture times were 21.095, 20.681, and 17.087 s. The long selector reduced capped time by 17.38\% relative to the matched short selector. These results motivate evaluating sustained task consequences in addition to immediate safety. The long selector chose online among five whole-team feedback candidates using existing policies. The new experiments ask whether the proposed composition-specific learning mechanism can acquire useful choices within the policy; its results are reported separately under the 60-s protocol.
+\begin{table}[t]
+\caption{Earlier online-selection evidence motivating composition and long-term task evaluation; original 80-s protocol}
+\label{tab:legacy}\centering\scriptsize
+\begin{tabular}{@{}lrrrr@{}}\toprule
+Original method & Success & Capture & Collision & $T_{80}$ (s)\\\midrule
+Unfiltered ARBoids & 146 & 146 & 878 & 70.248\\
+ARBoids+CBF & 1000 & 998 & 0 & 21.095\\
+Matched short selector & 993 & 992 & 0 & 20.681\\
+Strong fixed 2-s selector & 1008 & 1007 & 0 & 19.423\\
+Adaptive long selector & 1024 & 1022 & 0 & 17.087\\
+Guard-oriented selector & 1020 & 954 & 0 & 27.573\\
+Fixed 1-s long selector & 1024 & 1022 & 0 & 16.907\\\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion}
+The mechanism links two learning decisions: how to compose the currently available control candidates and how to evaluate a local composition change under teammates' choices. Candidate-interaction messages support the first decision; paired closed-loop consequences supervise the second. The Same-info, Model-return, and Short controls distinguish conditional supervision from policy expression, extra model exposure, and continuation horizon. The supplementary actor ablation isolates peer-candidate information within the otherwise matched learner.
+
+Configuration matching, conditional interaction, and learning benefit have different evidential roles. Coefficient permutation tests matching to vessels and candidates; four-branch finite differences examine non-additive conditional value; training controls test whether the proposed mechanism learns useful composition. The executed command chain then connects those decisions to actual maneuvers and task performance. Because the value targets include entropy and terminal rewards, their differences are not success probabilities or saved seconds. Calibration is assessed together with policy behavior and capture efficiency.
+
+The environment state used to construct labels is privileged training information. Deployment requires present observations and synchronized candidate messages, with no access to the simulator snapshots. A common CBF controls the comparison's safety layer, while relaxed feasibility and dynamics mismatch remain observable through collisions and task outcomes. VRX evaluates transfer within simulation. Claims about real vessel operations require separate physical experiments.
+
+\section{Conclusion}
+\our\ addresses cooperative control composition by coupling candidate-control interaction-conditioned blending with composition-specific conditional value learning. A local intervention holds the current candidates and teammates' coefficients fixed, and its paired closed-loop return difference teaches the critic to distinguish the team consequences of that composition choice. Actor--critic updates connect this evaluation to the learned blending policy, while deployment uses the actor and common safety filter. The evidence is organized around learning benefits, configuration matching and conditional interaction, and the resulting executed maneuvers and task outcomes. Final empirical conclusions await the corresponding completed evaluations.
+
+% Existing reference metadata checked against publisher-deposited Crossref records
+% or the official JMLR archive. Wu et al.: Cardiff ORCA record 188161, 2026-10-07.
+\begin{thebibliography}{99}
+\bibitem{qiao} Y. Qiao et al., ``Survey of deep learning for autonomous surface vehicles in marine environments,'' \emph{IEEE Trans. Intell. Transp. Syst.}, vol. 24, no. 4, pp. 3678--3701, 2023, doi: \href{https://doi.org/10.1109/TITS.2023.3235911}{10.1109/TITS.2023.3235911}.
+\bibitem{fu} H. Fu and H. H.-T. Liu, ``Guarding a territory against an intelligent intruder: Strategy design and experimental verification,'' \emph{IEEE/ASME Trans. Mechatron.}, vol. 25, no. 4, pp. 1765--1772, 2020, doi: 10.1109/TMECH.2020.2996901.
+\bibitem{chen} Y. Chen et al., ``A distributed pipeline for collaborative pursuit in the target guarding problem,'' \emph{IEEE Robot. Autom. Lett.}, vol. 9, no. 3, pp. 2064--2071, 2024, doi: 10.1109/LRA.2024.3349977.
+\bibitem{yan} R. Yan et al., ``Multiplayer homicidal chauffeur reach-avoid games: A pursuit enclosure function approach,'' \emph{Automatica}, vol. 167, Art. no. 111770, 2024, doi: 10.1016/j.automatica.2024.111770.
+\bibitem{fang} X. Fang, C. Wang, L. Xie, and J. Chen, ``Cooperative pursuit with multi-pursuer and one faster free-moving evader,'' \emph{IEEE Trans. Cybern.}, vol. 52, no. 3, pp. 1405--1414, 2022, doi: 10.1109/TCYB.2019.2958548.
+\bibitem{guo} X. Guo, R. Cui, and W. Yan, ``Pursuit-evasion games of marine surface vessels using neural network-based control,'' \emph{IEEE Trans. Syst., Man, Cybern., Syst.}, vol. 55, no. 1, pp. 18--27, 2025, doi: 10.1109/TSMC.2023.3347044.
+\bibitem{zhou} M. Zhou, Z. Wang, J. Wang, and Z. Cao, ``Multi-robot collaborative hunting in cluttered environments with obstacle-avoiding Voronoi cells,'' \emph{IEEE/CAA J. Autom. Sinica}, vol. 11, no. 7, pp. 1643--1655, 2024, doi: 10.1109/JAS.2023.124041.
+\bibitem{souza} C. de Souza et al., ``Decentralized multi-agent pursuit using deep reinforcement learning,'' \emph{IEEE Robot. Autom. Lett.}, vol. 6, no. 3, pp. 4552--4559, 2021, doi: 10.1109/LRA.2021.3068952.
+\bibitem{zhang} R. Zhang et al., ``Game of drones: Multi-UAV pursuit-evasion game with online motion planning by deep reinforcement learning,'' \emph{IEEE Trans. Neural Netw. Learn. Syst.}, vol. 34, no. 10, pp. 7900--7909, 2023, doi: 10.1109/TNNLS.2022.3146976.
+\bibitem{xue} S. Xue et al., ``Multi-agent self-attention reinforcement learning for multi-USV hunting target,'' \emph{Neural Netw.}, vol. 189, Art. no. 107574, 2025, doi: 10.1016/j.neunet.2025.107574.
+\bibitem{lin} X. Lin, P. Szenher, Y. Huang, and B. Englot, ``Distributional reinforcement learning based integrated decision making and control for autonomous surface vehicles,'' \emph{IEEE Robot. Autom. Lett.}, vol. 10, no. 2, pp. 1194--1201, 2025, doi: 10.1109/LRA.2024.3518839.
+\bibitem{huttenrauch} M. H\"uttenrauch, A. \v{S}o\v{s}i\'c, and G. Neumann, ``Deep reinforcement learning for swarm systems,'' \emph{J. Mach. Learn. Res.}, vol. 20, no. 54, pp. 1--31, 2019. \url{https://jmlr.org/papers/v20/18-476.html}
+\bibitem{rashid} T. Rashid et al., ``Monotonic value function factorisation for deep multi-agent reinforcement learning,'' \emph{J. Mach. Learn. Res.}, vol. 21, no. 178, pp. 1--51, 2020. \url{https://jmlr.org/papers/v21/20-081.html}
+\bibitem{ma} Z. Ma, Y. Luo, and J. Pan, ``Learning selective communication for multi-agent path finding,'' \emph{IEEE Robot. Autom. Lett.}, vol. 7, no. 2, pp. 1455--1462, 2022, doi: 10.1109/LRA.2021.3139145.
+\bibitem{li} Q. Li, W. Lin, Z. Liu, and A. Prorok, ``Message-aware graph attention networks for large-scale multi-robot path planning,'' \emph{IEEE Robot. Autom. Lett.}, vol. 6, no. 3, pp. 5533--5540, 2021, doi: 10.1109/LRA.2021.3077863.
+\bibitem{rana} K. Rana et al., ``Bayesian controller fusion: Leveraging control priors in deep reinforcement learning for robotics,'' \emph{Int. J. Robot. Res.}, vol. 42, no. 3, pp. 123--146, 2023, doi: 10.1177/02783649231167210.
+\bibitem{jeon} S. H. Jeon, H. J. Lee, S. Hong, and S. Kim, ``Residual MPC: Blending reinforcement learning with GPU-parallelized model predictive control,'' \emph{IEEE Trans. Robot.}, vol. 42, pp. 3469--3488, 2026, doi: \href{https://doi.org/10.1109/TRO.2026.3721669}{10.1109/TRO.2026.3721669}.
+\bibitem{tao} J. Tao, T. Shen, D. Zhao, and F. Zhang, ``ARBoids: Adaptive residual reinforcement learning with Boids model for cooperative multi-USV target defense,'' \emph{IEEE Robot. Autom. Lett.}, vol. 11, no. 3, pp. 3637--3644, 2026, doi: 10.1109/LRA.2026.3662620.
+\bibitem{wu} Y. Wu, S. Tian, W. Tao, Z. Ji, and C. Wei, ``Multi-agent policy sharing and safety-aware action correction for multi-USV cooperative encirclement,'' \emph{IEEE Internet Things J.}, early access, 2026, doi: \href{https://doi.org/10.1109/JIOT.2026.3709862}{10.1109/JIOT.2026.3709862}.
+\bibitem{bhattacharya} S. Bhattacharya et al., ``Multiagent reinforcement learning: Rollout and policy iteration for POMDP with application to multirobot problems,'' \emph{IEEE Trans. Robot.}, vol. 40, pp. 2003--2023, 2024, doi: 10.1109/TRO.2023.3347128.
+\bibitem{brunke} L. Brunke et al., ``Safe learning in robotics: From learning-based control to safe reinforcement learning,'' \emph{Annu. Rev. Control Robot. Auton. Syst.}, vol. 5, no. 1, pp. 411--444, 2022, doi: 10.1146/annurev-control-042920-020211.
+\bibitem{yu} J. Yu et al., ``A cooperative hunting method for multi-USVs based on trajectory prediction by OR-LSTM,'' \emph{IEEE Trans. Veh. Technol.}, vol. 73, no. 12, pp. 18087--18101, 2024, doi: 10.1109/TVT.2024.3432739.
+\bibitem{sac} T. Haarnoja, A. Zhou, P. Abbeel, and S. Levine, ``Soft actor-critic: Off-policy maximum entropy deep reinforcement learning with a stochastic actor,'' in \emph{Proc. ICML}, PMLR 80, pp. 1861--1870, 2018. \url{https://proceedings.mlr.press/v80/haarnoja18b.html}
+\bibitem{coma} J. Foerster et al., ``Counterfactual multi-agent policy gradients,'' in \emph{Proc. AAAI}, 2018. \url{https://arxiv.org/abs/1705.08926}
+\bibitem{mve} V. Feinberg et al., ``Model-based value estimation for efficient model-free reinforcement learning,'' 2018. \url{https://arxiv.org/abs/1803.00101}
+\bibitem{vrx} Open Source Robotics Foundation, ``Virtual RobotX (VRX) simulation environment,'' software repository. \url{https://github.com/osrf/vrx}
+\end{thebibliography}
+\end{document}

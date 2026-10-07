@@ -77,16 +77,21 @@ def episode(policy, seed, defenders=3, agility=2.25, *, safety=True, trajectory=
         return outcome_row(env, done), history
 
 
-def evaluate(policy, episodes, seed_base, defenders=3, agility=2.25, safety=True):
-    rows = [episode(policy, seed_base + i, defenders, agility, safety=safety)[0] for i in range(episodes)]
+def evaluate(policy, episodes, seed_base, defenders=3, agility=2.25, safety=True, attacker=None):
+    rows = [episode(policy, seed_base + i, defenders, agility, safety=safety, attacker=attacker)[0] for i in range(episodes)]
     return {key: float(np.mean([r[key] for r in rows]))
             for key in ('success', 'capture', 'collision', 'breach', 'timeout', 'capture_time')}
 
 
-def export_policy(agent, output, step):
-    atomic_torch(Path(output) / 'policy.pth', dict(format='interaction-sac-deployment-v1',
+def export_policy(agent, output, step, *, endpoint=False):
+    artifact = dict(format='interaction-sac-deployment-v1',
         config=agent.config, actor={k: v.detach().cpu() for k, v in agent.actor.state_dict().items()},
-        step=int(step), stage=agent.stage))
+        step=int(step), stage=agent.stage)
+    if endpoint and not agent.legacy:
+        artifact.update(critic={k: v.detach().cpu() for k, v in agent.critic.state_dict().items()},
+                        alpha=float(agent.alpha), gamma=agent.gamma)
+    name = agent.stage + '-endpoint.pth' if endpoint else 'policy.pth'
+    atomic_torch(Path(output) / name, artifact)
 
 
 def validate(config):
@@ -105,7 +110,8 @@ def validate(config):
         raise ValueError('Training study arms must share the CBF filter.')
 
 
-def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None, attacker=None):
+def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None, attacker=None,
+                 stop_after_stage=None):
     config = copy.deepcopy(config)
     validate(config)
     torch.set_num_threads(1)
@@ -144,6 +150,16 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
             packet = public_packet(env)
         saved['random'].restore()
         del saved
+        metrics_path = output / 'metrics.csv'
+        if metrics_path.exists():
+            with metrics_path.open(encoding='utf-8') as stream:
+                reader = csv.DictReader(stream)
+                fields = reader.fieldnames
+                rows = [row for row in reader if int(row['step']) <= step]
+            with metrics_path.open('w', newline='', encoding='utf-8') as stream:
+                writer = csv.DictWriter(stream, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(rows)
     elif t.get('initial_state'):
         initial = torch.load(t['initial_state'], map_location='cpu', weights_only=False)
         if initial['config']['interaction']['arm'] != interaction['arm']:
@@ -163,6 +179,14 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
     started = time.perf_counter()
     total = t['gate_steps'] + t['joint_steps']
     stop_at = total if max_steps is None else min(total, step + int(max_steps))
+    if stop_after_stage not in (None, 'gate', 'joint'):
+        raise ValueError('Unknown absolute training-stage boundary.')
+    if stop_after_stage == 'gate':
+        if not t['gate_steps'] or step > t['gate_steps']:
+            raise ValueError('The gate endpoint cannot be reconstructed after joint learning.')
+        stop_at = min(stop_at, t['gate_steps'])
+    if step in (t['gate_steps'], total) and step > 0 and not (output / (agent.stage + '-endpoint.pth')).exists():
+        export_policy(agent, output, step, endpoint=True)
     sampler = InterventionSampler(interaction['workers'])
     metrics_fields = ['step', 'stage', 'elapsed', 'simulated_steps', 'success', 'capture', 'collision',
                       'breach', 'timeout', 'capture_time']
@@ -174,6 +198,8 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
             episodes=episodes, elapsed=elapsed, auxiliary=auxiliary, done=bool(done),
             snapshot=None if env is None else compact_snapshot(env), random=RandomState.capture()))
         export_policy(agent, output, step)
+        if step in (t['gate_steps'], total):
+            export_policy(agent, output, step, endpoint=True)
         atomic_json(output / 'progress.json', dict(step=step, total=total, stage=agent.stage,
                     simulated_steps=simulated, elapsed=elapsed, complete=step == total))
 
@@ -187,7 +213,9 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
                 env = TADEnv(config['agent']['defender_num'], LearningSide='Att' if attacker else 'Def',
                              **config['environment'])
                 agility = t.get('fixed_agility', 2.25 if stage == 'gate' else 2. + .25 * min(3, (step - t['gate_steps']) // 250000))
-                obs, _ = env.reset(agility, noisy_agility=True)
+                with preserved_random_state():
+                    np.random.seed(100000000 + int(t['seed']) * 10000 + episodes)
+                    obs, _ = env.reset(agility, noisy_agility=True)
                 packet, done = public_packet(env, obs), False
                 episodes += 1
             if step % interaction['snapshot_interval'] == 0 and interaction['auxiliary'] != 'none':
@@ -200,15 +228,15 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
             following, reward, outcome, thrust, _, _ = execute(env, packet, action, attacker_action=attacker_action)
             replay.store(packet, action, thrust, reward, following, bool(outcome))
             packet, done, step = following, bool(outcome), step + 1
+            if interaction['auxiliary'] != 'none' and step % interaction['intervention_interval'] == 0:
+                auxiliary, used = sampler.generate(agent, pool, step=step,
+                    attacker=None if attacker is None else attacker.state_dict())
+                simulated += used
             if step >= t['warm_steps']:
-                if interaction['auxiliary'] != 'none' and step % interaction['intervention_interval'] == 0:
-                    auxiliary, used = sampler.generate(agent, pool,
-                        attacker=None if attacker is None else attacker.state_dict())
-                    simulated += used
                 losses = agent.learn(replay, auxiliary)
-            if step % t['eval_interval'] == 0 or step == total:
+            if step % t['eval_interval'] == 0 or step in (t['gate_steps'], total):
                 scores = evaluate(agent, t['eval_episodes'], 310000000 + int(t['seed']) * 10000,
-                                  config['agent']['defender_num'])
+                                  config['agent']['defender_num'], attacker=attacker)
                 row = dict(step=step, stage=stage, elapsed=prior_elapsed + time.perf_counter()-started,
                            simulated_steps=simulated, **scores)
                 exists = (output / 'metrics.csv').exists()
@@ -223,7 +251,7 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
                               elapsed=prior_elapsed + time.perf_counter()-started, complete=False, **losses)
                 atomic_json(output / 'progress.json', status)
                 print('[IA-TRAIN] ' + json.dumps(status), flush=True)
-            if step % t['checkpoint_interval'] == 0 or step == stop_at:
+            if step % t['checkpoint_interval'] == 0 or step in (stop_at, t['gate_steps']):
                 checkpoint()
         return dict(output=str(output), step=step, complete=step == total)
     except KeyboardInterrupt:
@@ -242,6 +270,7 @@ def main():
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--pretrain', type=Path)
     parser.add_argument('--max-steps', type=int)
+    parser.add_argument('--stop-after-stage', choices=['gate', 'joint'])
     parser.add_argument('--smoke', action='store_true')
     args = parser.parse_args()
     config = arm_config(yaml.safe_load(args.config.read_text(encoding='utf-8')), args.arm)
@@ -253,7 +282,8 @@ def main():
         config['rl']['batch_size'] = 16
         config['interaction'].update(workers=0, pairs_per_batch=2, intervention_interval=10,
                                      horizon_steps=2, snapshot_interval=2)
-    print(json.dumps(run_training(config, device=args.device, output=args.output, max_steps=args.max_steps)), flush=True)
+    print(json.dumps(run_training(config, device=args.device, output=args.output, max_steps=args.max_steps,
+                                  stop_after_stage=args.stop_after_stage)), flush=True)
 
 
 if __name__ == '__main__':

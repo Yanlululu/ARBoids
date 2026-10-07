@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="209.7pt" height="153.859572pt" viewBox="0 0 209.7 153.859572" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-10-07T15:43:30.002776</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.0, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 153.859572 
+L 209.7 153.859572 
+L 209.7 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 7.2 134.658947 
+L 202.5 134.658947 
+L 202.5 7.2 
+L 7.2 7.2 
+z
+" style="fill: #ffffff"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 64.762105 101.766316 
+C 72.940131 101.766316 80.784308 98.517152 86.567045 92.734414 
+C 92.349783 86.951676 95.598947 79.1075 95.598947 70.929474 
+C 95.598947 62.751448 92.349783 54.907271 86.567045 49.124534 
+C 80.784308 43.341796 72.940131 40.092632 64.762105 40.092632 
+C 56.584079 40.092632 48.739903 43.341796 42.957165 49.124534 
+C 37.174427 54.907271 33.925263 62.751448 33.925263 70.929474 
+C 33.925263 79.1075 37.174427 86.951676 42.957165 92.734414 
+C 48.739903 98.517152 56.584079 101.766316 64.762105 101.766316 
+z
+" clip-path="url(#p679b55281d)" style="fill: #204a68; opacity: 0.15; stroke: #204a68; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 118.212632 33.925263 
+L 107.933684 30.841579 
+L 107.933684 37.008947 
+z
+" clip-path="url(#p679b55281d)" style="fill: #00857d; stroke: #00857d; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 134.658947 70.929474 
+L 124.38 67.845789 
+L 124.38 74.013158 
+z
+" clip-path="url(#p679b55281d)" style="fill: #00857d; stroke: #00857d; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 114.101053 107.933684 
+L 103.822105 104.85 
+L 103.822105 111.017368 
+z
+" clip-path="url(#p679b55281d)" style="fill: #00857d; stroke: #00857d; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 171.663158 62.706316 
+L 183.997895 58.594737 
+L 183.997895 66.817895 
+z
+" clip-path="url(#p679b55281d)" style="fill: #d27a32; stroke: #d27a32; stroke-linejoin: miter"/>
+   </g>
+   <g id="matplotlib.axis_1">
+    <g id="text_1">
+     <text style="font-size: 8px; font-family: 'DejaVu Sans'; text-anchor: middle" x="104.85" y="144.737697" transform="rotate(-0 104.85 144.737697)">Schematic geometry (not an experimental trajectory)</text>
+    </g>
+   </g>
+   <g id="matplotlib.axis_2"/>
+   <g id="line2d_1">
+    <path d="M 112.045263 33.925263 
+L 128.491579 70.929474 
+L 107.933684 107.933684 
+L 112.045263 33.925263 
+" clip-path="url(#p679b55281d)" style="fill: none; stroke-dasharray: 3.7,1.6; stroke-dashoffset: 0; stroke: #00857d"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 7.2 134.658947 
+L 7.2 7.2 
+" style="fill: none; stroke: #000000; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 7.2 134.658947 
+L 202.5 134.658947 
+" style="fill: none; stroke: #000000; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="text_2">
+    <text style="font-size: 8px; font-family: 'DejaVu Sans'" transform="translate(45.61898 68.206817)">Protected</text>
+    <text style="font-size: 8px; font-family: 'DejaVu Sans'" transform="translate(52.11148 77.809005)">region</text>
+   </g>
+   <g id="text_3">
+    <text style="font-size: 8px; font-family: 'DejaVu Sans'; text-anchor: middle" x="112.045263" y="25.702105" transform="rotate(-0 112.045263 25.702105)">D1</text>
+   </g>
+   <g id="text_4">
+    <text style="font-size: 8px; font-family: 'DejaVu Sans'; text-anchor: middle" x="128.491579" y="62.706316" transform="rotate(-0 128.491579 62.706316)">D2</text>
+   </g>
+   <g id="text_5">
+    <text style="font-size: 8px; font-family: 'DejaVu Sans'; text-anchor: middle" x="107.933684" y="99.710526" transform="rotate(-0 107.933684 99.710526)">D3</text>
+   </g>
+   <g id="patch_10">
+    <path d="M 167.66802 62.221479 
+Q 153.160558 58.594613 139.737748 55.238911 
+" style="fill: none; stroke: #d27a32; stroke-linecap: round"/>
+    <path d="M 142.454147 57.567253 
+L 139.737748 55.238911 
+L 143.230261 54.462797 
+" style="fill: none; stroke: #d27a32; stroke-linecap: round"/>
+   </g>
+   <g id="text_6">
+    <text style="font-size: 8px; font-family: 'DejaVu Sans'; text-anchor: middle" x="173.718947" y="46.26" transform="rotate(-0 173.718947 46.26)">Intruder</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p679b55281d">
+   <rect x="7.2" y="7.2" width="195.3" height="127.458947"/>
+  </clipPath>
+ </defs>
+</svg>

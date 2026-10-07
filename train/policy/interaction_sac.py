@@ -13,8 +13,6 @@ from torch.nn import functional as F
 from torch.distributions import Normal
 
 from policy.networks import ActorAdap
-from policy.SAC import SAC
-from utils.config import _dict_to_namespace
 
 
 PACKET_KEYS = ('obs', 'motion', 'central')
@@ -184,8 +182,19 @@ class JointReplay:
         return {k: torch.as_tensor(v[index], device=device) for k, v in self.arrays.items()}
 
     def state_dict(self):
+        # Adjacent transitions share the same physical state. Store next-state
+        # exceptions at episode/ring boundaries, without reducing precision.
+        arrays, exceptions = {}, {}
+        for key, value in self.arrays.items():
+            if not key.startswith('next_'):
+                arrays[key] = value[:self.size].copy()
+                continue
+            expected = np.roll(self.arrays[key[5:]][:self.size], -1, axis=0)
+            different = np.any(value[:self.size] != expected, axis=tuple(range(1, value.ndim)))
+            index = np.flatnonzero(different)
+            exceptions[key] = dict(index=index, values=value[index].copy())
         return dict(capacity=self.capacity, count=self.count, size=self.size,
-                    arrays={k: v[:self.size].copy() for k, v in self.arrays.items()})
+                    arrays=arrays, next_exceptions=exceptions)
 
     def load_state_dict(self, state):
         self.capacity, self.count, self.size = state['capacity'], state['count'], state['size']
@@ -193,6 +202,11 @@ class JointReplay:
         for k, v in state['arrays'].items():
             self.arrays[k] = np.empty((self.capacity, *v.shape[1:]), dtype=np.float32)
             self.arrays[k][:self.size] = v
+        for key, values in state.get('next_exceptions', {}).items():
+            original = self.arrays[key[5:]]
+            self.arrays[key] = np.empty_like(original)
+            self.arrays[key][:self.size] = np.roll(original[:self.size], -1, axis=0)
+            self.arrays[key][values['index']] = values['values']
 
 
 def current_and_next(batch):
@@ -306,6 +320,8 @@ class LegacyCBFSAC:
     legacy = True
 
     def __init__(self, config, device='cpu'):
+        from policy.SAC import SAC
+        from utils.config import _dict_to_namespace
         self.config, self.device = copy.deepcopy(config), torch.device(device)
         self.sac = SAC(_dict_to_namespace(config), 6, 8, 3, adaptive=True, device=self.device)
         self.actor = self.sac.actor

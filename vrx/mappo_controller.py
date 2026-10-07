@@ -6,12 +6,12 @@ import numpy as np
 TRAIN = Path(__file__).resolve().parents[1] / 'train'
 if str(TRAIN) not in sys.path:
     sys.path.insert(0, str(TRAIN))
-from policy.mappo import PredictiveMAPPO
-from policy.message_stress import MessageStress
 
 
 class MAPPOController:
     def __init__(self, checkpoint, device='cpu', delay_steps=0, drop_probability=0., communication_seed=0):
+        from policy.mappo import PredictiveMAPPO
+        from policy.message_stress import MessageStress
         self.agent = PredictiveMAPPO.from_checkpoint(checkpoint, device)
         self.communication = MessageStress(delay_steps, drop_probability, communication_seed)
         self.last_action = None

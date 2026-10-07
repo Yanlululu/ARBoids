@@ -3,6 +3,7 @@ import study_runtime
 import argparse
 import copy
 import csv
+import hashlib
 from pathlib import Path
 import time
 
@@ -56,6 +57,7 @@ def train_attacker(config, defender_checkpoint, output, seed, device, initial=No
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     defender = DeploymentPolicy(defender_checkpoint)
+    defender_hash = hashlib.sha256(Path(defender_checkpoint).read_bytes()).hexdigest()
     seed_random(seed)
     agent = SAC(_dict_to_namespace(config), 2, 6, 2, attacker=True, device=torch.device(device))
     replay = ReplayBuffer(8, 2)
@@ -63,15 +65,29 @@ def train_attacker(config, defender_checkpoint, output, seed, device, initial=No
     saved = None
     if (output / 'resume.pth').exists():
         saved = torch.load(output / 'resume.pth', map_location='cpu', weights_only=False)
-        if saved['seed'] != seed or saved['budget'] != steps:
+        if (saved['seed'] != seed or saved['budget'] != steps or saved.get('config') != config
+                or saved.get('defender_sha256') != defender_hash):
             raise ValueError('Attacker resume specification mismatch.')
         load_attacker_state(agent, saved['agent'])
-        for k, v in saved['replay'].items():
-            setattr(replay, k, v)
+        for k in ('size', 'count', 'max_size'):
+            setattr(replay, k, saved['replay'][k])
+        for k in ('s', 'a', 'r', 's_', 'dw'):
+            value = saved['replay'][k]
+            getattr(replay, k)[:len(value)] = value
         env = copy.deepcopy(saved['snapshot'].environment)
         step, done, previous_elapsed = saved['step'], saved['done'], saved['elapsed']
         saved['random'].restore()
         del saved
+        metrics = output / 'metrics.csv'
+        if metrics.exists():
+            with metrics.open(encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                fields = reader.fieldnames
+                rows = [r for r in reader if int(r['step']) <= step]
+            with metrics.open('w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(rows)
     elif initial is not None:
         prior = torch.load(initial, map_location='cpu', weights_only=False)
         load_attacker_state(agent, prior['agent'])
@@ -81,9 +97,11 @@ def train_attacker(config, defender_checkpoint, output, seed, device, initial=No
 
     def save():
         atomic_torch(output / 'resume.pth', dict(format='interaction-attacker-resume-v1', seed=seed,
+            config=config, defender_sha256=defender_hash,
             budget=steps, step=step, done=done, elapsed=previous_elapsed+time.perf_counter()-started,
             agent=attacker_state(agent), snapshot=compact_snapshot(env), random=RandomState.capture(),
-            replay={k: getattr(replay, k) for k in ('s', 'a', 'r', 's_', 'dw', 'size', 'count', 'max_size')}))
+            replay={**{k: getattr(replay, k)[:replay.size] for k in ('s', 'a', 'r', 's_', 'dw')},
+                    **{k: getattr(replay, k) for k in ('size', 'count', 'max_size')}}))
         atomic_torch(output / 'attacker.pth', {k:v.detach().cpu() for k,v in agent.actor.state_dict().items()})
         atomic_json(output / 'progress.json', dict(step=step, total=steps, complete=step == steps,
                     elapsed=previous_elapsed+time.perf_counter()-started))
