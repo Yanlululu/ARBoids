@@ -92,6 +92,7 @@ class InteractionActor(nn.Module):
                           candidates.unsqueeze(-3).expand(-1, n, -1, -1)), -1)
 
     def forward(self, obs, motion, mask=None, deterministic=False, noise=None):
+        motion = motion.to(dtype=obs.dtype)
         b, n = obs.shape[:2]
         if mask is None:
             mask = torch.ones((b, n), dtype=torch.bool, device=obs.device)

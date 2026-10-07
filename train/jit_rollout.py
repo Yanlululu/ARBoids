@@ -10,10 +10,12 @@ from predictive_interception_v2 import reachable_capture_time
 
 
 class JitRolloutController(ArrayRolloutController):
+    prediction_environment_class = JitNominalEnvironment
+
     def predict(self, measurement, template):
         env = nominal_scene(measurement, self.previous_thrust, self.previous_attacker_thrust,
                             self.velocity_lag, self.attacker_agility)
-        env.__class__ = JitNominalEnvironment
+        env.__class__ = self.prediction_environment_class
         env.Defend_R = measurement.capture_radius - self.capture_margin
         current = measurement
         positions, attackers, commands = [current.defenders.copy()], [current.attacker.copy()], []
