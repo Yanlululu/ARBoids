@@ -176,6 +176,8 @@ def sac_run(args):
                     elapsed_seconds=elapsed, steps_per_second=(counters['steps']-start_step)/max(elapsed, 1e-9),
                     phase=counters['phase'], training_seed=args.seed))
                 next_log = counters['steps'] + 1000
+            if getattr(args, 'exact_steps', False) and counters['steps'] >= end:
+                break
         counters['episodes'] += 1
         counters['phase_episodes'] += 1
         if counters['steps'] >= next_save or counters['steps'] >= end:
@@ -285,6 +287,7 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--workers', type=int, default=2)
     parser.add_argument('--save-interval', type=int, default=25000)
+    parser.add_argument('--exact-steps', action='store_true', help='Stop at the exact requested final step.')
     args = parser.parse_args()
     if min(args.steps, args.workers, args.save_interval) <= 0:
         parser.error('Budgets, workers and checkpoint intervals must be positive.')

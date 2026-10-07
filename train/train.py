@@ -41,6 +41,11 @@ def evaluate(agent,
 
 def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
 
+    if getattr(cfg, 'algorithm', None) == 'interaction-aware-sac':
+        from train_interaction import run_training
+        from utils.config import _namespace_to_dict
+        return run_training(_namespace_to_dict(cfg), exp, device)
+
     if getattr(cfg, 'algorithm', None) == 'predictive-mappo':
         from train_mappo import run_training
         from utils.config import _namespace_to_dict

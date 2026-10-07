@@ -12,7 +12,7 @@ import time
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', type=Path, required=True)
-    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids', 'MAPPO'], default='AdaRes')
+    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids', 'MAPPO', 'IACRRL'], default='AdaRes')
     parser.add_argument('--episodes', type=int, default=10)
     parser.add_argument('--setting', type=int, choices=[0, 1], default=1)
     parser.add_argument('--seed', type=int, default=20000)

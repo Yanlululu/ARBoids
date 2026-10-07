@@ -1,0 +1,38 @@
+algorithm: interaction-aware-sac
+rl:
+  hidden_dim: 512
+  batch_size: 4096
+  learning_rate: 0.0001
+  GAMMA: 0.99
+  TAU: 0.005
+training:
+  seed: 42
+  pretrain_checkpoint: null
+  gate_steps: 250000
+  joint_steps: 1000000
+  warm_steps: 5000
+  replay_capacity: 1000000
+  eval_interval: 5000
+  eval_episodes: 100
+  log_interval: 1000
+  checkpoint_interval: 5000
+  resume: null
+  allow_random_initialization: false
+agent:
+  defender_num: 3
+environment:
+  protocol: paper-parameters-v1
+  total_time: 60.0
+  agility_noise_half_width: 0.5
+interaction:
+  arm: full
+  relation_dim: 128
+  auxiliary: difference
+  auxiliary_weight: 0.1
+  horizon_steps: 100
+  intervention_interval: 1000
+  pairs_per_batch: 64
+  snapshot_capacity: 256
+  snapshot_interval: 16
+  workers: 4
+  safety: true
