@@ -13,19 +13,104 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, FancyBboxPatch, Polygon
 from interaction_evaluation import hierarchical_interval, SEEDS, METRICS
+from interaction_review import digest
 
-ARMS=('arboids_cbf','same_info','model_value','short','full')
+ARMS=('arboids_cbf','same_info','model_value','short','no_peer','full')
 LABELS=dict(arboids_cbf='ARBoids+CBF',same_info='Same-info',model_value='Model-return',
             short='Short (2 s)',full='Full (IA-CRRL)',boids='Boids',
-            original='ARBoids (unfiltered)',long_reference='Long selector')
+            original='ARBoids (unfiltered)',long_reference='Long selector',no_peer='No candidate interaction')
 COLORS=dict(arboids_cbf='#6C757D',same_info='#427AB3',model_value='#BC863D',short='#8B6AA8',
-            full='#00857D',boids='#A4AAAD',original='#C35B50',long_reference='#204A68')
+            full='#00857D',boids='#A4AAAD',original='#C35B50',long_reference='#204A68',no_peer='#B65E84')
 plt.rcParams.update({'font.family':'DejaVu Sans','font.size':8,'axes.spines.top':False,
     'axes.spines.right':False,'axes.labelsize':8,'legend.fontsize':6,'pdf.fonttype':42,'svg.fonttype':'none'})
 
 
 def read_csv(path):
     with Path(path).open(encoding='utf-8') as f: return list(csv.DictReader(f))
+
+
+def stage_review_costs(study, version):
+    rows = []
+    if version in ('interaction-study-v6','interaction-study-v7'):
+        study=Path(study)
+        paths=[study/'reviews/signal/completed.json']
+        paths.extend((study/'reviews/screens').glob('*/completed.json'))
+        paths.extend((study/'reviews/confirmation').glob('*/completed.json'))
+        paths.extend((study/'reviews/target-audit').glob('*/completed.json'))
+        paths.extend((study/'reviews/bootstrap-check').glob('*/completed.json'))
+        paths.extend((study/'mechanism').glob('*/completed.json'))
+        for path in paths:
+            result=json.loads(path.read_text())
+            if not result.get('complete'): raise ValueError('Incomplete signal-first diagnostic cost')
+            rows.append(dict(stage=str(path.parent.relative_to(study)),seed=result['input'].get('seed'),
+                validation_steps=result.get('task_steps',0),
+                calibration_steps=result.get('simulated_steps',0)+result.get('state_collection_steps',0),
+                wall_seconds=result['wall_seconds']))
+        for path in (study/'reviews/bootstrap-repair').glob('*/completed.json'):
+            result=json.loads(path.read_text())
+            calibration=result['calibration']
+            # The successful evaluator fitting time is already in training.elapsed.
+            rows.append(dict(stage=str(path.parent.relative_to(study)),seed=int(path.parent.name.split('-')[0]),
+                validation_steps=0,calibration_steps=calibration['simulated_steps'],
+                wall_seconds=calibration['wall_seconds']))
+            investigation=result.get('discarded_investigation')
+            if investigation:
+                rows.append(dict(stage=str(path.parent.relative_to(study))+'/discarded-investigation',
+                    seed=int(path.parent.name.split('-')[0]),validation_steps=0,
+                    calibration_steps=investigation['model_steps'],wall_seconds=investigation['wall_seconds'],
+                    additional_critic_updates=investigation['monte_carlo_fit_updates']+investigation['failed_td_updates'],
+                    unmeasured_wall_time=investigation['failed_td_wall_seconds'] is None))
+        # Retain the CPU baseline evaluation already spent under the earlier graph.
+        for path in (study/'reviews').glob('data-gate-*/initial_cbf.json'):
+            result=json.loads(path.read_text())
+            rows.append(dict(stage=str(path.parent.relative_to(study)),seed=result['seed'],
+                validation_steps=result['validation_steps'],calibration_steps=result['calibration_steps'],
+                wall_seconds=result['wall_seconds']))
+        for row in rows:
+            row.setdefault('additional_critic_updates',0)
+            row.setdefault('unmeasured_wall_time',False)
+        return rows
+    for stage in ('gate', 'joint'):
+        for seed in SEEDS:
+            directory = Path(study)/f'reviews/data-{stage}-{seed}'
+            path = directory/'completed.json'
+            if version in ('interaction-study-v4', 'interaction-study-v5'):
+                # Core, full and peer reviews share immutable arm artifacts; count each once.
+                artifacts = {}
+                for name in ('completed.json', 'core-completed.json', 'peer-completed.json'):
+                    completion = directory/name
+                    if not completion.exists(): continue
+                    result = json.loads(completion.read_text())
+                    if not result.get('complete'): raise ValueError('Incomplete stage cost artifact')
+                    for arm, fingerprint in result['artifacts'].items():
+                        if arm in artifacts and artifacts[arm] != fingerprint:
+                            raise ValueError('Conflicting cached validation cost artifacts')
+                        artifacts[arm] = fingerprint
+                if not artifacts and (stage == 'joint' or seed == SEEDS[0]):
+                    raise ValueError('Missing evidence-chain validation cost')
+                if not artifacts: continue
+                totals = dict(validation_steps=0, calibration_steps=0, candidate_response_steps=0,
+                              candidate_response_cbf_evaluations=0, wall_seconds=0.)
+                for arm, fingerprint in artifacts.items():
+                    path = directory/f'{arm}.json'
+                    if digest(path) != fingerprint: raise ValueError('Validation cost artifact changed')
+                    result = json.loads(path.read_text())
+                    for key in ('validation_steps', 'calibration_steps', 'candidate_response_steps', 'wall_seconds'):
+                        totals[key] += result[key]
+                    totals['candidate_response_cbf_evaluations'] += (result.get('candidate_response') or {}).get('cbf_evaluations', 0)
+                rows.append(dict(stage=stage, seed=seed, **totals))
+                continue
+            if version == 'interaction-study-v2' and not path.exists():
+                raise ValueError('Missing staged validation cost')
+            if version == 'interaction-study-v3':
+                if not path.exists(): path = directory/'core-completed.json'
+                if not path.exists() and (stage == 'joint' or seed == SEEDS[0]):
+                    raise ValueError('Missing evidence-chain validation cost')
+            if path.exists():
+                result = json.loads(path.read_text())
+                rows.append(dict(stage=stage, seed=seed, validation_steps=result['validation_steps'],
+                    calibration_steps=result['calibration_steps'], wall_seconds=result['wall_seconds']))
+    return rows
 
 
 def export(fig, directory, name):
@@ -141,7 +226,7 @@ def seed_band(values):
 def trajectories(study):
     panels=[]
     for n,setting in ((3,0),(6,1)):
-        path=study/'vrx'/f'vrx-42-full-n{n}-s{setting}-00'/'trajectory.npz'
+        path=study/'vrx'/f'vrx-{SEEDS[0]}-full-n{n}-s{setting}-00'/'trajectory.npz'
         with np.load(path) as a:
             position=a['DefPos'].reshape(-1,n,2);attacker=a['AttPos'];time=a['timestamp'];gate=a['AdapterGate']
         lines=[];gates=[]
@@ -164,7 +249,7 @@ def learning(study):
         for arm in ARMS:
             rows=[read_csv(study/f'training/seed-{s}/{arm}/metrics.csv') for s in SEEDS]
             steps=[int(r['step']) for r in rows[0]]
-            if steps!=list(range(5000,1250001,5000)): raise ValueError('Incomplete learning curve: '+arm)
+            if steps!=list(range(5000,1000001,5000)): raise ValueError('Incomplete learning curve: '+arm)
             if any([int(r['step']) for r in group]!=steps for group in rows): raise ValueError('Unpaired learning checkpoints')
             mean,lo,hi=seed_band([[float(r[metric]) for r in g] for g in rows])
             lines.append(series(np.array(steps)/1e6,mean,LABELS[arm],COLORS[arm],lo,hi))
@@ -276,10 +361,11 @@ def replace_results(path,block):
 
 def finish(study,directory,manuscript,include_extensions=True):
     analysis=json.loads((study/'analysis.json').read_text())
-    if not analysis['complete']: raise ValueError('The 80000-row fixed numerical matrix is incomplete')
+    if not analysis['complete']: raise ValueError('The 90000-row fixed numerical matrix is incomplete')
+    formal=analysis.get('formal_evidence')
     blocks=[]
     blocks.append(chart(directory,'fig4-vrx',trajectories(study),
-        'Recorded complete-method trajectories and blending coefficients. The first prescribed seed-42 trial is shown for three defenders in open water and six at the dock; scenarios are fixed independently of outcome. Coefficients parameterize nominal composition and do not assign maneuver roles.','fig:vrx'))
+        'Recorded complete-method trajectories and blending coefficients. The first prescribed formal-seed trial is shown for three defenders in open water and six at the dock; scenarios are fixed independently of outcome. Coefficients parameterize nominal composition and do not assign maneuver roles.','fig:vrx'))
     blocks.append(chart(directory,'fig5-learning',learning(study),
         r'Five-seed validation curves with seed-bootstrap 95\% intervals. The first 0.25 million additional transitions freeze the proposals; subsequent transitions update both policy stages.','fig:learning'))
     blocks.append(chart(directory,'fig6-generalization',generalization(analysis),
@@ -287,14 +373,15 @@ def finish(study,directory,manuscript,include_extensions=True):
     if include_extensions:
         blocks.append(chart(directory,'fig7-alternating',alternating(study),
             'Alternating defender/attacker training. Defender phases 1, 3, and 5 alternate with attacker phases 2 and 4, each lasting 0.5 million transitions. Curves evaluate the current training opponent; the common frozen-opponent results are reported separately.','fig:alternating'))
-    standard=[r for r in analysis['summaries'] if r['cell']=='n3-a2.25']
-    blocks.append(table_metrics(standard,'Fixed endpoint at three defenders and agility 2.25. Rates are percentages; all 1000 scenarios enter the capped-time mean.','tab:numerical'))
+    standard=([dict(arm=r['arm'],cell=r['cell'],**r['mean']) for r in formal['arm_summaries']]
+              if formal else [r for r in analysis['summaries'] if r['cell']=='n3-a2.25'])
+    blocks.append(table_metrics(standard,'Prespecified core conditions at the fixed endpoint. Rates are percentages; all 1000 scenarios per condition enter the capped-time mean.','tab:numerical'))
     vrx_raw=vrx_rows(study)
     vrx=aggregate(vrx_raw,20)
     vrx_paired=paired_groups(vrx_raw,20)
     blocks.append(table_metrics(vrx,'VRX results: 100 episodes per method and condition. s0 denotes open water and s1 the dock. Rates are percentages.','tab:vrx'))
     calibration=[];rng=np.random.default_rng(7602026)
-    for arm in ('same_info','model_value','short','full'):
+    for arm in ('same_info','model_value','short','no_peer','full'):
         groups=[read_csv(study/f'calibration/seed-{s}/{arm}/calibration.csv') for s in SEEDS]
         if any(len(g)!=64 for g in groups): raise ValueError('Incomplete intervention calibration')
         values=np.array([[float(r['absolute_error']) for r in g] for g in groups])
@@ -306,10 +393,11 @@ def finish(study,directory,manuscript,include_extensions=True):
     for seed in SEEDS:
         for arm in ARMS:
             r=json.loads((study/f'training/seed-{seed}/{arm}/progress.json').read_text())
-            if r['step']!=1250000 or not r['complete']: raise ValueError('Incomplete fixed training endpoint')
-            cost.append(dict(seed=seed,arm=arm,real_steps=r['step'],auxiliary_steps=r['simulated_steps'],wall_seconds=r['elapsed']))
+            if r['step']!=1000000 or not r['complete']: raise ValueError('Incomplete fixed training endpoint')
+            cost.append(dict(seed=seed,arm=arm,real_steps=r['step'],auxiliary_steps=r['simulated_steps'],
+                             updates=r['updates'],bootstrap_updates=r.get('bootstrap_updates',0),wall_seconds=r['elapsed'],phase='formal'))
     blocks.append(r'\begin{table}[t]\centering\scriptsize\caption{Additional training cost, mean per seed. The common pretraining costs one million real steps per seed.}\begin{tabular}{@{}lrrr@{}}\toprule Method & Real steps & Auxiliary steps & Hours\\\midrule'+'\n'+
-        '\n'.join(escape(LABELS[a])+f' & 1250000 & {np.mean([r["auxiliary_steps"] for r in cost if r["arm"]==a]):.0f} & {np.mean([r["wall_seconds"] for r in cost if r["arm"]==a])/3600:.2f}'+r'\\' for a in ARMS)+
+        '\n'.join(escape(LABELS[a])+f' & 1000000 & {np.mean([r["auxiliary_steps"] for r in cost if r["arm"]==a]):.0f} & {np.mean([r["wall_seconds"] for r in cost if r["arm"]==a])/3600:.2f}'+r'\\' for a in ARMS)+
         '\n'+r'\bottomrule\end{tabular}\end{table}')
     latency=json.loads((study/'runtime/completed.json').read_text())
     if not latency['complete']: raise ValueError('Incomplete isolated latency evaluation')
@@ -327,19 +415,43 @@ def finish(study,directory,manuscript,include_extensions=True):
         common_summary=aggregate(common,100)
         common_paired=paired_groups(common,100)
         blocks.append(table_metrics(common_summary,'Common frozen-opponent tests after defender phases. APF and the ARBoids+CBF attacker checkpoints are shared across methods. Rates are percentages.','tab:opponents'))
-    paired=[r for r in analysis['paired_comparisons'] if r['reference']=='same_info' and r['cell']=='n3-a2.25' and r['metric']=='capture']
-    if len(paired)!=1: raise ValueError('Missing paired primary capture contrast')
-    contrast=paired[0]
+    paired=[r for r in analysis['paired_comparisons'] if r['reference']=='arboids_cbf' and r['cell']=='n3-a2.25' and r['metric']=='capture_time']
+    if formal:
+        contrast=formal['A']['effects']['capture_time']
+        contrasts=[('A: task','s',contrast),('B: conditional value','return',formal['B']['E_env']['all']),
+            ('C: six-defender task','s',formal['C']['strong']['capture_time']),
+            ('D: configuration matching','return',formal['D']['configuration_matching']),
+            ('D: signed interaction','return',formal['D']['conditional_interaction']),
+            ('D: noise-corrected interaction','return squared',formal['D']['noise_corrected_interaction_second_moment'])]
+        blocks.append(r'\begin{table*}[t]\centering\small\caption{Prespecified A--D paired effects across all five training seeds. Task and value-error contrasts are Full minus reference; negative values favor Full. Matching contrasts are original minus permuted; interaction signs have a different meaning.}\begin{tabular}{@{}llrr@{}}\toprule Evidence & Unit & Effect & 95\% CI\\\midrule'+'\n'+
+            '\n'.join(escape(label)+f' & {escape(unit)} & {effect["difference"]:.3f} & [{effect["ci95"][0]:.3f}, {effect["ci95"][1]:.3f}]'+r'\\' for label,unit,effect in contrasts)+
+            '\n'+r'\bottomrule\end{tabular}\end{table*}')
+        with (directory/'table-formal-seed-effects.csv').open('w',newline='',encoding='utf-8') as f:
+            writer=csv.DictWriter(f,fieldnames=['evidence','unit','seed','effect']);writer.writeheader()
+            writer.writerows(dict(evidence=label,unit=unit,seed=seed,effect=value)
+                for label,unit,effect in contrasts for seed,value in effect['seed_effects'].items())
+        with (directory/'table-core-means.csv').open('w',newline='',encoding='utf-8') as f:
+            writer=csv.DictWriter(f,fieldnames=['arm','cell','metric','mean','ci95_low','ci95_high','seed_standard_deviation']);writer.writeheader()
+            writer.writerows(dict(arm=r['arm'],cell=r['cell'],metric=m,mean=r['mean'][m],
+                ci95_low=r['ci95'][m][0],ci95_high=r['ci95'][m][1],seed_standard_deviation=r['seed_standard_deviation'][m])
+                for r in formal['arm_summaries'] for m in r['mean'])
+        with (directory/'table-core-seed-means.csv').open('w',newline='',encoding='utf-8') as f:
+            writer=csv.DictWriter(f,fieldnames=['arm','cell','metric','seed','mean']);writer.writeheader()
+            writer.writerows(dict(arm=r['arm'],cell=r['cell'],metric=m,seed=seed,mean=value)
+                for r in formal['arm_summaries'] for m,means in r['seed_means'].items() for seed,value in means.items())
+    else:
+        if len(paired)!=1: raise ValueError('Missing paired primary capped-time contrast against ARBoids+CBF')
+        contrast=paired[0]
     headline=(r'\subsection{Fixed-endpoint evidence}'+'\n'+
-        f'At three defenders and agility 2.25, the complete-method minus same-information capture-rate difference is {100*contrast["difference"]:.2f} percentage points '
-        f'(hierarchical paired 95\\% CI [{100*contrast["ci95"][0]:.2f}, {100*contrast["ci95"][1]:.2f}]). '
+        f'At three defenders and agility 2.25, the Full minus ARBoids+CBF capped-capture-time difference is {contrast["difference"]:.2f} s '
+        f'(hierarchical paired 95\\% CI [{contrast["ci95"][0]:.2f}, {contrast["ci95"][1]:.2f}] s). '
         'Tables report all task outcomes and capped capture time; the exported analysis retains condition-specific paired intervals for every metric. '
         'The conditional-value error and matched auxiliary control are assessed alongside these task outcomes.\n')
     replace_results(manuscript,headline+'\n\n'.join(blocks))
     text=manuscript.read_text(encoding='utf-8')
-    evidence=(f'At the fixed endpoint with three defenders and intruder agility 2.25, the complete method changes capture rate by '
-        f'{100*contrast["difference"]:.2f} percentage points relative to same-information joint SAC '
-        f'(paired 95\\% confidence interval [{100*contrast["ci95"][0]:.2f}, {100*contrast["ci95"][1]:.2f}]).')
+    evidence=(f'At the fixed endpoint with three defenders and intruder agility 2.25, the complete-method minus common-safety baseline difference in capped capture time is '
+        f'{contrast["difference"]:.2f} s '
+        f'(paired 95\\% confidence interval [{contrast["ci95"][0]:.2f}, {contrast["ci95"][1]:.2f}] s).')
     text=text.replace('This manuscript currently specifies the implemented method and evaluation design; numerical claims about the new policy await completion of the fixed experiment matrix.',evidence)
     text=text.replace('Final empirical conclusions await the corresponding completed evaluations.',evidence+' The condition-specific results, auxiliary controls, and compute measurements define the scope of this empirical finding.')
     manuscript.write_text(text,encoding='utf-8')
@@ -354,20 +466,13 @@ def finish(study,directory,manuscript,include_extensions=True):
         else:
             r=json.loads((study/f'pretrain/seed-{seed}/completed.json').read_text())
             pretraining.append(dict(seed=seed,real_steps=r['actual_phase_steps'],inherited=False,wall_seconds=r['elapsed_seconds'],source=str(study/f'pretrain/seed-{seed}/completed.json')))
-    review_cost=[]
-    for stage in ('gate','joint'):
-        for seed in SEEDS:
-            path=study/f'reviews/data-{stage}-{seed}/completed.json'
-            if manifest['format']=='interaction-study-v2' and not path.exists():
-                raise ValueError('Missing staged validation cost')
-            if manifest['format']=='interaction-study-v3':
-                if not path.exists(): path=path.with_name('core-completed.json')
-                if not path.exists() and (stage=='joint' or seed==SEEDS[0]):
-                    raise ValueError('Missing evidence-chain validation cost')
-            if path.exists():
-                r=json.loads(path.read_text())
-                review_cost.append(dict(stage=stage,seed=seed,validation_steps=r['validation_steps'],
-                    calibration_steps=r['calibration_steps'],wall_seconds=r['wall_seconds']))
+    review_cost=stage_review_costs(study,manifest['format'])
+    for path in sorted((study/'training').glob('seed-*/*/progress.json')):
+        seed=int(path.parents[1].name.split('-')[1])
+        if seed in SEEDS: continue
+        r=json.loads(path.read_text())
+        cost.append(dict(seed=seed,arm=path.parent.name,real_steps=r['step'],auxiliary_steps=r['simulated_steps'],
+                         updates=r['updates'],bootstrap_updates=r.get('bootstrap_updates',0),wall_seconds=r['elapsed'],phase='development'))
     deployment_jobs=[j for j in manifest['jobs'] if j.get('phase')=='deployment-validation']
     deployment_cost=dict(episodes=len(deployment_jobs),
         simulation_seconds=sum(json.loads(Path(j['result']).read_text())['simulation_seconds'] for j in deployment_jobs),
@@ -388,9 +493,9 @@ def finish(study,directory,manuscript,include_extensions=True):
     content=('## 新论文：协同控制组成的 60 秒协议正式结果\n\n'+
         '研究对象为协同控制组成；核心机制为候选控制交互条件化的融合决策与面向组成变量的条件价值学习。'
         '融合系数表征名义控制组成，行为解释结合候选控制、执行推力与实际轨迹。\n\n'+
-        f'三艇、敏捷度 2.25：完整方法相对同信息无辅助方法的捕获率差为 {100*contrast["difference"]:.2f} 个百分点，'
-        f'分层配对 95% 区间 [{100*contrast["ci95"][0]:.2f}, {100*contrast["ci95"][1]:.2f}]。\n\n'+
-        '固定训练终点、五个种子、80,000 个数值测试回合和 1,200 个 VRX 回合已汇总。'
+        f'三艇、敏捷度 2.25：完整方法相对共同安全基线 ARBoids+CBF 的平均封顶捕获耗时差为 {contrast["difference"]:.2f} 秒，'
+        f'分层配对 95% 区间 [{contrast["ci95"][0]:.2f}, {contrast["ci95"][1]:.2f}] 秒。\n\n'+
+        '固定训练终点、五个独立正式种子、90,000 个数值测试回合和 1,200 个 VRX 回合已汇总。'
         '旧 80 秒实验保留在下文，独立归属原方法及原协议。\n')
     if start in text:
         prefix,rest=text.split(start);_,suffix=rest.split(end)

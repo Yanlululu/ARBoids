@@ -85,7 +85,8 @@ class FrozenPolicy:
     def __init__(self, payload):
         config = payload['config']
         hidden, relation = config['rl']['hidden_dim'], config['interaction']['relation_dim']
-        self.actor = InteractionActor(hidden, relation).eval().requires_grad_(False)
+        self.actor = InteractionActor(hidden, relation,
+            peer_candidates=config['interaction'].get('peer_candidates', True)).eval().requires_grad_(False)
         self.critic = TwinTeamCritic(hidden, relation).eval().requires_grad_(False)
         self.actor.load_state_dict(payload['actor'])
         self.critic.load_state_dict(payload['critic'])
@@ -121,7 +122,9 @@ class FrozenPolicy:
         return action[0].numpy()
 
 
-def branch_return(policy, snapshot, first_action, future_seed, policy_seed, steps, *, trace=False):
+def branch_return(policy, snapshot, first_action, future_seed, policy_seed, steps, *, trace=False, record_states=False):
+    if record_states and not trace:
+        raise ValueError('State records require a return trace.')
     env = snapshot.restore(future_seed=future_seed)
     generator = torch.Generator().manual_seed(policy_seed)
     # Both branches advance past the noise used to draw the common first action.
@@ -139,6 +142,8 @@ def branch_return(policy, snapshot, first_action, future_seed, policy_seed, step
         if trace:
             traces.append(dict(action=action.copy(), thrust=thrust.copy(), motion=following['motion'].copy(),
                                reward=float(np.mean(reward)), logp=logp, outcome=done))
+            if record_states:
+                traces[-1]['packet'] = {key: value.copy() for key, value in packet.items()}
         discount *= policy.gamma
         packet = following
         if done:
@@ -228,7 +233,8 @@ class DeploymentPolicy:
             self.actor = ActorAdap(6, 8, 3, self.config['rl']['hidden_dim']).to(device)
         else:
             self.actor = InteractionActor(self.config['rl']['hidden_dim'],
-                                          self.config['interaction']['relation_dim']).to(device)
+                self.config['interaction']['relation_dim'],
+                peer_candidates=self.config['interaction'].get('peer_candidates', True)).to(device)
         self.actor.load_state_dict(saved['actor'], strict=True)
         self.actor.eval().requires_grad_(False)
         self.last_action = None

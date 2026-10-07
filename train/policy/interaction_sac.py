@@ -41,9 +41,10 @@ def masked_mean(x, mask, dim):
 
 
 class InteractionActor(nn.Module):
-    def __init__(self, hidden=512, relation=128):
+    def __init__(self, hidden=512, relation=128, peer_candidates=True):
         super().__init__()
         self.hidden, self.relation = hidden, relation
+        self.peer_candidates = bool(peer_candidates)
         self.base = ActorAdap(6, 8, 3, hidden)
         self.relations = nn.Sequential(nn.Linear(15, relation), nn.LeakyReLU(),
                                        nn.Linear(relation, relation), nn.LeakyReLU())
@@ -86,8 +87,9 @@ class InteractionActor(nn.Module):
         relation = torch.cat((p, delta[..., 2:3].sin(), delta[..., 2:3].cos(),
                               v, delta[..., 5:6]), -1)
         candidates = torch.cat((proposals, boids), -1)
+        peers = candidates if self.peer_candidates else torch.zeros_like(candidates)
         return torch.cat((relation, candidates.unsqueeze(-2).expand(-1, -1, n, -1),
-                          candidates.unsqueeze(-3).expand(-1, n, -1, -1)), -1)
+                          peers.unsqueeze(-3).expand(-1, n, -1, -1)), -1)
 
     def forward(self, obs, motion, mask=None, deterministic=False, noise=None):
         motion = motion.to(dtype=obs.dtype)
@@ -99,18 +101,23 @@ class InteractionActor(nn.Module):
             self.base.log_std_layer(h).clamp(-20, 2),
             None if noise is None else noise[..., :2], deterministic)
         boids = obs[..., 12:14]
+        gates, log_g = self.gates(h, motion, proposals, boids, mask, deterministic,
+                                None if noise is None else noise[..., 2:3])
+        action = torch.cat((proposals, gates), -1)
+        logp = ((log_l + log_g) * mask.unsqueeze(-1)).sum(-2)
+        return action, logp
+
+    def gates(self, h, motion, proposals, boids, mask, deterministic=False, noise=None):
+        """Gate evaluation with explicit candidates, also used by controlled diagnostics."""
+        n = proposals.shape[-2]
         pair_mask = mask.unsqueeze(-1) & mask.unsqueeze(-2)
-        pair_mask &= ~torch.eye(n, dtype=torch.bool, device=obs.device)
+        pair_mask &= ~torch.eye(n, dtype=torch.bool, device=proposals.device)
         edges = self.relations(self.relation_features(motion, proposals, boids))
         message = masked_mean(edges, pair_mask, -2)
         own = self.base.activation(self.base.a1(torch.cat((proposals, boids), -1)))
         mean = self.base.adap_layer(torch.cat((own, h), -1)) + self.relation_gate(message)
         log_std = self.gate_log_std(torch.cat((h, message), -1)).clamp(-5, 2)
-        gates, log_g = transformed_normal(mean, log_std,
-            None if noise is None else noise[..., 2:3], deterministic, gate=True)
-        action = torch.cat((proposals, gates), -1)
-        logp = ((log_l + log_g) * mask.unsqueeze(-1)).sum(-2)
-        return action, logp
+        return transformed_normal(mean, log_std, noise, deterministic, gate=True)
 
 
 class TeamValue(nn.Module):
@@ -221,11 +228,22 @@ class InteractionSAC:
         rl = config['rl']
         self.gamma, self.tau = rl['GAMMA'], rl['TAU']
         self.batch_size = rl['batch_size']
-        self.actor = InteractionActor(rl['hidden_dim'], config['interaction']['relation_dim']).to(self.device)
+        self.actor = InteractionActor(rl['hidden_dim'], config['interaction']['relation_dim'],
+            peer_candidates=config['interaction'].get('peer_candidates', True)).to(self.device)
         self.critic = TwinTeamCritic(rl['hidden_dim'], config['interaction']['relation_dim']).to(self.device)
         self.target = copy.deepcopy(self.critic).requires_grad_(False)
+        # Historical checkpoints used the supervised critic as its own teacher.
+        # Keep that interpretation readable, but new runs bootstrap exclusively
+        # from a separate critic fitted to real transitions. Auxiliary gradients
+        # must never reach this critic or its Polyak target.
+        self.bootstrap_source = config['interaction'].get('bootstrap_source', 'coupled')
+        if self.bootstrap_source not in ('coupled', 'real_td'):
+            raise ValueError('Unknown bootstrap source.')
+        self.bootstrap_critic = copy.deepcopy(self.critic) if self.bootstrap_source == 'real_td' else None
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=rl['learning_rate'], eps=1e-5)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=rl['learning_rate'], eps=1e-5)
+        self.bootstrap_optimizer = (torch.optim.Adam(self.bootstrap_critic.parameters(),
+            lr=rl['learning_rate'], eps=1e-5) if self.bootstrap_critic is not None else None)
         self.log_alpha = torch.tensor(math.log(.2), device=self.device, requires_grad=True)
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=rl['learning_rate'])
         self.set_stage('gate')
@@ -249,13 +267,16 @@ class InteractionSAC:
         action, logp = self.actor(obs, motion, deterministic=deterministic, noise=noise)
         return action[0].cpu().numpy(), float(logp.item())
 
-    def learn(self, replay, auxiliary=None):
+    def learn(self, replay, auxiliary=None, *, diagnostics=False):
         batch = replay.sample(self.batch_size, self.device)
         packet, following = current_and_next(batch)
         with torch.no_grad():
             next_action, next_logp = self.actor(following['obs'], following['motion'])
             q1, q2 = self.target(following, next_action)
             target = batch['reward'] + self.gamma * (1. - batch['done']) * (torch.minimum(q1, q2) - self.alpha * next_logp)
+            bootstrap_disagreement = (q1 - q2).abs().mean()
+            bootstrap_value_mean = torch.minimum(q1, q2).mean()
+        bootstrap_loss = self.fit_bootstrap(packet, batch['action'], target)
         q1, q2 = self.critic(packet, batch['action'])
         td_loss = F.mse_loss(q1, target) + F.mse_loss(q2, target)
         auxiliary_loss = torch.zeros((), device=self.device)
@@ -279,6 +300,23 @@ class InteractionSAC:
             raise FloatingPointError('Non-finite critic loss.')
         self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
+        checks = {}
+        def gradient_norm(module):
+            gradients = [p.grad.detach() for p in module.parameters() if p.grad is not None]
+            if not gradients or any(not torch.isfinite(g).all() for g in gradients):
+                raise FloatingPointError('Missing or non-finite training gradients.')
+            return float(torch.sqrt(sum(g.square().sum() for g in gradients)))
+        if diagnostics:
+            checks.update(critic_gradient_norm=gradient_norm(self.critic),
+                weighted_auxiliary_loss=float((self.config['interaction']['auxiliary_weight'] * auxiliary_loss).detach()),
+                td_target_abs_max=float(target.abs().max()), bootstrap_disagreement=float(bootstrap_disagreement),
+                bootstrap_value_mean=float(bootstrap_value_mean), entropy_cost_mean=float((self.alpha * next_logp).mean()))
+            if bootstrap_loss is not None:
+                checks['bootstrap_td_loss'] = bootstrap_loss
+                checks['bootstrap_gradient_norm'] = gradient_norm(self.bootstrap_critic)
+            if auxiliary is not None:
+                checks['model_target_abs_max'] = float(max(abs(auxiliary['return']).max(),
+                                                         abs(auxiliary['counterfactual_return']).max()))
         self.critic_optimizer.step()
         self.critic.requires_grad_(False)
         action, logp = self.actor(packet['obs'], packet['motion'])
@@ -288,6 +326,10 @@ class InteractionSAC:
             raise FloatingPointError('Non-finite policy loss.')
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
+        if diagnostics:
+            checks['actor_gradient_norm'] = gradient_norm(self.actor)
+            checks['adapter_gradient_norm'] = gradient_norm(self.actor.base.adap_layer)
+            checks['candidate_gate_gradient_norm'] = gradient_norm(self.actor.relation_gate)
         self.actor_optimizer.step()
         self.critic.requires_grad_(True)
         if self.stage == 'joint':
@@ -297,19 +339,59 @@ class InteractionSAC:
             alpha_loss.backward()
             self.alpha_optimizer.step()
         with torch.no_grad():
-            for target_parameter, parameter in zip(self.target.parameters(), self.critic.parameters()):
+            source = self.bootstrap_critic if self.bootstrap_critic is not None else self.critic
+            for target_parameter, parameter in zip(self.target.parameters(), source.parameters()):
                 target_parameter.lerp_(parameter, self.tau)
         return dict(td_loss=float(td_loss.detach()), auxiliary_loss=float(auxiliary_loss.detach()),
-                    actor_loss=float(actor_loss.detach()), alpha=float(self.alpha))
+                    actor_loss=float(actor_loss.detach()), alpha=float(self.alpha), **checks)
+
+    def fit_bootstrap(self, packet, action, target):
+        """Only real-transition Bellman targets may update the bootstrap critic."""
+        if self.bootstrap_critic is None:
+            return None
+        q1, q2 = self.bootstrap_critic(packet, action)
+        loss = F.mse_loss(q1, target) + F.mse_loss(q2, target)
+        if not torch.isfinite(loss):
+            raise FloatingPointError('Non-finite real-transition bootstrap loss.')
+        self.bootstrap_optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        self.bootstrap_optimizer.step()
+        return float(loss.detach())
+
+    def learn_bootstrap(self, replay):
+        """Recondition a legacy teacher with fixed actor and real replay only."""
+        if self.bootstrap_critic is None:
+            raise ValueError('A separate real-transition bootstrap critic is required.')
+        batch = replay.sample(self.batch_size, self.device)
+        packet, following = current_and_next(batch)
+        with torch.no_grad():
+            action, logp = self.actor(following['obs'], following['motion'])
+            q1, q2 = self.target(following, action)
+            target = batch['reward'] + self.gamma * (1. - batch['done']) * (torch.minimum(q1, q2) - self.alpha * logp)
+        loss = self.fit_bootstrap(packet, batch['action'], target)
+        with torch.no_grad():
+            for slow, current in zip(self.target.parameters(), self.bootstrap_critic.parameters()):
+                slow.lerp_(current, self.tau)
+        return dict(bootstrap_td_loss=loss, bootstrap_disagreement=float((q1-q2).abs().mean()),
+                    bootstrap_value_mean=float(torch.minimum(q1,q2).mean()), td_target_abs_max=float(target.abs().max()))
 
     def state_dict(self):
-        return dict(actor=self.actor.state_dict(), critic=self.critic.state_dict(), target=self.target.state_dict(),
+        state = dict(actor=self.actor.state_dict(), critic=self.critic.state_dict(), target=self.target.state_dict(),
                     actor_optimizer=self.actor_optimizer.state_dict(), critic_optimizer=self.critic_optimizer.state_dict(),
                     log_alpha=self.log_alpha.detach(), alpha_optimizer=self.alpha_optimizer.state_dict(), stage=self.stage)
+        if self.bootstrap_critic is not None:
+            state.update(bootstrap_critic=self.bootstrap_critic.state_dict(),
+                         bootstrap_optimizer=self.bootstrap_optimizer.state_dict())
+        return state
 
     def load_state_dict(self, state):
+        if (self.bootstrap_critic is not None) != ('bootstrap_critic' in state):
+            raise ValueError('Bootstrap protocol changed; use explicit checkpoint reconditioning.')
         for name in ('actor', 'critic', 'target', 'actor_optimizer', 'critic_optimizer', 'alpha_optimizer'):
             getattr(self, name).load_state_dict(state[name])
+        if self.bootstrap_critic is not None:
+            self.bootstrap_critic.load_state_dict(state['bootstrap_critic'])
+            self.bootstrap_optimizer.load_state_dict(state['bootstrap_optimizer'])
         with torch.no_grad():
             self.log_alpha.copy_(state['log_alpha'])
         self.set_stage(state['stage'])

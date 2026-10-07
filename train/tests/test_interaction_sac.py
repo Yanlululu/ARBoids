@@ -18,7 +18,7 @@ from envs.snapshot import RandomState, seed_random
 from policy.interaction_sac import InteractionActor, InteractionSAC, JointReplay, TwinTeamCritic, transformed_normal
 from interaction_rollout import (public_packet, compact_snapshot, FrozenPolicy, frozen_payload,
     branch_return, intervention_pair, SnapshotPool, InterventionSampler, DeploymentPolicy)
-from train_interaction import export_policy
+from train_interaction import export_policy, arm_config
 
 
 def config():
@@ -85,6 +85,55 @@ class Networks(unittest.TestCase):
         self.assertGreater(float(actor.relations[0].weight.grad.abs().sum()), 0.)
         self.assertGreater(float(actor.base.mean_layer.weight.grad.abs().sum()), 0.)
 
+    def test_no_peer_ablation_removes_only_peer_candidate_dependence(self):
+        _, p = scene()
+        obs, motion = torch.as_tensor(p['obs'])[None], torch.as_tensor(p['motion'], dtype=torch.float32)[None]
+        full = InteractionActor(32, 16)
+        torch.nn.init.normal_(full.relation_gate.weight, std=.2)
+        masked = InteractionActor(32, 16, peer_candidates=False)
+        masked.load_state_dict(full.state_dict(), strict=True)
+        self.assertEqual(sum(x.numel() for x in full.parameters()), sum(x.numel() for x in masked.parameters()))
+        mask = torch.ones((1, 3), dtype=torch.bool)
+        noise = torch.randn((1, 3, 1))
+        proposals = torch.randn((1, 3, 2)).tanh().requires_grad_()
+        boids = obs[..., 12:14].clone().requires_grad_()
+        for actor, expect_peer in ((full, True), (masked, False)):
+            h = actor.encode(obs, mask)
+            gates, _ = actor.gates(h, motion, proposals, boids, mask, noise=noise)
+            gradients = torch.autograd.grad(gates[0, 0], (proposals, boids), retain_graph=True)
+            self.assertGreater(sum(float(g[0, 0].abs().sum()) for g in gradients), 0.)
+            peer_gradient = sum(float(g[0, 1:].abs().sum()) for g in gradients)
+            self.assertEqual(peer_gradient > 0., expect_peer)
+            changed, changed_boids = proposals.detach().clone(), boids.detach().clone()
+            changed[:, 1:] *= -1
+            changed_boids[:, 1:] += .2
+            other, _ = actor.gates(h, motion, changed, changed_boids, mask, noise=noise)
+            self.assertEqual(bool(torch.equal(gates[:, 0], other[:, 0])), not expect_peer)
+
+    def test_no_peer_training_rollout_and_deployment_use_the_same_mask(self):
+        from policy.interaction_sac import make_agent
+        full_config = arm_config(config(), 'full')
+        masked_config = arm_config(config(), 'no_peer')
+        expected = copy.deepcopy(full_config)
+        expected['interaction'].update(arm='no_peer', peer_candidates=False)
+        self.assertEqual(masked_config, expected)
+        agent = make_agent(masked_config)
+        torch.nn.init.normal_(agent.actor.relation_gate.weight, std=.1)
+        frozen = FrozenPolicy(frozen_payload(agent))
+        self.assertFalse(frozen.actor.peer_candidates)
+        _, packet = scene()
+        with tempfile.TemporaryDirectory() as directory:
+            export_policy(agent, directory, 0)
+            deployment = DeploymentPolicy(Path(directory)/'policy.pth')
+            self.assertFalse(deployment.actor.peer_candidates)
+            wanted, _ = agent.choose_action(packet, deterministic=True)
+            got, _ = deployment.choose_action(packet)
+            np.testing.assert_array_equal(wanted, got)
+        noise = torch.randn((1, 3, 3), generator=torch.Generator().manual_seed(123))
+        wanted, _ = agent.choose_action(packet, noise=noise[0])
+        got, _ = frozen.action(packet, torch.Generator().manual_seed(123))
+        np.testing.assert_array_equal(wanted, got)
+
     def test_freeze_unfreeze_and_auxiliary_updates(self):
         agent = InteractionSAC(config())
         env, packet = scene()
@@ -103,6 +152,68 @@ class Networks(unittest.TestCase):
         auxiliary, _ = InterventionSampler(0).generate(agent, pool)
         result = agent.learn(replay, auxiliary)
         self.assertTrue(all(np.isfinite(v) for v in result.values()))
+
+    def test_auxiliary_labels_cannot_update_the_bootstrap_teacher(self):
+        c = config()
+        c['interaction']['bootstrap_source'] = 'real_td'
+        left, right = InteractionSAC(c), InteractionSAC(c)
+        right.load_state_dict(copy.deepcopy(left.state_dict()))
+        env, packet = scene()
+        replay = JointReplay(8)
+        for _ in range(8):
+            action, _ = left.choose_action(packet)
+            replay.store(packet, action, env.boids_actions, np.ones(3), packet, False)
+        pool = SnapshotPool(1)
+        pool.add(env)
+        auxiliary, _ = InterventionSampler(0).generate(left, pool)
+        changed = copy.deepcopy(auxiliary)
+        changed['counterfactual_return'] += 1000.
+        actor = copy.deepcopy(left.actor.state_dict())
+        for _ in range(3):
+            # Hold the continuation policy fixed to isolate the direct label path.
+            left.actor.load_state_dict(actor)
+            right.actor.load_state_dict(actor)
+            state = RandomState.capture()
+            left.learn(replay, auxiliary)
+            state.restore()
+            right.learn(replay, changed)
+            for name in ('bootstrap_critic', 'target'):
+                for key, value in getattr(left, name).state_dict().items():
+                    torch.testing.assert_close(value, getattr(right, name).state_dict()[key], rtol=0, atol=0)
+        self.assertTrue(any(not torch.equal(a, b) for a, b in zip(left.critic.parameters(), right.critic.parameters())))
+
+    def test_same_info_real_td_teacher_preserves_the_original_update(self):
+        c = arm_config(config(), 'same_info')
+        c['interaction']['bootstrap_source'] = 'real_td'
+        new = InteractionSAC(c)
+        old_config = copy.deepcopy(c)
+        old_config['interaction']['bootstrap_source'] = 'coupled'
+        old = InteractionSAC(old_config)
+        state = copy.deepcopy(new.state_dict())
+        del state['bootstrap_critic'], state['bootstrap_optimizer']
+        old.load_state_dict(state)
+        env, packet = scene()
+        replay = JointReplay(8)
+        for _ in range(8):
+            action, _ = new.choose_action(packet)
+            replay.store(packet, action, env.boids_actions, np.ones(3), packet, False)
+        for _ in range(3):
+            random = RandomState.capture()
+            new.learn(replay)
+            random.restore()
+            old.learn(replay)
+            for name in ('actor', 'critic', 'target'):
+                for key, value in getattr(new, name).state_dict().items():
+                    torch.testing.assert_close(value, getattr(old, name).state_dict()[key], rtol=0, atol=0)
+
+    def test_bootstrap_protocol_cannot_silently_reinterpret_old_checkpoints(self):
+        c = config()
+        c['interaction']['bootstrap_source'] = 'coupled'
+        old = InteractionSAC(c)
+        c['interaction']['bootstrap_source'] = 'real_td'
+        new = InteractionSAC(c)
+        with self.assertRaisesRegex(ValueError, 'explicit checkpoint reconditioning'):
+            new.load_state_dict(old.state_dict())
 
     def test_deployment_matches_training_without_critic(self):
         agent = InteractionSAC(config())

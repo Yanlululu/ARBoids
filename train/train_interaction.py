@@ -1,4 +1,4 @@
-"""Train the five fixed IA-CRRL study arms with full resumable state."""
+"""Train IA-CRRL study arms and the matched peer-candidate control with resumable state."""
 import study_runtime
 import argparse
 import copy
@@ -18,7 +18,7 @@ from policy.interaction_sac import JointReplay, make_agent
 from interaction_rollout import public_packet, execute, compact_snapshot, SnapshotPool, InterventionSampler
 
 
-ARMS = ('arboids_cbf', 'same_info', 'model_value', 'short', 'full')
+ARMS = ('arboids_cbf', 'same_info', 'model_value', 'short', 'full', 'no_peer')
 
 
 def arm_config(config, arm):
@@ -28,6 +28,10 @@ def arm_config(config, arm):
     config['interaction'].update(arm=arm, auxiliary=('none' if arm in ('arboids_cbf', 'same_info')
                                                     else 'value' if arm == 'model_value' else 'difference'),
                                   horizon_steps=10 if arm == 'short' else 100)
+    # Preserve the original five configuration dictionaries and their checkpoints.
+    config['interaction'].pop('peer_candidates', None)
+    if arm == 'no_peer':
+        config['interaction']['peer_candidates'] = False
     return config
 
 
@@ -94,10 +98,22 @@ def export_policy(agent, output, step, *, endpoint=False):
     atomic_torch(Path(output) / name, artifact)
 
 
+def export_probe(agent, output, step, checks):
+    """Fixed development checkpoint, including the lagged critic used for model labels."""
+    from interaction_rollout import frozen_payload
+    artifact = frozen_payload(agent, online_critic=True)
+    artifact.update(format='interaction-sac-deployment-v1', step=int(step), stage=agent.stage,
+                    target={k: v.detach().cpu() for k, v in agent.target.state_dict().items()},
+                    learning_checks=checks)
+    atomic_torch(Path(output) / f'probe-{step}.pth', artifact)
+
+
 def validate(config):
     if config['environment'] != dict(protocol='paper-parameters-v1', total_time=60., agility_noise_half_width=.5):
         raise ValueError('This study requires the fixed 60-second paper protocol.')
     t, i = config['training'], config['interaction']
+    if i.get('peer_candidates', True) != (i['arm'] != 'no_peer'):
+        raise ValueError('Only the matched no-peer arm may mask peer candidates.')
     positive = ('joint_steps', 'warm_steps', 'replay_capacity', 'eval_interval',
                 'eval_episodes', 'log_interval', 'checkpoint_interval')
     if t['gate_steps'] < 0 or any(t[k] <= 0 for k in positive) or t['warm_steps'] >= t['gate_steps'] + t['joint_steps']:
@@ -108,10 +124,111 @@ def validate(config):
         raise ValueError('Invalid auxiliary objective.')
     if not i['safety']:
         raise ValueError('Training study arms must share the CBF filter.')
+    if i.get('bootstrap_source', 'coupled') not in ('coupled', 'real_td'):
+        raise ValueError('Invalid bootstrap source.')
+
+
+def recondition_bootstrap(output, device='cpu', updates=10000, workers=4):
+    """Repair a development checkpoint only after a fixed-policy heldout audit.
+
+    The actor, replay, simulator, environment-step counter and training RNG are
+    preserved. A fresh teacher is fitted to real replay, never to model labels.
+    This is explicitly charged development recovery, not a fresh-run comparison.
+    """
+    from interaction_review import bootstrap_calibration, source_for_seed, digest
+    from interaction_rollout import frozen_payload
+    output = Path(output)
+    study = output.parents[2]
+    checkpoint = output/'resume.pth'
+    fingerprint = digest(checkpoint)
+    saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
+    config = copy.deepcopy(saved['config'])
+    if config['training']['seed'] not in (42,101) or config['interaction']['arm'] == 'arboids_cbf':
+        raise ValueError('Only development joint-critic checkpoints may be reconditioned.')
+    if config['interaction'].get('bootstrap_source','coupled') != 'coupled':
+        raise ValueError('This checkpoint already uses the independent bootstrap protocol.')
+    if updates <= 0:
+        raise ValueError('A fixed positive recovery budget is required.')
+    before = dict(config=config, actor=saved['agent']['actor'], critic=saved['agent']['critic'],
+        target=saved['agent']['target'], alpha=float(saved['agent']['log_alpha'].exp()), gamma=config['rl']['GAMMA'])
+    config = copy.deepcopy(config)
+    config['interaction']['bootstrap_source'] = 'real_td'
+    validate(config)
+    started = time.perf_counter()
+    same_info = config['interaction']['auxiliary'] == 'none'
+    with preserved_random_state():
+        seed_random(401000000+config['training']['seed'])
+        agent = make_agent(config, device)
+        agent.actor.load_state_dict(saved['agent']['actor'])
+        agent.actor_optimizer.load_state_dict(saved['agent']['actor_optimizer'])
+        agent.alpha_optimizer.load_state_dict(saved['agent']['alpha_optimizer'])
+        agent.log_alpha.data.copy_(saved['agent']['log_alpha'].to(agent.device))
+        agent.set_stage(saved['agent']['stage'])
+        # CPU/CUDA exp can differ by one ulp. Both audit branches use the
+        # unchanged temperature evaluated on the learner's actual device.
+        before['alpha'] = float(agent.alpha)
+        if same_info:
+            # The auxiliary-free reference already is its own real-TD teacher.
+            # Duplicating it must preserve the original learner exactly.
+            for name in ('critic','bootstrap_critic'):
+                getattr(agent,name).load_state_dict(saved['agent']['critic'])
+            for name in ('critic_optimizer','bootstrap_optimizer'):
+                getattr(agent,name).load_state_dict(saved['agent']['critic_optimizer'])
+            agent.target.load_state_dict(saved['agent']['target'])
+            actual_updates, checks = 0, saved.get('learning_checks',{})
+        else:
+            replay = JointReplay(1)
+            replay.load_state_dict(saved['replay'])
+            for count in range(1,updates+1):
+                checks = agent.learn_bootstrap(replay)
+                if count % 1000 == 0 or count == updates:
+                    print('[IA-BOOTSTRAP] '+json.dumps(dict(update=count, **checks)),flush=True)
+            agent.critic.load_state_dict(agent.bootstrap_critic.state_dict())
+            agent.critic_optimizer.load_state_dict(agent.bootstrap_optimizer.state_dict())
+            del replay
+            actual_updates = updates
+        learning_seconds = time.perf_counter()-started
+        after = frozen_payload(agent, online_critic=True)
+        after['target'] = {k:v.detach().cpu().clone() for k,v in agent.target.state_dict().items()}
+        calibration = bootstrap_calibration(dict(before=before, repaired=after), source_for_seed(study,config['training']['seed']),
+            scene_base=400000000+(config['training']['seed']-42)*10000, states=64, repetitions=2, workers=workers)
+        a,b = (calibration['summary'][k]['all'] for k in ('before','repaired'))
+        identity_split = all(torch.equal(before[name][k],after[name][k])
+                             for name in ('actor','critic','target') for k in before[name])
+        passed = identity_split if same_info else (b['horizon_100_label_mae'] <= .5*a['horizon_100_label_mae'] and
+            b['tail_value_mae'] is not None and b['tail_value_mae'] <= .5*a['tail_value_mae'] and
+            b['environment_mae'] <= max(a['environment_mae'],1.05*b['zero_prediction_mae']))
+        record = dict(protocol='real-transition-only-bootstrap-v1',complete=False,
+            input=dict(seed=config['training']['seed'],arm=config['interaction']['arm']),
+            previous_checkpoint_sha256=fingerprint,
+            step=saved['step'],actor_unchanged=all(torch.equal(v,after['actor'][k]) for k,v in before['actor'].items()),
+            additional_environment_steps=0,additional_model_training_steps=0,bootstrap_updates=actual_updates,
+            learning_wall_seconds=learning_seconds,calibration=calibration,passed=bool(passed),
+            acceptance='At the fixed recovery endpoint, halve H100 label and tail-value errors; root delta error must not worsen. '
+                       'Same-info is a numerically identical teacher split, without reconditioning updates.')
+        record_path=study/f'reviews/bootstrap-repair/{config["training"]["seed"]}-{config["interaction"]["arm"]}/completed.json'
+        atomic_json(record_path,record)
+        if not passed or not record['actor_unchanged']:
+            raise RuntimeError('Bootstrap reconditioning failed heldout calibration; the checkpoint is unchanged.')
+        if digest(checkpoint) != fingerprint:
+            raise RuntimeError('The checkpoint changed during reconditioning; refusing to overwrite it.')
+        saved.update(config=config,agent=agent.state_dict(),auxiliary=None,learning_checks=checks,
+            bootstrap_updates=actual_updates,bootstrap_repair=record,
+            elapsed=saved['elapsed']+learning_seconds)
+        atomic_torch(checkpoint,saved)
+        export_policy(agent,output,saved['step'])
+        export_probe(agent,output,saved['step'],checks)
+        (output/'config.yaml').write_text(yaml.safe_dump(config,sort_keys=False),encoding='utf-8')
+        atomic_json(output/'progress.json',dict(step=saved['step'],total=config['training']['gate_steps']+config['training']['joint_steps'],
+            stage=agent.stage,simulated_steps=saved['simulated_steps'],elapsed=saved['elapsed'],complete=False,
+            updates=max(0,saved['step']-config['training']['warm_steps']+1),bootstrap_updates=actual_updates,learning_checks=checks))
+        record.update(complete=True,repaired_probe_sha256=digest(output/f'probe-{saved["step"]}.pth'))
+        atomic_json(record_path,record)
+    return dict(output=str(output),step=saved['step'],bootstrap_updates=actual_updates,calibration=calibration['summary'],passed=True)
 
 
 def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None, attacker=None,
-                 stop_after_stage=None):
+                 stop_after_stage=None, stop_at_step=None):
     config = copy.deepcopy(config)
     validate(config)
     torch.set_num_threads(1)
@@ -138,6 +255,7 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
     agent = make_agent(config, device)
     replay, pool = JointReplay(t['replay_capacity']), SnapshotPool(interaction['snapshot_capacity'])
     step, simulated, episodes, prior_elapsed, auxiliary, losses = 0, 0, 0, 0., None, {}
+    bootstrap_updates, bootstrap_repair = 0, None
     env, packet, done = None, None, True
     if saved is not None:
         agent.load_state_dict(saved['agent'])
@@ -145,6 +263,8 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
         pool = saved['pool']
         step, simulated, episodes = saved['step'], saved['simulated_steps'], saved['episodes']
         prior_elapsed, auxiliary, done = saved['elapsed'], saved['auxiliary'], saved['done']
+        losses = saved.get('learning_checks', {})
+        bootstrap_updates, bootstrap_repair = saved.get('bootstrap_updates',0), saved.get('bootstrap_repair')
         if saved['snapshot'] is not None:
             env = copy.deepcopy(saved['snapshot'].environment)
             packet = public_packet(env)
@@ -179,6 +299,10 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
     started = time.perf_counter()
     total = t['gate_steps'] + t['joint_steps']
     stop_at = total if max_steps is None else min(total, step + int(max_steps))
+    if stop_at_step is not None:
+        if not 0 < stop_at_step <= total or step > stop_at_step:
+            raise ValueError('The absolute development checkpoint is outside the remaining training budget.')
+        stop_at = min(stop_at, int(stop_at_step))
     if stop_after_stage not in (None, 'gate', 'joint'):
         raise ValueError('Unknown absolute training-stage boundary.')
     if stop_after_stage == 'gate':
@@ -196,12 +320,17 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
         atomic_torch(output / 'resume.pth', dict(format='interaction-sac-resume-v1', config=config,
             agent=agent.state_dict(), replay=replay.state_dict(), pool=pool, step=step, simulated_steps=simulated,
             episodes=episodes, elapsed=elapsed, auxiliary=auxiliary, done=bool(done),
-            snapshot=None if env is None else compact_snapshot(env), random=RandomState.capture()))
+            snapshot=None if env is None else compact_snapshot(env), random=RandomState.capture(),
+            learning_checks=losses,bootstrap_updates=bootstrap_updates,bootstrap_repair=bootstrap_repair))
         export_policy(agent, output, step)
         if step in (t['gate_steps'], total):
             export_policy(agent, output, step, endpoint=True)
+        if (stop_at_step is not None and step == stop_at_step and not agent.legacy and
+                not (output/f'probe-{step}.pth').exists()):
+            export_probe(agent, output, step, losses)
         atomic_json(output / 'progress.json', dict(step=step, total=total, stage=agent.stage,
-                    simulated_steps=simulated, elapsed=elapsed, complete=step == total))
+                    simulated_steps=simulated, elapsed=elapsed, complete=step == total,
+                    updates=max(0, step-t['warm_steps']+1), bootstrap_updates=bootstrap_updates, learning_checks=losses))
 
     try:
         while step < stop_at:
@@ -212,7 +341,8 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
             if done:
                 env = TADEnv(config['agent']['defender_num'], LearningSide='Att' if attacker else 'Def',
                              **config['environment'])
-                agility = t.get('fixed_agility', 2.25 if stage == 'gate' else 2. + .25 * min(3, (step - t['gate_steps']) // 250000))
+                agility = t.get('fixed_agility', 2.25 if stage == 'gate' else
+                    2. + .25 * min(3, (step - t['gate_steps']) // t.get('curriculum_interval', 250000)))
                 with preserved_random_state():
                     np.random.seed(100000000 + int(t['seed']) * 10000 + episodes)
                     obs, _ = env.reset(agility, noisy_agility=True)
@@ -233,7 +363,12 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
                     attacker=None if attacker is None else attacker.state_dict())
                 simulated += used
             if step >= t['warm_steps']:
-                losses = agent.learn(replay, auxiliary)
+                if agent.legacy:
+                    losses = agent.learn(replay, auxiliary)
+                else:
+                    losses = agent.learn(replay, auxiliary,
+                        diagnostics=step % t['log_interval'] == 0 or step == stop_at)
+                    bootstrap_updates += int(agent.bootstrap_critic is not None)
             if step % t['eval_interval'] == 0 or step in (t['gate_steps'], total):
                 scores = evaluate(agent, t['eval_episodes'], 310000000 + int(t['seed']) * 10000,
                                   config['agent']['defender_num'], attacker=attacker)
@@ -248,11 +383,15 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
                 print('[IA-EVAL] ' + json.dumps(row), flush=True)
             if step % t['log_interval'] == 0:
                 status = dict(step=step, total=total, stage=stage, simulated_steps=simulated,
-                              elapsed=prior_elapsed + time.perf_counter()-started, complete=False, **losses)
+                              elapsed=prior_elapsed + time.perf_counter()-started, complete=False,
+                              bootstrap_updates=bootstrap_updates, **losses)
                 atomic_json(output / 'progress.json', status)
                 print('[IA-TRAIN] ' + json.dumps(status), flush=True)
             if step % t['checkpoint_interval'] == 0 or step in (stop_at, t['gate_steps']):
                 checkpoint()
+        if (stop_at_step is not None and step == stop_at_step and not agent.legacy and
+                not (output/f'probe-{step}.pth').exists()):
+            export_probe(agent, output, step, losses)
         return dict(output=str(output), step=step, complete=step == total)
     except KeyboardInterrupt:
         checkpoint()
@@ -271,10 +410,28 @@ def main():
     parser.add_argument('--pretrain', type=Path)
     parser.add_argument('--max-steps', type=int)
     parser.add_argument('--stop-after-stage', choices=['gate', 'joint'])
+    parser.add_argument('--stop-at-step', type=int)
+    parser.add_argument('--formal', action='store_true')
+    parser.add_argument('--repair-bootstrap', action='store_true')
+    parser.add_argument('--recondition-bootstrap-if-needed', action='store_true')
     parser.add_argument('--smoke', action='store_true')
     args = parser.parse_args()
+    if args.repair_bootstrap:
+        # The scheduler and all owned training jobs must already be stopped.
+        import fcntl
+        study=args.output.resolve().parents[2]
+        with (study/'runner.lock').open('a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            status=json.loads((study/'status.json').read_text())
+            if status.get('active'):
+                raise RuntimeError('Stop all training jobs before bootstrap reconditioning.')
+            print(json.dumps(recondition_bootstrap(args.output,args.device)),flush=True)
+        return
     config = arm_config(yaml.safe_load(args.config.read_text(encoding='utf-8')), args.arm)
     config['training'].update(seed=args.seed, pretrain_checkpoint=None if args.pretrain is None else str(args.pretrain))
+    if args.formal:
+        # The new confirmatory budget is one million additional real transitions in total.
+        config['training'].update(joint_steps=750000, curriculum_interval=187500)
     if args.smoke:
         config['training'].update(gate_steps=20, joint_steps=20, warm_steps=8, replay_capacity=128,
             eval_interval=20, eval_episodes=2, checkpoint_interval=20, log_interval=10,
@@ -282,8 +439,12 @@ def main():
         config['rl']['batch_size'] = 16
         config['interaction'].update(workers=0, pairs_per_batch=2, intervention_interval=10,
                                      horizon_steps=2, snapshot_interval=2)
+    if args.recondition_bootstrap_if_needed and (args.output/'resume.pth').exists():
+        previous=yaml.safe_load((args.output/'config.yaml').read_text(encoding='utf-8'))
+        if previous['interaction'].get('bootstrap_source','coupled') == 'coupled':
+            recondition_bootstrap(args.output,args.device)
     print(json.dumps(run_training(config, device=args.device, output=args.output, max_steps=args.max_steps,
-                                  stop_after_stage=args.stop_after_stage)), flush=True)
+                                  stop_after_stage=args.stop_after_stage, stop_at_step=args.stop_at_step)), flush=True)
 
 
 if __name__ == '__main__':
