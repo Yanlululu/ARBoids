@@ -264,15 +264,20 @@ def deployment_evidence(study):
                j['validation']['setting'],j['validation']['trial']) for j in jobs}
     if len(jobs) != 60 or actual != expected:
         raise ValueError('The fixed deployment validation matrix is incomplete.')
-    rows, inputs, input_paths = [], {}, {}
+    rows, inputs, input_paths, artifact_inputs = [], {}, {}, {}
     for job in jobs:
         spec = job['validation']
         path = Path(job['result'])
         result = json.loads(path.read_text())
+        checkpoint = study/f'training/seed-{spec["seed"]}/{spec["arm"]}/policy.pth'
+        fingerprint = digest(checkpoint)
         if (not result.get('passed') or result.get('outcome_code') not in (1,2,3,4) or
                 result.get('seed') != spec['scene_seed'] or result.get('setting') != spec['setting'] or
-                result.get('num_robots') != spec['defenders']+1 or result.get('controller') != 'IACRRL'):
+                result.get('num_robots') != spec['defenders']+1 or result.get('controller') != 'IACRRL' or
+                result.get('duration_limit') != 60 or result.get('termination_rule') != 'paper' or
+                result.get('agility') != 2.25 or result.get('checkpoint_sha256') != fingerprint):
             raise ValueError('Deployment validation has an invalid or mismatched episode.')
+        artifact_inputs[str(checkpoint.relative_to(study))] = fingerprint
         inputs[job['name']] = digest(path)
         input_paths[job['name']] = str(path.relative_to(study))
         code, duration = result['outcome_code'], float(result['simulation_seconds'])
@@ -290,7 +295,7 @@ def deployment_evidence(study):
                 contrasts.append(dict(seed=seed, reference=arm, defenders=n, setting=c,
                     **{m: float(np.mean([lookup[seed,'full',n,c,i][m]-lookup[seed,arm,n,c,i][m]
                         for i in range(5)])) for m in METRICS}))
-    return dict(stage='deployment', seeds=list(SEEDS[:2]), inputs=inputs, input_paths=input_paths,
+    return dict(stage='deployment', seeds=list(SEEDS[:2]), inputs=inputs, input_paths=input_paths, artifact_inputs=artifact_inputs,
         technical_checks_passed=True, episodes=rows, seed_contrasts=contrasts,
         scope='Independent deployment validation only; five paired scenes per seed and condition, not final VRX evidence',
         interpretation='Inspect task failures and consistency across both seeds; this small bank screens transfer before replication.')
