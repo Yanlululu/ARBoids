@@ -324,6 +324,8 @@ def main():
                    f'world:={world}', f'headless:={str(args.headless).lower()}']
         if args.headless:
             command += ['extra_gz_args:=--headless-rendering']
+        if hasattr(trial, 'additional_launch_arguments'):
+            command += trial.additional_launch_arguments()
         launch_env = dict(os.environ)
         launch_env['GZ_PARTITION'] = f'arboids-{os.getpid()}-{uuid.uuid4().hex[:8]}'
         result['gazebo_partition'] = launch_env['GZ_PARTITION']
@@ -342,6 +344,8 @@ def main():
                     raise RuntimeError(f'Gazebo launch exited ({process.returncode}); see gazebo.log')
                 if time.monotonic() - started > args.startup_timeout:
                     raise TimeoutError('Waiting for all vessel poses and thrust bridge subscribers')
+                if hasattr(trial, 'startup_tick'):
+                    trial.startup_tick(output, launch_env)
                 rclpy.spin_once(trial.node, timeout_sec=0.05)
             start_sim = float(np.min(trial.last_stamp))
             next_action = 0.

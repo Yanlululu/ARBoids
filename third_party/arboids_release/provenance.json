@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/taojy687/ARBoids",
+  "commit": "9eb6df464808af6b9729f39644b4d658e1695e2d",
+  "files": {
+    "LICENSE": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+    "train/envs/modules.py": "c947be812f9f952b71241f8b0538114ea92cdd5a4f86c72bb4161cebc94b92b2",
+    "train/envs/TADgame.py": "cbfb0d50082d428ac43d92718fb2bb182314bc04f584bbccd9aa58023b723807",
+    "train/policy/networks.py": "c3d7c11cdf5d780f42640645736c10717061910ee246e808753c7fedb5ca0e0d",
+    "train/policy/SAC.py": "2c799797ca5ac4ced9bca348153bbfee247251b432813d4ca1675fb1d242fa6c",
+    "vrx/tad_vrx_experiment.py": "3134413500e4d969e242cbbfad64074da522e1e9cb71e88faeb7883d8fcec0be",
+    "vrx/models.py": "abd004c7b5770ea343589c68676636ce29df4e5ba99d8bce7b0195a123cb4a08",
+    "vrx/utils.py": "c196466a2c1c2796939ebf691b4be896aabf3a9ee2ae125163b6f5cc6c64f753",
+    "train/configs/train.yaml": "ab17366095bb4db2d0dc774be28d8032056f783b62a07512c3e94ed0df2ad21b"
+  }
+}

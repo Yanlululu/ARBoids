@@ -81,12 +81,13 @@ def run_controlled(case, policy, *, mode='baseline', theta=None, active_steps=1,
                    grid=(0., .25, .5, .75, 1.), nominal=False, stop_after=None):
     """Run a full episode, or a labelled truncated prefix for model audits.
 
-    pulse: one gate impulse; hold: fixed initial physical thrust; rolling:
-    re-observe/re-propose/reselect every cycle while the correction is enabled.
+    pulse: one gate impulse; hold: fixed initial physical thrust; constant:
+    fixed gates applied to fresh candidates; rolling: reselect every cycle;
+    rolling_once: reselect only on the first predicted warning.
     A finite active_steps budget is measured from the captured state, not from
     the first alarm. None enables the rule throughout the remaining episode.
     """
-    if mode not in ('baseline', 'pulse', 'hold', 'rolling'):
+    if mode not in ('baseline', 'pulse', 'hold', 'constant', 'rolling', 'rolling_once'):
         raise ValueError('Unknown intervention mode.')
     if active_steps is not None and (not isinstance(active_steps, int) or active_steps < 1):
         raise ValueError('Use positive active steps or None for the remaining episode.')
@@ -118,10 +119,13 @@ def run_controlled(case, policy, *, mode='baseline', theta=None, active_steps=1,
             override = None
             if mode == 'pulse' and steps == 0:
                 action[:, 2] = theta
+            elif mode == 'constant' and enabled:
+                action[:, 2] = theta
             elif mode == 'hold' and enabled:
                 override = fixed_thrust
                 action[:, 2] = theta  # descriptive; physical override is authoritative
-            elif mode == 'rolling' and enabled:
+            elif (mode in ('rolling', 'rolling_once') and enabled
+                  and (mode == 'rolling' or warnings == 0)):
                 action[:, 2], forecast = choose_rolling_gate(
                     env, action, horizon=horizon, safe_distance=safe_distance,
                     change_penalty=change_penalty, grid=grid)

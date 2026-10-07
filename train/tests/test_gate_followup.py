@@ -80,6 +80,29 @@ class GateFollowupTests(unittest.TestCase):
         self.assertFalse(info['warning'])
         np.testing.assert_array_equal(theta, case.theta)
 
+    def test_one_shot_waits_for_first_warning_then_resumes_original_gate(self):
+        case, _ = make_case(total_time=1.6)
+        calls = []
+        def choose(env, action, **kwargs):
+            calls.append(env.Current_T)
+            warning = len(calls) == 3
+            return (np.full(3, .9) if warning else action[:, 2].copy()), dict(warning=warning)
+        with patch('gate_followup.choose_rolling_gate', choose):
+            trace = run_controlled(case, policy, mode='rolling_once', active_steps=None, future_seed=5)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(trace.summary['warning_steps'], 1)
+        self.assertAlmostEqual(trace.summary['first_warning_time'], case.snapshot.environment.Current_T + .4)
+        expected = np.tile(case.theta, (len(trace.gates), 1))
+        expected[2] = .9
+        np.testing.assert_array_equal(trace.gates, expected)
+
+    def test_fixed_blend_remains_fixed_throughout_episode(self):
+        case, _ = make_case(total_time=1.6)
+        trace = run_controlled(case, policy, mode='constant', theta=np.full(3, .5),
+                               active_steps=None, future_seed=5)
+        np.testing.assert_array_equal(trace.gates, np.full((len(trace.gates), 3), .5))
+        self.assertTrue(trace.summary['terminated'])
+
     def test_prefix_comparison_does_not_score_unobserved_future(self):
         case, _ = make_case(total_time=.6)
         paths, _, _ = held_forecasts(case.snapshot.environment, case.action, case.theta[None], 2.)

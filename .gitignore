@@ -54,3 +54,7 @@ experiments/
 /vrx/vrx_urdf/wamv_gazebo/models/
 
 /vrx/vrx_urdf/vrx_gazebo/models/
+
+# Isolated, pinned dependencies for the source-code comparison study.
+/train/_study_dependencies/
+/train/_study_dependencies_linux/
