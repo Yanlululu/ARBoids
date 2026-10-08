@@ -50,6 +50,71 @@ def equal(test, a, b):
 
 
 class CandidateRoles(unittest.TestCase):
+    def test_linked_strata_bootstrap_retains_cross_stratum_pairs(self):
+        from analyze_candidate_roles import analyze_linked_strata
+        count = 128
+        protocol = dict(stage='independent_locked_confirmation', files={},
+            methods=['joint', 'additive'], count=count, conditions=[[6, 4., 1000], [6, 6., 2000]],
+            primary_method='joint', primary_references=['additive'], familywise_alpha=.05,
+            bootstrap_repetitions=2000, primary_population='synthetic linked-strata fixture')
+        rows = []
+        for cell, (_, agility, bank) in enumerate(protocol['conditions']):
+            for i in range(count):
+                offset = 4. if (i+cell) % 2 else -4.
+                for method in protocol['methods']:
+                    rows.append(dict(method=method, defenders=6, agility=agility, scene_seed=bank+i,
+                        capture_time=10. if method == 'joint' else 18.+offset,
+                        capture=1, success=1, collision=0, breach=0, timeout=0))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for filename, data in [('protocol.json', protocol),
+                    ('results.json', dict(complete=True, protocol=protocol, episodes=rows)),
+                    ('linked-strata-protocol.json', dict(conditions=protocol['conditions'], count=count))]:
+                (root/filename).write_text(json.dumps(data), encoding='utf-8')
+            result = analyze_linked_strata(root)
+        self.assertEqual(result['independent_random_stream_blocks'], count)
+        self.assertEqual(result['contrasts']['additive']['time_interval'], [-8., -8.])
+        lower = result['contrasts']['additive']['preservation']['success']['conservative_lower']
+        self.assertAlmostEqual(lower, .025**(1./count)-1.)
+        self.assertTrue(result['criteria_passed'])
+
+    def test_elapsed_time_bound_preserves_the_best_joint_forecast(self):
+        from evaluate_candidate_roles import adaptive_guard_controller
+        from feedback_joint_control import observe
+        seed_random(1020000000)
+        env = TADEnv(6, protocol='paper-parameters-v1')
+        obs, _ = env.reset(4., noisy_agility=False)
+        measured = observe(env, obs)
+        controller = adaptive_guard_controller(6)
+        original = [controller.predict(measured, t) for t in controller.options]
+        best = min(original, key=lambda p: p['score'])
+        self.assertEqual(best['score'][:2], (0, 0))
+        controller.prediction_bound = lambda: best['score'][2]
+        bounded = [controller.predict(measured, t) for t in controller.options]
+        self.assertTrue(any(p.get('pruned') for p in bounded))
+        actual = min(bounded, key=lambda p: p['score'])
+        self.assertEqual(actual['template'], best['template'])
+        for key in ('score', 'positions', 'attackers', 'commands'):
+            np.testing.assert_array_equal(actual[key], best[key])
+
+    def test_adaptive_guard_bank_preserves_both_control_families(self):
+        from evaluate_candidate_roles import adaptive_guard_controller, ConditionalGuardResidual
+        from policy.role_residual import RoleResidualPolicy
+        from feedback_joint_control import observe
+        seed_random(86)
+        env = TADEnv(6, protocol='paper-parameters-v1')
+        obs, _ = env.reset(4., noisy_agility=False)
+        measured = observe(env, obs)
+        packet = dict(obs=np.asarray(measured.observations, dtype=np.float32), motion=measured.defenders)
+        controller = adaptive_guard_controller(6)
+        point, guard = RoleResidualPolicy(), ConditionalGuardResidual()
+        self.assertEqual(len(controller.options), 43)
+        for name, mask in controller.options.items():
+            expected = (guard if name.startswith('guard-') else point).compose(packet, mask)
+            np.testing.assert_array_equal(controller.nominal(measured, name), expected)
+        np.testing.assert_array_equal(controller.nominal(measured, 'baseline'),
+                                      CandidateRolePolicy().choose_action(packet)[0])
+
     def test_guard_handover_keeps_zero_residual_and_fills_outer_roles(self):
         from evaluate_candidate_roles import ConditionalGuardResidual
         policy = ConditionalGuardResidual()

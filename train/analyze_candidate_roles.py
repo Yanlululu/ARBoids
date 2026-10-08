@@ -78,6 +78,57 @@ def analyze(root):
         scope='Task and matched predictive interaction evidence; learned-policy and runtime claims remain separate.')
 
 
+def analyze_linked_strata(root):
+    """Keep same-offset strata together when their initial/future seeds overlap."""
+    original = analyze(root)
+    result = json.loads((root/'results.json').read_text())
+    protocol = result['protocol']
+    design_path = root/'linked-strata-protocol.json'
+    design = json.loads(design_path.read_text())
+    if design['conditions'] != protocol['conditions'] or design['count'] != protocol['count']:
+        raise ValueError('Linked-strata design does not match the frozen evaluation.')
+    count, strata = protocol['count'], len(protocol['conditions'])
+    index = {(r['scene_seed'], r['method']): r for r in result['episodes']}
+    primary = protocol['primary_method']
+    alpha = protocol['familywise_alpha']/len(protocol['primary_references'])
+    draws = np.random.default_rng(20261008).integers(0, count,
+        size=(protocol['bootstrap_repetitions'], count))
+
+    def paired_values(reference, metric):
+        return np.array([[index[bank+i, primary][metric]-index[bank+i, reference][metric]
+            for i in range(count)] for _, _, bank in protocol['conditions']]).mean(0)
+
+    def bounded_binary_lower(delta):
+        # A positive block difference is at least 1/strata; a negative one
+        # can have magnitude at most 1, including unobserved severe losses.
+        wins, losses = int((delta > 0).sum()), int((delta < 0).sum())
+        lower_win = 0. if wins == 0 else float(beta.ppf(.025, wins, count-wins+1))
+        upper_loss = 1. if losses == count else float(beta.ppf(.975, losses+1, count-losses))
+        lower = lower_win/strata-upper_loss
+        return dict(winning_blocks=wins, losing_blocks=losses,
+            difference=float(delta.mean()), conservative_lower=lower,
+            noninferior_3pp=lower >= -.03)
+
+    contrasts = {}
+    for reference in protocol['primary_references']:
+        delta = paired_values(reference, 'capture_time')
+        interval = np.quantile(delta[draws].mean(1), [alpha/2., 1.-alpha/2.]).tolist()
+        preservation = {key: bounded_binary_lower(paired_values(reference, key))
+                        for key in ('capture', 'success')}
+        a, b = original['table'][primary], original['table'][reference]
+        passed = (original['contrasts'][reference]['improvement'] >= protocol.get('minimum_time_improvement', .10)
+                  and interval[1] < 0. and a['collision'] <= b['collision'] and a['success'] >= b['success']
+                  and all(p['noninferior_3pp'] for p in preservation.values()))
+        contrasts[reference] = dict(time_difference=float(delta.mean()), time_interval=interval,
+            preservation=preservation, passed=bool(passed))
+    return dict(complete=True, independent_random_stream_blocks=count, scenarios=count*strata,
+        criteria_passed=all(c['passed'] for c in contrasts.values()), contrasts=contrasts,
+        time_interval_confidence=1.-alpha, binary_one_sided_confidence=.95,
+        results_sha256=original['results_sha256'], protocol_sha256=original['protocol_sha256'],
+        sensitivity_protocol_sha256=hashlib.sha256(design_path.read_bytes()).hexdigest(),
+        scope='Additional dependence-aware sensitivity analysis; preserves the original registered analysis.')
+
+
 def analyze_learning(root):
     design_path = root/'predictive-learning-analysis-protocol.json'
     design = json.loads(design_path.read_text())
@@ -164,9 +215,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
     parser.add_argument('--learning', action='store_true')
+    parser.add_argument('--linked-strata', action='store_true')
     args = parser.parse_args()
-    output = analyze_learning(args.directory) if args.learning else analyze(args.directory)
-    destination = args.directory/('predictive-learning-analysis.json' if args.learning else 'analysis.json')
+    if args.learning and args.linked_strata:
+        parser.error('Choose one analysis population.')
+    output = (analyze_linked_strata(args.directory) if args.linked_strata else
+              analyze_learning(args.directory) if args.learning else analyze(args.directory))
+    destination = args.directory/('linked-strata-analysis.json' if args.linked_strata else
+        'predictive-learning-analysis.json' if args.learning else 'analysis.json')
     text = json.dumps(output, ensure_ascii=False, indent=2, allow_nan=False)
     if destination.exists() and destination.read_text(encoding='utf-8') != text:
         raise RuntimeError('A different analysis already exists.')

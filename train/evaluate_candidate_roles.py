@@ -108,6 +108,58 @@ def guard_composition_controller(n, independent=False, tail_steps=100):
     return controller
 
 
+def adaptive_guard_controller(n, independent=False, tail_steps=100):
+    """Choose the guard response jointly with the pursuing-vessel composition."""
+    from role_prediction import RolePrediction
+
+    class AdaptiveGuardPrediction(RolePrediction):
+        def __init__(self):
+            super().__init__(n, tail_steps=tail_steps, tail_policy='candidate')
+            masks = self.options
+            self.options = {'baseline': masks['baseline']}
+            for mode in ('guard', 'point'):
+                self.options.update({mode+'-'+key: mask for key, mask in masks.items() if key != 'baseline'})
+            self.completion = ConditionalGuardResidual()
+            self.expanded_plans = self.forecast_calls = 0
+            self.mode_plans = dict(baseline=0, guard=0, point=0)
+
+        def control(self, measurement):
+            force, info = super().control(measurement)
+            if info['planned']:
+                self.mode_plans[self.template.split('-')[0]] += 1
+            return force, info
+
+        def nominal(self, measurement, template):
+            policy = self.completion if template.startswith('guard-') else self.residual
+            packet = dict(obs=np.asarray(measurement.observations, dtype=np.float32),
+                          motion=measurement.defenders)
+            return policy.compose(packet, self.options[template])
+
+        def predict(self, measurement, template):
+            if template == 'point-1':
+                self.expanded_plans += 1
+            predicted = super().predict(measurement, template)
+            self.forecast_calls += 1
+            if independent:
+                score = predicted['score']
+                cost = 360.*score[0]+180.*score[1]+score[2]
+                if template == 'baseline':
+                    self.base_cost = cost
+                    self.single_costs = {mode: np.zeros(n) for mode in ('guard', 'point')}
+                    surrogate = cost
+                else:
+                    mode = template.split('-')[0]
+                    mask = self.options[template]
+                    if mask.sum() == 1:
+                        self.single_costs[mode][int(mask.argmax())] = cost-self.base_cost
+                    surrogate = self.base_cost+mask@self.single_costs[mode]
+                predicted['joint_score'] = score
+                predicted['score'] = (0, 0, surrogate)
+            return predicted
+
+    return AdaptiveGuardPrediction()
+
+
 def full_composition_controller(n, independent=False):
     from role_prediction import RolePrediction
 
@@ -224,6 +276,14 @@ def run_one(task):
             raise ValueError('The role-handover pilot is limited to six vessels.')
         row, _ = rollout(seed, agility, lambda: guard_composition_controller(n,
             method == 'role_guard_independent', tail_steps=0 if method == 'role_guard_short' else 100))
+    elif method in ('role_adaptive_guard', 'role_adaptive_guard_independent', 'role_adaptive_guard_short'):
+        from distill_role_value import rollout
+        if n != 6:
+            raise ValueError('The adaptive guard-composition pilot uses six vessels.')
+        row, controller = rollout(seed, agility, lambda: adaptive_guard_controller(n,
+            independent=method.endswith('_independent'), tail_steps=0 if method.endswith('_short') else 100))
+        row.update(planning_calls=controller.plan_count, expanded_plans=controller.expanded_plans,
+                   forecast_calls=controller.forecast_calls, mode_plans=controller.mode_plans)
     elif method in ('role_long_sustained', 'role_long_independent'):
         from distill_role_value import rollout
         from role_prediction import RolePrediction
@@ -267,14 +327,24 @@ def main():
                         'fixed', 'distance', 'greedy', 'long_prediction'])
     parser.add_argument('--count', type=int, default=32)
     parser.add_argument('--scene-base', type=int, default=1020000000)
+    parser.add_argument('--scene-stride', type=int, default=10000000)
     parser.add_argument('--agilities', nargs='+', type=float, default=[4., 6.])
     parser.add_argument('--defenders', type=int, default=6)
     parser.add_argument('--workers', type=int, default=16)
     parser.add_argument('--locked-confirmation', action='store_true')
     parser.add_argument('--primary-method', default='role_sustained')
+    parser.add_argument('--primary-references', nargs='+')
     parser.add_argument('--replicate-interaction', action='store_true')
     parser.add_argument('--minimum-initial-separation', type=float)
     args = parser.parse_args()
+    if args.count <= 0 or args.scene_stride <= 0:
+        parser.error('Scene count and stratum stride must be positive.')
+    conditions = [(args.defenders, a, args.scene_base+i*args.scene_stride)
+                  for i, a in enumerate(args.agilities)]
+    initial_seeds = [bank+i for _, _, bank in conditions for i in range(args.count)]
+    all_streams = initial_seeds+[seed+1000000 for seed in initial_seeds]
+    if len(set(all_streams)) != len(all_streams) or not all(0 <= s < 2**32 for s in all_streams):
+        parser.error('Initialization and disturbance streams must be disjoint and fit uint32.')
     if args.replicate_interaction and (args.locked_confirmation or set(args.methods) != {'role_sustained', 'role_independent'}):
         parser.error('Interaction replication requires exactly the frozen joint and additive controls.')
     allowed = {'source', 'joint', 'independent', 'fixed', 'distance', 'greedy', 'long_prediction',
@@ -282,12 +352,20 @@ def main():
                'role_long_sustained', 'role_long_independent'} | set(RESIDUAL_SETTINGS)
     allowed |= {'role_all_sustained', 'role_all_independent'}
     allowed |= {'role_guard_sustained', 'role_guard_independent', 'role_guard_short'}
+    allowed |= {'role_adaptive_guard', 'role_adaptive_guard_independent', 'role_adaptive_guard_short'}
     if not set(args.methods) <= allowed or len(set(args.methods)) != len(args.methods):
         parser.error('Unknown or duplicate methods.')
     if args.locked_confirmation and (args.primary_method not in args.methods or len(args.methods) < 2):
         parser.error('Locked confirmation requires its primary method and at least one reference.')
     if args.replicate_interaction and args.primary_method != 'role_sustained':
         parser.error('The original interaction replication has a fixed primary method.')
+    references = args.primary_references or [m for m in args.methods if m != args.primary_method]
+    if args.primary_references is not None:
+        if not args.locked_confirmation or args.replicate_interaction:
+            parser.error('Explicit primary references require a new locked confirmation.')
+        if (len(set(references)) != len(references) or args.primary_method in references
+                or not set(references) <= set(args.methods)):
+            parser.error('Primary references must be distinct evaluated comparison methods.')
     if args.output.exists():
         parser.error('Use a new result directory; existing evidence is immutable.')
     if hasattr(os, 'sched_setaffinity'):
@@ -296,11 +374,13 @@ def main():
              Path('train/interaction_rollout.py'), Path('train/train_interaction.py'),
              Path('train/interaction_evaluation.py'), Path('train/envs/TADgame.py'),
              Path('train/policy/role_residual.py'), Path('train/role_prediction.py'),
-             Path('train/distill_role_value.py')]
+             Path('train/distill_role_value.py'), Path('train/jit_rollout.py'),
+             Path('train/jit_nominal_environment.py'), Path('train/feedback_joint_control.py'),
+             Path('train/predictive_interception_v2.py'), Path('train/policy/role_value.py')]
     hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
-    conditions = [(args.defenders, a, args.scene_base + i * 1000000)
-                  for i, a in enumerate(args.agilities)]
     protocol = dict(methods=args.methods, count=args.count, conditions=conditions,
+        scene_seed_stride=args.scene_stride, future_seed_offset=1000000,
+        disjoint_initialization_and_disturbance_streams=True,
         files=hashes, frozen_before_execution=True, stage='development_comparator_challenge',
         environment='paper-parameters-v1', capped_capture_seconds=60,
         common_random_scene_and_disturbance=True, formal_evidence=False)
@@ -315,7 +395,8 @@ def main():
     if args.locked_confirmation or args.replicate_interaction:
         protocol.update(stage=('independent_interaction_replication' if args.replicate_interaction else 'independent_locked_confirmation'),
             primary_method=args.primary_method,
-            primary_references=[m for m in args.methods if m != args.primary_method],
+            primary_references=references,
+            secondary_references=[m for m in args.methods if m != args.primary_method and m not in references],
             primary_population=f'equal-weight {args.defenders}-vessel agility strata {args.agilities}',
             primary_gate='At least 10% lower pooled capped time against every primary reference; '
                 'paired stratified simultaneous bootstrap intervals exclude zero; '

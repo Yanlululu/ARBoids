@@ -20,6 +20,8 @@ class JitRolloutController(ArrayRolloutController):
         current = measurement
         positions, attackers, commands = [current.defenders.copy()], [current.attacker.copy()], []
         nearest_pair = minimum_separation(current.defenders)
+        penalty = self.departure_seconds if template != 'baseline' else 0.
+        score_bound = getattr(self, 'prediction_bound', None)
         held = None
         done = prefix_done = used = 0
         execution_policy = self.policy
@@ -42,6 +44,13 @@ class JitRolloutController(ArrayRolloutController):
                 used = step + 1
                 if done:
                     break
+                # A safe completed forecast supplies an upper bound on the
+                # model selection objective. Any unfinished forecast costs at
+                # least elapsed time plus departure; future failure is worse
+                # lexicographically. Strict comparison preserves score ties.
+                if score_bound is not None and used*.2+penalty > score_bound()+1e-9:
+                    return dict(template=template, score=(1, 1, np.inf),
+                                pruned=True, simulated_steps=used)
         finally:
             self.policy = execution_policy
         elapsed = used * .2
@@ -52,9 +61,9 @@ class JitRolloutController(ArrayRolloutController):
             estimated = measurement.total_time - measurement.time
         if self.failure_cost == 'delay' and done in (1, 2):
             estimated = 2. * (measurement.total_time - measurement.time) - elapsed
-        penalty = self.departure_seconds if template != 'baseline' else 0.
         score = (int(done == 2), int(done == 1), estimated + penalty)
         return dict(template=template, score=score, outcome=int(prefix_done), continuation_outcome=int(done),
+                    simulated_steps=used,
                     continuation_steps=max(0, used - self.block_steps), minimum_distance=nearest_pair,
                     positions=np.asarray(positions), attackers=np.asarray(attackers), commands=np.asarray(commands),
                     estimated_capture_time=estimated, guard_margin=guard_margin,
