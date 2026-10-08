@@ -9,7 +9,7 @@ import torch
 
 from envs.TADgame import TADEnv
 from envs.snapshot import SimulationSnapshot, preserved_random_state
-from policy.interaction_sac import InteractionActor, TwinTeamCritic, tensor_packet
+from policy.interaction_sac import InteractionActor, TwinTeamCritic, tensor_packet, bootstrap_value
 
 
 def public_packet(env, observations=None):
@@ -30,7 +30,22 @@ def safety_controller(defenders):
         return CBFController(defenders)
 
 
-def execute(env, packet, action, *, safety=True, attacker_action=None):
+def transition_reward(reward, previous_time, current_time, total_time, outcome, defenders,
+                      objective='paper-reward-v1'):
+    if objective == 'paper-reward-v1':
+        return reward
+    if objective != 'capped-time-v1':
+        raise ValueError('Unknown training reward objective.')
+    # With gamma=1 the whole episode sums to minus capped capture time,
+    # including early unsuccessful terminations. Evaluation is unchanged.
+    cost = current_time - previous_time
+    if outcome and outcome != 3:
+        cost += max(0., total_time - current_time)
+    return np.full(defenders, -cost, dtype=np.float32)
+
+
+def execute(env, packet, action, *, safety=True, attacker_action=None, reward_objective='paper-reward-v1'):
+    previous_time = float(env.Current_T)
     if safety:
         _, thrust, info = safety_controller(env.defender_num).control(np.asarray(packet['motion'], dtype=float), action, env.boids_actions)
     else:
@@ -41,6 +56,8 @@ def execute(env, packet, action, *, safety=True, attacker_action=None):
     if env.LearningSide == 'Att':
         info['attacker_reward'] = float(reward)
         reward = np.sum(env.paper_reward_components(), axis=0)
+    reward = transition_reward(reward, previous_time, float(env.Current_T), float(env.Total_T),
+                               int(outcome), env.defender_num, reward_objective)
     return public_packet(env, obs), reward, int(outcome), thrust, info, att_obs
 
 
@@ -78,7 +95,7 @@ def frozen_payload(agent, *, online_critic=False, attacker=None):
     cpu_state = lambda model: {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     return dict(config=copy.deepcopy(agent.config), actor=cpu_state(agent.actor),
                 critic=cpu_state(agent.critic if online_critic else agent.target),
-                alpha=float(agent.alpha), gamma=agent.gamma, attacker=attacker)
+                alpha=float(agent.alpha), gamma=agent.gamma, stage=agent.stage, attacker=attacker)
 
 
 class FrozenPolicy:
@@ -86,12 +103,18 @@ class FrozenPolicy:
         config = payload['config']
         hidden, relation = config['rl']['hidden_dim'], config['interaction']['relation_dim']
         self.actor = InteractionActor(hidden, relation,
-            peer_candidates=config['interaction'].get('peer_candidates', True)).eval().requires_grad_(False)
-        self.critic = TwinTeamCritic(hidden, relation).eval().requires_grad_(False)
+            peer_candidates=config['interaction'].get('peer_candidates', True),
+            entropy_objective=config['interaction'].get('entropy_objective', 'joint-sum-v1')).eval().requires_grad_(False)
+        self.actor.stage = payload.get('stage', 'gate')
+        self.critic = TwinTeamCritic(hidden, relation,
+            config['interaction'].get('critic_control_coordinates','raw-v1')).eval().requires_grad_(False)
         self.actor.load_state_dict(payload['actor'])
         self.critic.load_state_dict(payload['critic'])
         self.alpha, self.gamma = payload['alpha'], payload['gamma']
+        self.bootstrap_estimator = config['interaction'].get('bootstrap_estimator', 'min')
         self.safety = config['interaction'].get('safety', True)
+        self.reward_objective = config['interaction'].get('reward_objective', 'paper-reward-v1')
+        self.deterministic_rollouts = config['interaction'].get('deterministic_rollouts', False)
         self.attacker = None
         if payload.get('attacker') is not None:
             from policy.networks import ActorAtt
@@ -102,7 +125,8 @@ class FrozenPolicy:
     def action(self, packet, generator):
         packet = {k: v.unsqueeze(0) for k, v in tensor_packet(packet).items()}
         noise = torch.randn((*packet['obs'].shape[:2], 3), generator=generator)
-        action, logp = self.actor(packet['obs'], packet['motion'], noise=noise)
+        action, logp = self.actor(packet['obs'], packet['motion'], noise=noise,
+                                 deterministic=self.deterministic_rollouts)
         return action[0].numpy(), float(logp.item())
 
     @torch.no_grad()
@@ -110,7 +134,7 @@ class FrozenPolicy:
         action, logp = self.action(packet, generator)
         p = {k: v.unsqueeze(0) for k, v in tensor_packet(packet).items()}
         q1, q2 = self.critic(p, torch.as_tensor(action).unsqueeze(0))
-        return float(torch.minimum(q1, q2).item()) - self.alpha * logp
+        return float(bootstrap_value(q1, q2, self.bootstrap_estimator).item()) - self.alpha * logp
 
     @torch.no_grad()
     def attacker_action(self, env):
@@ -137,7 +161,8 @@ def branch_return(policy, snapshot, first_action, future_seed, policy_seed, step
         else:
             action, logp = policy.action(packet, generator)
         following, reward, done, thrust, _, _ = execute(env, packet, action, safety=policy.safety,
-                                                        attacker_action=policy.attacker_action(env))
+            attacker_action=policy.attacker_action(env),
+            reward_objective=getattr(policy, 'reward_objective', 'paper-reward-v1'))
         total += discount * (float(np.mean(reward)) - policy.alpha * logp)
         if trace:
             traces.append(dict(action=action.copy(), thrust=thrust.copy(), motion=following['motion'].copy(),
@@ -153,9 +178,23 @@ def branch_return(policy, snapshot, first_action, future_seed, policy_seed, step
     return total, k + 1, traces
 
 
+def replaced_gates(action, boat, reference):
+    alternative = action.copy()
+    if boat is None:
+        reference = np.asarray(reference)
+        if reference.shape != (len(action),) or not np.isin(reference, (0., .5, 1.)).all():
+            raise ValueError('Team intervention requires one legal reference per vessel.')
+        alternative[:, 2] = reference
+    else:
+        if reference not in (0., .5, 1.):
+            raise ValueError('Gate reference must be in {0,.5,1}.')
+        alternative[boat, 2] = reference
+    return alternative
+
+
 def intervention_pair(policy, snapshot, future_seed, policy_seed, boat, reference, steps, *, trace=False):
-    if steps < 1 or reference not in (0., .5, 1.):
-        raise ValueError('Positive horizon and reference in {0,.5,1} required.')
+    if steps < 1:
+        raise ValueError('Positive horizon required.')
     with preserved_random_state():
         env = snapshot.restore(future_seed=future_seed)
         if env.protocol != 'paper-parameters-v1':
@@ -163,8 +202,7 @@ def intervention_pair(policy, snapshot, future_seed, policy_seed, boat, referenc
         packet = public_packet(env)
         generator = torch.Generator().manual_seed(policy_seed)
         action, _ = policy.action(packet, generator)
-        alternative = action.copy()
-        alternative[boat, 2] = reference
+        alternative = replaced_gates(action, boat, reference)
         original, n1, t1 = branch_return(policy, snapshot, action, future_seed, policy_seed, steps, trace=trace)
         changed, n2, t2 = branch_return(policy, snapshot, alternative, future_seed, policy_seed, steps, trace=trace)
     result = {**packet, 'action': action, 'counterfactual': alternative,
@@ -176,11 +214,35 @@ def intervention_pair(policy, snapshot, future_seed, policy_seed, boat, referenc
     return result
 
 
-def _worker_pairs(payload, jobs, steps):
+def repeated_intervention_pair(policy, snapshot, future_seed, policy_seed, boat, reference, steps, repetitions):
+    """Average independent futures for one fixed root intervention, paired within each repeat."""
+    if repetitions<1: raise ValueError('Positive continuation count required.')
+    if repetitions==1:
+        return intervention_pair(policy,snapshot,future_seed,policy_seed,boat,reference,steps)
+    with preserved_random_state():
+        packet=public_packet(snapshot.restore(future_seed=future_seed))
+        action,_=policy.action(packet,torch.Generator().manual_seed(policy_seed))
+        alternative=replaced_gates(action,boat,reference)
+        rng=np.random.default_rng([future_seed,policy_seed,708000000])
+        values=[];used=0
+        for _ in range(repetitions):
+            future,noise=map(int,rng.integers(1,2**31-1,size=2))
+            left,n1,_=branch_return(policy,snapshot,action,future,noise,steps)
+            right,n2,_=branch_return(policy,snapshot,alternative,future,noise,steps)
+            values.append((left,right));used+=n1+n2
+        values=np.asarray(values,dtype=np.float64)
+    return {**packet,'action':action,'counterfactual':alternative,
+        'return':np.asarray([values[:,0].mean()],dtype=np.float32),
+        'counterfactual_return':np.asarray([values[:,1].mean()],dtype=np.float32),
+        'difference_standard_error':np.asarray([(values[:,0]-values[:,1]).std(ddof=1)/np.sqrt(repetitions)],dtype=np.float32),
+        'simulated_steps':used,'boat':boat,'reference':reference}
+
+
+def _worker_pairs(payload, jobs, steps, repetitions=1):
     import study_runtime  # Set CPU limits before the first JAX initialization.
     torch.set_num_threads(1)
     policy = FrozenPolicy(payload)
-    return [intervention_pair(policy, snapshot, future, noise, boat, ref, steps)
+    return [repeated_intervention_pair(policy, snapshot, future, noise, boat, ref, steps, repetitions)
             for snapshot, future, noise, boat, ref in jobs]
 
 
@@ -196,20 +258,26 @@ class InterventionSampler:
             # and continuations belong to each method's own current policy.
             rng = np.random.default_rng([600000000, agent.config['training']['seed'], int(step)])
             snapshots = [pool.items[i] for i in rng.integers(len(pool.items), size=config['pairs_per_batch'])]
-            jobs = [(s, int(rng.integers(1000000000,2000000000)), int(rng.integers(2000000000,3000000000)),
-                     int(rng.integers(s.environment.defender_num)), float(rng.choice([0., .5, 1.])))
-                    for s in snapshots]
+            if config.get('intervention_scope', 'single') == 'team':
+                jobs = [(s, int(rng.integers(1000000000,2000000000)), int(rng.integers(2000000000,3000000000)),
+                         None, tuple(rng.choice([0., .5, 1.], size=s.environment.defender_num))) for s in snapshots]
+            else:
+                jobs = [(s, int(rng.integers(1000000000,2000000000)), int(rng.integers(2000000000,3000000000)),
+                         int(rng.integers(s.environment.defender_num)), float(rng.choice([0., .5, 1.])))
+                        for s in snapshots]
             payload = frozen_payload(agent, attacker=attacker)
             steps = config['horizon_steps']
+            repetitions = config.get('label_repetitions',1)
             if self.workers <= 0:
-                rows = _worker_pairs(payload, jobs, steps)
+                rows = _worker_pairs(payload, jobs, steps, repetitions)
             else:
                 if self.executor is None:
                     self.executor = ProcessPoolExecutor(self.workers, mp_context=mp.get_context('spawn'))
                 batches = [jobs[i::self.workers] for i in range(self.workers)]
-                futures = [self.executor.submit(_worker_pairs, payload, part, steps) for part in batches if part]
+                futures = [self.executor.submit(_worker_pairs, payload, part, steps, repetitions) for part in batches if part]
                 rows = [row for future in futures for row in future.result()]
         fields = ('obs', 'motion', 'central', 'action', 'counterfactual', 'return', 'counterfactual_return')
+        if repetitions>1: fields += ('difference_standard_error',)
         return {k: np.stack([row[k] for row in rows]) for k in fields}, sum(r['simulated_steps'] for r in rows)
 
     def close(self):
@@ -218,10 +286,70 @@ class InterventionSampler:
             self.executor = None
 
 
+class CandidateRolePolicy:
+    """Jointly choose distinct interception candidates from public measurements.
+
+    Each vessel proposes a physical control for each lateral interception role.
+    The joint assignment prevents several vessels from choosing the same role.
+    The independent control uses exactly the same candidates and unary costs.
+    The common CBF is applied by the existing execution/deployment entry point.
+    """
+    def __init__(self, width=28., coordinated=True):
+        if not np.isfinite(width) or width <= 0:
+            raise ValueError('Interception width must be finite and positive.')
+        if not isinstance(coordinated, bool):
+            raise ValueError('Coordinated selection must be a boolean.')
+        self.width, self.coordinated = float(width), coordinated
+
+    def candidates(self, packet):
+        state = np.asarray(packet['motion'], dtype=float)
+        obs = np.asarray(packet['obs'])
+        n = len(state)
+        if (n < 2 or state.shape != (n, 6) or obs.shape != (n, 14 + 2 * (n - 1))
+                or not np.isfinite(state).all() or not np.isfinite(obs).all()):
+            raise ValueError('Expected finite public observations and vessel motions.')
+        bearing = state[:, 2] + obs[:, 3]
+        target = (state[:, :2] + obs[:, 2, None] *
+                  np.column_stack((np.cos(bearing), np.sin(bearing)))).mean(0)
+        side = np.array([-target[1], target[0]]) / max(np.linalg.norm(target), 1e-9)
+        goals = target + np.linspace(-self.width, self.width, n)[:, None] * side
+        delta = goals[None] - state[:, None, :2]
+        distance = np.linalg.norm(delta, axis=-1)
+        error = (np.arctan2(delta[..., 1], delta[..., 0]) - state[:, None, 2]
+                 + np.pi) % (2 * np.pi) - np.pi
+        cost = distance / 3.2 + .6 * np.abs(error)
+        speed = np.cos(state[:, 2]) * state[:, 3] + np.sin(state[:, 2]) * state[:, 4]
+        desired = 3.2 * np.minimum(distance / 5., 1.) * np.maximum(np.cos(error), 0.)
+        forward = .5 * (100 * desired + 150 * desired**2 + 400 * (desired - speed[:, None]))
+        turn = 900 * error - 700 * state[:, None, 5]
+        thrust = np.clip(np.stack((forward + turn, forward - turn), axis=-1), -500., 1000.)
+        action = np.concatenate(((thrust - 250.) / 750., np.ones((n, n, 1))), axis=-1)
+        return action.astype(np.float32), cost
+
+    def choose_action(self, packet, deterministic=True):
+        candidates, cost = self.candidates(packet)
+        if self.coordinated:
+            from scipy.optimize import linear_sum_assignment
+            rows, choice = linear_sum_assignment(cost)
+            action = np.empty((len(cost), 3), dtype=np.float32)
+            action[rows] = candidates[rows, choice]
+        else:
+            action = candidates[np.arange(len(cost)), cost.argmin(axis=1)]
+        return action, 0.
+
+
 class DeploymentPolicy:
     """Load only the deployment artifact. Never creates a critic or a rollout."""
     def __init__(self, checkpoint, device='cpu'):
         saved = torch.load(checkpoint, map_location=device, weights_only=True)
+        self.role_policy = None
+        if saved.get('format') == 'candidate-role-deployment-v1':
+            self.config, self.device = saved['config'], torch.device(device)
+            if self.config['environment']['protocol'] != 'paper-parameters-v1':
+                raise ValueError('Checkpoint task protocol mismatch.')
+            self.role_policy = CandidateRolePolicy(**self.config['candidate_control'])
+            self.legacy, self.last_action = False, None
+            return
         if saved.get('format') != 'interaction-sac-deployment-v1':
             raise ValueError('Expected an IA-CRRL deployment checkpoint.')
         self.config, self.device = saved['config'], torch.device(device)
@@ -234,13 +362,17 @@ class DeploymentPolicy:
         else:
             self.actor = InteractionActor(self.config['rl']['hidden_dim'],
                 self.config['interaction']['relation_dim'],
-                peer_candidates=self.config['interaction'].get('peer_candidates', True)).to(device)
+                peer_candidates=self.config['interaction'].get('peer_candidates', True),
+                entropy_objective=self.config['interaction'].get('entropy_objective', 'joint-sum-v1')).to(device)
+            self.actor.stage = saved.get('stage', 'gate')
         self.actor.load_state_dict(saved['actor'], strict=True)
         self.actor.eval().requires_grad_(False)
         self.last_action = None
 
     @torch.no_grad()
     def choose_action(self, packet, deterministic=True):
+        if self.role_policy is not None:
+            return self.role_policy.choose_action(packet, deterministic)
         obs = torch.as_tensor(packet['obs'], dtype=torch.float32, device=self.device)
         if self.legacy:
             action, _ = self.actor(obs, deterministic=deterministic, with_logprob=False)

@@ -1,0 +1,117 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{qiao}
+\citation{fu}
+\citation{chen}
+\citation{yan}
+\citation{fang}
+\citation{guo}
+\citation{zhou}
+\citation{souza}
+\citation{zhang}
+\citation{xue}
+\citation{lin}
+\citation{huttenrauch}
+\citation{rashid}
+\citation{ma}
+\citation{li}
+\citation{rana}
+\citation{jeon}
+\citation{tao}
+\citation{wu}
+\citation{bhattacharya}
+\citation{brunke}
+\citation{yu}
+\citation{coma}
+\citation{mve}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{section.1}\protected@file@percent }
+\citation{tao}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Cooperative control composition for target defense. Dashed links carry concurrent candidate-control information; the drawing assigns no fixed maneuver roles. Defense succeeds through capture or survival to the 60-s deadline, with region entry and defender collision recorded separately.}}{2}{figure.1}\protected@file@percent }
+\newlabel{fig:task}{{1}{2}{Cooperative control composition for target defense. Dashed links carry concurrent candidate-control information; the drawing assigns no fixed maneuver roles. Defense succeeds through capture or survival to the 60-s deadline, with region entry and defender collision recorded separately}{figure.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {II}Task and Control Model}{2}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-A}}Dynamics, observations, and outcomes}{2}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-B}}Control sources and nominal composition}{2}{subsection.2.2}\protected@file@percent }
+\newlabel{eq:mix}{{2}{2}{Control sources and nominal composition}{equation.2}{}}
+\newlabel{eq:configuration}{{3}{2}{Control sources and nominal composition}{equation.3}{}}
+\newlabel{eq:composition-sensitivity}{{4}{2}{Control sources and nominal composition}{equation.4}{}}
+\newlabel{eq:execution}{{5}{2}{Control sources and nominal composition}{equation.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-C}}Task reward}{2}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {III}Learning Cooperative Control Composition}{2}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-A}}Candidate-control interaction-conditioned blending}{2}{subsection.3.1}\protected@file@percent }
+\citation{sac}
+\newlabel{eq:candidate-relations}{{7}{3}{Candidate-control interaction-conditioned blending}{equation.7}{}}
+\newlabel{eq:composition-policy}{{8}{3}{Candidate-control interaction-conditioned blending}{equation.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-B}}Joint configuration value and real-transition learning}{3}{subsection.3.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces The coupled policy and learning mechanism. Candidate-control relations condition local blending; paired composition interventions supervise conditional differences in the joint configuration value. Actor--critic updates connect that evaluation to the policy. Deployment uses the actor and common CBF.}}{4}{figure.2}\protected@file@percent }
+\newlabel{fig:architecture}{{2}{4}{The coupled policy and learning mechanism. Candidate-control relations condition local blending; paired composition interventions supervise conditional differences in the joint configuration value. Actor--critic updates connect that evaluation to the policy. Deployment uses the actor and common CBF}{figure.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-C}}Local composition intervention and conditional return difference}{4}{subsection.3.3}\protected@file@percent }
+\newlabel{eq:conditional-composition-value}{{17}{4}{Local composition intervention and conditional return difference}{equation.17}{}}
+\newlabel{eq:paired-composition-target}{{20}{4}{Local composition intervention and conditional return difference}{equation.20}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces A local composition intervention fixes the current state, both candidate controls of every defender, and all other current coefficients. Later actions follow the same policy on each branch's own state. The label estimates a conditional soft-return difference for the composition variable.}}{4}{figure.3}\protected@file@percent }
+\newlabel{fig:intervention}{{3}{4}{A local composition intervention fixes the current state, both candidate controls of every defender, and all other current coefficients. Later actions follow the same policy on each branch's own state. The label estimates a conditional soft-return difference for the composition variable}{figure.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-D}}Composition-specific conditional value supervision}{4}{subsection.3.4}\protected@file@percent }
+\citation{zhang-assignment}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-E}}Training stages, recovery, and deployment}{5}{subsection.3.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {IV}Experimental Design and Results}{5}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-A}}Conditional guard completion: strengthened interaction evidence}{5}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:guard-completion}{{\mbox  {IV-A}}{5}{Conditional guard completion: strengthened interaction evidence}{subsection.4.1}{}}
+\citation{zhang-assignment}
+\citation{johannink}
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces Independent conditional-guard evaluation, 128 paired scenarios}}{6}{table.1}\protected@file@percent }
+\newlabel{tab:guard-completion}{{I}{6}{Independent conditional-guard evaluation, 128 paired scenarios}{table.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-B}}Structured predictive compositions: completed task evidence}{6}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:structured-prediction}{{\mbox  {IV-B}}{6}{Structured predictive compositions: completed task evidence}{subsection.4.2}{}}
+\newlabel{eq:structured-residual}{{24}{6}{Structured predictive compositions: completed task evidence}{equation.24}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Frozen predictive-composition evaluation: capped time, 256 paired scenarios}}{7}{table.2}\protected@file@percent }
+\newlabel{tab:structured-prediction}{{II}{7}{Frozen predictive-composition evaluation: capped time, 256 paired scenarios}{table.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-C}}Learning mechanism: fixed endpoints and matched comparisons}{7}{subsection.4.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {III}{\ignorespaces Fixed training and auxiliary settings}}{8}{table.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-D}}Configuration mechanism: conditional value, matching, and interaction}{8}{subsection.4.4}\protected@file@percent }
+\newlabel{eq:configuration-controls}{{27}{8}{Configuration mechanism: conditional value, matching, and interaction}{equation.27}{}}
+\citation{vrx}
+\newlabel{eq:configuration-interaction}{{28}{9}{Configuration mechanism: conditional value, matching, and interaction}{equation.28}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-E}}Behavior and task: composition to executed maneuvers}{9}{subsection.4.5}\protected@file@percent }
+\newlabel{eq:behavior-chain}{{29}{9}{Behavior and task: composition to executed maneuvers}{equation.29}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-F}}VRX and learned opponents}{9}{subsection.4.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-G}}Metrics, uncertainty, and computation}{9}{subsection.4.7}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {IV}{\ignorespaces Evidence groups and the claims they address}}{10}{table.4}\protected@file@percent }
+\newlabel{tab:evidence}{{IV}{10}{Evidence groups and the claims they address}{table.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-H}}Execution status}{10}{subsection.4.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-I}}Earlier evidence under its original protocol}{10}{subsection.4.9}\protected@file@percent }
+\newlabel{sec:earlier}{{\mbox  {IV-I}}{10}{Earlier evidence under its original protocol}{subsection.4.9}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {V}Discussion}{10}{section.5}\protected@file@percent }
+\bibcite{qiao}{1}
+\bibcite{fu}{2}
+\bibcite{chen}{3}
+\bibcite{yan}{4}
+\bibcite{fang}{5}
+\bibcite{guo}{6}
+\bibcite{zhou}{7}
+\bibcite{souza}{8}
+\bibcite{zhang}{9}
+\bibcite{xue}{10}
+\bibcite{lin}{11}
+\bibcite{huttenrauch}{12}
+\bibcite{rashid}{13}
+\bibcite{ma}{14}
+\bibcite{li}{15}
+\bibcite{rana}{16}
+\bibcite{jeon}{17}
+\bibcite{tao}{18}
+\bibcite{wu}{19}
+\bibcite{bhattacharya}{20}
+\bibcite{brunke}{21}
+\bibcite{yu}{22}
+\@writefile{lot}{\contentsline {table}{\numberline {V}{\ignorespaces Earlier online-selection evidence motivating composition and long-term task evaluation; original 80-s protocol}}{11}{table.5}\protected@file@percent }
+\newlabel{tab:legacy}{{V}{11}{Earlier online-selection evidence motivating composition and long-term task evaluation; original 80-s protocol}{table.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {VI}Conclusion}{11}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{References}{11}{section*.1}\protected@file@percent }
+\bibcite{sac}{23}
+\bibcite{coma}{24}
+\bibcite{mve}{25}
+\bibcite{vrx}{26}
+\bibcite{zhang-assignment}{27}
+\bibcite{johannink}{28}
+\gdef \@abspage@last{12}

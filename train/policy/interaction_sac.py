@@ -18,6 +18,14 @@ from policy.networks import ActorAdap
 PACKET_KEYS = ('obs', 'motion', 'central')
 
 
+def bootstrap_value(q1, q2, estimator='min'):
+    if estimator == 'mean':
+        return .5 * (q1 + q2)
+    if estimator == 'min':
+        return torch.minimum(q1, q2)
+    raise ValueError('Unknown bootstrap estimator.')
+
+
 def tensor_packet(packet, device='cpu'):
     return {k: torch.as_tensor(packet[k], dtype=torch.float32, device=device)
             for k in PACKET_KEYS}
@@ -41,10 +49,13 @@ def masked_mean(x, mask, dim):
 
 
 class InteractionActor(nn.Module):
-    def __init__(self, hidden=512, relation=128, peer_candidates=True):
+    def __init__(self, hidden=512, relation=128, peer_candidates=True, entropy_objective='joint-sum-v1'):
         super().__init__()
         self.hidden, self.relation = hidden, relation
         self.peer_candidates = bool(peer_candidates)
+        if entropy_objective not in ('joint-sum-v1', 'stage-mean-v2', 'proposal-mean-v3', 'task-return-v4'):
+            raise ValueError('Unknown entropy objective.')
+        self.entropy_objective, self.stage = entropy_objective, 'gate'
         self.base = ActorAdap(6, 8, 3, hidden)
         self.relations = nn.Sequential(nn.Linear(15, relation), nn.LeakyReLU(),
                                        nn.Linear(relation, relation), nn.LeakyReLU())
@@ -58,6 +69,7 @@ class InteractionActor(nn.Module):
         self.base.load_state_dict(weights, strict=True)
 
     def freeze_proposals(self, freeze=True):
+        self.stage = 'gate' if freeze else 'joint'
         for name, parameter in self.base.named_parameters():
             if name.split('.')[0] in ('f1', 'f2', 't1', 'l1', 'l2', 'mean_layer', 'log_std_layer'):
                 parameter.requires_grad_(not freeze)
@@ -104,7 +116,21 @@ class InteractionActor(nn.Module):
         gates, log_g = self.gates(h, motion, proposals, boids, mask, deterministic,
                                 None if noise is None else noise[..., 2:3])
         action = torch.cat((proposals, gates), -1)
-        logp = ((log_l + log_g) * mask.unsqueeze(-1)).sum(-2)
+        if self.entropy_objective == 'task-return-v4':
+            logp = torch.zeros((b, 1), dtype=obs.dtype, device=obs.device)
+        elif self.entropy_objective == 'proposal-mean-v3':
+            # Blending noise receives no intrinsic reward. Gate-only learning
+            # optimizes the physical task; joint learning regularizes only
+            # the trainable proposal distribution, as in the source policy.
+            logp = (masked_mean(log_l, mask, -2) if self.stage == 'joint'
+                    else torch.zeros((b, 1), dtype=obs.dtype, device=obs.device))
+        elif self.entropy_objective == 'stage-mean-v2':
+            # Team reward is a mean. Match its fleet-size scale, and in the
+            # gate-only MDP treat frozen proposals as exogenous candidates.
+            # Their state-dependent density must not become a gate reward.
+            logp = masked_mean(log_g if self.stage == 'gate' else log_l + log_g, mask, -2)
+        else:
+            logp = ((log_l + log_g) * mask.unsqueeze(-1)).sum(-2)
         return action, logp
 
     def gates(self, h, motion, proposals, boids, mask, deterministic=False, noise=None):
@@ -121,8 +147,13 @@ class InteractionActor(nn.Module):
 
 
 class TeamValue(nn.Module):
-    def __init__(self, hidden=512, relation=128):
+    def __init__(self, hidden=512, relation=128, control_coordinates='raw-v1'):
         super().__init__()
+        if control_coordinates not in ('raw-v1','nominal-thrust-v2'):
+            raise ValueError('Unknown critic control coordinates.')
+        self.control_coordinates = control_coordinates
+        if control_coordinates != 'raw-v1':
+            self.register_buffer('control_coordinates_version',torch.tensor(2,dtype=torch.int64))
         self.node = nn.Sequential(nn.Linear(12, relation), nn.LeakyReLU(),
                                   nn.Linear(relation, relation), nn.LeakyReLU())
         self.pair = nn.Sequential(nn.Linear(2 * relation + 1, relation), nn.LeakyReLU(),
@@ -138,7 +169,15 @@ class TeamValue(nn.Module):
         if central.shape[-1] != 7 * (n + 1) + 2:
             raise ValueError('Central state does not match the team size.')
         state = central[..., :7*n].reshape(b, n, 7)
-        nodes = self.node(torch.cat((state, action, packet['obs'][..., 12:14]), -1))
+        boids = packet['obs'][..., 12:14]
+        controls = action
+        if self.control_coordinates == 'nominal-thrust-v2':
+            # Physical thrust is 750 * nominal + 250. CBF receives this
+            # composition only; its arbitrary proposal/gate factorization
+            # cannot change a root action value. Root entropy is outside Q.
+            nominal = action[..., 2:3] * action[..., :2] + (1.-action[..., 2:3]) * boids
+            controls = torch.cat((nominal, nominal[..., :1]-nominal[..., 1:2]), -1)
+        nodes = self.node(torch.cat((state, controls, boids), -1))
         left, right = nodes.unsqueeze(-2), nodes.unsqueeze(-3)
         distance = (state[..., :2].unsqueeze(-2) - state[..., :2].unsqueeze(-3)).norm(dim=-1, keepdim=True)
         pairs = self.pair(torch.cat((left + right, (left - right).abs(), distance), -1))
@@ -150,10 +189,10 @@ class TeamValue(nn.Module):
 
 
 class TwinTeamCritic(nn.Module):
-    def __init__(self, hidden=512, relation=128):
+    def __init__(self, hidden=512, relation=128, control_coordinates='raw-v1'):
         super().__init__()
-        self.q1 = TeamValue(hidden, relation)
-        self.q2 = TeamValue(hidden, relation)
+        self.q1 = TeamValue(hidden, relation, control_coordinates)
+        self.q2 = TeamValue(hidden, relation, control_coordinates)
 
     def forward(self, packet, action, mask=None):
         return self.q1(packet, action, mask), self.q2(packet, action, mask)
@@ -164,12 +203,14 @@ class JointReplay:
         self.capacity, self.count, self.size = int(capacity), 0, 0
         self.arrays = {}
 
-    def store(self, before, action, executed, individual_reward, after, terminated):
+    def store(self, before, action, executed, individual_reward, after, terminated, *, policy_cost=None):
         record = {**before, **{'next_' + k: v for k, v in after.items()},
                   'action': action, 'executed': executed,
                   'individual_reward': individual_reward,
                   'reward': np.asarray([np.mean(individual_reward)]),
                   'done': np.asarray([float(terminated)])}
+        if policy_cost is not None:
+            record['policy_cost'] = np.asarray([policy_cost])
         for key, value in record.items():
             value = np.asarray(value, dtype=np.float32)
             if not np.isfinite(value).all():
@@ -187,6 +228,21 @@ class JointReplay:
             raise ValueError('Empty replay.')
         index = np.random.randint(self.size, size=batch_size)
         return {k: torch.as_tensor(v[index], device=device) for k, v in self.arrays.items()}
+
+    def complete_returns(self, gamma):
+        """Warmup Q targets from complete real episodes, excluding root entropy."""
+        if self.count != self.size or 'policy_cost' not in self.arrays:
+            raise ValueError('Complete real-return warmup requires intact on-policy history and policy costs.')
+        terminal = np.flatnonzero(self.arrays['done'][:self.size, 0])
+        if not len(terminal):
+            raise ValueError('No completed real episode is available for critic warmup.')
+        stop = int(terminal[-1]) + 1
+        returns = np.empty(stop, dtype=np.float64)
+        for i in range(stop - 1, -1, -1):
+            returns[i] = float(self.arrays['reward'][i, 0])
+            if not self.arrays['done'][i, 0]:
+                returns[i] += gamma * (returns[i + 1] - self.arrays['policy_cost'][i + 1, 0])
+        return returns.astype(np.float32)
 
     def state_dict(self):
         # Adjacent transitions share the same physical state. Store next-state
@@ -228,9 +284,19 @@ class InteractionSAC:
         rl = config['rl']
         self.gamma, self.tau = rl['GAMMA'], rl['TAU']
         self.batch_size = rl['batch_size']
+        self.entropy_objective = config['interaction'].get('entropy_objective', 'joint-sum-v1')
         self.actor = InteractionActor(rl['hidden_dim'], config['interaction']['relation_dim'],
-            peer_candidates=config['interaction'].get('peer_candidates', True)).to(self.device)
-        self.critic = TwinTeamCritic(rl['hidden_dim'], config['interaction']['relation_dim']).to(self.device)
+            peer_candidates=config['interaction'].get('peer_candidates', True),
+            entropy_objective=self.entropy_objective).to(self.device)
+        self.critic_control_coordinates = config['interaction'].get('critic_control_coordinates','raw-v1')
+        self.critic = TwinTeamCritic(rl['hidden_dim'], config['interaction']['relation_dim'],
+                                   self.critic_control_coordinates).to(self.device)
+        if config['training'].get('critic_warmup_target') == 'complete_real_state_return':
+            # First fit a state-value prior, rather than initializing control
+            # sensitivities from one realized trajectory at each state.
+            with torch.no_grad():
+                for head in (self.critic.q1,self.critic.q2):
+                    head.node[0].weight[:,7:10].zero_()
         self.target = copy.deepcopy(self.critic).requires_grad_(False)
         # Historical checkpoints used the supervised critic as its own teacher.
         # Keep that interpretation readable, but new runs bootstrap exclusively
@@ -239,13 +305,16 @@ class InteractionSAC:
         self.bootstrap_source = config['interaction'].get('bootstrap_source', 'coupled')
         if self.bootstrap_source not in ('coupled', 'real_td'):
             raise ValueError('Unknown bootstrap source.')
+        self.bootstrap_estimator = config['interaction'].get('bootstrap_estimator', 'min')
+        if self.bootstrap_estimator not in ('min', 'mean'):
+            raise ValueError('Unknown bootstrap estimator.')
         self.bootstrap_critic = copy.deepcopy(self.critic) if self.bootstrap_source == 'real_td' else None
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=rl['learning_rate'], eps=1e-5)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=rl.get('actor_learning_rate',rl['learning_rate']), eps=1e-5)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=rl['learning_rate'], eps=1e-5)
         self.bootstrap_optimizer = (torch.optim.Adam(self.bootstrap_critic.parameters(),
             lr=rl['learning_rate'], eps=1e-5) if self.bootstrap_critic is not None else None)
         self.log_alpha = torch.tensor(math.log(.2), device=self.device, requires_grad=True)
-        self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=rl['learning_rate'])
+        self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=rl.get('temperature_learning_rate',rl['learning_rate']))
         self.set_stage('gate')
 
     @property
@@ -267,15 +336,63 @@ class InteractionSAC:
         action, logp = self.actor(obs, motion, deterministic=deterministic, noise=noise)
         return action[0].cpu().numpy(), float(logp.item())
 
-    def learn(self, replay, auxiliary=None, *, diagnostics=False):
+    def paired_gate_loss(self, auxiliary):
+        """Distill better executed gate interventions with fixed root candidates.
+
+        Return gaps weight improvements; non-focal gates stay near the behavior
+        that generated this paired comparison. Neither critic supplies targets.
+        """
+        if auxiliary is None:
+            raise ValueError('Paired gate improvement requires intervention returns.')
+        ap = tensor_packet(auxiliary, self.device)
+        action = torch.as_tensor(auxiliary['action'], device=self.device).detach()
+        alternative = torch.as_tensor(auxiliary['counterfactual'], device=self.device).detach()
+        gap = (torch.as_tensor(auxiliary['return'], device=self.device) -
+               torch.as_tensor(auxiliary['counterfactual_return'], device=self.device)).detach()
+        changed = (action[..., 2] - alternative[..., 2]).abs() > 1e-6
+        single = self.config['interaction'].get('intervention_scope', 'single') == 'single'
+        if (single and (changed.sum(-1) > 1).any()) or not torch.equal(action[..., :2], alternative[..., :2]):
+            raise ValueError('Gate improvement requires one focal gate and shared candidates.')
+        mask = torch.ones(action.shape[:2], dtype=torch.bool, device=self.device)
+        h = self.actor.encode(ap['obs'], mask)
+        prediction, _ = self.actor.gates(h, ap['motion'].to(h.dtype), action[..., :2],
+                                         ap['obs'][..., 12:14], mask, deterministic=True)
+        prediction = prediction.squeeze(-1)
+        target = torch.where(gap >= 0., action[..., 2], alternative[..., 2])
+        weights = gap.abs().clamp(max=10.) * changed
+        improvement = (weights * (prediction - target).square()).sum() / weights.sum().clamp_min(1e-8)
+        anchor = ((prediction - action[..., 2]).square() * ~changed).sum() / (~changed).sum().clamp_min(1)
+        return improvement + self.config['interaction'].get('gate_anchor_weight', .05) * anchor
+
+    def learn(self, replay, auxiliary=None, *, diagnostics=False, update_actor=True):
+        if (self.stage == 'gate' and
+                self.config['interaction'].get('gate_objective', 'critic-v1') == 'paired-improvement-v1'):
+            # Complete Monte Carlo improvements need neither a value tail nor
+            # a critic gradient. Spend this phase on control improvement.
+            loss = self.paired_gate_loss(auxiliary) if update_actor else torch.zeros((), device=self.device)
+            if not torch.isfinite(loss):
+                raise FloatingPointError('Non-finite paired gate loss.')
+            self.actor_optimizer.zero_grad(set_to_none=True)
+            checks = {}
+            if update_actor:
+                loss.backward()
+                gradients = [p.grad for p in self.actor.parameters() if p.grad is not None]
+                if not gradients or any(not torch.isfinite(g).all() for g in gradients):
+                    raise FloatingPointError('Missing or non-finite paired gate gradients.')
+                if diagnostics:
+                    checks['actor_gradient_norm'] = float(torch.sqrt(sum(g.square().sum() for g in gradients)))
+                self.actor_optimizer.step()
+            return dict(actor_loss=float(loss.detach()), actor_updated=bool(update_actor),
+                        critic_updated=False, bootstrap_updated=False, alpha=float(self.alpha), **checks)
         batch = replay.sample(self.batch_size, self.device)
         packet, following = current_and_next(batch)
         with torch.no_grad():
             next_action, next_logp = self.actor(following['obs'], following['motion'])
             q1, q2 = self.target(following, next_action)
-            target = batch['reward'] + self.gamma * (1. - batch['done']) * (torch.minimum(q1, q2) - self.alpha * next_logp)
+            next_value = bootstrap_value(q1, q2, self.bootstrap_estimator)
+            target = batch['reward'] + self.gamma * (1. - batch['done']) * (next_value - self.alpha * next_logp)
             bootstrap_disagreement = (q1 - q2).abs().mean()
-            bootstrap_value_mean = torch.minimum(q1, q2).mean()
+            bootstrap_value_mean = next_value.mean()
         bootstrap_loss = self.fit_bootstrap(packet, batch['action'], target)
         q1, q2 = self.critic(packet, batch['action'])
         td_loss = F.mse_loss(q1, target) + F.mse_loss(q2, target)
@@ -317,23 +434,46 @@ class InteractionSAC:
             if auxiliary is not None:
                 checks['model_target_abs_max'] = float(max(abs(auxiliary['return']).max(),
                                                          abs(auxiliary['counterfactual_return']).max()))
+                if 'difference_standard_error' in auxiliary:
+                    checks['auxiliary_difference_standard_error']=float(np.mean(auxiliary['difference_standard_error']))
         self.critic_optimizer.step()
+        if diagnostics and self.bootstrap_critic is not None:
+            storage=lambda optimizer:{(str(v.device),v.data_ptr()) for values in optimizer.state.values()
+                for v in values.values() if isinstance(v,torch.Tensor)}
+            aliases=len(storage(self.critic_optimizer)&storage(self.bootstrap_optimizer))
+            checks['bootstrap_optimizer_aliases']=aliases
+            if aliases:
+                raise RuntimeError('Main and bootstrap optimizers must have independent state storage.')
+            if kind=='none':
+                delta=max(float((left-right).detach().abs().max()) for left,right in
+                          zip(self.critic.parameters(),self.bootstrap_critic.parameters()))
+                checks['same_info_critic_max_difference']=delta
+                if delta!=0.:
+                    raise RuntimeError('Same-info main and bootstrap critics diverged despite identical objectives.')
         self.critic.requires_grad_(False)
-        action, logp = self.actor(packet['obs'], packet['motion'])
-        q1, q2 = self.critic(packet, action)
-        actor_loss = (self.alpha * logp - torch.minimum(q1, q2)).mean()
+        if not update_actor:
+            actor_loss = torch.zeros((), device=self.device)
+        else:
+            action, logp = self.actor(packet['obs'], packet['motion'])
+            q1, q2 = self.critic(packet, action)
+            actor_loss = (self.alpha * logp - torch.minimum(q1, q2)).mean()
         if not torch.isfinite(actor_loss):
             raise FloatingPointError('Non-finite policy loss.')
         self.actor_optimizer.zero_grad(set_to_none=True)
-        actor_loss.backward()
-        if diagnostics:
+        if update_actor:
+            actor_loss.backward()
+        if diagnostics and update_actor:
             checks['actor_gradient_norm'] = gradient_norm(self.actor)
             checks['adapter_gradient_norm'] = gradient_norm(self.actor.base.adap_layer)
             checks['candidate_gate_gradient_norm'] = gradient_norm(self.actor.relation_gate)
-        self.actor_optimizer.step()
+        if update_actor:
+            self.actor_optimizer.step()
         self.critic.requires_grad_(True)
-        if self.stage == 'joint':
-            target_entropy = -3 * action.shape[-2]
+        if (update_actor and self.entropy_objective != 'task-return-v4' and
+                (self.stage == 'joint' or self.entropy_objective == 'stage-mean-v2')):
+            target_entropy = (-2 if self.entropy_objective == 'proposal-mean-v3' else
+                ((-1 if self.stage == 'gate' else -3)
+                 if self.entropy_objective == 'stage-mean-v2' else -3 * action.shape[-2]))
             alpha_loss = -(self.log_alpha * (logp.detach() + target_entropy)).mean()
             self.alpha_optimizer.zero_grad(set_to_none=True)
             alpha_loss.backward()
@@ -343,9 +483,19 @@ class InteractionSAC:
             for target_parameter, parameter in zip(self.target.parameters(), source.parameters()):
                 target_parameter.lerp_(parameter, self.tau)
         return dict(td_loss=float(td_loss.detach()), auxiliary_loss=float(auxiliary_loss.detach()),
-                    actor_loss=float(actor_loss.detach()), alpha=float(self.alpha), **checks)
+                    actor_loss=float(actor_loss.detach()), actor_updated=bool(update_actor), critic_updated=True,
+                    bootstrap_updated=self.bootstrap_critic is not None,
+                    alpha=float(self.alpha), **checks)
 
-    def fit_bootstrap(self, packet, action, target):
+    def initialize_critic_from_bootstrap(self):
+        if self.bootstrap_critic is None:
+            raise ValueError('A separate bootstrap critic is required.')
+        self.critic.load_state_dict(self.bootstrap_critic.state_dict())
+        # Adam load_state_dict can retain same-device tensor storage, including
+        # CPU step counters for CUDA optimizers. Values must match, storage must not.
+        self.critic_optimizer.load_state_dict(copy.deepcopy(self.bootstrap_optimizer.state_dict()))
+
+    def fit_bootstrap(self, packet, action, target, *, state_only=False):
         """Only real-transition Bellman targets may update the bootstrap critic."""
         if self.bootstrap_critic is None:
             return None
@@ -355,6 +505,9 @@ class InteractionSAC:
             raise FloatingPointError('Non-finite real-transition bootstrap loss.')
         self.bootstrap_optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        if state_only:
+            for head in (self.bootstrap_critic.q1,self.bootstrap_critic.q2):
+                head.node[0].weight.grad[:,7:10].zero_()
         self.bootstrap_optimizer.step()
         return float(loss.detach())
 
@@ -367,31 +520,55 @@ class InteractionSAC:
         with torch.no_grad():
             action, logp = self.actor(following['obs'], following['motion'])
             q1, q2 = self.target(following, action)
-            target = batch['reward'] + self.gamma * (1. - batch['done']) * (torch.minimum(q1, q2) - self.alpha * logp)
+            next_value = bootstrap_value(q1, q2, self.bootstrap_estimator)
+            target = batch['reward'] + self.gamma * (1. - batch['done']) * (next_value - self.alpha * logp)
         loss = self.fit_bootstrap(packet, batch['action'], target)
         with torch.no_grad():
             for slow, current in zip(self.target.parameters(), self.bootstrap_critic.parameters()):
                 slow.lerp_(current, self.tau)
         return dict(bootstrap_td_loss=loss, bootstrap_disagreement=float((q1-q2).abs().mean()),
-                    bootstrap_value_mean=float(torch.minimum(q1,q2).mean()), td_target_abs_max=float(target.abs().max()))
+                    bootstrap_value_mean=float(next_value.mean()), td_target_abs_max=float(target.abs().max()))
+
+    def learn_bootstrap_returns(self, replay, returns):
+        """Initialize values before policy learning, without a learned value tail."""
+        index = np.random.randint(len(returns), size=self.batch_size)
+        packet = {k: torch.as_tensor(replay.arrays[k][index], device=self.device) for k in PACKET_KEYS}
+        action = torch.as_tensor(replay.arrays['action'][index], device=self.device)
+        target = torch.as_tensor(returns[index, None], device=self.device)
+        loss = self.fit_bootstrap(packet, action, target,
+            state_only=self.config['training'].get('critic_warmup_target') == 'complete_real_state_return')
+        with torch.no_grad():
+            for slow, current in zip(self.target.parameters(), self.bootstrap_critic.parameters()):
+                slow.lerp_(current, self.tau)
+        return dict(bootstrap_mc_loss=loss, complete_return_samples=len(returns),
+                    real_return_target_mean=float(target.mean()), real_return_target_abs_max=float(target.abs().max()))
 
     def state_dict(self):
         state = dict(actor=self.actor.state_dict(), critic=self.critic.state_dict(), target=self.target.state_dict(),
                     actor_optimizer=self.actor_optimizer.state_dict(), critic_optimizer=self.critic_optimizer.state_dict(),
-                    log_alpha=self.log_alpha.detach(), alpha_optimizer=self.alpha_optimizer.state_dict(), stage=self.stage)
+                    log_alpha=self.log_alpha.detach(), alpha_optimizer=self.alpha_optimizer.state_dict(), stage=self.stage,
+                    critic_control_coordinates=self.critic_control_coordinates,
+                    entropy_objective=self.entropy_objective, bootstrap_estimator=self.bootstrap_estimator)
         if self.bootstrap_critic is not None:
             state.update(bootstrap_critic=self.bootstrap_critic.state_dict(),
                          bootstrap_optimizer=self.bootstrap_optimizer.state_dict())
         return state
 
     def load_state_dict(self, state):
+        if state.get('bootstrap_estimator', 'min') != self.bootstrap_estimator:
+            raise ValueError('Bootstrap estimator changed; a fresh matched training run is required.')
+        if state.get('entropy_objective', 'joint-sum-v1') != self.entropy_objective:
+            raise ValueError('Entropy objective changed; a fresh matched training run is required.')
+        if state.get('critic_control_coordinates','raw-v1') != self.critic_control_coordinates:
+            raise ValueError('Critic control coordinates changed; a fresh matched training run is required.')
         if (self.bootstrap_critic is not None) != ('bootstrap_critic' in state):
             raise ValueError('Bootstrap protocol changed; use explicit checkpoint reconditioning.')
         for name in ('actor', 'critic', 'target', 'actor_optimizer', 'critic_optimizer', 'alpha_optimizer'):
-            getattr(self, name).load_state_dict(state[name])
+            value=copy.deepcopy(state[name]) if name.endswith('optimizer') else state[name]
+            getattr(self, name).load_state_dict(value)
         if self.bootstrap_critic is not None:
             self.bootstrap_critic.load_state_dict(state['bootstrap_critic'])
-            self.bootstrap_optimizer.load_state_dict(state['bootstrap_optimizer'])
+            self.bootstrap_optimizer.load_state_dict(copy.deepcopy(state['bootstrap_optimizer']))
         with torch.no_grad():
             self.log_alpha.copy_(state['log_alpha'])
         self.set_stage(state['stage'])

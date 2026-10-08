@@ -16,6 +16,7 @@ PROPOSALS = ('f1', 'f2', 't1', 'l1', 'l2', 'mean_layer', 'log_std_layer')
 DEVELOPMENT_SEEDS = (42, 101)
 DEVELOPMENT_ARMS = ('full', 'same_info', 'no_peer', 'short', 'model_value')
 SIGNAL_PROTOCOL = 'shared-state-signal-v1'
+VALUE_ESTIMATOR = 'min-head-conditional-difference-v1'
 
 
 def digest(path):
@@ -428,8 +429,15 @@ def deployment_evidence(study):
 
 def source_for_seed(study, seed):
     manifest = json.loads((Path(study)/'manifest.json').read_text())
+    shared=manifest.get('pretraining_outputs',{}).get(str(seed))
+    if shared: return Path(shared)
     inherited = manifest['inherited_pretraining'].get(f'pretrain-{seed}')
     return Path(inherited['path']) if inherited else Path(study)/f'pretrain/seed-{seed}/actor.pth'
+
+
+def development_bank(study, base):
+    manifest=json.loads((Path(study)/'manifest.json').read_text())
+    return int(base)+int(manifest.get('development_bank_offset',0))
 
 
 def diagnostic_state(source, scene, index):
@@ -529,10 +537,8 @@ def _signal_worker(job):
 
 
 def collect_signal(study, seed=42, workers=4):
-    import copy
     from concurrent.futures import ProcessPoolExecutor
     import multiprocessing as mp
-    import numpy as np
     import torch
     import yaml
     from envs.snapshot import preserved_random_state, seed_random
@@ -544,8 +550,8 @@ def collect_signal(study, seed=42, workers=4):
     output = study/'reviews/signal'
     inputs = dict(protocol=SIGNAL_PROTOCOL, source=digest(source), seed=seed, states=128,
         split='64 debug + 64 heldout, one independently seeded episode per state; equal 3/6-defender strata',
-        scene_base=390000000+DEVELOPMENT_SEEDS.index(seed)*1000000,
-        horizon=100, reward='discounted team reward plus future joint-policy entropy; no first-action entropy')
+        scene_base=development_bank(study,390000000)+DEVELOPMENT_SEEDS.index(seed)*1000000,
+        horizon=100, reward='discounted team reward and the checkpoint entropy objective; no first-action entropy')
     if (output/'completed.json').exists():
         existing = json.loads((output/'completed.json').read_text())
         if existing['input'] != inputs or digest(output/'states.json') != existing['states_sha256']:
@@ -553,7 +559,9 @@ def collect_signal(study, seed=42, workers=4):
         return existing
     with preserved_random_state():
         seed_random(seed)
-        config = arm_config(yaml.safe_load((Path(__file__).parent/'configs/interaction-aware-sac.yaml').read_text()), 'full')
+        manifest=json.loads((study/'manifest.json').read_text())
+        config = arm_config(manifest.get('candidate_protocol',{}).get('configuration') or
+            yaml.safe_load((Path(__file__).parent/'configs/interaction-aware-sac.yaml').read_text()), 'full')
         agent = make_agent(config)
         agent.actor.initialize_source(torch.load(source, map_location='cpu', weights_only=True))
         payload = frozen_payload(agent)
@@ -595,6 +603,7 @@ def _calibration_worker(job):
         qa = policy.critic(p, torch.as_tensor(action).unsqueeze(0))
         qb = policy.critic(p, torch.as_tensor(alternative).unsqueeze(0))
         predictions = [float((a-b).item()) for a,b in zip(qa, qb)]
+        predicted = float((torch.minimum(*qa) - torch.minimum(*qb)).item())
     differences, used, execution_delta = [], 0, None
     # Evaluation critic predicts delta Q; model bootstrap uses the exact lagged training critic.
     original_critic = policy.critic
@@ -611,9 +620,10 @@ def _calibration_worker(job):
     finally:
         policy.critic = original_critic
     actual = float(np.mean(differences))
-    row.update(boat=boat, reference=reference, critic_predictions=predictions, target_difference=actual,
-        absolute_error=float(np.mean(np.abs(np.asarray(predictions)-actual))),
+    row.update(boat=boat, reference=reference, critic_predictions=predictions,
+        predicted_difference=predicted, target_difference=actual, absolute_error=abs(predicted-actual),
         zero_prediction_error=abs(actual), executed_thrust_difference_N=execution_delta,
+        return_differences=differences,
         monte_carlo_standard_error=float(np.std(differences, ddof=1)/np.sqrt(repetitions)) if repetitions>1 else None,
         simulated_steps=used)
     return row
@@ -623,20 +633,20 @@ def _screen_initializer(payload, source_path):
     from policy.interaction_sac import TwinTeamCritic
     _diagnostic_initializer(payload, source_path)
     config = payload['config']
-    target = TwinTeamCritic(config['rl']['hidden_dim'], config['interaction']['relation_dim']).eval().requires_grad_(False)
+    target = TwinTeamCritic(config['rl']['hidden_dim'], config['interaction']['relation_dim'],
+        config['interaction'].get('critic_control_coordinates','raw-v1')).eval().requires_grad_(False)
     target.load_state_dict(payload['target'])
     _DIAGNOSTIC_POLICY.label_critic = target
 
 
 def collect_screen(study, seed, arm, checkpoint_step, workers=2, fresh=False):
-    import copy
     from concurrent.futures import ProcessPoolExecutor
     import multiprocessing as mp
     import numpy as np
     import torch
     from envs.snapshot import preserved_random_state
     from policy.interaction_sac import make_agent, JointReplay
-    from interaction_rollout import frozen_payload, DeploymentPolicy
+    from interaction_rollout import frozen_payload
     from interaction_evaluation import OriginalPolicy
     from train_interaction import episode
     torch.set_num_threads(1)
@@ -646,17 +656,17 @@ def collect_screen(study, seed, arm, checkpoint_step, workers=2, fresh=False):
     source = source_for_seed(study, seed)
     output = study/'reviews'/('confirmation' if fresh else 'screens')/f'{seed}-{arm}-{checkpoint_step}'
     inputs = dict(protocol='fresh-two-density-v2' if fresh else 'heldout-model-and-environment-v1', checkpoint_sha256=digest(checkpoint),
-                  source_sha256=digest(source), seed=seed, arm=arm, fresh=fresh)
+                  source_sha256=digest(source), seed=seed, arm=arm, fresh=fresh, value_estimator=VALUE_ESTIMATOR)
     if (output/'completed.json').exists():
         existing = json.loads((output/'completed.json').read_text())
         if existing['input'] != inputs:
             raise ValueError('A reviewed screen checkpoint changed.')
         if 'candidate_response' not in existing:
             saved=torch.load(checkpoint,weights_only=checkpoint_step!=0,map_location='cpu')
-            payload=(dict(config=saved['config'],actor=saved['agent']['actor'],critic=saved['agent']['critic'],
+            payload=(dict(config=saved['config'],actor=saved['agent']['actor'],critic=saved['agent']['critic'],stage=saved['agent']['stage'],
                 alpha=float(saved['agent']['log_alpha'].exp()),gamma=saved['config']['rl']['GAMMA'])
                 if checkpoint_step==0 else saved)
-            base=(398000000 if fresh else 392000000)+DEVELOPMENT_SEEDS.index(seed)*1000000
+            base=development_bank(study,398000000 if fresh else 392000000)+DEVELOPMENT_SEEDS.index(seed)*1000000
             response=validation_candidate_response(payload,OriginalPolicy(source),seed,states=16,resamples=2,
                                                    scene_base=base+300000)
             existing.update(candidate_response=response,candidate_response_cbf_evaluations=response['cbf_evaluations'])
@@ -685,9 +695,9 @@ def collect_screen(study, seed, arm, checkpoint_step, workers=2, fresh=False):
     if not checks or any(not np.isfinite(v) for v in checks.values()):
         raise FloatingPointError('Missing or non-finite learning connectivity evidence.')
     # Training uses the 100M scene family. Model holdout and environment checks use disjoint episodes.
-    base = (398000000 if fresh else 392000000)+DEVELOPMENT_SEEDS.index(seed)*1000000
+    base = development_bank(study,398000000 if fresh else 392000000)+DEVELOPMENT_SEEDS.index(seed)*1000000
     horizon = payload['config']['interaction']['horizon_steps']
-    jobs = [(base+i, i, horizon, 1) for i in range(32)]
+    jobs = [(base+i, i, horizon, payload['config']['interaction'].get('label_repetitions',1)) for i in range(32)]
     jobs += [(base+100000+i, i, 300, 2) for i in range(16)]
     if workers:
         with ProcessPoolExecutor(workers, mp_context=mp.get_context('spawn'),
@@ -773,7 +783,6 @@ def _mechanism_worker(job):
 
 
 def _target_audit_worker(job):
-    import numpy as np
     import torch
     from envs.snapshot import preserved_random_state
     from interaction_rollout import branch_return
@@ -824,7 +833,7 @@ def collect_target_audit(study,seed,arm,workers=4):
         if previous['input']!=inputs: raise ValueError('Target-audit checkpoint changed.')
         return previous
     payload=dict(config=saved['config'],actor=saved['agent']['actor'],critic=saved['agent']['critic'],
-        target=saved['agent']['target'],alpha=float(saved['agent']['log_alpha'].exp()),
+        target=saved['agent']['target'],stage=saved['agent']['stage'],alpha=float(saved['agent']['log_alpha'].exp()),
         gamma=saved['config']['rl']['GAMMA'])
     step=saved['step']
     del saved
@@ -851,21 +860,22 @@ def collect_target_audit(study,seed,arm,workers=4):
     return result
 
 
-def collect_mechanism(study, seed, workers=2):
+def collect_mechanism(study, seed, workers=2, development=False):
     from concurrent.futures import ProcessPoolExecutor
     import multiprocessing as mp
     import torch
     from interaction_evaluation import SEEDS as formal_seeds
     study,started=Path(study),time.perf_counter()
-    checkpoint=study/f'training/seed-{seed}/full/joint-endpoint.pth'
+    checkpoint=study/f'training/seed-{seed}/full'/('probe-250000.pth' if development else 'joint-endpoint.pth')
     source=source_for_seed(study,seed)
     payload=torch.load(checkpoint,weights_only=True,map_location='cpu')
-    if payload['step']!=1000000 or payload['stage']!='joint':
-        raise ValueError('Mechanism evidence requires the frozen formal one-million-step endpoint.')
-    inputs=dict(checkpoint=str(checkpoint),checkpoint_sha256=digest(checkpoint),source=str(source),
+    if payload['step']!=(250000 if development else 1000000) or payload['stage']!=('gate' if development else 'joint'):
+        raise ValueError('Mechanism evidence requires the prescribed fixed endpoint.')
+    seeds=DEVELOPMENT_SEEDS if development else formal_seeds
+    inputs=dict(seed=seed,checkpoint=str(checkpoint),checkpoint_sha256=digest(checkpoint),source=str(source),
                 source_sha256=digest(source),states=32,repetitions=4,
-                scene_base=530000000+formal_seeds.index(seed)*1000000)
-    output=study/f'mechanism/seed-{seed}'
+                scene_base=(development_bank(study,406000000) if development else 530000000)+seeds.index(seed)*1000000)
+    output=study/('reviews/development-mechanism' if development else 'mechanism')/f'seed-{seed}'
     if (output/'completed.json').exists():
         previous=json.loads((output/'completed.json').read_text())
         if previous['input']!=inputs or digest(output/'states.json')!=previous['states_sha256']:
@@ -888,6 +898,69 @@ def collect_mechanism(study, seed, workers=2):
     return result
 
 
+def precision_summary(rows):
+    """Keep Monte Carlo uncertainty visible beside critic error, including its zero reference."""
+    import numpy as np
+    if not rows: raise ValueError('Precision diagnostics require independent states.')
+    variance=[];errors=[];absolute_errors=[];zero=[]
+    for row in rows:
+        samples=np.asarray(row['return_differences'],dtype=float)
+        predictions=np.asarray(row['critic_predictions'],dtype=float)
+        if samples.ndim!=1 or len(samples)<2 or len(samples)!=len(rows[0]['return_differences']) or predictions.shape!=(2,) or not np.isfinite(samples).all() or not np.isfinite(predictions).all():
+            raise ValueError('Precision diagnostics require finite paired continuations and both critic heads.')
+        predicted=row.get('predicted_difference')
+        if predicted is None or not np.isfinite(predicted):
+            raise ValueError('Precision diagnostics require the recorded minimum-head value difference.')
+        variance.append(float(samples.var(ddof=1)/len(samples)))
+        errors.append(float((predicted-samples.mean())**2))
+        absolute_errors.append(float(abs(predicted-samples.mean())))
+        zero.append(float(samples.mean()**2))
+    return dict(E_env=float(np.mean(absolute_errors)), value_estimator=VALUE_ESTIMATOR,
+        environment_zero_predictor=float(np.mean([abs(np.mean(r['return_differences'])) for r in rows])),
+        mean_monte_carlo_standard_error=float(np.mean(np.sqrt(variance))),
+        prediction_mse_noise_corrected=float(np.mean(np.asarray(errors)-variance)),
+        zero_mse_noise_corrected=float(np.mean(np.asarray(zero)-variance)),
+        mse_excess_over_zero=float(np.mean(np.asarray(errors)-zero)),
+        states=len(rows),repetitions=len(rows[0]['return_differences']),
+        interpretation='Development diagnosis only. Negative noise-corrected estimates are retained; they are sampling uncertainty, not negative true risk.')
+
+
+def collect_precision(study,seed,arm,workers=2):
+    from concurrent.futures import ProcessPoolExecutor
+    import multiprocessing as mp
+    import torch
+    study,started=Path(study),time.perf_counter()
+    checkpoint=study/f'training/seed-{seed}/{arm}/probe-250000.pth'
+    source=source_for_seed(study,seed)
+    inputs=dict(seed=seed,arm=arm,checkpoint=str(checkpoint),checkpoint_sha256=digest(checkpoint),source_sha256=digest(source),
+        scene_base=development_bank(study,404000000)+DEVELOPMENT_SEEDS.index(seed)*1000000,states=64,repetitions=16,
+        value_estimator=VALUE_ESTIMATOR)
+    output=study/f'reviews/precision/{seed}-{arm}-250000'
+    if (output/'completed.json').exists():
+        prior=json.loads((output/'completed.json').read_text())
+        if prior['input']!=inputs or prior['states_sha256']!=digest(output/'states.json'):
+            raise ValueError('A precision diagnostic input changed.')
+        return prior
+    payload=torch.load(checkpoint,map_location='cpu',weights_only=True)
+    if payload['step']!=250000 or payload['stage']!='gate': raise ValueError('A fixed 250k development endpoint is required.')
+    jobs=[(inputs['scene_base']+i,i,300,16) for i in range(64)]
+    if workers:
+        with ProcessPoolExecutor(workers,mp_context=mp.get_context('spawn'),
+                initializer=_screen_initializer,initargs=(payload,str(source))) as executor:
+            rows=list(executor.map(_calibration_worker,jobs))
+    else:
+        _screen_initializer(payload,str(source));rows=[_calibration_worker(j) for j in jobs]
+    if digest(checkpoint)!=inputs['checkpoint_sha256'] or digest(source)!=inputs['source_sha256']:
+        raise ValueError('A precision diagnostic checkpoint changed while running.')
+    write_json(output/'states.json',dict(input=inputs,states=rows))
+    result=dict(complete=True,input=inputs,step=250000,summary=precision_summary(rows),
+        strata={n:precision_summary([r for r in rows if r['stratum']==n]) for n in ('ordinary','crowded')},
+        states_sha256=digest(output/'states.json'),simulated_steps=sum(r['simulated_steps']+r['prefix_steps'] for r in rows),
+        wall_seconds=time.perf_counter()-started)
+    write_json(output/'completed.json',result)
+    return result
+
+
 def _bootstrap_check_initializer(payloads, source):
     import torch
     from interaction_rollout import FrozenPolicy
@@ -900,7 +973,8 @@ def _bootstrap_check_initializer(payloads, source):
     for name, payload in payloads.items():
         policy = FrozenPolicy(payload)
         cfg = payload['config']
-        target = TwinTeamCritic(cfg['rl']['hidden_dim'], cfg['interaction']['relation_dim']).eval().requires_grad_(False)
+        target = TwinTeamCritic(cfg['rl']['hidden_dim'], cfg['interaction']['relation_dim'],
+            cfg['interaction'].get('critic_control_coordinates','raw-v1')).eval().requires_grad_(False)
         target.load_state_dict(payload['target'])
         policy.label_critic = target
         _BOOTSTRAP_POLICIES[name] = policy
@@ -912,7 +986,7 @@ def _bootstrap_check_worker(job):
     import torch
     from envs.snapshot import preserved_random_state
     from interaction_rollout import branch_return
-    from policy.interaction_sac import tensor_packet
+    from policy.interaction_sac import tensor_packet, bootstrap_value
     scene, index, repetitions = job
     policies = _BOOTSTRAP_POLICIES
     policy = next(iter(policies.values()))
@@ -952,7 +1026,7 @@ def _bootstrap_check_worker(job):
                     bp = {k:v.unsqueeze(0) for k,v in tensor_packet(boundary['packet']).items()}
                     with torch.no_grad():
                         q = candidate.label_critic(bp, torch.as_tensor(boundary['action']).unsqueeze(0))
-                    predicted = float(torch.minimum(*q).item())-policy.alpha*boundary['logp']
+                    predicted = float(bootstrap_value(*q, candidate.bootstrap_estimator).item())-policy.alpha*boundary['logp']
                     labels.append(prefix+policy.gamma**horizon*predicted)
                     if horizon == 100:
                         tail_errors[name].append(abs(predicted-(value-prefix)/policy.gamma**horizon))
@@ -1033,7 +1107,8 @@ def collect_bootstrap_check(study,seed,arm,step,workers=4):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--study', type=Path, required=True)
-    parser.add_argument('--mode', choices=['legacy', 'signal', 'screen', 'mechanism', 'target-audit','bootstrap-check'], default='legacy')
+    parser.add_argument('--mode', choices=['legacy', 'signal', 'screen', 'mechanism', 'development-mechanism',
+                                        'precision', 'target-audit','bootstrap-check'], default='legacy')
     parser.add_argument('--stage', choices=['gate', 'joint'])
     parser.add_argument('--seed', type=int, choices=(*SEEDS,505,606), required=True)
     parser.add_argument('--scope', choices=list(SCOPE_ARMS), default='full')
@@ -1048,6 +1123,10 @@ def main():
         collect_screen(args.study, args.seed, args.arm, args.checkpoint_step, args.workers, args.fresh)
     elif args.mode == 'mechanism':
         collect_mechanism(args.study,args.seed,args.workers)
+    elif args.mode == 'development-mechanism':
+        collect_mechanism(args.study,args.seed,args.workers,development=True)
+    elif args.mode == 'precision':
+        collect_precision(args.study,args.seed,args.arm,args.workers)
     elif args.mode == 'target-audit':
         collect_target_audit(args.study,args.seed,args.arm,args.workers)
     elif args.mode == 'bootstrap-check':

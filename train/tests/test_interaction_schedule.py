@@ -9,12 +9,12 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'scripts'))
 import run_interaction_study as scheduler
-from interaction_review import review_evidence, deployment_evidence, ARMS, METRICS, CANDIDATE_RESPONSE_PROTOCOL
+from interaction_review import review_evidence, ARMS, CORE_ARMS, SEEDS, METRICS, CANDIDATE_RESPONSE_PROTOCOL
 
 
 def candidate_response(seed=42):
     return dict(protocol=CANDIDATE_RESPONSE_PROTOCOL, resamples=4,
-        states=[dict(state=i, scene_seed=350000000+scheduler.SEEDS.index(seed)*1000000+i,
+        states=[dict(state=i, scene_seed=350000000+SEEDS.index(seed)*1000000+i,
                      perturbations=[{} for _ in range(4)]) for i in range(32)])
 
 
@@ -46,6 +46,251 @@ def automatic_pair_fixture(study):
 
 
 class StageSchedule(unittest.TestCase):
+    def test_protocol_describes_the_actual_configured_rollout_and_batch_budget(self):
+        config = scheduler.yaml.safe_load((scheduler.ROOT/'train/configs/interaction-aware-sac.yaml').read_text())
+        config['interaction'].update(horizon_steps=300, pairs_per_batch=32, intervention_interval=500)
+        config['rl']['batch_size'] = 2048
+        with patch.object(scheduler.yaml, 'safe_load', return_value=config):
+            protocol = scheduler.protocol_specification()
+        self.assertEqual(protocol['long_horizon_steps'], 300)
+        self.assertEqual(protocol['auxiliary_pairs_per_update'], 32)
+        self.assertEqual(protocol['real_replay_batch'], 2048)
+        self.assertEqual(protocol['auxiliary_to_real_batch_ratio'], 32/2048)
+        self.assertIn('32 snapshots every 500 real steps', protocol['intervention_sampling'])
+
+    def test_formal_vrx_pairs_scenes_and_retains_task_failures(self):
+        import shlex
+        with tempfile.TemporaryDirectory() as directory:
+            study = Path(directory)
+            with patch.object(scheduler, 'verified_existing_pretrain', return_value=None):
+                jobs, _ = scheduler.build_jobs(study, 'python', Path('/activate'))
+            vrx = [j for j in jobs if j['name'].startswith('vrx-')]
+            self.assertEqual(len(vrx), 1200)
+            pairs = {}
+            for job in vrx:
+                _, seed, arm, defenders, setting, trial = job['name'].split('-')
+                command = shlex.split(job['command'][2])
+                scene = int(command[command.index('--seed') + 1])
+                self.assertIn(int(seed), scheduler.FORMAL_SEEDS)
+                self.assertGreaterEqual(scene, 540000000)
+                pairs.setdefault((seed, defenders, setting, trial), {})[arm] = scene
+                self.assertIn('review-formal-core', job['dependencies'])
+            for arms in pairs.values():
+                self.assertEqual(set(arms), set(scheduler.VRX_ARMS))
+                self.assertEqual(len(set(arms.values())), 1)
+            scheduler.write_json(vrx[0]['result'], dict(passed=True, outcome_code=1))
+            self.assertTrue(scheduler.valid_completion(vrx[0], study))
+            scheduler.write_json(vrx[0]['result'], dict(passed=False, outcome_code=1))
+            self.assertFalse(scheduler.valid_completion(vrx[0], study))
+
+    def test_runner_releases_lock_when_source_validation_fails(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            study = Path(directory)
+            scheduler.write_json(study/'manifest.json', dict(root=str(scheduler.ROOT),
+                code={'scripts/run_interaction_study.py': 'stale'}))
+            handles = []
+            original_open = Path.open
+            def opened(path, *args, **kwargs):
+                handle = original_open(path, *args, **kwargs)
+                if path.name == 'runner.lock':
+                    handles.append(handle)
+                return handle
+            fcntl = SimpleNamespace(LOCK_EX=1, LOCK_NB=2, flock=lambda *args: None)
+            with patch.dict(sys.modules, {'fcntl': fcntl}), patch.object(Path, 'open', opened):
+                with self.assertRaisesRegex(RuntimeError, 'Frozen scientific code changed'):
+                    scheduler.run(study)
+            self.assertEqual(len(handles), 1)
+            self.assertTrue(handles[0].closed)
+
+    def test_performance_search_spends_its_budget_on_candidates_without_evidence_barriers(self):
+        previous_jobs = [dict(name=f'develop-42-{arm}-10000', command=['python', 'train/train_interaction.py',
+            '--output', f'/previous/training/seed-42/{arm}', '--arm', arm, '--stop-at-step', '10000'])
+            for arm in ('full', 'short')]
+        jobs, candidates = scheduler.performance_search_jobs('/search', 'python', '/previous', previous_jobs, '/source.pth')
+        active = {'time_single_n3', 'time_single_n6', 'time_team_n3', 'time_team_n6'}
+        self.assertEqual(set(candidates), {'long', 'short'} | active)
+        self.assertEqual(len([j for j in jobs if j['kind'] == 'gpu']), 12)
+        self.assertFalse(any(j['kind'] == 'review' or j['name'].startswith('train-') for j in jobs))
+        graph = {j['name']: j for j in jobs}; done = set()
+        while len(done) < len(graph):
+            ready = {n for n, j in graph.items() if n not in done and set(j['dependencies']) <= done}
+            self.assertTrue(ready); done.update(ready)
+        for name in active:
+            first = graph[f'develop-performance-{name}-10000']
+            self.assertEqual(first['dependencies'], [])
+            self.assertEqual(graph[f'develop-performance-{name}-50000']['dependencies'],
+                             [f'develop-performance-{name}-25000'])
+        for name in active:
+            command = candidates[name]['command']
+            self.assertEqual(command[command.index('--reward-objective') + 1], 'capped-time-v1')
+            self.assertEqual(command[command.index('--gate-objective') + 1], 'paired-improvement-v1')
+            self.assertEqual(command[command.index('--defenders') + 1], name[-1])
+            self.assertEqual(command[command.index('--intervention-scope') + 1], name.split('_')[1])
+        for name in ('long', 'short'):
+            self.assertFalse(candidates[name]['train'])
+            self.assertFalse(any(j['kind'] == 'gpu' and j.get('candidate') == name for j in jobs))
+            for step in (5000, 10000): self.assertIn(f'diagnostics-performance-{name}-{step}', graph)
+
+    def test_performance_summary_pairs_all_failures_without_filtering(self):
+        baseline = [dict(defenders=n, agility=2.25, scene_seed=n * 100 + i, capture_time=t, capture=int(t < 60),
+            success=int(t < 60), collision=0, breach=int(t == 60), timeout=0)
+            for n in (3, 6) for i, t in enumerate((20., 60., 40.))]
+        rows = [dict(row, capture_time=row['capture_time'] - (5. if row['capture'] else 0.)) for row in baseline]
+        result = scheduler.performance_summary(rows, baseline)
+        for cell in result.values():
+            self.assertEqual(cell['episodes'], 3)
+            self.assertAlmostEqual(cell['time_difference_from_source']['mean'], -10. / 3)
+            self.assertAlmostEqual(cell['capture'], 2. / 3)
+        with self.assertRaisesRegex(ValueError, 'Duplicate reference scenes'):
+            scheduler.performance_summary(rows, baseline + baseline[:1])
+        with self.assertRaisesRegex(ValueError, 'Duplicate candidate scenes'):
+            scheduler.performance_summary(rows + rows[:1], baseline)
+        with self.assertRaisesRegex(ValueError, 'same paired scenes'):
+            scheduler.performance_summary(rows[:-1], baseline)
+        with self.assertRaisesRegex(ValueError, 'same paired scenes'):
+            scheduler.performance_summary([dict(r, agility=1.5) for r in rows], baseline)
+        self.assertEqual(set(scheduler.performance_summary([dict(r, agility=1.5) for r in rows])),
+                         {'n3-a1.5', 'n6-a1.5'})
+
+    def test_paired_task_regression_holds_even_when_calibration_passes(self):
+        for change in (0., 12.):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                study=Path(directory)
+                job,manifest=automatic_pair_fixture(study)
+                manifest['technical_review_automation']=scheduler.technical_review_policy(True,True)
+                scheduler.write_json(study/'manifest.json',manifest)
+                for arm,step in (('full',250000),('same_info',100000)):
+                    episodes=[dict(scene_seed=452200000+i,defenders=3,capture_time=20.+i/10) for i in range(32)]
+                    scheduler.write_json(study/f'reviews/screens/42-{arm}-5000/completed.json',dict(episodes=episodes))
+                    current=study/f'reviews/screens/42-{arm}-{step}/completed.json'
+                    data=json.loads(current.read_text())
+                    data['episodes']=[dict(r,capture_time=r['capture_time']+change) for r in episodes]
+                    scheduler.write_json(current,data)
+                evidence=scheduler.build_signal_first_evidence(job,study,{j['name']:j for j in manifest['jobs']})
+                scheduler.write_json(study/'reviews'/job['name']/'evidence.json',evidence)
+                self.assertTrue(scheduler.automatic_technical_review(job,study,manifest))
+                decision=json.loads((study/'reviews'/job['name']/'decision.json').read_text())
+                self.assertEqual(decision['decision'],'continue' if change==0 else 'hold')
+                measured=decision['automatic_technical_review']['measurements']['full']['task_change_from_5000']
+                self.assertAlmostEqual(measured['mean'],change)
+
+    def test_composed_revision_is_fresh_matched_and_retains_formal_evidence_gates(self):
+        shared=dict(name='pretrain-101',kind='gpu',dependencies=['old-review'],
+            command=['python','train/formal_study_training.py','--arm','pretrain','--output','/previous/pretrain/seed-101'])
+        with patch.object(scheduler,'verified_existing_pretrain',return_value=None):
+            jobs,_,common=scheduler.composed_revision_jobs(Path('/revision'),'python',Path('/activate'),shared)
+        graph={j['name']:j for j in jobs}
+        self.assertEqual(common,str(Path('/previous/pretrain/seed-101/actor.pth')))
+        self.assertEqual(graph['pretrain-101']['command'],shared['command'])
+        self.assertEqual(graph['pretrain-101']['dependencies'],[])
+        for name,j in graph.items():
+            if name.startswith(('develop-','train-')):
+                c=j['command'];arm=c[c.index('--arm')+1]
+                self.assertNotIn('--recondition-bootstrap-if-needed',c)
+                self.assertNotIn('--isolate-bootstrap-if-needed',c)
+                if arm!='arboids_cbf':
+                    self.assertEqual(c[c.index('--critic-control-coordinates')+1],'nominal-thrust-v2')
+                    self.assertEqual(c[c.index('--label-repetitions')+1],'8')
+                    self.assertEqual(c[c.index('--critic-warmup-updates')+1],'5000')
+                    self.assertEqual(c[c.index('--entropy-objective')+1],'proposal-mean-v3')
+                    self.assertEqual(c[c.index('--critic-warmup-target')+1],'complete_real_state_return')
+                    self.assertEqual(float(c[c.index('--policy-learning-rate')+1]),1e-5)
+                    self.assertEqual(c[c.index('--long-horizon-steps')+1],'300')
+                    self.assertEqual(c[c.index('--bootstrap-estimator')+1],'mean')
+                if name.startswith('develop-101-'): self.assertEqual(c[c.index('--pretrain')+1],common)
+            if name.startswith('train-'): self.assertIn('review-protocol-freeze',j['dependencies'])
+        done=set()
+        while len(done)<len(graph):
+            ready={n for n,j in graph.items() if n not in done and set(j['dependencies'])<=done}
+            self.assertTrue(ready,'Revision must be acyclic with every fixed endpoint reachable')
+            done.update(ready)
+        for arm in ('no_peer','short','model_value'):
+            for step in (5000,10000,50000,250000): self.assertEqual(graph[f'develop-42-{arm}-{step}']['endpoint_step'],step)
+        for arm in scheduler.DEVELOPMENT_ARMS:
+            self.assertEqual(graph[f'develop-101-{arm}-5000']['dependencies'],['pretrain-101'])
+            self.assertIn(f'develop-101-{arm}-5000',graph[f'develop-101-{arm}-250000']['dependencies'])
+            self.assertIn('review-pair-10000',graph[f'develop-42-{arm}-50000']['dependencies'])
+        self.assertIn('review-pair-10000',scheduler.technical_review_policy(True,True)['reviews'])
+        self.assertTrue(graph['review-formal-core']['requires_claim_assessment'])
+
+    def test_development_revisions_skip_the_reserved_formal_bank_family(self):
+        self.assertEqual(scheduler.next_development_bank_offset(0), 20000000)
+        self.assertEqual(scheduler.next_development_bank_offset(80000000), 100000000)
+        self.assertEqual(scheduler.next_development_bank_offset(100000000), 410000000)
+        self.assertEqual(scheduler.next_development_bank_offset(410000000), 430000000)
+        with self.assertRaises(ValueError): scheduler.next_development_bank_offset(-1)
+        with self.assertRaises(ValueError): scheduler.next_development_bank_offset(2**31)
+
+    def test_parallel_development_preserves_budgets_commands_and_formal_barrier(self):
+        with patch.object(scheduler,'verified_existing_pretrain',return_value=None):
+            original,_=scheduler.build_jobs(Path('/study'),'python',Path('/activate'))
+        updated=scheduler.parallel_development_jobs(original,Path('/study'),'python')
+        graph={j['name']:j for j in updated}
+        self.assertEqual(len(graph),len(updated))
+        for job in original:
+            self.assertEqual(graph[job['name']]['command'],job['command'])
+        done=set()
+        approvals={'review-signal','review-pair-connectivity','review-pair-50000','review-pair-100000'}
+        while True:
+            ready={n for n,j in graph.items() if n not in done and set(j['dependencies'])<=done
+                and (j['kind']!='review' or n in approvals)}
+            if not ready: break
+            done.update(ready)
+        for seed in scheduler.PILOT_SEEDS:
+            for arm in scheduler.DEVELOPMENT_ARMS:
+                self.assertIn(f'develop-{seed}-{arm}-250000',done)
+                self.assertEqual(graph[f'develop-{seed}-{arm}-250000']['endpoint_step'],250000)
+                self.assertIn(f'diagnostics-confirmation-{seed}-{arm}-250000',done)
+            self.assertIn(f'diagnostics-development-mechanism-{seed}',done)
+            for arm in ('full','same_info'):
+                self.assertIn(f'diagnostics-precision-{seed}-{arm}-250000',done)
+        self.assertFalse(any(n.startswith('train-') for n in done))
+        self.assertFalse(any(f'pretrain-{s}' in done for s in scheduler.FORMAL_SEEDS))
+        self.assertTrue({'review-pair-250000','review-development-replication','review-small-matrix'}<=
+                        set(graph['review-protocol-freeze']['dependencies']))
+        while len(done)<len(graph):
+            ready={n for n,j in graph.items() if n not in done and set(j['dependencies'])<=done}
+            self.assertTrue(ready,'Parallel development graph must be acyclic and complete')
+            done.update(ready)
+        self.assertEqual(updated,scheduler.parallel_development_jobs(updated,Path('/study'),'python'))
+
+    def test_precision_preserves_noise_correction_and_rejects_mismatched_repetitions(self):
+        from interaction_review import precision_summary
+        rows=[dict(return_differences=[-1.,1.],critic_predictions=[0.,0.],predicted_difference=0.)]
+        summary=precision_summary(rows)
+        self.assertEqual(summary['E_env'],0.)
+        self.assertEqual(summary['mse_excess_over_zero'],0.)
+        self.assertEqual(summary['prediction_mse_noise_corrected'],-1.)
+        self.assertEqual(summary['zero_mse_noise_corrected'],-1.)
+        rows[0]['critic_predictions']=[1.,2.]
+        rows[0]['predicted_difference']=1.
+        summary=precision_summary(rows)
+        self.assertEqual(summary['E_env'],1.)
+        self.assertEqual(summary['prediction_mse_noise_corrected'],0.)
+        self.assertEqual(summary['mse_excess_over_zero'],1.)
+        with self.assertRaisesRegex(ValueError, 'minimum-head'):
+            precision_summary([dict(return_differences=[-1., 1.], critic_predictions=[0., 0.])])
+        with self.assertRaises(ValueError):
+            precision_summary(rows+[dict(return_differences=[1.,2.,3.],critic_predictions=[0.,0.])])
+        with self.assertRaises(ValueError):
+            precision_summary([dict(return_differences=[float('nan'),1.],critic_predictions=[0.,0.])])
+
+    def test_explicit_diagnostic_checkpoint_is_bound_without_arm_or_cli_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            study=Path(directory);checkpoint=study/'training/seed-42/full/probe-250000.pth'
+            checkpoint.parent.mkdir(parents=True);checkpoint.write_bytes(b'fixed probe')
+            path=study/'reviews/development-mechanism/seed-42/completed.json'
+            scheduler.write_json(path,dict(complete=True,input=dict(seed=42,checkpoint=str(checkpoint),
+                checkpoint_sha256=scheduler.digest(checkpoint))))
+            parent=dict(name='diagnostic',kind='cpu',completion=str(path),command=['python'])
+            job=dict(name='review',kind='review',dependencies=['diagnostic'],policy={})
+            evidence=scheduler.build_signal_first_evidence(job,study,{'diagnostic':parent})
+            self.assertIn(str(checkpoint.relative_to(study)),evidence['artifact_inputs'])
+            checkpoint.write_bytes(b'changed probe')
+            with self.assertRaises(ValueError):
+                scheduler.build_signal_first_evidence(job,study,{'diagnostic':parent})
+
     def test_automatic_pair_check_passes_without_claiming_efficacy(self):
         with tempfile.TemporaryDirectory() as directory:
             study=Path(directory)
@@ -173,75 +418,6 @@ class StageSchedule(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'artifact changed'):
                 review_evidence(study,'gate',[42])
 
-    def test_dependencies_block_joint_replication_and_final_tests(self):
-        with patch.object(scheduler,'verified_existing_pretrain',return_value=None):
-            jobs,_=scheduler.build_legacy_jobs(Path('/study'),'python',Path('/activate'))
-        graph={j['name']:j for j in jobs}
-        self.assertEqual(len(graph),len(jobs))
-        self.assertEqual(len([j for j in jobs if j['kind']=='review']),9)
-        done=set()
-        while len(done)<len(jobs):
-            ready={n for n,j in graph.items() if n not in done and set(j['dependencies'])<=done}
-            self.assertTrue(ready,'Cyclic or missing dependencies')
-            done.update(ready)
-        def reachable(approved):
-            done=set()
-            while True:
-                ready={n for n,j in graph.items() if n not in done and set(j['dependencies'])<=done
-                       and (j['kind']!='review' or n in approved)}
-                if not ready: return done
-                done.update(ready)
-        approved=[]
-        early=reachable(approved)
-        self.assertEqual({n for n in early if n.startswith('gate-')},
-                         {f'gate-42-{a}' for a in (*scheduler.CORE_ARMS,'no_peer')})
-        self.assertIn('diagnostics-arm-gate-42-initial_cbf',early)
-        self.assertTrue(graph['review-core-gate']['peer_gate_control'])
-        self.assertIn('diagnostics-peer-gate-42',graph['review-core-gate']['dependencies'])
-        self.assertEqual(graph['review-core-gate']['policy']['next_stage_budget']['additional_training_steps'],4000000)
-        self.assertEqual(graph['review-core-replication']['policy']['next_stage_budget']['additional_training_steps'],5000000)
-        self.assertFalse(any(n.startswith(('train-','eval-','vrx-')) for n in early))
-        approved.append('review-core-gate')
-        pilot=reachable(approved)
-        self.assertEqual({n for n in pilot if n.startswith('train-')},
-                         {f'train-42-{a}' for a in (*scheduler.CORE_ARMS,'no_peer')})
-        approved.append('review-core-pilot')
-        replicated=reachable(approved)
-        self.assertEqual({n for n in replicated if n.startswith('train-')},
-                         {f'train-{s}-{a}' for s in (42,101) for a in scheduler.CORE_ARMS} | {'train-42-no_peer'})
-        approved.append('review-core-replication')
-        ablated=reachable(approved)
-        self.assertEqual({n for n in ablated if n.startswith('train-')},
-                         {f'train-{s}-{a}' for s in (42,101) for a in scheduler.ARMS} | {'train-42-no_peer'})
-        self.assertNotIn('pretrain-202',ablated)
-        self.assertNotIn('train-101-no_peer',ablated)
-        self.assertNotIn('review-evidence', graph['review-peer-pilot']['dependencies'])
-        approved.append('review-peer-pilot')
-        candidate_replicated=reachable(approved)
-        self.assertIn('train-101-no_peer',candidate_replicated)
-        self.assertNotIn('pretrain-202',candidate_replicated)
-        approved.append('review-peer-replication')
-        approved.append('review-evidence')
-        deployment=reachable(approved)
-        self.assertEqual(len([n for n in deployment if n.startswith('vrx-pilot-')]),60)
-        self.assertFalse(any(n.startswith('vrx-') and not n.startswith('vrx-pilot-') for n in deployment))
-        approved.append('review-deployment')
-        replicated_all=reachable(approved)
-        self.assertEqual(len([n for n in replicated_all if n.startswith('train-')]),27)
-        self.assertFalse(any(n.startswith(('eval-','calibration-')) for n in replicated_all))
-        approved.append('review-submission')
-        primary=reachable(approved)
-        self.assertIn('figures',primary)
-        self.assertFalse(any(n.startswith('adv-') for n in primary))
-        self.assertNotIn('figures-extensions',primary)
-        self.assertIn('--without-extensions',graph['figures']['command'])
-        self.assertNotIn('--without-extensions',graph['figures-extensions']['command'])
-        self.assertEqual(graph['gate-42-full']['command'][-2:],['--stop-after-stage','gate'])
-        for name in ('gate-101-no_peer','train-101-no_peer','diagnostics-peer-gate-101',
-                     'diagnostics-peer-joint-101','review-peer-replication'):
-            self.assertEqual(graph[name]['condition'],dict(review='review-peer-pilot',assessment='inconclusive'))
-        self.assertTrue(graph['review-evidence']['peer_control'])
-
     def test_parallel_slots_use_disjoint_cpu_budgets_and_reuse_freed_slots(self):
         manifest=dict(cpu_affinity=list(range(20)),cpu_per_gpu=4,cpu_per_evaluation=2,
                       limits=dict(gpu=4,cpu=2,vrx=1))
@@ -342,40 +518,6 @@ class StageSchedule(unittest.TestCase):
             manifest['candidate_protocol']['H']=10
             scheduler.write_json(study/'manifest.json',manifest)
             self.assertFalse(scheduler.review_passed(job,study))
-
-    def test_signal_migration_preserves_checkpoint_bytes_and_rejects_live_jobs(self):
-        import torch
-        from types import SimpleNamespace
-        with tempfile.TemporaryDirectory() as directory:
-            study=Path(directory)
-            with patch.object(scheduler,'verified_existing_pretrain',return_value=None):
-                jobs,_=scheduler.build_legacy_jobs(study,'python',Path('/activate'))
-            manifest=dict(format='interaction-study-v5',root=str(scheduler.ROOT),jobs=jobs,
-                code={'scripts/run_interaction_study.py':'old'},cpu_affinity=list(range(20)))
-            scheduler.write_json(study/'manifest.json',manifest)
-            record=study/'jobs/gate-42-full.json'
-            scheduler.write_json(record,dict(name='gate-42-full',state='paused_protocol_revision',pid=123))
-            checkpoint=study/'training/seed-42/full/resume.pth'
-            checkpoint.parent.mkdir(parents=True)
-            config=dict(training=dict(gate_steps=250000,joint_steps=1000000,warm_steps=5000))
-            torch.save(dict(step=210000,agent=dict(stage='gate'),config=config,
-                            simulated_steps=1700000,elapsed=10000.),checkpoint)
-            before=checkpoint.read_bytes()
-            scheduler.write_json(checkpoint.parent/'progress.json',dict(step=213000))
-            fcntl=SimpleNamespace(flock=lambda *args:None,LOCK_EX=1,LOCK_NB=2)
-            with patch.dict(sys.modules,fcntl=fcntl),patch.object(scheduler,'process_identity',return_value='live'):
-                with self.assertRaisesRegex(RuntimeError,'Stop owned jobs'):
-                    scheduler.migrate_signal_first(study)
-            with patch.dict(sys.modules,fcntl=fcntl),patch.object(scheduler,'process_identity',return_value=None), \
-                 patch.object(scheduler,'source_hashes',return_value={'scripts/run_interaction_study.py':'new'}), \
-                 patch.object(scheduler,'verified_existing_pretrain',return_value=None):
-                scheduler.migrate_signal_first(study)
-            updated=json.loads((study/'manifest.json').read_text())
-            self.assertEqual(updated['format'],'interaction-study-v6')
-            self.assertEqual(checkpoint.read_bytes(),before)
-            self.assertEqual(updated['execution_revisions'][-1]['preserved_checkpoints']['42/full']['uncheckpointed_steps'],3000)
-            self.assertIn('gate-42-full',updated['retired_jobs'])
-            self.assertEqual(updated['development_resume_steps']['42/full'],210000)
 
     def test_explicit_scientific_hold_stops_idle_scheduler(self):
         from types import SimpleNamespace
@@ -482,78 +624,12 @@ class StageSchedule(unittest.TestCase):
             self.assertEqual(process.poll(),'unobserved')
             self.assertEqual(process.poll(),'unobserved')
 
-    def test_early_migration_preserves_live_training_and_rejects_learner_changes(self):
-        from types import SimpleNamespace
-        with tempfile.TemporaryDirectory() as directory:
-            study=Path(directory)
-            with patch.object(scheduler,'verified_existing_pretrain',return_value=None), \
-                 patch.object(scheduler,'advance_candidate_screen',side_effect=lambda jobs,*args:jobs):
-                jobs,_=scheduler.build_legacy_jobs(study,'python',Path('/activate'))
-            old=dict(format='interaction-study-v4',root=str(scheduler.ROOT),jobs=jobs,cpu_affinity=list(range(20)),
-                limits=dict(gpu=1,cpu=2,vrx=1,rollout_workers=4),
-                code={'scripts/run_interaction_study.py':'old','train/train_interaction.py':'learner'})
-            scheduler.write_json(study/'manifest.json',old)
-            record=study/'jobs/gate-42-full.json'
-            scheduler.write_json(record,dict(name='gate-42-full',pid=123,state='running'))
-            checkpoint=study/'training/seed-42/full/resume.pth'
-            checkpoint.parent.mkdir(parents=True)
-            checkpoint.write_bytes(b'live checkpoint, never rewritten by migration')
-            fcntl=SimpleNamespace(flock=lambda *args:None,LOCK_EX=1,LOCK_NB=2)
-            with patch.dict(sys.modules,fcntl=fcntl), patch.object(scheduler,'process_identity',return_value='456'), \
-                 patch.object(scheduler,'verify_running_job',return_value='456'), \
-                 patch.object(scheduler,'source_hashes',return_value={**old['code'],'train/train_interaction.py':'unreviewed'}):
-                with self.assertRaisesRegex(RuntimeError,'frozen learner'):
-                    scheduler.migrate_early_screen(study)
-                self.assertEqual(json.loads((study/'manifest.json').read_text()),old)
-            with patch.dict(sys.modules,fcntl=fcntl), patch.object(scheduler,'process_identity',return_value='456'), \
-                 patch.object(scheduler,'verify_running_job',return_value='456'), \
-                 patch.object(scheduler,'source_hashes',return_value={**old['code'],'scripts/run_interaction_study.py':'new'}):
-                scheduler.migrate_early_screen(study)
-            updated=json.loads((study/'manifest.json').read_text())
-            self.assertEqual(updated['format'],'interaction-study-v5')
-            self.assertEqual(updated['limits']['gpu'],4)
-            self.assertEqual(updated['execution_revisions'][-1]['preserved_running'],
-                             [dict(name='gate-42-full',pid=123,process_identity='456')])
-            self.assertEqual(json.loads(record.read_text())['state'],'running')
-            self.assertEqual(checkpoint.read_bytes(),b'live checkpoint, never rewritten by migration')
-            graph={j['name']:j for j in updated['jobs']}
-            self.assertEqual(graph['gate-42-no_peer']['dependencies'],['pretrain-42'])
-            self.assertEqual(graph['gate-42-full']['command'],next(j['command'] for j in jobs if j['name']=='gate-42-full'))
-
-    def test_deployment_bank_is_paired_independent_and_keeps_task_failures(self):
-        with tempfile.TemporaryDirectory() as directory:
-            study=Path(directory)
-            with patch.object(scheduler,'verified_existing_pretrain',return_value=None):
-                jobs,_=scheduler.build_legacy_jobs(study,'python',Path('/activate'))
-            scheduler.write_json(study/'manifest.json',dict(jobs=jobs))
-            final_scenes={int(j['command'][2].split('--seed ')[1].split()[0]) for j in jobs
-                          if j['name'].startswith('vrx-') and j.get('phase')=='submission'}
-            for job in (j for j in jobs if j.get('phase')=='deployment-validation'):
-                spec=job['validation']
-                self.assertNotIn(spec['scene_seed'],final_scenes)
-                self.assertIn(f'--seed {spec["scene_seed"]}',job['command'][2])
-                checkpoint=study/f'training/seed-{spec["seed"]}/{spec["arm"]}/policy.pth'
-                checkpoint.parent.mkdir(parents=True,exist_ok=True)
-                checkpoint.write_bytes(b'fixed validation policy')
-                scheduler.write_json(job['result'],dict(passed=True,outcome_code=1,seed=spec['scene_seed'],
-                    setting=spec['setting'],num_robots=spec['defenders']+1,controller='IACRRL',
-                    duration_limit=60,termination_rule='paper',agility=2.25,checkpoint_sha256=scheduler.digest(checkpoint),
-                    simulation_seconds=20.,defender_collision=False,terminal_positions=[[0.,0.]],target_radius=15.))
-            evidence=deployment_evidence(study)
-            self.assertEqual(len(evidence['episodes']),60)
-            self.assertTrue(evidence['technical_checks_passed'])
-            self.assertTrue(all(r['success']==0 and r['capture_time']==60 for r in evidence['episodes']))
-            self.assertEqual(len(evidence['seed_contrasts']),8)
-            checkpoint.write_bytes(b'changed policy')
-            with self.assertRaisesRegex(ValueError,'mismatched'):
-                deployment_evidence(study)
-
     def test_core_evidence_survives_adding_ablations_but_not_editing_cached_results(self):
         with tempfile.TemporaryDirectory() as directory:
             study=Path(directory)
             data=study/'reviews/data-joint-42'
             artifacts={}
-            for arm in (*scheduler.CORE_ARMS,'initial_cbf'):
+            for arm in (*CORE_ARMS,'initial_cbf'):
                 path=data/f'{arm}.json'
                 scheduler.write_json(path,dict(summary={},episodes=[dict(scene_seed=310420000+i,
                     **{m:0. for m in METRICS}) for i in range(100)],
@@ -638,7 +714,7 @@ class StageSchedule(unittest.TestCase):
             study=Path(directory)
             data=study/'reviews/data-gate-42'
             artifacts={}
-            for arm in (*scheduler.CORE_ARMS,'initial_cbf'):
+            for arm in (*CORE_ARMS,'initial_cbf'):
                 path=data/f'{arm}.json'
                 scheduler.write_json(path,dict(summary={},episodes=[dict(scene_seed=310420000+i,
                     **{m:0. for m in METRICS}) for i in range(100)],

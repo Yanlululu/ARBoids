@@ -17,7 +17,7 @@ import yaml
 from envs.TADgame import TADEnv
 from envs.snapshot import RandomState, seed_random
 from interaction_rollout import (public_packet, execute, safety_controller, SnapshotPool,
-                                 InterventionSampler, DeploymentPolicy)
+                                 InterventionSampler, DeploymentPolicy, CandidateRolePolicy)
 from policy.interaction_sac import JointReplay, make_agent
 from train_interaction import arm_config, run_training, export_policy
 from interaction_review import check_endpoint, validation_calibration, validation_candidate_response, collect
@@ -30,7 +30,7 @@ def small_config(arm='full'):
         eval_interval=12, eval_episodes=1, checkpoint_interval=6, log_interval=12,
         allow_random_initialization=True)
     c['interaction'].update(relation_dim=16, workers=0, pairs_per_batch=2, horizon_steps=2,
-        intervention_interval=4, snapshot_interval=2, snapshot_capacity=8)
+        intervention_interval=4, snapshot_interval=2, snapshot_capacity=8,entropy_objective='stage-mean-v2')
     return c
 
 
@@ -49,7 +49,174 @@ def equal(test, a, b):
         test.assertEqual(a, b)
 
 
+class CandidateRoles(unittest.TestCase):
+    def test_guard_handover_keeps_zero_residual_and_fills_outer_roles(self):
+        from evaluate_candidate_roles import ConditionalGuardResidual
+        policy = ConditionalGuardResidual()
+        candidates = np.zeros((6, 6, 3), dtype=np.float32)
+        candidates[:, :, 0] = np.arange(6)
+        candidates[:, :, 2] = 1.
+        prior = candidates[np.arange(6), np.arange(6)]
+        pursuit = np.full((6, 3), .75, dtype=np.float32)
+        cost = np.arange(36).reshape(6, 6)
+        packet = dict(motion=np.zeros((6, 6)))
+        with patch.object(policy, 'candidate_controls', return_value=(prior, pursuit, np.zeros(6))), \
+                patch.object(policy, 'pursuit_controls', return_value=(pursuit, np.zeros(6))), \
+                patch.object(policy, 'candidates', return_value=(candidates, cost)):
+            np.testing.assert_array_equal(policy.compose(packet, np.zeros(6)), prior)
+            action = policy.compose(packet, np.array([1., 1., 0., 0., 0., 0.]))
+            np.testing.assert_array_equal(action[:2], pursuit[:2])
+            np.testing.assert_array_equal(np.sort(action[2:, 0]), [0, 1, 4, 5])
+
+    def test_residual_zero_preserves_prior_without_central_state(self):
+        from policy.role_residual import RoleResidualPolicy
+        from policy.role_value import features
+        seed_random(83)
+        env = TADEnv(6, protocol='paper-parameters-v1')
+        env.reset(4.)
+        packet = public_packet(env)
+        del packet['central']
+        policy = RoleResidualPolicy()
+        np.testing.assert_array_equal(policy.compose(packet, np.zeros(6)),
+                                      CandidateRolePolicy().choose_action(packet)[0])
+        x = features(packet, policy.candidate_controls(packet))
+        self.assertEqual(x.shape, (6, 16))
+        self.assertTrue(np.isfinite(x).all())
+
+    def test_conditional_values_follow_vessel_permutations(self):
+        from policy.role_residual import RoleResidualPolicy
+        from policy.role_value import ConditionalRoleValue, compositions, features
+        seed_random(84)
+        env = TADEnv(6, protocol='paper-parameters-v1')
+        env.reset(6.)
+        packet = public_packet(env)
+        policy = RoleResidualPolicy()
+        x = torch.from_numpy(features(packet, policy.candidate_controls(packet)))[None]
+        masks = torch.from_numpy(compositions(6))
+        order = torch.tensor([3, 0, 5, 1, 4, 2])
+        model = ConditionalRoleValue().eval()
+        with torch.no_grad():
+            torch.testing.assert_close(model(x, masks), model(x[:, order], masks[:, order]),
+                                       atol=2e-6, rtol=0)
+
+    def test_joint_selection_resolves_competing_candidate_choices(self):
+        candidates = np.zeros((3, 3, 3), dtype=np.float32)
+        candidates[:, :, 0] = [-1., 0., 1.]
+        candidates[:, :, 2] = 1.
+        costs = np.array([[1., 2., 40.], [1., 6., 40.], [20., 1., 2.]])
+        with patch.object(CandidateRolePolicy, 'candidates', return_value=(candidates, costs)):
+            joint, _ = CandidateRolePolicy().choose_action({})
+            independent, _ = CandidateRolePolicy(coordinated=False).choose_action({})
+        np.testing.assert_array_equal(joint[:, 0], [0., -1., 1.])
+        np.testing.assert_array_equal(independent[:, 0], [-1., -1., 0.])
+
+    def test_public_inputs_permutation_and_deployment_roundtrip(self):
+        seed_random(73)
+        env = TADEnv(6, protocol='paper-parameters-v1')
+        env.reset(4.)
+        packet = public_packet(env)
+        packet.pop('central')
+        policy = CandidateRolePolicy()
+        expected, _ = policy.choose_action(packet)
+        before = copy.deepcopy(packet)
+        order = np.array([3, 0, 5, 1, 4, 2])
+        shuffled, _ = policy.choose_action({k: v[order] for k, v in packet.items()})
+        np.testing.assert_allclose(shuffled, expected[order], atol=1e-6, rtol=0)
+        equal(self, before, packet)
+        self.assertTrue((np.abs(expected[:, :2]) <= 1.).all())
+        np.testing.assert_array_equal(expected[:, 2], np.ones(6))
+        config = dict(environment=dict(protocol='paper-parameters-v1'),
+                      candidate_control=dict(width=28., coordinated=True))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'policy.pth'
+            torch.save(dict(format='candidate-role-deployment-v1', config=config), path)
+            deployed = DeploymentPolicy(path)
+            actual, _ = deployed.choose_action(packet)
+            np.testing.assert_array_equal(actual, expected)
+            physical = deployed.control(packet['obs'], packet['motion'], env.boids_actions)
+            _, reference, _ = safety_controller(6).control(packet['motion'], expected, env.boids_actions)
+            np.testing.assert_array_equal(physical, reference)
+            np.testing.assert_array_equal(deployed.last_action, expected)
+
+    def test_invalid_role_settings_and_public_states_are_rejected(self):
+        for width in (0., -1., float('nan'), float('inf')):
+            with self.assertRaises(ValueError):
+                CandidateRolePolicy(width=width)
+        with self.assertRaises(ValueError):
+            CandidateRolePolicy(coordinated='false')
+        with self.assertRaises(ValueError):
+            CandidateRolePolicy().choose_action(dict(obs=np.zeros((3, 18)), motion=np.full((3, 6), np.nan)))
+
+
 class Pipeline(unittest.TestCase):
+    def test_arm_selection_preserves_the_configured_long_horizon(self):
+        config = small_config()
+        config['interaction']['horizon_steps'] = 300
+        for arm in ('full', 'same_info', 'no_peer', 'model_value'):
+            self.assertEqual(arm_config(config, arm)['interaction']['horizon_steps'], 300)
+        self.assertEqual(arm_config(config, 'short')['interaction']['horizon_steps'], 10)
+        self.assertEqual(config['interaction']['horizon_steps'], 300)
+
+    def test_direct_gate_task_training_resumes_with_sparse_actor_updates(self):
+        c = small_config()
+        c['rl']['GAMMA'] = 1.
+        c['training'].update(gate_steps=12, joint_steps=4, warm_steps=4,
+                             eval_interval=16, checkpoint_interval=16, log_interval=16)
+        c['interaction'].update(entropy_objective='task-return-v4', reward_objective='capped-time-v1',
+            gate_objective='paired-improvement-v1', deterministic_rollouts=True,
+            gate_updates_per_batch=2, horizon_steps=300)
+        with tempfile.TemporaryDirectory() as directory:
+            left, right = Path(directory)/'whole', Path(directory)/'resumed'
+            run_training(c, output=left)
+            run_training(c, output=right, stop_at_step=7)
+            run_training(c, output=right)
+            whole = torch.load(left/'resume.pth', weights_only=False)
+            resumed = torch.load(right/'resume.pth', weights_only=False)
+            for key in ('agent', 'replay', 'actor_updates', 'critic_updates', 'step', 'simulated_steps'):
+                equal(self, whole[key], resumed[key])
+            self.assertEqual(whole['actor_updates'], 9)
+            self.assertEqual(whole['critic_updates'], 4)
+            for path in (left, right):
+                self.assertEqual(json.loads((path/'progress.json').read_text())['updates'], 9)
+
+    def test_time_objective_charges_every_unsuccessful_termination_the_full_deadline(self):
+        from interaction_rollout import transition_reward
+        reward = np.ones(3)
+        self.assertIs(transition_reward(reward, 0., .2, 60., 0, 3), reward)
+        for outcome in (1, 2, 3, 4):
+            elapsed = 60. if outcome == 4 else 17.
+            first = transition_reward(reward, 0., 10., 60., 0, 3, 'capped-time-v1')
+            last = transition_reward(reward, 10., elapsed, 60., outcome, 3, 'capped-time-v1')
+            np.testing.assert_allclose(first + last, -elapsed if outcome == 3 else -60.)
+        from train_interaction import validate
+        c = small_config(); c['interaction']['reward_objective'] = 'capped-time-v1'
+        with self.assertRaisesRegex(ValueError, 'undiscounted task returns'): validate(c)
+        c['rl']['GAMMA'] = 1.; c['interaction']['entropy_objective'] = 'task-return-v4'
+        validate(c)
+
+    def test_complete_real_return_initialization_resumes_across_the_first_policy_update(self):
+        c=small_config('same_info')
+        c['training'].update(gate_steps=516,joint_steps=4,warm_steps=512,critic_warmup_updates=5,
+            critic_warmup_target='complete_real_state_return',replay_capacity=1024,
+            eval_interval=520,checkpoint_interval=520,log_interval=520)
+        c['rl'].update(actor_learning_rate=1e-5,temperature_learning_rate=1e-5)
+        c['interaction']['bootstrap_estimator'] = 'mean'
+        c['interaction']['entropy_objective'] = 'proposal-mean-v3'
+        with tempfile.TemporaryDirectory() as directory:
+            left,right=Path(directory)/'whole',Path(directory)/'resumed'
+            run_training(c,output=left)
+            run_training(c,output=right,stop_at_step=511)
+            run_training(c,output=right,stop_at_step=512)
+            run_training(c,output=right)
+            whole=torch.load(left/'resume.pth',weights_only=False)
+            resumed=torch.load(right/'resume.pth',weights_only=False)
+            for key in ('agent','replay','critic_warmup_updates','critic_warmup_complete','step'):
+                equal(self,whole[key],resumed[key])
+            self.assertEqual(whole['critic_warmup_updates'],5)
+            self.assertEqual(whole['agent']['actor_optimizer']['param_groups'][0]['lr'],1e-5)
+            self.assertEqual(whole['agent']['alpha_optimizer']['param_groups'][0]['lr'],1e-5)
+            self.assertIn('policy_cost',whole['replay']['arrays'])
+
     def setUp(self):
         torch.set_num_threads(1)
         seed_random(42)
@@ -119,6 +286,27 @@ class Pipeline(unittest.TestCase):
             self.assertEqual(target.calls,2)
         self.assertIs(policy.critic,online)
 
+    def test_development_value_error_matches_the_formal_minimum_head_estimate(self):
+        import interaction_review as review
+        from interaction_rollout import compact_snapshot, FrozenPolicy, frozen_payload
+        policy = FrozenPolicy(frozen_payload(make_agent(small_config()), online_critic=True))
+        env = TADEnv(3, protocol='paper-parameters-v1')
+        env.reset(2.25)
+        snapshot, packet = compact_snapshot(env), public_packet(env)
+        heads = [(torch.tensor([[0.]]), torch.tensor([[10.]])),
+                 (torch.tensor([[9.]]), torch.tensor([[0.]]))]
+        traces = [[dict(thrust=np.zeros((3, 2)))]] * 2
+        with patch.object(review, '_DIAGNOSTIC_POLICY', policy, create=True), \
+             patch.object(review, '_DIAGNOSTIC_SOURCE', None, create=True), \
+             patch.object(review, 'diagnostic_state', return_value=(snapshot, packet, {})), \
+             patch.object(policy.critic, 'forward', side_effect=heads), \
+             patch.object(review, 'paired_consequences', return_value=(0., 2, traces, None)):
+            row = review._calibration_worker((392100000, 0, 300, 2))
+        self.assertEqual(row['critic_predictions'], [-9., 10.])
+        self.assertEqual(row['predicted_difference'], 0.)
+        self.assertEqual(row['absolute_error'], 0.)
+        self.assertEqual(review.precision_summary([row])['E_env'], 0.)
+
     def test_bootstrap_calibration_uses_the_exact_soft_tail_and_one_terminal_branch(self):
         import interaction_review as review
         from interaction_rollout import compact_snapshot, FrozenPolicy, frozen_payload
@@ -128,9 +316,10 @@ class Pipeline(unittest.TestCase):
                 self.value=value
             def forward(self,packet,action):
                 value=torch.full((len(action),1),self.value)
-                return value,value
+                return value-1.,value+1.
         before=FrozenPolicy(frozen_payload(make_agent(small_config()),online_critic=True))
         after=copy.deepcopy(before)
+        after.bootstrap_estimator='mean'
         before.label_critic=ConstantCritic(0.)
         # Q_100 excludes its own entropy, includes entropy at step 101.
         after.label_critic=ConstantCritic(2.+.99*(2.-.2))
@@ -211,6 +400,93 @@ class Pipeline(unittest.TestCase):
         self.assertAlmostEqual(row['contrasts']['conditional_interaction']['mean'],float(base[0,2]*base[1,2]))
         np.testing.assert_allclose(np.asarray(row['configurations']['mean'])[:,2],base[:,2].mean())
         np.testing.assert_array_equal(np.sort(np.asarray(row['configurations']['permuted'])[:,2]),np.sort(base[:,2]))
+
+    def test_exact_development_isolation_preserves_values_and_failed_attempts(self):
+        from train_interaction import recondition_bootstrap
+        for arm in ('no_peer','model_value'):
+            with self.subTest(arm=arm), tempfile.TemporaryDirectory() as directory:
+                path=Path(directory)/f'training/seed-42/{arm}'
+                c=small_config(arm);c['interaction']['bootstrap_source']='coupled'
+                run_training(c,output=path,stop_at_step=4)
+                old=torch.load(path/'resume.pth',weights_only=False)
+                metric=dict(horizon_100_label_mae=10.,tail_value_mae=10.,environment_mae=10.,zero_prediction_mae=10.)
+                calibration=dict(summary=dict(before=dict(all=copy.deepcopy(metric)),repaired=dict(all=copy.deepcopy(metric))))
+                record=Path(directory)/f'reviews/bootstrap-repair/42-{arm}/completed.json'
+                record.parent.mkdir(parents=True)
+                record.write_text(json.dumps(dict(complete=False,passed=False,bootstrap_updates=10000)))
+                with patch('interaction_review.source_for_seed',return_value='unused'), \
+                     patch('interaction_review.bootstrap_calibration',return_value=calibration):
+                    recondition_bootstrap(path,workers=0,isolate=True)
+                new=torch.load(path/'resume.pth',weights_only=False)
+                for key in ('replay','step','done','simulated_steps'):
+                    equal(self,old[key],new[key])
+                for key in ('actor','critic','target','actor_optimizer','critic_optimizer','alpha_optimizer','log_alpha'):
+                    equal(self,old['agent'][key],new['agent'][key])
+                equal(self,old['agent']['critic'],new['agent']['bootstrap_critic'])
+                equal(self,old['agent']['critic_optimizer'],new['agent']['bootstrap_optimizer'])
+                for key in ('numpy','python','torch_cpu','torch_cuda'):
+                    equal(self,getattr(old['random'],key),getattr(new['random'],key))
+                self.assertEqual(new['bootstrap_updates'],0)
+                self.assertEqual(new['bootstrap_repair']['prior_attempts'][0]['bootstrap_updates'],10000)
+                self.assertTrue(new['bootstrap_repair']['passed'])
+                c['interaction']['bootstrap_source']='real_td'
+                run_training(c,output=path,stop_at_step=6)
+
+    def test_composed_revision_warmup_and_repeated_labels_resume_exactly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            a,b=Path(directory)/'continuous',Path(directory)/'resumed'
+            c=small_config()
+            c['interaction'].update(critic_control_coordinates='nominal-thrust-v2',label_repetitions=3)
+            c['training']['critic_warmup_updates']=3
+            run_training(c,output=a)
+            run_training(c,output=b,stop_at_step=1)
+            run_training(c,output=b,stop_at_step=4)
+            run_training(c,output=b)
+            left=torch.load(a/'resume.pth',weights_only=False)
+            right=torch.load(b/'resume.pth',weights_only=False)
+            self.assertEqual(left['critic_warmup_updates'],3)
+            self.assertEqual(left['bootstrap_updates'],14)
+            for key in ('agent','replay','step','simulated_steps','auxiliary','critic_warmup_updates'):
+                equal(self,left[key],right[key])
+            self.assertIn('difference_standard_error',left['auxiliary'])
+            from policy.interaction_sac import InteractionSAC
+            interrupted=Path(directory)/'interrupted'
+            original=InteractionSAC.learn_bootstrap;calls=[]
+            def interrupt_once(agent,replay):
+                calls.append(1)
+                if len(calls)==2: raise KeyboardInterrupt
+                return original(agent,replay)
+            with patch.object(InteractionSAC,'learn_bootstrap',interrupt_once):
+                with self.assertRaises(KeyboardInterrupt): run_training(c,output=interrupted)
+            partial=torch.load(interrupted/'resume.pth',weights_only=False)
+            self.assertEqual(partial['critic_warmup_updates'],1)
+            self.assertFalse(partial['critic_warmup_complete'])
+            run_training(c,output=interrupted)
+            recovered=torch.load(interrupted/'resume.pth',weights_only=False)
+            for key in ('agent','replay','step','simulated_steps','auxiliary','critic_warmup_updates'):
+                equal(self,left[key],recovered[key])
+
+    def test_same_info_critics_and_optimizers_remain_independent_after_warmup_and_resume(self):
+        devices=['cpu']+(['cuda:0'] if torch.cuda.is_available() else [])
+        for device in devices:
+            with self.subTest(device=device), tempfile.TemporaryDirectory() as directory:
+                c=small_config('same_info')
+                c['interaction']['critic_control_coordinates']='nominal-thrust-v2'
+                c['training']['critic_warmup_updates']=3
+                path=Path(directory)
+                run_training(c,output=path,device=device,stop_after_stage='gate')
+                for resume in (False,True):
+                    if resume: run_training(c,output=path,device=device)
+                    saved=torch.load(path/'resume.pth',map_location='cpu',weights_only=False)
+                    a=saved['agent']
+                    equal(self,a['critic'],a['bootstrap_critic'])
+                    equal(self,a['critic_optimizer'],a['bootstrap_optimizer'])
+                    left,right=(a[k]['state'] for k in ('critic_optimizer','bootstrap_optimizer'))
+                    for key in left:
+                        for field in ('step','exp_avg','exp_avg_sq'):
+                            self.assertNotEqual(left[key][field].data_ptr(),right[key][field].data_ptr())
+                    self.assertEqual(saved['learning_checks']['bootstrap_optimizer_aliases'],0)
+                    self.assertEqual(saved['learning_checks']['same_info_critic_max_difference'],0.)
 
     def test_lossless_replay_ring_and_reset_boundaries(self):
         env = TADEnv(3, protocol='paper-parameters-v1')

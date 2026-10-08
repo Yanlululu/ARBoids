@@ -38,6 +38,8 @@ def stage_review_costs(study, version):
         paths.extend((study/'reviews/confirmation').glob('*/completed.json'))
         paths.extend((study/'reviews/target-audit').glob('*/completed.json'))
         paths.extend((study/'reviews/bootstrap-check').glob('*/completed.json'))
+        paths.extend((study/'reviews/precision').glob('*/completed.json'))
+        paths.extend((study/'reviews/development-mechanism').glob('*/completed.json'))
         paths.extend((study/'mechanism').glob('*/completed.json'))
         for path in paths:
             result=json.loads(path.read_text())
@@ -49,6 +51,13 @@ def stage_review_costs(study, version):
         for path in (study/'reviews/bootstrap-repair').glob('*/completed.json'):
             result=json.loads(path.read_text())
             calibration=result['calibration']
+            for attempt in result.get('prior_attempts',[]):
+                audit=attempt['calibration']
+                rows.append(dict(stage=str(path.parent.relative_to(study))+'/failed-reconditioning',
+                    seed=int(path.parent.name.split('-')[0]),validation_steps=0,
+                    calibration_steps=audit['simulated_steps'],
+                    wall_seconds=attempt['learning_wall_seconds']+audit['wall_seconds'],
+                    additional_critic_updates=attempt['bootstrap_updates']))
             # The successful evaluator fitting time is already in training.elapsed.
             rows.append(dict(stage=str(path.parent.relative_to(study)),seed=int(path.parent.name.split('-')[0]),
                 validation_steps=0,calibration_steps=calibration['simulated_steps'],
@@ -395,7 +404,8 @@ def finish(study,directory,manuscript,include_extensions=True):
             r=json.loads((study/f'training/seed-{seed}/{arm}/progress.json').read_text())
             if r['step']!=1000000 or not r['complete']: raise ValueError('Incomplete fixed training endpoint')
             cost.append(dict(seed=seed,arm=arm,real_steps=r['step'],auxiliary_steps=r['simulated_steps'],
-                             updates=r['updates'],bootstrap_updates=r.get('bootstrap_updates',0),wall_seconds=r['elapsed'],phase='formal'))
+                             updates=r['updates'],bootstrap_updates=r.get('bootstrap_updates',0),
+                             critic_warmup_updates=r.get('critic_warmup_updates',0),wall_seconds=r['elapsed'],phase='formal'))
     blocks.append(r'\begin{table}[t]\centering\scriptsize\caption{Additional training cost, mean per seed. The common pretraining costs one million real steps per seed.}\begin{tabular}{@{}lrrr@{}}\toprule Method & Real steps & Auxiliary steps & Hours\\\midrule'+'\n'+
         '\n'.join(escape(LABELS[a])+f' & 1000000 & {np.mean([r["auxiliary_steps"] for r in cost if r["arm"]==a]):.0f} & {np.mean([r["wall_seconds"] for r in cost if r["arm"]==a])/3600:.2f}'+r'\\' for a in ARMS)+
         '\n'+r'\bottomrule\end{tabular}\end{table}')
@@ -459,20 +469,36 @@ def finish(study,directory,manuscript,include_extensions=True):
     # inspect the complete comparisons before claiming mechanism or superiority.
     manifest=json.loads((study/'manifest.json').read_text())
     pretraining=[]
-    for seed in SEEDS:
+    for seed in dict.fromkeys([*SEEDS,*manifest.get('development_seeds',[])]):
         reused=manifest['inherited_pretraining'].get(f'pretrain-{seed}')
         if reused:
             pretraining.append(dict(seed=seed,real_steps=1000000,inherited=True,wall_seconds=None,source=reused['provenance']))
         else:
-            r=json.loads((study/f'pretrain/seed-{seed}/completed.json').read_text())
-            pretraining.append(dict(seed=seed,real_steps=r['actual_phase_steps'],inherited=False,wall_seconds=r['elapsed_seconds'],source=str(study/f'pretrain/seed-{seed}/completed.json')))
+            source=Path(manifest.get('pretraining_outputs',{}).get(str(seed),str(study/f'pretrain/seed-{seed}/actor.pth'))).with_name('completed.json')
+            r=json.loads(source.read_text())
+            pretraining.append(dict(seed=seed,real_steps=r['actual_phase_steps'],inherited=False,wall_seconds=r['elapsed_seconds'],source=str(source)))
     review_cost=stage_review_costs(study,manifest['format'])
     for path in sorted((study/'training').glob('seed-*/*/progress.json')):
         seed=int(path.parents[1].name.split('-')[1])
         if seed in SEEDS: continue
         r=json.loads(path.read_text())
         cost.append(dict(seed=seed,arm=path.parent.name,real_steps=r['step'],auxiliary_steps=r['simulated_steps'],
-                         updates=r['updates'],bootstrap_updates=r.get('bootstrap_updates',0),wall_seconds=r['elapsed'],phase='development'))
+                         updates=r['updates'],bootstrap_updates=r.get('bootstrap_updates',0),
+                         critic_warmup_updates=r.get('critic_warmup_updates',0),wall_seconds=r['elapsed'],phase='development'))
+    history=manifest.get('previous_development');seen={study.resolve()}
+    while history:
+        previous=Path(history['study']).resolve()
+        if previous in seen: raise ValueError('Cyclic development provenance.')
+        seen.add(previous);prior=json.loads((previous/'manifest.json').read_text())
+        review_cost.extend(dict(row,stage=f'{previous.name}/{row["stage"]}')
+                           for row in stage_review_costs(previous,prior['format']))
+        for path in sorted((previous/'training').glob('seed-*/*/progress.json')):
+            r=json.loads(path.read_text())
+            cost.append(dict(seed=int(path.parents[1].name.split('-')[1]),arm=path.parent.name,
+                real_steps=r['step'],auxiliary_steps=r['simulated_steps'],updates=r['updates'],
+                bootstrap_updates=r.get('bootstrap_updates',0),critic_warmup_updates=r.get('critic_warmup_updates',0),
+                wall_seconds=r['elapsed'],phase='development-retired:'+previous.name))
+        history=prior.get('previous_development')
     deployment_jobs=[j for j in manifest['jobs'] if j.get('phase')=='deployment-validation']
     deployment_cost=dict(episodes=len(deployment_jobs),
         simulation_seconds=sum(json.loads(Path(j['result']).read_text())['simulation_seconds'] for j in deployment_jobs),

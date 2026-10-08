@@ -170,6 +170,27 @@ class FormalEvidence(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'checkpoint changed'):
                 evaluation.formal_evidence(study)
 
+    def test_matching_and_interaction_cannot_substitute_for_each_other(self):
+        interval=evaluation.hierarchical_interval
+        for missing in ('matching','interaction'):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                study=Path(directory);fixture(study)
+                for seed in evaluation.SEEDS:
+                    path=study/f'mechanism/seed-{seed}/states.json'
+                    data=json.loads(path.read_text())
+                    for row in data['states']:
+                        # Keep actual thrust changes and the other mechanism
+                        # contrast, but remove the required causal evidence.
+                        row['returns']['permuted' if missing=='matching' else '11']=[10. if missing=='matching' else 7.]*4
+                    scheduler.write_json(path,data)
+                    record=json.loads(path.with_name('completed.json').read_text())
+                    record['states_sha256']=evaluation.digest(path)
+                    scheduler.write_json(path.with_name('completed.json'),record)
+                with patch.object(evaluation,'hierarchical_interval',side_effect=lambda v,r,repeats=10000:interval(v,r,100)):
+                    result=evaluation.formal_evidence(study)
+                self.assertTrue(all(result['statistical_checks'][k] for k in 'ABC'))
+                self.assertFalse(result['statistical_checks']['D'])
+
     def test_formal_review_requires_practical_assessment_and_statistical_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             study=Path(directory)

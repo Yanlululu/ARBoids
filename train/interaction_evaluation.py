@@ -33,7 +33,7 @@ def digest(path):
 
 
 def formal_evidence_standard():
-    return dict(version='AD-capped-capture-v1', primary_metric='capture_time',
+    return dict(version='AD-capped-capture-v2', primary_metric='capture_time',
         primary_definition='Episode capture time if captured; otherwise Tmax=60 s. Average over every episode.',
         primary_reference='arboids_cbf', primary_cell='n3-a2.25', strong_interaction_cell='n6-a2.25',
         strong_interaction_definition='Six defenders in the same task arena at agility 2.25; fixed before formal outcomes.',
@@ -50,10 +50,12 @@ def formal_evidence_standard():
         B='Full improves independent E_env against Same-info; robust across states/seeds and linked to learning efficiency, control selection or task performance.',
         C='Full improves against no_peer in the prespecified six-defender condition; a small three-defender contrast is permitted.',
         D='Permutation tests configuration matching; four-branch contrasts test conditional interaction; executed controls and fixed trajectories connect coefficients to behavior.',
+        mechanism_rule='Require beneficial configuration matching AND credible nonzero four-branch interaction AND changed executed control; inspect all fixed trajectory examples.',
         attribution=dict(same_info='Only remove conditional-consequence supervision and its label generation.',
             no_peer='Only mask teammate learned/Boids candidates in the gate; preserve teammate state, joint critic, supervision, CBF and budget.'),
-        formal_entry=['implementation invariants','replicated conditional-value trend','interpretable no_peer contrast',
-                      'short and model-return development controls','fresh development confirmation','frozen method and test protocol'])
+        formal_entry=['implementation invariants','promising candidate-interaction task performance',
+                      'fresh task confirmation','frozen method and test protocol'],
+        research_order='Find excellent task results, strengthen the method, then complete replication, attribution and mechanism evidence. A--D remain final requirements.')
 
 
 class OriginalPolicy:
@@ -74,7 +76,7 @@ class BoidsPolicy:
         return np.zeros((len(packet['obs']), 3), dtype=np.float32), 0.
 
 
-def long_reference_controller(policy, defenders):
+def long_reference_controller(policy, defenders, *, agility_bounds=None):
     from adaptive_interval_rollout import AdaptiveIntervalController
     from jit_nominal_environment import JitNominalEnvironment
 
@@ -86,17 +88,23 @@ def long_reference_controller(policy, defenders):
     controller = AdaptiveIntervalController(defenders, policy, blend=1., capture_margin=.5,
         failure_cost='delay', tail_steps=100, tail_policy='candidate', agility_threshold=1.75)
     controller.prediction_environment_class = PaperNominal
+    if agility_bounds is not None:
+        lower, upper = agility_bounds
+        if not 0 < lower < upper:
+            raise ValueError('Invalid public opponent-model bounds.')
+        controller.observer.grid = np.linspace(lower, upper, round((upper-lower)/.125)+1)
+        controller.observer.reset()
     return controller
 
 
-def long_reference_episode(policy, seed, defenders, agility, trajectory=False):
+def long_reference_episode(policy, seed, defenders, agility, trajectory=False, *, agility_bounds=None):
     from feedback_joint_control import observe
 
     with preserved_random_state():
         seed_random(seed)
         env = TADEnv(defenders, protocol='paper-parameters-v1')
         obs, _ = env.reset(agility)
-        controller = long_reference_controller(policy, defenders)
+        controller = long_reference_controller(policy, defenders, agility_bounds=agility_bounds)
         np.random.seed(seed + 1_000_000)
         done, history = 0, []
         while not done:
@@ -419,8 +427,8 @@ def formal_evidence(study):
         A=a['ci95'][1]<0,
         B=b['ci95'][1]<0 and b['trimmed_10pct_sensitivity']<0 and all(v<0 for v in b['leave_one_seed_out']) and task_link,
         C=c['ci95'][1]<0,
-        D=(d['configuration_matching']['ci95'][0]>0 or
-           d['conditional_interaction']['ci95'][0]>0 or d['conditional_interaction']['ci95'][1]<0 or
+        D=d['configuration_matching']['ci95'][0]>0 and
+          (d['conditional_interaction']['ci95'][0]>0 or d['conditional_interaction']['ci95'][1]<0 or
            d['noise_corrected_interaction_second_moment']['ci95'][0]>0) and
           d['executed_permutation_thrust_change_N']['ci95'][0]>0)
     result['B']['task_direction_consistent']=task_link

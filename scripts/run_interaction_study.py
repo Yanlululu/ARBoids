@@ -17,11 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'train'))
 import yaml
 
-SEEDS = (42, 101, 202, 303, 404)
 ARMS = ('full', 'same_info', 'arboids_cbf', 'short', 'model_value')
-CORE_ARMS = ('full', 'same_info', 'model_value')
-PEER_ARMS = ('full', 'no_peer')
-PILOT_SEEDS = SEEDS[:2]
+PILOT_SEEDS = (42, 101)
 VRX_ARMS = ('full', 'same_info', 'arboids_cbf')
 FORMAL_SEEDS = (202, 303, 404, 505, 606)
 DEVELOPMENT_ARMS = ('full', 'same_info', 'no_peer', 'short', 'model_value')
@@ -29,13 +26,18 @@ FORMAL_ARMS = (*ARMS, 'no_peer')
 BLOCKING_PROJECTS = ('/root/arboids-formal-20261005', '/root/autodl-tmp/channel-evidence-20261005')
 
 
-def technical_review_policy():
+def technical_review_policy(connectivity=False, regression=False):
     """Operational bounds for completing the existing pair, never an efficacy test."""
-    return dict(version='bounded-pair-technical-v1',
-        reviews=['review-pair-50000', 'review-pair-100000'],
+    policy = dict(version='bounded-pair-connectivity-v2' if connectivity else 'bounded-pair-technical-v1',
+        reviews=(['review-pair-connectivity'] if connectivity else [])+['review-pair-50000', 'review-pair-100000'],
         maximum_endpoint_step=250000, maximum_environment_error_to_zero=1.25,
         maximum_collision_fraction=0.,
         interpretation='Finite, calibrated development only; no automatic promising or frozen assessment.')
+    if regression:
+        policy.update(version='bounded-pair-regression-v3', task_regression_reference_step=5000,
+                      task_regression_bootstrap_repetitions=10000)
+        policy['reviews'].insert(1, 'review-pair-10000')
+    return policy
 
 
 def digest(path):
@@ -77,8 +79,9 @@ def verified_existing_pretrain(seed):
     return None
 
 
-def build_legacy_jobs(study, python, vrx_activate, *, raw=False, seeds=SEEDS, arms=ARMS):
+def build_formal_jobs(study, python, vrx_activate):
     study=Path(study)
+    seeds, arms = FORMAL_SEEDS, FORMAL_ARMS
     jobs, pretrains, inherited = [], {}, {}
 
     def add(name, kind, command, dependencies=(), **extra):
@@ -125,7 +128,7 @@ def build_legacy_jobs(study, python, vrx_activate, *, raw=False, seeds=SEEDS, ar
                 for setting in (0,1):
                     for trial in range(20):
                         name=f'vrx-{seed}-{arm}-n{n}-s{setting}-{trial:02d}'
-                        scene=(540000000 if raw else 410000000)+seeds.index(seed)*10000+n*100+setting*1000+trial
+                        scene=540000000+seeds.index(seed)*10000+n*100+setting*1000+trial
                         command=['python','-X','utf8','vrx/run_experiment.py','--checkpoint',directory/'policy.pth',
                             '--controller','IACRRL','--num-robots',n+1,'--setting',setting,'--seed',scene,
                             '--agility','2.25','--duration','60','--termination-rule','paper','--headless',
@@ -138,21 +141,23 @@ def build_legacy_jobs(study, python, vrx_activate, *, raw=False, seeds=SEEDS, ar
         study,'--output',study/'runtime'],prerequisites)
     add('analysis','cpu',[python,'-X','utf8','train/interaction_evaluation.py','summarize','--output',study],['runtime'])
     add('figures','cpu',[python,'-X','utf8','scripts/build_interaction_figures.py','--study',study],['analysis'])
-    return (jobs if raw else staged_jobs(jobs, study, python)), inherited
+    return jobs, inherited
 
 
 def protocol_specification():
     """Concrete candidate protocol; the freeze review binds this object and the source hashes."""
     config = yaml.safe_load((ROOT/'train/configs/interaction-aware-sac.yaml').read_text())
+    interaction, batch = config['interaction'], config['rl']['batch_size']
     from interaction_evaluation import formal_evidence_standard
     return dict(development_seeds=PILOT_SEEDS, formal_seeds=FORMAL_SEEDS,
         development_arms=DEVELOPMENT_ARMS, formal_arms=FORMAL_ARMS,
         development_environment_steps=250000, formal_environment_steps=1000000,
         formal_gate_steps=250000, formal_joint_steps=750000, formal_curriculum_interval=187500,
         common_pretraining_steps=1000000, configuration=config,
-        pair_reference=[0., .5, 1.], long_horizon_steps=100, short_horizon_steps=10,
-        intervention_sampling='64 snapshots every 1000 real steps; reuse between refreshes; no outcome filtering',
-        auxiliary_pairs_per_update=64, real_replay_batch=4096, auxiliary_to_real_batch_ratio=64/4096,
+        pair_reference=[0., .5, 1.], long_horizon_steps=interaction['horizon_steps'], short_horizon_steps=10,
+        intervention_sampling=f"{interaction['pairs_per_batch']} snapshots every {interaction['intervention_interval']} real steps; reuse between refreshes; no outcome filtering",
+        auxiliary_pairs_per_update=interaction['pairs_per_batch'], real_replay_batch=batch,
+        auxiliary_to_real_batch_ratio=interaction['pairs_per_batch']/batch,
         no_peer='Mask only teammate learned/Boids candidate fields; preserve teammate state, joint critic, labels and CBF.',
         same_info='Remove only model-based auxiliary supervision.',
         model_value='Same paired rollout calls as Full; regress ordinary returns instead of their difference.',
@@ -171,8 +176,7 @@ def protocol_specification():
 def build_jobs(study, python, vrx_activate, resume_steps=None):
     """Signal -> minimum pair -> replicated five-arm development -> freeze -> formal evidence."""
     study, resume_steps = Path(study), resume_steps or {}
-    formal, inherited = build_legacy_jobs(study, python, vrx_activate, raw=True,
-                                         seeds=FORMAL_SEEDS, arms=FORMAL_ARMS)
+    formal, inherited = build_formal_jobs(study, python, vrx_activate)
     jobs, pretrains = [], {}
     def add(name, kind, command=(), dependencies=(), **extra):
         jobs.append(dict(name=name, kind=kind, command=list(map(str, command)),
@@ -351,221 +355,6 @@ def build_jobs(study, python, vrx_activate, resume_steps=None):
     return sorted(jobs,key=priority), inherited
 
 
-def staged_jobs(original, study, python):
-    """Establish a bounded two-seed evidence chain before buying the full matrix."""
-    jobs = json.loads(json.dumps(original))
-    added = []
-
-    def diagnostics(stage, seed, scope='full'):
-        arms = CORE_ARMS if scope == 'core' else ARMS
-        name = f'diagnostics-{scope}-{stage}-{seed}'
-        completion = 'core-completed.json' if scope == 'core' else 'completed.json'
-        added.append(dict(name=name, kind='cpu', phase=f'{scope}-{stage}',
-            command=list(map(str, [python, '-X', 'utf8', 'train/interaction_review.py',
-                '--study', study, '--stage', stage, '--seed', seed, '--scope', scope])),
-            completion=str(Path(study)/f'reviews/data-{stage}-{seed}'/completion),
-            dependencies=[f'{"gate" if stage == "gate" else "train"}-{seed}-{arm}' for arm in arms]))
-        return name
-
-    def review(name, stage, seeds, scope, dependencies, allowed, budget, criteria):
-        added.append(dict(name=name, kind='review', command=[], stage=stage,
-            seeds=list(seeds), scope=scope, dependencies=dependencies, phase=name,
-            policy=dict(allowed_assessments=allowed, next_stage_budget=budget, criteria=criteria,
-                on_hold='Stop expansion; diagnose with development data. No automatic retuning or final-test reuse.')))
-
-    for job in jobs:
-        name = job['name']
-        if name.startswith('train-'):
-            _, seed, arm = name.split('-')
-            seed = int(seed)
-            entry = (None if seed == SEEDS[0] and arm in CORE_ARMS else
-                     'review-core-pilot' if seed == SEEDS[1] and arm in CORE_ARMS else
-                     'review-core-replication' if seed in PILOT_SEEDS else 'review-deployment')
-            gate = dict(job, name=f'gate-{seed}-{arm}',
-                        command=job['command'] + ['--stop-after-stage', 'gate'],
-                        dependencies=list(job['dependencies']), phase=entry or 'core-gate')
-            if entry: gate['dependencies'].append(entry)
-            added.append(gate)
-            job['dependencies'] = [gate['name']]
-            job['phase'] = entry or 'core-joint'
-            if seed == SEEDS[0] and arm in CORE_ARMS:
-                job['dependencies'].append('review-core-gate')
-        elif name.startswith('pretrain-'):
-            seed = int(name.split('-')[1])
-            if seed != SEEDS[0]:
-                job['dependencies'].append('review-core-pilot' if seed == SEEDS[1] else 'review-deployment')
-        elif name.startswith(('eval-', 'calibration-', 'vrx-')):
-            job['dependencies'].append('review-submission')
-            job['phase'] = 'submission'
-        elif name.startswith('adv-'):
-            job['dependencies'].append('review-extensions')
-            job.update(phase='optional-extension', optional=True)
-
-    gate = diagnostics('gate', SEEDS[0], 'core')
-    core = [diagnostics('joint', seed, 'core') for seed in PILOT_SEEDS]
-    full = [diagnostics('joint', seed) for seed in SEEDS]
-    # Reuse the immutable per-arm validation results when adding the two ablations.
-    for job in added:
-        if job['name'] in full[:2]: job['dependencies'].append('review-core-replication')
-    review('review-core-gate', 'gate', SEEDS[:1], 'core', [gate], ['technical_ready'],
-        dict(additional_training_steps=3000000),
-        ['Finite parameters and unchanged frozen proposal branches; inspect gate saturation.',
-         'A weak gate-only score does not reject joint learning; spend only this one-seed joint budget.'])
-    review('review-core-pilot', 'joint', SEEDS[:1], 'core', core[:1], ['promising', 'inconclusive'],
-        dict(pretraining_steps=1000000, additional_training_steps=3750000),
-        ['Compare paired capture, capped time, safety, and E_delta against both matched controls.',
-         'An inconclusive first seed permits only the fixed second seed; unsupported mechanisms require a hold.'])
-    review('review-core-replication', 'joint', PILOT_SEEDS, 'core', core, ['promising'],
-        dict(additional_training_steps=5000000),
-        ['Inspect both seed-level contrasts; a pooled favorable mean cannot hide a reversed replication.',
-         'Require task benefit and conditional-value evidence beyond ordinary value supervision, without a material safety loss.',
-         'Inconclusive or unsupported evidence stops expansion; no remaining three seeds are released.'])
-    review('review-evidence', 'joint', PILOT_SEEDS, 'full', full[:2], ['promising'],
-        dict(vrx_validation_episodes=60, seconds_per_episode=60),
-        ['Use short-horizon and ARBoids+CBF results to assess which central claims the two-seed evidence supports.',
-         'Check consistency of mechanism and task outcomes across all five methods; retain every valid failure.'])
-
-    # A small deployment validation bank is independent of all 1,200 final VRX trials.
-    pilots = []
-    for job in jobs:
-        if not job['name'].startswith('vrx-'): continue
-        _, seed, arm, n, setting, trial = job['name'].split('-')
-        if int(seed) not in PILOT_SEEDS or (n, setting) not in (('n3', 's0'), ('n6', 's1')) or int(trial) >= 5:
-            continue
-        pilot = json.loads(json.dumps(job))
-        pilot['name'] = job['name'].replace('vrx-', 'vrx-pilot-', 1)
-        shell = pilot['command'][2]
-        old_scene = 410000000 + SEEDS.index(int(seed))*10000 + int(n[1:])*100 + int(setting[1:])*1000 + int(trial)
-        shell = shell.replace(f'--seed {old_scene}', f'--seed {old_scene + 20000000}')
-        shell = shell.replace(str(Path(study)/'vrx'), str(Path(study)/'vrx-validation'))
-        pilot['command'][2] = shell.replace(job['name'], pilot['name'])
-        pilot.update(result=str(Path(study)/'vrx-validation'/pilot['name']/'result.json'),
-                     dependencies=['review-evidence'], phase='deployment-validation',
-                     validation=dict(seed=int(seed), arm=arm, defenders=int(n[1:]), setting=int(setting[1:]),
-                                     trial=int(trial), scene_seed=old_scene + 20000000))
-        added.append(pilot)
-        pilots.append(pilot['name'])
-    review('review-deployment', 'deployment', PILOT_SEEDS, 'full', pilots, ['promising'],
-        dict(pretraining_steps=3000000, additional_training_steps=18750000),
-        ['All 60 prescribed validation episodes must be valid; poor task outcomes remain in the evidence.',
-         'Inspect paired deployment outcomes in both representative conditions before expanding to all five seeds.'])
-    review('review-submission', 'joint', SEEDS, 'full', full + ['review-deployment'], ['promising'],
-        dict(numerical_test_episodes=80000, calibration_states=1280, calibration_repetitions=4,
-             vrx_test_episodes=1200),
-        ['Inspect all five seeds and necessary ablations before opening the independent final tests.',
-         'Final-test results are confirmatory evidence, not data for method selection or retuning.'])
-
-    # Primary submission outputs must finish without any alternating-opponent training.
-    primary = [j['name'] for j in jobs if j['name'].startswith(('eval-', 'calibration-', 'vrx-'))]
-    runtime = next(j for j in jobs if j['name'] == 'runtime')
-    runtime['dependencies'] = primary
-    figures = next(j for j in jobs if j['name'] == 'figures')
-    extension_figures = json.loads(json.dumps(figures))
-    extension_figures.update(name='figures-extensions', optional=True, phase='optional-extension',
-        dependencies=['figures'] + [j['name'] for j in jobs if j['name'].startswith('adv-')])
-    figures['command'].append('--without-extensions')
-    added.append(extension_figures)
-    review('review-extensions', 'joint', SEEDS, 'full', ['figures'], ['necessary'],
-        dict(additional_training_steps=37500000, common_opponent_test_episodes=13500),
-        ['Primary submission evidence is already exported. Continue only for a specific necessary robustness claim.',
-         'State the unresolved question and why existing evidence cannot answer it; this extension is not automatic.'])
-    added[-1]['optional'] = True
-
-    def priority(job):
-        name = job['name']
-        if job.get('optional'): return 20
-        if name.startswith('review-'): return 0
-        if name.startswith('diagnostics-'): return 1
-        if name.startswith('gate-'): return 2
-        if name.startswith('train-'): return 3
-        if name.startswith('pretrain-'): return 4
-        return 10
-    return sorted(advance_candidate_screen(strengthen_jobs(jobs + added, study, python), study, python), key=priority)
-
-
-def strengthen_jobs(jobs, study, python):
-    """A one-seed candidate ablation, with a bounded second seed only if inconclusive."""
-    jobs = json.loads(json.dumps(jobs))
-    graph = {j['name']: j for j in jobs}
-    condition = dict(review='review-peer-pilot', assessment='inconclusive')
-    for seed in PILOT_SEEDS:
-        first = seed == PILOT_SEEDS[0]
-        entry = 'review-core-replication' if first else 'review-peer-pilot'
-        original = graph[f'train-{seed}-full']
-        command = list(original['command'])
-        command[command.index('--arm')+1] = 'no_peer'
-        command[command.index('--output')+1] = str(Path(study)/f'training/seed-{seed}/no_peer')
-        additions = [dict(name=f'gate-{seed}-no_peer', kind='gpu', phase='peer-control',
-            command=command+['--stop-after-stage', 'gate'], dependencies=[f'pretrain-{seed}', entry]),
-            dict(name=f'train-{seed}-no_peer', kind='gpu', phase='peer-control', command=command,
-                 dependencies=[f'gate-{seed}-no_peer'])]
-        for stage in ('gate', 'joint'):
-            dependencies = [f'{"gate" if stage == "gate" else "train"}-{seed}-{a}' for a in PEER_ARMS]
-            if stage == 'joint': dependencies.append(f'diagnostics-peer-gate-{seed}')
-            additions.append(dict(name=f'diagnostics-peer-{stage}-{seed}', kind='cpu', phase='peer-control',
-                command=list(map(str, [python, '-X', 'utf8', 'train/interaction_review.py', '--study', study,
-                    '--stage', stage, '--seed', seed, '--scope', 'peer'])), dependencies=dependencies,
-                completion=str(Path(study)/f'reviews/data-{stage}-{seed}/peer-completed.json')))
-        if not first:
-            for job in additions:
-                job['condition'] = condition
-                if entry not in job['dependencies']: job['dependencies'].append(entry)
-        jobs.extend(additions)
-    for name, seeds, allowed, dependencies in (
-            ('review-peer-pilot', PILOT_SEEDS[:1], ['promising', 'inconclusive'], ['diagnostics-peer-joint-42']),
-            ('review-peer-replication', PILOT_SEEDS, ['promising'], ['diagnostics-peer-joint-42', 'diagnostics-peer-joint-101'])):
-        job = dict(name=name, kind='review', command=[], stage='joint', scope='peer', seeds=list(seeds),
-            dependencies=dependencies, phase='peer-control',
-            policy=dict(allowed_assessments=allowed,
-                next_stage_budget=(dict(additional_training_steps_if_inconclusive=1250000) if len(seeds)==1 else {}),
-                criteria=['Check paired Full/no-peer task and conditional-value evidence, plus controlled gate and thrust responses.',
-                    'Response alone does not demonstrate benefit. A promising single seed is pilot evidence only.',
-                    'An inconclusive first seed releases only seed 101; an inconclusive second seed or unsupported evidence holds expansion.'],
-                on_hold='Stop expansion; retain the method, budgets and every valid task failure.'))
-        if len(seeds)==2:
-            job['condition'] = condition
-            job['dependencies'].append('review-peer-pilot')
-        jobs.append(job)
-    graph['review-core-gate']['policy']['criteria'].append(
-        'Inspect fixed-state peer-candidate gate and executed-thrust responses; flat response is diagnostic, not an automatic veto.')
-    graph['review-core-replication']['policy']['next_stage_budget']['additional_training_steps'] += 1250000
-    graph['review-evidence']['dependencies'].extend(['review-peer-pilot', 'review-peer-replication'])
-    for name in ('review-evidence', 'review-submission', 'review-extensions'):
-        graph[name]['peer_control'] = True
-        graph[name]['policy']['criteria'].append(
-            'Inspect the matched no-peer candidate control before expansion; state whether it has one or two training seeds.')
-    return jobs
-
-
-def advance_candidate_screen(jobs, study, python):
-    """Put the candidate ablation in the first gate screen and evaluate endpoints as they arrive."""
-    jobs = json.loads(json.dumps(jobs))
-    graph = {j['name']: j for j in jobs}
-    seed = SEEDS[0]
-    graph[f'gate-{seed}-no_peer'].update(dependencies=[f'pretrain-{seed}'], phase='core-gate')
-    graph[f'train-{seed}-no_peer'].update(dependencies=[f'gate-{seed}-no_peer', 'review-core-gate'], phase='core-joint')
-    screen_arms = (*CORE_ARMS, 'no_peer')
-    for arm in ('initial_cbf', *screen_arms):
-        name = f'diagnostics-arm-gate-{seed}-{arm}'
-        dependencies = ([f'pretrain-{seed}'] if arm == 'initial_cbf' else
-                        [f'gate-{seed}-{arm}', f'diagnostics-arm-gate-{seed}-initial_cbf'])
-        jobs.append(dict(name=name, kind='cpu', phase='early-screen', dependencies=dependencies,
-            command=list(map(str, [python, '-X', 'utf8', 'train/interaction_review.py', '--study', study,
-                '--stage', 'gate', '--seed', seed, '--scope', 'peer' if arm=='no_peer' else 'core', '--arm', arm])),
-            completion=str(Path(study)/f'reviews/data-gate-{seed}/arm-{arm}-completed.json')))
-    for scope, arms in (('core', CORE_ARMS), ('peer', PEER_ARMS)):
-        graph[f'diagnostics-{scope}-gate-{seed}']['dependencies'].extend(
-            f'diagnostics-arm-gate-{seed}-{arm}' for arm in (*arms, 'initial_cbf'))
-    gate_review = graph['review-core-gate']
-    gate_review['dependencies'].append(f'diagnostics-peer-gate-{seed}')
-    gate_review['peer_gate_control'] = True
-    gate_review['policy']['next_stage_budget']['additional_training_steps'] += 1000000
-    gate_review['policy']['criteria'].append(
-        'Review all four first-seed gate endpoints, including Full versus the no-peer candidate control, before joint training.')
-    graph['review-core-replication']['policy']['next_stage_budget']['additional_training_steps'] -= 1250000
-    return jobs
-
-
 def process_identity(pid):
     """Linux process start time, excluding exited/zombie processes and PID reuse."""
     try:
@@ -644,6 +433,196 @@ def source_hashes():
     return {str(p.relative_to(ROOT)).replace('\\','/'):digest(p) for p in sorted(set(paths))}
 
 
+def performance_search_jobs(study, python, previous, previous_jobs, pretrain):
+    """Spend the exploration budget on four candidate methods and paired tasks."""
+    study, previous = Path(study), Path(previous)
+    graph = {j['name']: j for j in previous_jobs}
+    candidates = {}
+    for name, arm in (('long', 'full'), ('short', 'short')):
+        command = list(graph[f'develop-42-{arm}-10000']['command'])
+        candidates[name] = dict(output=command[command.index('--output') + 1], train=False,
+            command=command, inherited_from=str(previous), training_defenders=3,
+            description=f'Continue v8 candidate interaction with H={300 if arm == "full" else 10}.')
+    for scope, defenders in (('single', 3), ('single', 6), ('team', 3), ('team', 6)):
+        name = f'time_{scope}_n{defenders}'
+        output = study/'training'/name
+        command = [python, '-X', 'utf8', 'train/train_interaction.py', '--output', str(output),
+            '--arm', 'full', '--seed', '42', '--pretrain', str(pretrain), '--device', 'cuda:0',
+            '--stop-at-step', '10000', '--critic-control-coordinates', 'nominal-thrust-v2',
+            '--warm-steps', '1000',
+            '--bootstrap-estimator', 'mean', '--policy-learning-rate', '0.00003',
+            '--long-horizon-steps', '300', '--label-repetitions', '4',
+            '--reward-objective', 'capped-time-v1', '--gate-objective', 'paired-improvement-v1',
+            '--defenders', str(defenders), '--intervention-scope', scope]
+        candidates[name] = dict(output=str(output), command=command, train=True, training_defenders=defenders,
+            intervention_scope=scope,
+            description='Direct paired gate improvement from complete deployment-policy capped-time returns.')
+    jobs = []
+    def screen(name, step, dependencies):
+        jobs.append(dict(name=f'diagnostics-performance-{name}-{step}', kind='cpu',
+            command=[python, '-X', 'utf8', 'scripts/run_interaction_study.py', 'performance-screen',
+                '--study', str(study), '--candidate', name, '--checkpoint-step', str(step)],
+            dependencies=dependencies, completion=str(study/'screens'/f'{name}-{step}'/'completed.json')))
+    screen('source', 0, [])
+    for name in ('long', 'short'):
+        screen(name, 5000, ['diagnostics-performance-source-0'])
+        screen(name, 10000, ['diagnostics-performance-source-0'])
+    latest = {}
+    for step in (10000, 25000, 50000):
+        for name, candidate in candidates.items():
+            if not candidate['train']:
+                continue
+            command = list(candidate['command'])
+            command[command.index('--stop-at-step') + 1] = str(step)
+            job = f'develop-performance-{name}-{step}'
+            jobs.append(dict(name=job, kind='gpu', command=command,
+                dependencies=[] if name not in latest else [latest[name]], endpoint_step=step,
+                phase='performance-exploration', candidate=name))
+            screen(name, step, [job, 'diagnostics-performance-source-0'])
+            latest[name] = job
+    return jobs, candidates
+
+
+def prepare_performance_search(study, previous, python):
+    import fcntl
+    from interaction_evaluation import formal_evidence_standard
+    study, previous = Path(study).resolve(), Path(previous).resolve()
+    if (study/'manifest.json').exists():
+        raise RuntimeError('Performance search already exists; resume its runner.')
+    with (previous/'runner.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        old = json.loads((previous/'manifest.json').read_text())
+        if old['root'] != str(ROOT) or old.get('superseded_by'):
+            raise ValueError('Expected the current owned development study.')
+        if (previous/'reviews/review-protocol-freeze/decision.json').exists():
+            raise RuntimeError('An assessed formal freeze cannot be changed by exploration.')
+        for path in (previous/'jobs').glob('*.json'):
+            record = json.loads(path.read_text())
+            if record.get('pid') and process_identity(record['pid']):
+                raise RuntimeError('Finish or checkpoint owned jobs before changing the source manifest.')
+        source = verified_existing_pretrain(42)
+        if source is None:
+            raise RuntimeError('Verify the shared source actor before launching candidates.')
+        jobs, candidates = performance_search_jobs(study, python, previous, old['jobs'], source['path'])
+        inherited = {}
+        for name in ('long', 'short'):
+            directory = Path(candidates[name]['output'])
+            config = yaml.safe_load((directory/'config.yaml').read_text())
+            if (config['interaction'].get('entropy_objective') != 'proposal-mean-v3' or
+                    config['interaction'].get('bootstrap_estimator') != 'mean' or
+                    not (directory/'probe-5000.pth').exists() or not (directory/'probe-10000.pth').exists()):
+                raise ValueError('Only the unchanged v8 candidate checkpoints may be continued.')
+            inherited[name] = dict(path=str(directory/'resume.pth'), sha256=digest(directory/'resume.pth'),
+                step=json.loads((directory/'progress.json').read_text())['step'],
+                previous_source_hashes=old['code'])
+        manifest = dict(format='interaction-performance-v1', root=str(ROOT), code=source_hashes(),
+            jobs=jobs, candidates=candidates, inherited_pretraining={'pretrain-42': source},
+            inherited_development=inherited, previous_study=str(previous),
+            limits=dict(gpu=4, cpu=2, vrx=1, rollout_workers=4), cpu_per_gpu=4, cpu_per_evaluation=2,
+            cpu_affinity=old['cpu_affinity'], wait_for_projects=old.get('wait_for_projects', []),
+            exploration=dict(priority='Find excellent candidate-interaction task performance, strengthen it, then complete paper evidence.',
+                maximum_endpoint_step=50000, development_seed=42, episodes_per_condition=32,
+                conditions=[dict(defenders=3, agility=2.25, bank=860000000),
+                            dict(defenders=6, agility=2.25, bank=861000000)],
+                confirmation_banks=[864000000, 865000000],
+                selection='Compare capped capture time, capture, success and physical collision jointly. Keep every fixed endpoint and scenario.',
+                reference='Shared one-million-step pretrained ARBoids+CBF; screening reference only, not the final matched-budget comparison.',
+                retired_routes=dict(long='100-episode validation time 20.384 to 33.598 s, capture .98 to .62 at 10000.',
+                                    short='100-episode validation time 20.448 to 34.472 s, capture .98 to .60 at 10000.'),
+                deferred=['complete ablations', 'cross-seed replication', 'high-precision value calibration', 'mechanism proof']),
+            formal_evidence=formal_evidence_standard(), formal_method_frozen=False, formal_jobs_released=False)
+        write_json(study/'manifest.json', manifest)
+        for job in jobs:
+            if job['name'].startswith('develop-') and valid_completion(job, study):
+                write_json(study/'jobs'/f'{job["name"]}.json', dict(name=job['name'], state='completed',
+                    returncode=0, inherited_from=str(previous), completion_basis='Existing fixed endpoint and progress verified'))
+        old['superseded_by'] = str(study)
+        old['superseded_reason'] = manifest['exploration']['priority']
+        write_json(previous/'manifest.json', old)
+        write_json(study/'status.json', dict(state='prepared', active=[], jobs=len(jobs),
+            core_evidence_complete=False, submission_evidence_complete=False))
+
+
+_PERFORMANCE_POLICIES = {}
+
+
+def _performance_episode(task):
+    import study_runtime
+    import torch
+    from interaction_evaluation import OriginalPolicy
+    from interaction_rollout import DeploymentPolicy
+    from train_interaction import episode
+    checkpoint, original, defenders, agility, seed = task
+    torch.set_num_threads(1)
+    key = checkpoint, original
+    if key not in _PERFORMANCE_POLICIES:
+        _PERFORMANCE_POLICIES[key] = OriginalPolicy(checkpoint) if original else DeploymentPolicy(checkpoint)
+    row, _ = episode(_PERFORMANCE_POLICIES[key], seed, defenders, agility, safety=True)
+    return dict(row, scene_seed=seed, defenders=defenders, agility=agility)
+
+
+def performance_summary(rows, baseline=None):
+    import numpy as np
+    if not rows:
+        raise ValueError('Performance summaries require task outcomes.')
+    key = lambda r: (r['defenders'], r['agility'], r['scene_seed'])
+    scenes = {key(r) for r in rows}
+    if len(scenes) != len(rows):
+        raise ValueError('Duplicate candidate scenes.')
+    if baseline is not None:
+        reference = {key(r): r for r in baseline}
+        if len(reference) != len(baseline):
+            raise ValueError('Duplicate reference scenes.')
+        if scenes != set(reference):
+            raise ValueError('Candidate and reference must contain the same paired scenes and conditions.')
+    results = {}
+    for defenders, agility in sorted({(r['defenders'], r['agility']) for r in rows}):
+        cell = [r for r in rows if (r['defenders'], r['agility']) == (defenders, agility)]
+        result = {key: float(np.mean([r[key] for r in cell]))
+                  for key in ('capture_time', 'capture', 'success', 'collision', 'breach', 'timeout')}
+        result['episodes'] = len(cell)
+        if baseline is not None:
+            differences = np.asarray([r['capture_time'] - reference[key(r)]['capture_time'] for r in cell])
+            rng = np.random.default_rng(862000000 + defenders)
+            means = differences[rng.integers(len(cell), size=(2000, len(cell)))].mean(-1)
+            result['time_difference_from_source'] = dict(mean=float(differences.mean()),
+                interval_95=list(map(float, np.quantile(means, [.025, .975]))),
+                interpretation='Exploratory paired scenarios for one development seed; not a formal five-seed claim.')
+        results[f'n{defenders}-a{agility:g}'] = result
+    return results
+
+
+def performance_screen(study, candidate, step):
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+    study = Path(study).resolve()
+    manifest = json.loads((study/'manifest.json').read_text())
+    if manifest['format'] != 'interaction-performance-v1':
+        raise ValueError('Expected a performance-search manifest.')
+    original = candidate == 'source'
+    checkpoint = (Path(manifest['inherited_pretraining']['pretrain-42']['path']) if original else
+                  Path(manifest['candidates'][candidate]['output'])/f'probe-{step}.pth')
+    fingerprint = digest(checkpoint)
+    tasks = [(str(checkpoint), original, c['defenders'], c['agility'], c['bank'] + i)
+             for c in manifest['exploration']['conditions']
+             for i in range(manifest['exploration']['episodes_per_condition'])]
+    started = time.perf_counter()
+    with ProcessPoolExecutor(2, mp_context=mp.get_context('spawn')) as executor:
+        rows = list(executor.map(_performance_episode, tasks, chunksize=4))
+    if digest(checkpoint) != fingerprint:
+        raise RuntimeError('Evaluation checkpoint changed during its fixed screen.')
+    baseline = None if original else json.loads((study/'screens/source-0/completed.json').read_text())
+    if baseline is not None:
+        if baseline['checkpoint_sha256'] != manifest['inherited_pretraining']['pretrain-42']['sha256']:
+            raise RuntimeError('Screen reference no longer matches the shared source.')
+    output = dict(complete=True, candidate=candidate, step=step, checkpoint=str(checkpoint),
+        checkpoint_sha256=fingerprint, wall_seconds=time.perf_counter()-started,
+        summary=performance_summary(rows, None if original else baseline['episodes']), episodes=rows,
+        formal_evidence=False)
+    write_json(study/'screens'/f'{candidate}-{step}'/'completed.json', output)
+    print(json.dumps({k: v for k, v in output.items() if k != 'episodes'}), flush=True)
+
+
 def prepare(study, python, vrx_activate):
     study=Path(study)
     manifest=study/'manifest.json'
@@ -657,6 +636,149 @@ def prepare(study, python, vrx_activate):
         cpu_affinity=sorted(os.sched_getaffinity(0))[:20] if hasattr(os,'sched_getaffinity') else [],
         wait_for_projects=BLOCKING_PROJECTS))
     write_json(study/'status.json',dict(state='prepared',jobs=len(jobs),completed=0,active=[]))
+
+
+def composed_revision_jobs(study,python,vrx_activate,shared_pretrain_job):
+    """Fresh, matched physical-coordinate revision with bounded early control work."""
+    import copy
+    study=Path(study)
+    jobs,inherited=build_jobs(study,python,vrx_activate)
+    jobs=parallel_development_jobs(jobs,study,python)
+    graph={j['name']:j for j in jobs}
+    shared=copy.deepcopy(shared_pretrain_job);shared['dependencies']=[]
+    graph['pretrain-101'].update(shared)
+    common=Path(shared['command'][shared['command'].index('--output')+1])/'actor.pth'
+    graph['diagnostics-signal']['kind']='cpu'
+    signal=graph['diagnostics-signal']['command'];signal[signal.index('--workers')+1]='2'
+    flags=['--critic-control-coordinates','nominal-thrust-v2','--label-repetitions','8','--critic-warmup-updates','5000',
+           '--entropy-objective','proposal-mean-v3','--critic-warmup-target','complete_real_state_return',
+           '--policy-learning-rate','0.00001','--long-horizon-steps','300','--bootstrap-estimator','mean']
+    for job in jobs:
+        command=job['command']
+        if '--pretrain' in command and command[command.index('--pretrain')+1]==str(study/'pretrain/seed-101/actor.pth'):
+            command[command.index('--pretrain')+1]=str(common)
+        if job['name'].startswith(('develop-','train-')) and command[command.index('--arm')+1]!='arboids_cbf':
+            command.extend(flags)
+    early_screens=[]
+    for arm in ('full','same_info'):
+        task=copy.deepcopy(graph[f'develop-42-{arm}-50000'])
+        task.update(name=f'develop-42-{arm}-10000',endpoint_step=10000)
+        task['command'][task['command'].index('--stop-at-step')+1]='10000'
+        task['dependencies']=['review-pair-connectivity',f'develop-42-{arm}-5000','pretrain-42']
+        diagnostic=copy.deepcopy(graph[f'diagnostics-screen-42-{arm}-50000'])
+        diagnostic.update(name=f'diagnostics-screen-42-{arm}-10000',checkpoint_step=10000,
+            dependencies=[task['name']],completion=str(study/f'reviews/screens/42-{arm}-10000/completed.json'))
+        diagnostic['command'][diagnostic['command'].index('--checkpoint-step')+1]='10000'
+        jobs.extend([task,diagnostic]);early_screens.append(diagnostic['name'])
+        graph[f'develop-42-{arm}-50000']['dependencies']=['review-pair-10000',task['name'],'pretrain-42']
+    early_review=copy.deepcopy(graph['review-pair-50000'])
+    early_review.update(name='review-pair-10000',dependencies=['review-pair-connectivity',*early_screens])
+    jobs.append(early_review)
+    for arm in ('no_peer','short','model_value'):
+        endpoint=graph[f'develop-42-{arm}-250000']
+        for step,review,prior in ((5000,'review-signal',None),(10000,'review-pair-connectivity',5000),
+                                  (50000,'review-pair-10000',10000)):
+            job=copy.deepcopy(endpoint);job['name']=f'develop-42-{arm}-{step}';job['endpoint_step']=step
+            command=job['command'];command[command.index('--stop-at-step')+1]=str(step)
+            job['dependencies']=[review,'pretrain-42']
+            if prior: job['dependencies'].append(f'develop-42-{arm}-{prior}')
+            jobs.append(job)
+        endpoint['dependencies']=['review-pair-100000',f'develop-42-{arm}-50000','pretrain-42']
+    # The checked implementation may collect its bounded 5k probes concurrently
+    # with the independent signal audit. Expansion still needs that audit.
+    for job in jobs:
+        if job['name'].startswith('develop-42-') and job.get('endpoint_step')==5000:
+            job['dependencies']=['pretrain-42']
+    graph['review-pair-connectivity']['dependencies'].append('review-signal')
+    # The second common actor is already available. Its bounded matched probes
+    # can test seed sensitivity while the first seed's longer jobs are running.
+    for arm in DEVELOPMENT_ARMS:
+        endpoint=graph[f'develop-101-{arm}-250000']
+        task=copy.deepcopy(endpoint)
+        task.update(name=f'develop-101-{arm}-5000',endpoint_step=5000,dependencies=['pretrain-101'])
+        task['command'][task['command'].index('--stop-at-step')+1]='5000'
+        screen=copy.deepcopy(graph[f'diagnostics-screen-101-{arm}-250000'])
+        screen.update(name=f'diagnostics-screen-101-{arm}-5000',checkpoint_step=5000,dependencies=[task['name']],
+            completion=str(study/f'reviews/screens/101-{arm}-5000/completed.json'))
+        screen['command'][screen['command'].index('--checkpoint-step')+1]='5000'
+        jobs.extend([task,screen]);endpoint['dependencies'].append(task['name'])
+    return jobs,inherited,str(common)
+
+
+def next_development_bank_offset(previous):
+    offset = int(previous) + 20000000
+    # Retain every earlier development bank and reserve the entire formal
+    # family. The next unused development family begins at 800M.
+    if 407000000 + offset >= 510000000 and 390000000 + offset < 800000000:
+        offset = 410000000
+    if previous < 0 or 408000000 + offset >= 2**31:
+        raise ValueError('Development bank allocation is outside the reserved seed space.')
+    return offset
+
+
+def prepare_composed_revision(study,previous,python,vrx_activate):
+    """Retain old evidence; transfer the unchanged common pretrain and start fresh matched actors."""
+    import fcntl
+    study,previous=Path(study).resolve(),Path(previous).resolve()
+    if (study/'manifest.json').exists(): raise RuntimeError('The revision already exists; resume it.')
+    with (previous/'runner.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        old_path=previous/'manifest.json';old=json.loads(old_path.read_text())
+        if old['root']!=str(ROOT) or old['format']!='interaction-study-v6':
+            raise ValueError('The previous owned development study is required.')
+        if old.get('superseded_by') or (previous/'reviews/review-protocol-freeze/evidence.json').exists() or any(
+                (previous/f'training/seed-{seed}').exists() for seed in FORMAL_SEEDS):
+            raise RuntimeError('This revision must precede formal protocol freeze and formal outcomes.')
+        old_jobs={j['name']:j for j in old['jobs']};live=[]
+        for path in (previous/'jobs').glob('*.json'):
+            record=json.loads(path.read_text())
+            if record.get('state')=='running' and process_identity(record.get('pid',0)) is not None:
+                if record['name']!='pretrain-101': raise RuntimeError('Checkpoint the owned old learners before changing protocols.')
+                verify_running_job(old_jobs[record['name']],record);live.append(record)
+        preserved={}
+        for path in (previous/'training').glob('seed-*/*/resume.pth'):
+            progress=json.loads(path.with_name('progress.json').read_text())
+            preserved[str(path.relative_to(previous))]=dict(sha256=digest(path),step=progress['step'])
+        jobs,inherited,common=composed_revision_jobs(study,python,vrx_activate,old_jobs['pretrain-101'])
+        bank_offset=next_development_bank_offset(old.get('development_bank_offset',0))
+        protocol=protocol_specification()
+        protocol['configuration']['interaction'].update(critic_control_coordinates='nominal-thrust-v2',label_repetitions=8,
+                                                       entropy_objective='proposal-mean-v3',horizon_steps=300,
+                                                       bootstrap_estimator='mean')
+        protocol['configuration']['training'].update(critic_warmup_updates=5000,critic_warmup_target='complete_real_state_return')
+        protocol['configuration']['rl'].update(actor_learning_rate=1e-5,temperature_learning_rate=1e-5)
+        protocol.update(critic_coordinates='Value depends on normalized nominal composed thrust, not its proposal/gate factorization.',
+            bootstrap_estimator='Arithmetic mean of the two independent real-data evaluator heads for TD and truncated tails; retain the main-critic minimum for policy improvement and the registered value-difference diagnostics. Identical across all five matched arms.',
+            entropy_objective='No gate-density reward in either stage. Gate-only continuation optimizes task return; joint learning includes only mean proposal log density per active defender. Proposal temperature starts at 0.2 and adapts in the joint stage to -2 per defender. TD, actor, labels and calibration share this objective; task reward and all A--D thresholds remain fixed.',
+            intervention_sampling='64 fixed root interventions every 1000 real steps after critic warmup; eight independent paired futures per root.',
+            long_horizon_steps=300,
+            critic_warmup='5000 state-value evaluator updates against complete returns from the initial fixed-policy real episodes; exclude root entropy and unfinished episodes. Control-input columns start at zero and remain zero during this initialization. Copy the evaluator into both main and lagged critics, then release all control columns for ordinary learning. Identical across five matched arms, charged separately.',
+            learning_timescales='Critics use 1e-4; actor and temperature use 1e-5 in all five matched arms.',
+            long_labels='Full, No-peer and Model-return branches run for at most 300 steps, reaching actual 60-second task termination with no learned tail. Short retains 10-step labels and a lagged real-data value tail.',
+            optimizer_isolation='Main and bootstrap optimizers clone all state tensors, including CPU Adam counters; Same-info equality is checked after updates.',
+            development_banks=[x+bank_offset for x in protocol['development_banks']]+[x+bank_offset for x in (404000000,405000000,406000000,407000000)],
+            confirmation_banks=[398000000+bank_offset,399000000+bank_offset],
+            development_precision=dict(states=64,repetitions=16,full_environment=True,banks=[404000000+bank_offset,405000000+bank_offset]))
+        manifest=dict(format='interaction-study-v6',root=str(ROOT),seeds=list(FORMAL_SEEDS),protocol='paper-parameters-v1',
+            development_seeds=list(PILOT_SEEDS),candidate_protocol=protocol,code=source_hashes(),jobs=jobs,
+            inherited_pretraining=inherited,pretraining_outputs={'101':common},development_bank_offset=bank_offset,
+            technical_review_automation=technical_review_policy(True,True),
+            limits=dict(gpu=4,cpu=2,vrx=1,rollout_workers=4),cpu_per_gpu=4,cpu_per_evaluation=2,
+            cpu_affinity=old['cpu_affinity'],wait_for_projects=old.get('wait_for_projects',list(BLOCKING_PROJECTS)),
+            development_execution=dict(version='composed-control-v8',seeds=list(PILOT_SEEDS),arms=list(DEVELOPMENT_ARMS),
+                endpoint_steps=250000,precision_states=64,precision_repetitions=16,mechanism_states=32,mechanism_repetitions=4),
+            previous_development=dict(study=str(previous),manifest_sha256=digest(old_path),preserved_checkpoints=preserved,
+                reason='User requested continued changes until all A--D criteria hold. Mean bootstrapping reduced evaluator underestimation but v7 Full/Same-info 10k validation capped times were 26.822/29.888 seconds versus about 20.35 at 5k. Same-info median pre-transform gate standard deviation increased from 0.100 to 0.875; its initial log-standard-deviation bias gradient was -0.19874 from entropy versus -0.00023 from value. Alternative deterministic expectation and gate sampling did not restore task performance. Remove gate-density regularization in all five matched arms, retaining proposal entropy only during joint learning, common initialization and budgets, and all historical results and costs.'))
+        write_json(study/'manifest.json',manifest)
+        shared_path=previous/'jobs/pretrain-101.json'
+        shared_record=json.loads(shared_path.read_text()) if shared_path.exists() else None
+        if shared_record and (live or valid_completion(old_jobs['pretrain-101'],previous)):
+            write_json(study/'jobs/pretrain-101.json',dict(shared_record,transferred_from=str(previous)))
+        old.update(superseded_by=str(study),superseded_at=time.time())
+        write_json(old_path,old)
+        write_json(previous/'status.json',dict(state='superseded_development_revision',active=[],revision=str(study),
+            preserved_checkpoints=preserved,transferred_pretraining=[r['pid'] for r in live]))
+        write_json(study/'status.json',dict(state='prepared',jobs=len(jobs),active=live,previous_study=str(previous)))
 
 
 def blocking_processes():
@@ -828,7 +950,8 @@ def build_signal_first_evidence(job, study, jobs):
             if spec.get('checkpoint_sha256'):
                 command=parent['command']
                 step=int(command[command.index('--checkpoint-step')+1]) if '--checkpoint-step' in command else 0
-                checkpoint=study/f'training/seed-{spec["seed"]}/{spec["arm"]}'/('resume.pth' if step==0 else f'probe-{step}.pth')
+                checkpoint=(Path(spec['checkpoint']) if spec.get('checkpoint') else
+                    study/f'training/seed-{spec["seed"]}/{spec["arm"]}'/('resume.pth' if step==0 else f'probe-{step}.pth'))
                 if digest(checkpoint)!=spec['checkpoint_sha256']:
                     raise ValueError('A diagnostic checkpoint changed after calibration.')
                 artifacts[str(checkpoint.relative_to(study))]=spec['checkpoint_sha256']
@@ -862,7 +985,8 @@ def build_signal_first_evidence(job, study, jobs):
         result.update(frozen_protocol=manifest['candidate_protocol'], frozen_source=manifest['code'])
         if manifest['candidate_protocol'].get('formal_evidence'):
             required={f'diagnostics-confirmation-{s}-{a}-250000' for s in PILOT_SEEDS for a in DEVELOPMENT_ARMS}
-            if set(summaries)!=required: raise ValueError('Freeze requires all ten fresh development confirmations.')
+            if {n for n in summaries if n.startswith('diagnostics-confirmation-')}!=required:
+                raise ValueError('Freeze requires all ten fresh development confirmations.')
             trends={}
             for seed in PILOT_SEEDS:
                 arms={a:summaries[f'diagnostics-confirmation-{seed}-{a}-250000'] for a in DEVELOPMENT_ARMS}
@@ -872,6 +996,15 @@ def build_signal_first_evidence(job, study, jobs):
                 trends[str(seed)]=dict(E_env_full_minus_same_info=arms['full']['summary']['E_env']-arms['same_info']['summary']['E_env'],
                     strong_capped_time_full_minus_no_peer=arms['full']['task_by_defenders']['6']['capture_time']-
                         arms['no_peer']['task_by_defenders']['6']['capture_time'])
+                if manifest.get('development_execution'):
+                    precision={a:summaries[f'diagnostics-precision-{seed}-{a}-250000']['summary']
+                               for a in ('full','same_info')}
+                    if any(p['states']!=64 or p['repetitions']!=16 for p in precision.values()):
+                        raise ValueError('The registered high-precision development bank is incomplete.')
+                    trends[str(seed)].update(
+                        confirmation_E_env_full_minus_same_info=trends[str(seed)]['E_env_full_minus_same_info'],
+                        E_env_full_minus_same_info=precision['full']['E_env']-precision['same_info']['E_env'],
+                        precision=precision)
             result['formal_entry_evidence']=dict(trends=trends,all_controls_complete=True,
                 implementation_review='review-signal',recovery_history=manifest.get('bootstrap_revision'),
                 requirement='Assess repeated conditional-value improvement, interpretable strong-interaction control and recovery history before freezing.')
@@ -931,7 +1064,7 @@ def decide_review(study, name, decision, rationale, evidence_sha256, assessment=
 def automatic_technical_review(job, study, manifest):
     """Resolve only explicitly enabled intermediate pair checks; retain every hold."""
     policy=manifest.get('technical_review_automation')
-    if (policy!=technical_review_policy() or job['name'] not in policy['reviews'] or
+    if (policy not in (technical_review_policy(),technical_review_policy(True),technical_review_policy(True,True)) or job['name'] not in policy['reviews'] or
             job.get('freezes_protocol') or job.get('stage')!='development-v6' or
             job.get('policy',{}).get('allowed_assessments')!=['technical_ready']):
         return False
@@ -955,7 +1088,7 @@ def automatic_technical_review(job, study, manifest):
             screens[arm]=data
         if set(screens)!={'full','same_info'}:
             raise ValueError('Both fixed pair screens are required.')
-        boundary=int(job['name'].rsplit('-',1)[1])
+        boundary=5000 if job['name']=='review-pair-connectivity' else int(job['name'].rsplit('-',1)[1])
         for arm,data in screens.items():
             summary,learning,frozen=data['summary'],data['learning_checks'],data['frozen_proposals']
             if (data.get('complete') is not True or data.get('technical_checks_passed') is not True or
@@ -981,6 +1114,21 @@ def automatic_technical_review(job, study, manifest):
             measurements[arm]=dict(step=data['step'],E_env=error,environment_zero_predictor=zero,
                 collision=summary['collision'],success=summary['success'],capture=summary['capture'],
                 capture_time=summary['capture_time'],bootstrap_td_loss=learning['bootstrap_td_loss'])
+            if policy.get('task_regression_reference_step') and boundary>policy['task_regression_reference_step']:
+                import numpy as np
+                initial=json.loads((Path(study)/f'reviews/screens/42-{arm}-5000/completed.json').read_text())
+                key=lambda row:(row['scene_seed'],row['defenders'])
+                baseline={key(row):row['capture_time'] for row in initial['episodes']}
+                current={key(row):row['capture_time'] for row in data['episodes']}
+                if len(current)!=32 or set(current)!=set(baseline):
+                    raise ValueError('The regression check requires the same 32 paired task scenes.')
+                delta=np.array([current[k]-baseline[k] for k in sorted(current)])
+                rng=np.random.default_rng(790042)
+                means=delta[rng.integers(len(delta),size=(policy['task_regression_bootstrap_repetitions'],len(delta)))].mean(1)
+                interval=np.quantile(means,[.025,.975])
+                measurements[arm]['task_change_from_5000']=dict(mean=float(delta.mean()),ci95=interval.tolist())
+                if interval[0]>0.:
+                    failures.append(f'{arm}: paired capture time regressed from the fixed 5k screen; diagnose before expansion.')
     except (OSError,KeyError,TypeError,ValueError,OverflowError) as exc:
         failures.append('Missing or invalid technical evidence: '+str(exc))
     rationale=('Automatic bounded pair check: '+('; '.join(failures) if failures else
@@ -1085,208 +1233,136 @@ def migrate_evidence_standard(study):
         write_json(path,manifest)
 
 
-def migrate_stages(study):
-    """Execution-only migration; retain outcomes, checkpoints, and previous hashes."""
+def parallel_development_jobs(jobs, study, python):
+    """Collect the bounded development matrix concurrently; keep scientific formal-entry reviews."""
+    import copy
+    jobs=copy.deepcopy(jobs); study=Path(study)
+    graph={j['name']:j for j in jobs}
+    anchor='review-pair-100000'
+    if anchor not in graph: raise ValueError('The pair technical checkpoint is required.')
+    for seed in PILOT_SEEDS:
+        if seed!=42: graph[f'pretrain-{seed}']['dependencies']=[anchor]
+        for arm in DEVELOPMENT_ARMS:
+            name=f'develop-{seed}-{arm}-250000'
+            if name in graph and (seed,arm) not in ((42,'full'),(42,'same_info')):
+                graph[name]['dependencies']=[anchor,f'pretrain-{seed}']
+            graph[f'diagnostics-confirmation-{seed}-{arm}-250000']['dependencies']=[
+                f'diagnostics-screen-{seed}-{arm}-250000']
+    diagnostics=[]
+    for seed in PILOT_SEEDS:
+        for arm in ('full','same_info'):
+            name=f'diagnostics-precision-{seed}-{arm}-250000'
+            diagnostics.append(dict(name=name,kind='cpu',phase='development-precision',
+                command=[str(python),'-X','utf8','train/interaction_review.py','--mode','precision',
+                    '--study',str(study),'--seed',str(seed),'--arm',arm,'--workers','2'],
+                dependencies=[f'diagnostics-screen-{seed}-{arm}-250000'],
+                completion=str(study/f'reviews/precision/{seed}-{arm}-250000/completed.json')))
+        diagnostics.append(dict(name=f'diagnostics-development-mechanism-{seed}',kind='cpu',phase='development-mechanism',
+            command=[str(python),'-X','utf8','train/interaction_review.py','--mode','development-mechanism',
+                '--study',str(study),'--seed',str(seed),'--workers','2'],
+            dependencies=[f'diagnostics-screen-{seed}-full-250000'],
+            completion=str(study/f'reviews/development-mechanism/seed-{seed}/completed.json')))
+    freeze=graph['review-protocol-freeze']
+    freeze['dependencies']=list(dict.fromkeys([*freeze['dependencies'],'review-pair-250000',
+        'review-development-replication','review-small-matrix',*[j['name'] for j in diagnostics]]))
+    # Independent value/mechanism work gets CPU priority without delaying any GPU training.
+    return diagnostics+[j for j in jobs if j['name'] not in {d['name'] for d in diagnostics}]
+
+
+def migrate_parallel_development(study):
+    """User-authorized use of idle resources, without changing learner settings or formal standards."""
     import fcntl
-    study=Path(study)
-    lock=(study/'runner.lock').open('a')
-    fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    path=study/'manifest.json'
-    manifest=json.loads(path.read_text())
-    if manifest['format'] not in ('interaction-study-v1','interaction-study-v2'):
-        raise ValueError('Only the original or five-arm staged study needs this migration.')
-    records=[]
-    for record_path in (study/'jobs').glob('*.json'):
-        record=json.loads(record_path.read_text())
-        if record.get('state')=='running' and Path(f'/proc/{record.get("pid",0)}').exists():
-            raise RuntimeError('Stop the owned study jobs at recoverable checkpoints before migration.')
-        if record['name'].startswith(('review-', 'diagnostics-')):
-            raise RuntimeError('Existing stage evidence needs an explicit migration; it must not be silently replaced.')
-        records.append((record_path,record))
-    for progress in (study/'training').glob('seed-*/*/progress.json'):
-        if json.loads(progress.read_text())['step']>250000:
-            raise RuntimeError('Joint training already began; gate endpoints need an explicit recovery decision.')
-    current=source_hashes()
-    changed={p:dict(before=h,after=current.get(p)) for p,h in manifest['code'].items() if current.get(p)!=h}
-    allowed={'scripts/run_interaction_study.py','scripts/build_interaction_figures.py','train/interaction_review.py'}
-    if manifest['format']=='interaction-study-v1': allowed.add('train/train_interaction.py')
-    if set(changed)-allowed or set(current)-set(manifest['code'])-{'train/interaction_review.py'}:
-        raise RuntimeError('Unreviewed source changes would alter the frozen study.')
-    for p in set(current)-set(manifest['code']): changed[p]=dict(before=None,after=current[p])
-    first=next(j for j in manifest['jobs'] if j['name'].startswith('train-'))
-    original=[]
-    for job in manifest['jobs']:
-        if job['name'].startswith(('gate-', 'diagnostics-', 'review-')): continue
-        job=dict(job,dependencies=[d for d in job['dependencies'] if not d.startswith(('gate-', 'diagnostics-', 'review-'))])
-        if job['name'].startswith('train-'):
-            job['dependencies']=[f'pretrain-{job["name"].split("-")[1]}']
-        original.append(job)
-    manifest['jobs']=staged_jobs(original,study,first['command'][0])
-    manifest.setdefault('execution_revisions',[]).append(dict(time=time.time(),prior_manifest_sha256=digest(path),changes=changed,
-        reason='User authorized a minimum necessary evidence chain before submission expansion; methods and training budgets unchanged.',
-        preserved_job_records=[r['name'] for _,r in records]))
-    manifest.update(format='interaction-study-v5',code=current)
-    write_json(path,manifest)
-    for record_path, record in records:
-        if record.get('state')=='running':
-            record.update(state='interrupted',interrupted_at=time.time(),reason='checkpointed stage-scheduling migration')
-            write_json(record_path,record)
-    write_json(study/'status.json',dict(state='prepared',jobs=len(manifest['jobs']),
-        completed=sum(r.get('state')=='completed' for _,r in records),active=[]))
-    lock.close()
-
-
-def migrate_candidate_control(study):
-    """Preserve the active v3 study while adding the reviewed candidate-control scope."""
-    import fcntl
-    study = Path(study)
-    with (study/'runner.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX|fcntl.LOCK_NB)
-        path = study/'manifest.json'
-        manifest = json.loads(path.read_text())
-        if manifest['format'] != 'interaction-study-v3' or manifest['root'] != str(ROOT):
-            raise ValueError('Candidate-control migration requires the original v3 study path.')
-        if any((study/'reviews').rglob('*.json')):
-            raise RuntimeError('Existing diagnostic evidence needs an explicit revision; it cannot be replaced.')
-        records = []
-        for record_path in (study/'jobs').glob('*.json'):
-            record = json.loads(record_path.read_text())
-            if record.get('state') == 'running' and Path(f'/proc/{record.get("pid",0)}').exists():
-                raise RuntimeError('Stop the owned jobs at recoverable checkpoints before migration.')
-            records.append((record_path, record))
-        current = source_hashes()
-        changed = {p: dict(before=manifest['code'].get(p), after=current.get(p))
-                   for p in set(current)|set(manifest['code']) if manifest['code'].get(p) != current.get(p)}
-        allowed = {'scripts/run_interaction_study.py', 'train/interaction_review.py',
-                   'train/policy/interaction_sac.py', 'train/interaction_rollout.py', 'train/train_interaction.py',
-                   'scripts/build_interaction_figures.py'}
-        if set(changed)-allowed or set(current) != set(manifest['code']):
-            raise RuntimeError('Unreviewed source changes would alter the frozen study.')
-        checkpoints = {str(p.relative_to(study)): digest(p) for p in (study/'training').glob('seed-*/*/*.pth')}
-        for item in manifest['inherited_pretraining'].values():
-            if digest(item['path']) != item['sha256']:
-                raise RuntimeError('The inherited common pretraining changed.')
-        first = next(j for j in manifest['jobs'] if j['name'].startswith('train-'))
-        manifest['jobs'] = strengthen_jobs(manifest['jobs'], study, first['command'][0])
-        manifest.setdefault('execution_revisions', []).append(dict(time=time.time(), prior_manifest_sha256=digest(path),
-            changes=changed, preserved_checkpoints=checkpoints, preserved_job_records=[r['name'] for _, r in records],
-            reason='User authorized fixed-state candidate diagnostics and a matched no-peer pilot before five-seed expansion. '
-                   'Original arm settings, learned parameters and training budgets are retained.'))
-        manifest.update(format='interaction-study-v4', code=current)
-        write_json(path, manifest)
-        for record_path, record in records:
-            if record.get('state') == 'running':
-                record.update(state='interrupted', interrupted_at=time.time(), reason='candidate-control migration at saved checkpoint')
-                write_json(record_path, record)
-        write_json(study/'status.json', dict(state='prepared', jobs=len(manifest['jobs']),
-            completed=sum(r.get('state')=='completed' for _,r in records), active=[]))
-
-
-def migrate_early_screen(study, gpu_slots=4):
-    """Advance the first candidate screen and retain live compatible training processes."""
-    import fcntl
-    study = Path(study)
-    with (study/'runner.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX|fcntl.LOCK_NB)
-        path = study/'manifest.json'
-        manifest = json.loads(path.read_text())
-        if manifest['format'] != 'interaction-study-v4' or manifest['root'] != str(ROOT):
-            raise ValueError('Early-screen migration requires the original v4 study path.')
-        if (study/'reviews/review-core-gate/evidence.json').exists():
-            raise RuntimeError('An existing first-stage decision needs an explicit evidence revision.')
-        if gpu_slots not in (1, 2, 3, 4):
-            raise ValueError('The first screen supports one to four shared-GPU training slots.')
-        cpus = manifest['cpu_affinity']
-        required_cpus = 4*gpu_slots + 2*manifest['limits']['cpu']
-        quota_path = Path('/sys/fs/cgroup/cpu.max')
-        quota = len(cpus)
-        if quota_path.exists():
-            amount, period = quota_path.read_text().split()
-            if amount != 'max': quota = min(quota, int(amount)//int(period))
-        if required_cpus > quota:
-            raise ValueError('Parallel slots exceed the existing CPU affinity or container quota.')
-        current = source_hashes()
-        changed = {p: dict(before=manifest['code'].get(p), after=current.get(p))
-                   for p in set(current)|set(manifest['code']) if manifest['code'].get(p) != current.get(p)}
-        allowed = {'scripts/run_interaction_study.py', 'scripts/build_interaction_figures.py', 'train/interaction_review.py'}
-        if set(changed)-allowed or set(current) != set(manifest['code']):
-            raise RuntimeError('Unreviewed source changes would alter the frozen learner.')
-        jobs = {j['name']: j for j in manifest['jobs']}
-        running = []
-        for record_path in (study/'jobs').glob('*.json'):
-            record = json.loads(record_path.read_text())
-            if record.get('state') == 'running' and process_identity(record.get('pid', 0)) is not None:
-                identity = verify_running_job(jobs[record['name']], record)
-                running.append(dict(name=record['name'], pid=record['pid'], process_identity=identity))
-        first = next(j for j in manifest['jobs'] if j['name'].startswith('train-'))
-        manifest['jobs'] = advance_candidate_screen(manifest['jobs'], study, first['command'][0])
-        manifest.setdefault('execution_revisions', []).append(dict(time=time.time(), prior_manifest_sha256=digest(path),
-            changes=changed, preserved_running=running, previous_limits=manifest['limits'].copy(),
-            reason='User authorized moving the no-peer control into the first 250k screen and using idle compute. '
-                   'Existing training processes continue; learner settings, datasets and per-arm step budgets are unchanged.'))
-        manifest['limits']['gpu'] = gpu_slots
-        manifest.update(format='interaction-study-v5', code=current, cpu_per_gpu=4, cpu_per_evaluation=2)
-        write_json(path, manifest)
-
-
-def migrate_signal_first(study):
-    """Retain durable development checkpoints; replace the premature formal graph."""
-    import fcntl
-    import study_runtime
-    import torch
     study=Path(study)
     with (study/'runner.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        path=study/'manifest.json'
-        manifest=json.loads(path.read_text())
-        if manifest['format']!='interaction-study-v5' or manifest['root']!=str(ROOT):
-            raise ValueError('Signal-first migration requires the owned v5 development study.')
+        path=study/'manifest.json'; manifest=json.loads(path.read_text())
+        if manifest['format']!='interaction-study-v6' or manifest['root']!=str(ROOT):
+            raise ValueError('Parallel development requires the original v6 study path.')
+        if (study/'reviews/review-protocol-freeze/evidence.json').exists() or any(
+                (study/f'training/seed-{seed}').exists() for seed in FORMAL_SEEDS):
+            raise RuntimeError('Development execution must be registered before formal protocol freeze.')
+        jobs={j['name']:j for j in manifest['jobs']}
+        if not review_passed(jobs['review-pair-100000'],study):
+            raise RuntimeError('The bounded pair technical check has not passed.')
+        quota=len(manifest['cpu_affinity'])
+        quota_path=Path('/sys/fs/cgroup/cpu.max')
+        if quota_path.exists():
+            amount,period=quota_path.read_text().split()
+            if amount!='max': quota=min(quota,int(amount)//int(period))
+        if quota<20: raise RuntimeError('Four training and two evaluation slots require 20 assigned CPUs.')
+        current=source_hashes()
+        changed={p:dict(before=manifest['code'].get(p),after=current.get(p))
+            for p in set(current)|set(manifest['code']) if manifest['code'].get(p)!=current.get(p)}
+        allowed={'scripts/run_interaction_study.py','train/interaction_review.py','scripts/build_interaction_figures.py'}
+        if set(changed)-allowed or set(current)!=set(manifest['code']):
+            raise RuntimeError('Parallel execution cannot modify the learner or training protocol.')
+        running=[]
         for record_path in (study/'jobs').glob('*.json'):
             record=json.loads(record_path.read_text())
-            if record.get('state') in ('running','paused_protocol_revision') and process_identity(record.get('pid',0)):
-                raise RuntimeError('Stop owned jobs at durable checkpoints before changing the development protocol.')
-        if list((study/'reviews').glob('review-*/decision.json')):
-            raise RuntimeError('Previously reviewed scientific evidence needs an explicit protocol revision.')
-        before=digest(path)
-        current=source_hashes()
-        changes={p:dict(before=h,after=current.get(p)) for p,h in manifest['code'].items() if current.get(p)!=h}
-        allowed={'scripts/run_interaction_study.py','scripts/build_interaction_figures.py','train/interaction_review.py',
-                 'train/train_interaction.py','train/policy/interaction_sac.py','train/interaction_evaluation.py'}
-        if set(changes)-allowed or set(current)-set(manifest['code']):
-            raise RuntimeError('The signal-first revision contains unreviewed source changes.')
-        resume_steps, preserved={},{}
-        for checkpoint in (study/'training').glob('seed-*/*/resume.pth'):
-            seed=int(checkpoint.parents[1].name.split('-')[1])
-            arm=checkpoint.parent.name
-            saved=torch.load(checkpoint,weights_only=False,map_location='cpu')
-            if seed not in PILOT_SEEDS or saved['step']>250000 or saved['agent']['stage']!='gate':
-                raise ValueError('A formal or joint checkpoint cannot be relabeled as a small development run.')
-            key=f'{seed}/{arm}'
-            resume_steps[key]=saved['step']
-            preserved[key]=dict(step=saved['step'],sha256=digest(checkpoint),
-                simulated_steps=saved['simulated_steps'],elapsed=saved['elapsed'])
-            prior=json.loads((checkpoint.parent/'progress.json').read_text())
-            preserved[key]['last_reported_step']=prior['step']
-            preserved[key]['uncheckpointed_steps']=max(0,prior['step']-saved['step'])
-            # Match the public progress to the last complete atomic resume, without rewriting its contents.
-            write_json(checkpoint.parent/'progress.json',dict(step=saved['step'],stage='gate',complete=False,
-                total=saved['config']['training']['gate_steps']+saved['config']['training']['joint_steps'],
-                simulated_steps=saved['simulated_steps'],elapsed=saved['elapsed'],
-                updates=max(0,saved['step']-saved['config']['training']['warm_steps']+1)))
-            del saved
-        first=next(j for j in manifest['jobs'] if j['name'].startswith('train-'))
-        jobs,inherited=build_jobs(study,first['command'][0],ROOT/'vrx_ws/activate.bash',resume_steps)
-        retired=set(j['name'] for j in manifest['jobs'])-set(j['name'] for j in jobs)
-        manifest.setdefault('execution_revisions',[]).append(dict(time=time.time(),prior_manifest_sha256=before,
-            reason='User adopted signal-first, pair-first development, two-seed small ablations and a separate formal freeze.',
-            changes=changes,preserved_checkpoints=preserved,retired_jobs=sorted(retired)))
-        manifest.update(format='interaction-study-v6',code=current,jobs=jobs,inherited_pretraining=inherited,
-            seeds=FORMAL_SEEDS,development_seeds=PILOT_SEEDS,development_resume_steps=resume_steps,
-            candidate_protocol=protocol_specification(),retired_jobs=sorted(retired),
-            limits=dict(gpu=2,cpu=2,vrx=1,rollout_workers=4),cpu_per_gpu=6,cpu_per_evaluation=4)
+            if record.get('state')=='running' and process_identity(record.get('pid',0)) is not None:
+                if jobs[record['name']]['kind']!='gpu' or not record['name'].startswith(('develop-','pretrain-')):
+                    raise RuntimeError('Finish active evaluation jobs before revising diagnostic code.')
+                running.append(dict(name=record['name'],pid=record['pid'],
+                    process_identity=verify_running_job(jobs[record['name']],record)))
+        python=next(j['command'][0] for j in manifest['jobs'] if j['name'].startswith('develop-'))
+        manifest['jobs']=parallel_development_jobs(manifest['jobs'],study,python)
+        manifest.setdefault('execution_revisions',[]).append(dict(time=time.time(),prior_manifest_sha256=digest(path),
+            changes=changed,preserved_running=running,previous_limits=manifest['limits'].copy(),
+            reason='User requested using idle compute to complete all evidence requirements. Collect the existing two-seed five-arm 250k development matrix concurrently, with independent precision and mechanism diagnostics. Preserve all scientific reviews before formal training.'))
+        manifest['limits'].update(gpu=4,cpu=2)
+        manifest.update(code=current,cpu_per_gpu=4,cpu_per_evaluation=2,
+            development_execution=dict(version='parallel-bounded-v1',seeds=list(PILOT_SEEDS),
+                arms=list(DEVELOPMENT_ARMS),endpoint_steps=250000,precision_states=64,
+                precision_repetitions=16,mechanism_states=32,mechanism_repetitions=4))
+        banks=manifest['candidate_protocol']['development_banks']
+        manifest['candidate_protocol']['development_banks']=sorted(set(banks)|{404000000,405000000,406000000,407000000})
+        manifest['candidate_protocol']['development_precision']=dict(states=64,repetitions=16,
+            full_environment=True,bank='404M/405M',purpose='Independent Full/Same-info conditional-value trend before formal freeze.')
         write_json(path,manifest)
-        write_json(study/'status.json',dict(state='prepared_signal_first',active=[],jobs=len(jobs),
-            preserved_checkpoints=preserved,limits=manifest['limits']))
+
+
+def migrate_control_isolation(study):
+    """Retry only the two failed legacy controls through an exact evaluator split."""
+    import fcntl
+    study=Path(study)
+    with (study/'runner.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        path=study/'manifest.json';manifest=json.loads(path.read_text())
+        if manifest['format']!='interaction-study-v6' or manifest['root']!=str(ROOT) or not manifest.get('development_execution'):
+            raise ValueError('Control isolation requires the registered parallel development study.')
+        if (study/'reviews/review-protocol-freeze/evidence.json').exists():
+            raise RuntimeError('Legacy control recovery is prohibited after protocol freeze.')
+        current=source_hashes()
+        changed={p:dict(before=manifest['code'].get(p),after=current.get(p))
+            for p in set(current)|set(manifest['code']) if manifest['code'].get(p)!=current.get(p)}
+        allowed={'train/train_interaction.py','scripts/run_interaction_study.py','scripts/build_interaction_figures.py'}
+        if set(changed)-allowed or set(current)!=set(manifest['code']):
+            raise RuntimeError('Only exact control isolation and execution accounting may change.')
+        jobs={j['name']:j for j in manifest['jobs']};running=[];attempts={}
+        for record_path in (study/'jobs').glob('*.json'):
+            record=json.loads(record_path.read_text())
+            if record.get('state')=='running' and process_identity(record.get('pid',0)) is not None:
+                if record['name'] in ('develop-42-no_peer-250000','develop-42-model_value-250000'):
+                    raise RuntimeError('The failed control must have exited before retrying it.')
+                running.append(dict(name=record['name'],pid=record['pid'],
+                    process_identity=verify_running_job(jobs[record['name']],record)))
+        for arm in ('no_peer','model_value'):
+            name=f'develop-42-{arm}-250000';checkpoint=study/f'training/seed-42/{arm}/resume.pth'
+            record=json.loads((study/f'reviews/bootstrap-repair/42-{arm}/completed.json').read_text())
+            if record.get('complete') or record.get('passed') or digest(checkpoint)!=record['previous_checkpoint_sha256']:
+                raise RuntimeError('Recovery must preserve the unchanged checkpoint of the failed rebuild.')
+            if record['step']!=20000 or not record['actor_unchanged']:
+                raise RuntimeError('Only the two retained 20k development controls are covered.')
+            attempts[arm]=dict(checkpoint_sha256=digest(checkpoint),
+                failed_job=json.loads((study/f'jobs/{name}.json').read_text()))
+            command=jobs[name]['command']
+            if '--recondition-bootstrap-if-needed' not in command: raise RuntimeError('Unexpected prior recovery command.')
+            command[command.index('--recondition-bootstrap-if-needed')]='--isolate-bootstrap-if-needed'
+        manifest.setdefault('execution_revisions',[]).append(dict(time=time.time(),prior_manifest_sha256=digest(path),
+            changes=changed,preserved_running=running,failed_reconditioning=attempts,
+            reason='The two 20k legacy controls failed the reconstruction-specific error-halving test. Preserve their exact actor/critic/target and all training state, verify identical calibration, and isolate subsequent real-TD bootstrap updates. Retain failed reconstruction costs; no efficacy assessment is implied.'))
+        manifest['code']=current
+        write_json(path,manifest)
 
 
 def migrate_bootstrap(study):
@@ -1364,178 +1440,183 @@ def run(study, adopt_running=False):
     import fcntl
     study=Path(study)
     manifest=json.loads((study/'manifest.json').read_text(encoding='utf-8'))
+    if manifest.get('superseded_by'):
+        raise RuntimeError('This development protocol was superseded; resume '+manifest['superseded_by'])
     if manifest['root']!=str(ROOT): raise RuntimeError('Run the manifest in its original project path.')
-    lock=(study/'runner.lock').open('a')
-    try: fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    except BlockingIOError: raise RuntimeError('This study already has a live scheduler.')
-    for path,expected in manifest['code'].items():
-        if digest(ROOT/path)!=expected: raise RuntimeError('Frozen scientific code changed: '+path)
-    for item in manifest['inherited_pretraining'].values():
-        if digest(item['path'])!=item['sha256']: raise RuntimeError('A common pretraining artifact changed.')
-    jobs={j['name']:j for j in manifest['jobs']}
-    done=set(manifest['inherited_pretraining'])
-    (study/'jobs').mkdir(exist_ok=True)
-    active={}
-    logs=study/'logs'; logs.mkdir(exist_ok=True)
-    for path in (study/'jobs').glob('*.json'):
-        item=json.loads(path.read_text())
-        if item['name'] not in jobs:
-            if item['name'] not in manifest.get('retired_jobs',[]):
-                raise RuntimeError('Unrecognized historical job record: '+item['name'])
-            continue
-        if item.get('state') in ('completed', 'skipped'):
-            job = jobs[item['name']]
-            if job.get('condition'):
-                enabled, fingerprint = conditional_selection(job, study, jobs)
-                if (enabled == (item['state'] == 'skipped') or
-                        item.get('condition_decision_sha256') != fingerprint):
-                    raise RuntimeError('A conditional job no longer matches its reviewed pilot decision.')
-            elif item['state'] == 'skipped':
-                raise RuntimeError('A required job cannot be skipped.')
-            if item['state'] == 'skipped':
-                done.add(item['name'])
+    with (study/'runner.lock').open('a') as lock:
+        try: fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError: raise RuntimeError('This study already has a live scheduler.')
+        for path,expected in manifest['code'].items():
+            if digest(ROOT/path)!=expected: raise RuntimeError('Frozen scientific code changed: '+path)
+        for item in manifest['inherited_pretraining'].values():
+            if digest(item['path'])!=item['sha256']: raise RuntimeError('A common pretraining artifact changed.')
+        jobs={j['name']:j for j in manifest['jobs']}
+        done=set(manifest['inherited_pretraining'])
+        (study/'jobs').mkdir(exist_ok=True)
+        active={}
+        logs=study/'logs'; logs.mkdir(exist_ok=True)
+        for path in (study/'jobs').glob('*.json'):
+            item=json.loads(path.read_text())
+            if item['name'] not in jobs:
+                if item['name'] not in manifest.get('retired_jobs',[]):
+                    raise RuntimeError('Unrecognized historical job record: '+item['name'])
                 continue
-            if jobs[item['name']]['kind']=='review' and not review_passed(jobs[item['name']],study):
-                raise RuntimeError('A completed stage review no longer matches its evidence.')
-            done.add(item['name'])
-        elif item.get('state')=='running':
-            pid=item.get('pid',0)
-            if pid and process_identity(pid) is not None:
-                if not adopt_running:
-                    raise RuntimeError(f'Existing study child {pid} is alive; do not duplicate it.')
+            if item.get('state') in ('completed', 'skipped'):
                 job = jobs[item['name']]
-                identity = verify_running_job(job, item)
-                slot, assigned = resource_assignment(manifest, job['kind'], jobs, active)
-                set_tree_affinity(pid, assigned)
-                log = (logs/f'{item["name"]}.log').open('a', encoding='utf-8')
-                active[item['name']] = (AdoptedProcess(pid, identity), log, slot)
-                item.update(adopted_at=time.time(), process_identity=identity, slot=slot, assigned_cpus=assigned)
-                write_json(path, item)
-                continue
-            if valid_completion(jobs[item['name']],study):
+                if job.get('condition'):
+                    enabled, fingerprint = conditional_selection(job, study, jobs)
+                    if (enabled == (item['state'] == 'skipped') or
+                            item.get('condition_decision_sha256') != fingerprint):
+                        raise RuntimeError('A conditional job no longer matches its reviewed pilot decision.')
+                elif item['state'] == 'skipped':
+                    raise RuntimeError('A required job cannot be skipped.')
+                if item['state'] == 'skipped':
+                    done.add(item['name'])
+                    continue
+                if jobs[item['name']]['kind']=='review' and not review_passed(jobs[item['name']],study):
+                    raise RuntimeError('A completed stage review no longer matches its evidence.')
                 done.add(item['name'])
-                write_json(path,dict(item,state='completed',recovered=True))
-    external_clear=False
-    failed=False
-    pending_reviews=[]
-
-    def status(state, blockers=None):
-        write_json(study/'status.json',dict(state=state,runner_pid=os.getpid(),updated_at=time.time(),
-            jobs=len(jobs),completed=len(done-set(manifest['inherited_pretraining'])),
-            active=[dict(name=k,pid=v[0].pid,kind=jobs[k]['kind'],slot=v[2]) for k,v in active.items()],
-            limits=manifest['limits'],
-            pending_reviews=pending_reviews,blockers=blockers or [],
-            core_evidence_complete=('review-formal-core' if manifest.get('format')=='interaction-study-v6' else 'review-evidence') in done,
-            submission_evidence_complete='figures' in done,
-            optional_jobs=sum(bool(j.get('optional')) for j in jobs.values())))
-
-    try:
-        while len(done-set(manifest['inherited_pretraining'])) < len(jobs):
-            blockers=blocking_processes()
-            if blockers and not active:
-                status('waiting_existing_workload',blockers)
-                time.sleep(30)
-                continue
-            if not external_clear:
-                required=2 if any((study/'jobs').glob('*.json')) else 32
-                if shutil.disk_usage(study).free < required*1024**3:
-                    raise RuntimeError(f'At least {required} GiB free is required before scheduling.')
-                external_clear=True
-            for name,details in list(active.items()):
-                process,log=details[:2]
-                code=process.poll()
-                if code is None: continue
-                log.close(); del active[name]
-                valid=code in (0, 'unobserved') and valid_completion(jobs[name],study)
-                record=json.loads((study/'jobs'/f'{name}.json').read_text())
-                record.update(returncode=None if code=='unobserved' else code,
-                    state='completed' if valid else 'failed',finished_at=time.time())
-                if code=='unobserved': record['completion_basis']='validated endpoint after adopting an existing process'
-                record['wall_seconds']=record['finished_at']-record['started_at']
-                write_json(study/'jobs'/f'{name}.json',record)
-                if valid: done.add(name)
-                else: failed=True
-            if failed:
-                status('failed_waiting_for_running_jobs')
-                if not active: raise RuntimeError('An experiment job failed; inspect its existing job log before resuming.')
-                time.sleep(5); continue
-            counts={kind:sum(jobs[name]['kind']==kind for name in active) for kind in ('gpu','cpu','vrx','exclusive')}
-            pending_reviews=[]
-            for name,job in jobs.items():
-                if name in done or name in active or not set(job['dependencies']).issubset(done): continue
-                enabled, selection_hash = conditional_selection(job, study, jobs)
-                if not enabled:
-                    done.add(name)
-                    write_json(study/'jobs'/f'{name}.json',dict(name=name,state='skipped',finished_at=time.time(),
-                        reason='The reviewed first candidate-ablation seed did not request a second seed.',
-                        condition_decision_sha256=selection_hash))
+            elif item.get('state')=='running':
+                pid=item.get('pid',0)
+                if pid and process_identity(pid) is not None:
+                    if not adopt_running:
+                        raise RuntimeError(f'Existing study child {pid} is alive; do not duplicate it.')
+                    job = jobs[item['name']]
+                    identity = verify_running_job(job, item)
+                    slot, assigned = resource_assignment(manifest, job['kind'], jobs, active)
+                    set_tree_affinity(pid, assigned)
+                    log = (logs/f'{item["name"]}.log').open('a', encoding='utf-8')
+                    active[item['name']] = (AdoptedProcess(pid, identity), log, slot)
+                    item.update(adopted_at=time.time(), process_identity=identity, slot=slot, assigned_cpus=assigned)
+                    write_json(path, item)
                     continue
-                kind=job['kind']
-                if blockers or counts['exclusive']: continue
-                if kind=='review':
-                    directory=study/'reviews'/name
-                    if not (directory/'evidence.json').exists():
-                        evidence=build_review_evidence(job,study,jobs)
-                        write_json(directory/'evidence.json',evidence)
-                    automatic_technical_review(job,study,manifest)
-                    if review_passed(job,study):
+                if valid_completion(jobs[item['name']],study):
+                    done.add(item['name'])
+                    write_json(path,dict(item,state='completed',recovered=True))
+        external_clear=False
+        failed=False
+        pending_reviews=[]
+
+        def status(state, blockers=None):
+            write_json(study/'status.json',dict(state=state,runner_pid=os.getpid(),updated_at=time.time(),
+                jobs=len(jobs),completed=len(done-set(manifest['inherited_pretraining'])),
+                active=[dict(name=k,pid=v[0].pid,kind=jobs[k]['kind'],slot=v[2]) for k,v in active.items()],
+                limits=manifest['limits'],
+                pending_reviews=pending_reviews,blockers=blockers or [],
+                core_evidence_complete=('review-formal-core' if manifest.get('format')=='interaction-study-v6' else 'review-evidence') in done,
+                submission_evidence_complete='figures' in done,
+                optional_jobs=sum(bool(j.get('optional')) for j in jobs.values())))
+
+        try:
+            while len(done-set(manifest['inherited_pretraining'])) < len(jobs):
+                blockers=blocking_processes()
+                if blockers and not active:
+                    status('waiting_existing_workload',blockers)
+                    time.sleep(30)
+                    continue
+                if not external_clear:
+                    required=(2 if any((study/'jobs').glob('*.json')) else
+                              8 if manifest['format'] == 'interaction-performance-v1' else 32)
+                    if shutil.disk_usage(study).free < required*1024**3:
+                        raise RuntimeError(f'At least {required} GiB free is required before scheduling.')
+                    external_clear=True
+                for name,details in list(active.items()):
+                    process,log=details[:2]
+                    code=process.poll()
+                    if code is None: continue
+                    log.close(); del active[name]
+                    valid=code in (0, 'unobserved') and valid_completion(jobs[name],study)
+                    record=json.loads((study/'jobs'/f'{name}.json').read_text())
+                    record.update(returncode=None if code=='unobserved' else code,
+                        state='completed' if valid else 'failed',finished_at=time.time())
+                    if code=='unobserved': record['completion_basis']='validated endpoint after adopting an existing process'
+                    record['wall_seconds']=record['finished_at']-record['started_at']
+                    write_json(study/'jobs'/f'{name}.json',record)
+                    if valid: done.add(name)
+                    else: failed=True
+                if failed:
+                    status('failed_waiting_for_running_jobs')
+                    if not active: raise RuntimeError('An experiment job failed; inspect its existing job log before resuming.')
+                    time.sleep(5); continue
+                counts={kind:sum(jobs[name]['kind']==kind for name in active) for kind in ('gpu','cpu','vrx','exclusive')}
+                pending_reviews=[]
+                for name,job in jobs.items():
+                    if name in done or name in active or not set(job['dependencies']).issubset(done): continue
+                    enabled, selection_hash = conditional_selection(job, study, jobs)
+                    if not enabled:
                         done.add(name)
-                        write_json(study/'jobs'/f'{name}.json',dict(name=name,state='completed',finished_at=time.time(),
-                            condition_decision_sha256=selection_hash,
-                            evidence_sha256=digest(directory/'evidence.json'),decision_sha256=digest(directory/'decision.json')))
-                    else:
-                        pending_reviews.append(name)
-                        write_json(study/'jobs'/f'{name}.json',dict(name=name,state='waiting_review',
-                            condition_decision_sha256=selection_hash,
-                            evidence_sha256=digest(directory/'evidence.json')))
-                    continue
-                if shutil.disk_usage(study).free < 2*1024**3:
-                    raise RuntimeError('Less than 2 GiB free: preserve running work and resolve storage before scheduling more jobs.')
-                if kind=='exclusive':
-                    if active: continue
-                elif counts[kind]>=manifest['limits'][kind]: continue
-                log=(logs/f'{name}.log').open('a',encoding='utf-8')
-                environment=os.environ.copy()
-                environment.update(OMP_NUM_THREADS='1',MKL_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',MPLBACKEND='Agg',
-                                   XLA_FLAGS='--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1')
-                if kind!='gpu': environment['CUDA_VISIBLE_DEVICES']=''
-                if kind=='vrx': environment['ROS_DOMAIN_ID']='121'
-                slot, assigned=resource_assignment(manifest,kind,jobs,active)
-                process=subprocess.Popen(job['command'],cwd=ROOT,env=environment,stdout=log,stderr=subprocess.STDOUT,
-                    start_new_session=True,preexec_fn=(lambda:os.sched_setaffinity(0,assigned)) if assigned else None)
-                active[name]=(process,log,slot); counts[kind]+=1
-                write_json(study/'jobs'/f'{name}.json',dict(name=name,pid=process.pid,state='running',started_at=time.time(),
-                    process_identity=process_identity(process.pid),slot=slot,assigned_cpus=assigned,
-                    condition_decision_sha256=selection_hash))
-                if kind=='exclusive': break
-            status('running' if active else 'waiting_review' if pending_reviews else 'waiting_dependencies')
-            if not active and pending_reviews:
-                decisions=[study/'reviews'/name/'decision.json' for name in pending_reviews]
-                if all(p.exists() and json.loads(p.read_text()).get('decision')=='hold' for p in decisions):
-                    status('held')
-                    return
-            if not active and not blockers and not any(name not in done and set(j['dependencies']).issubset(done) for name,j in jobs.items()):
-                if len(done-set(manifest['inherited_pretraining'])) != len(jobs):
-                    raise RuntimeError('Unsatisfied dependency graph.')
-            time.sleep(5)
-        status('complete')
-    except BaseException as exc:
-        # Do not terminate jobs implicitly. A subsequent run detects surviving children.
-        status('interrupted' if isinstance(exc,KeyboardInterrupt) else 'error')
-        write_json(study/'error.json',dict(error=str(exc),time=time.time()))
-        raise
-    finally:
-        for value in active.values(): value[1].close()
-        lock.close()
+                        write_json(study/'jobs'/f'{name}.json',dict(name=name,state='skipped',finished_at=time.time(),
+                            reason='The reviewed first candidate-ablation seed did not request a second seed.',
+                            condition_decision_sha256=selection_hash))
+                        continue
+                    kind=job['kind']
+                    if blockers or counts['exclusive']: continue
+                    if kind=='review':
+                        directory=study/'reviews'/name
+                        if not (directory/'evidence.json').exists():
+                            evidence=build_review_evidence(job,study,jobs)
+                            write_json(directory/'evidence.json',evidence)
+                        automatic_technical_review(job,study,manifest)
+                        if review_passed(job,study):
+                            done.add(name)
+                            write_json(study/'jobs'/f'{name}.json',dict(name=name,state='completed',finished_at=time.time(),
+                                condition_decision_sha256=selection_hash,
+                                evidence_sha256=digest(directory/'evidence.json'),decision_sha256=digest(directory/'decision.json')))
+                        else:
+                            pending_reviews.append(name)
+                            write_json(study/'jobs'/f'{name}.json',dict(name=name,state='waiting_review',
+                                condition_decision_sha256=selection_hash,
+                                evidence_sha256=digest(directory/'evidence.json')))
+                        continue
+                    if shutil.disk_usage(study).free < 2*1024**3:
+                        raise RuntimeError('Less than 2 GiB free: preserve running work and resolve storage before scheduling more jobs.')
+                    if kind=='exclusive':
+                        if active: continue
+                    elif counts[kind]>=manifest['limits'][kind]: continue
+                    log=(logs/f'{name}.log').open('a',encoding='utf-8')
+                    environment=os.environ.copy()
+                    environment.update(OMP_NUM_THREADS='1',MKL_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',MPLBACKEND='Agg',
+                                       XLA_FLAGS='--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1')
+                    if kind!='gpu': environment['CUDA_VISIBLE_DEVICES']=''
+                    if kind=='vrx': environment['ROS_DOMAIN_ID']='121'
+                    slot, assigned=resource_assignment(manifest,kind,jobs,active)
+                    process=subprocess.Popen(job['command'],cwd=ROOT,env=environment,stdout=log,stderr=subprocess.STDOUT,
+                        start_new_session=True,preexec_fn=(lambda:os.sched_setaffinity(0,assigned)) if assigned else None)
+                    active[name]=(process,log,slot); counts[kind]+=1
+                    write_json(study/'jobs'/f'{name}.json',dict(name=name,pid=process.pid,state='running',started_at=time.time(),
+                        process_identity=process_identity(process.pid),slot=slot,assigned_cpus=assigned,
+                        condition_decision_sha256=selection_hash))
+                    if kind=='exclusive': break
+                status('running' if active else 'waiting_review' if pending_reviews else 'waiting_dependencies')
+                if not active and pending_reviews:
+                    decisions=[study/'reviews'/name/'decision.json' for name in pending_reviews]
+                    if all(p.exists() and json.loads(p.read_text()).get('decision')=='hold' for p in decisions):
+                        status('held')
+                        return
+                if not active and not blockers and not any(name not in done and set(j['dependencies']).issubset(done) for name,j in jobs.items()):
+                    if len(done-set(manifest['inherited_pretraining'])) != len(jobs):
+                        raise RuntimeError('Unsatisfied dependency graph.')
+                time.sleep(5)
+            status('complete')
+        except BaseException as exc:
+            # Do not terminate jobs implicitly. A subsequent run detects surviving children.
+            status('interrupted' if isinstance(exc,KeyboardInterrupt) else 'error')
+            write_json(study/'error.json',dict(error=str(exc),time=time.time()))
+            raise
+        finally:
+            for value in active.values(): value[1].close()
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode',choices=['prepare','run','status','migrate-stages','migrate-evidence','migrate-candidate-control',
-                                       'migrate-early-screen','migrate-signal-first','migrate-bootstrap',
-                                       'migrate-technical-reviews','migrate-evidence-standard','decide-review'])
+    parser.add_argument('mode',choices=['prepare','prepare-composed-revision','prepare-performance-search','performance-screen','run','status','migrate-bootstrap',
+                                       'migrate-technical-reviews','migrate-evidence-standard','migrate-parallel-development',
+                                       'migrate-control-isolation','decide-review'])
     parser.add_argument('--study',type=Path,default=ROOT/'train/experiments/ia-crrl-20261007')
     parser.add_argument('--python',default=sys.executable)
+    parser.add_argument('--previous-study',type=Path)
+    parser.add_argument('--candidate')
+    parser.add_argument('--checkpoint-step', type=int, default=0)
     parser.add_argument('--vrx-activate',type=Path,default=ROOT/'vrx_ws/activate.bash')
     parser.add_argument('--review')
     parser.add_argument('--decision',choices=['continue','hold'])
@@ -1543,18 +1624,24 @@ def main():
     parser.add_argument('--evidence-sha256')
     parser.add_argument('--assessment',choices=['technical_ready','promising','inconclusive','unsupported','necessary','frozen','supported'])
     parser.add_argument('--findings-file',type=Path)
-    parser.add_argument('--gpu-slots', type=int, choices=(1,2,3,4), default=4)
     parser.add_argument('--adopt-running', action='store_true')
     args=parser.parse_args()
     if args.mode=='prepare': prepare(args.study.resolve(),args.python,args.vrx_activate.resolve())
+    elif args.mode=='prepare-composed-revision':
+        if args.previous_study is None: parser.error('--previous-study is required for a scientific revision.')
+        prepare_composed_revision(args.study,args.previous_study,args.python,args.vrx_activate.resolve())
+    elif args.mode=='prepare-performance-search':
+        if args.previous_study is None: parser.error('--previous-study is required.')
+        prepare_performance_search(args.study, args.previous_study, args.python)
+    elif args.mode=='performance-screen':
+        if args.candidate is None: parser.error('--candidate is required.')
+        performance_screen(args.study, args.candidate, args.checkpoint_step)
     elif args.mode=='run': run(args.study.resolve(),args.adopt_running)
-    elif args.mode in ('migrate-stages','migrate-evidence'): migrate_stages(args.study.resolve())
-    elif args.mode=='migrate-candidate-control': migrate_candidate_control(args.study.resolve())
-    elif args.mode=='migrate-early-screen': migrate_early_screen(args.study.resolve(),args.gpu_slots)
-    elif args.mode=='migrate-signal-first': migrate_signal_first(args.study.resolve())
     elif args.mode=='migrate-bootstrap': migrate_bootstrap(args.study.resolve())
     elif args.mode=='migrate-technical-reviews': migrate_technical_reviews(args.study.resolve())
     elif args.mode=='migrate-evidence-standard': migrate_evidence_standard(args.study.resolve())
+    elif args.mode=='migrate-parallel-development': migrate_parallel_development(args.study.resolve())
+    elif args.mode=='migrate-control-isolation': migrate_control_isolation(args.study.resolve())
     elif args.mode=='decide-review':
         decide_review(args.study.resolve(),args.review,args.decision,args.rationale,args.evidence_sha256,args.assessment,
             findings=json.loads(args.findings_file.read_text(encoding='utf-8')) if args.findings_file else None)

@@ -3,7 +3,6 @@ import study_runtime
 import argparse
 import copy
 import csv
-import hashlib
 import json
 from pathlib import Path
 import time
@@ -26,8 +25,9 @@ def arm_config(config, arm):
         raise ValueError('Unknown study arm: ' + arm)
     config = copy.deepcopy(config)
     config['interaction'].update(arm=arm, auxiliary=('none' if arm in ('arboids_cbf', 'same_info')
-                                                    else 'value' if arm == 'model_value' else 'difference'),
-                                  horizon_steps=10 if arm == 'short' else 100)
+                                                    else 'value' if arm == 'model_value' else 'difference'))
+    if arm == 'short':
+        config['interaction']['horizon_steps'] = 10
     # Preserve the original five configuration dictionaries and their checkpoints.
     config['interaction'].pop('peer_candidates', None)
     if arm == 'no_peer':
@@ -126,9 +126,38 @@ def validate(config):
         raise ValueError('Training study arms must share the CBF filter.')
     if i.get('bootstrap_source', 'coupled') not in ('coupled', 'real_td'):
         raise ValueError('Invalid bootstrap source.')
+    if i.get('critic_control_coordinates','raw-v1') not in ('raw-v1','nominal-thrust-v2'):
+        raise ValueError('Invalid critic control coordinates.')
+    if not isinstance(i.get('label_repetitions',1),int) or i.get('label_repetitions',1)<1:
+        raise ValueError('A positive integer label continuation count is required.')
+    if not isinstance(t.get('critic_warmup_updates',0),int) or t.get('critic_warmup_updates',0)<0:
+        raise ValueError('Critic warmup updates must be a nonnegative integer.')
+    if t.get('critic_warmup_updates',0) and (i['arm']=='arboids_cbf' or i.get('bootstrap_source')!='real_td'):
+        raise ValueError('Critic warmup requires the matched real-TD evaluator.')
+    if t.get('critic_warmup_updates',0) and t['warm_steps']<2:
+        raise ValueError('Collect real replay before critic warmup.')
+    if i.get('reward_objective', 'paper-reward-v1') not in ('paper-reward-v1', 'capped-time-v1'):
+        raise ValueError('Unknown training reward objective.')
+    if i.get('reward_objective') == 'capped-time-v1' and (
+            config['rl']['GAMMA'] != 1. or i.get('entropy_objective') != 'task-return-v4'):
+        raise ValueError('Capped-time training requires undiscounted task returns without entropy rewards.')
+    if i.get('gate_objective', 'critic-v1') not in ('critic-v1', 'paired-improvement-v1'):
+        raise ValueError('Unknown gate objective.')
+    if i.get('intervention_scope', 'single') not in ('single', 'team'):
+        raise ValueError('Unknown gate intervention scope.')
+    if i.get('intervention_scope') == 'team' and i.get('gate_objective') != 'paired-improvement-v1':
+        raise ValueError('Team intervention is an explicit direct-gate exploration variant.')
+    if i.get('gate_objective') == 'paired-improvement-v1':
+        if (i['auxiliary'] != 'difference' or i['horizon_steps'] < 300 or
+                not i.get('deterministic_rollouts') or i.get('reward_objective') != 'capped-time-v1'):
+            raise ValueError('Direct gate improvement requires complete paired deployment-policy task returns.')
+        if not 1 <= i.get('gate_updates_per_batch', 64) <= i['intervention_interval']:
+            raise ValueError('Invalid number of gate updates per intervention batch.')
+    if config['agent']['defender_num'] < 2:
+        raise ValueError('Candidate interaction requires at least two defenders.')
 
 
-def recondition_bootstrap(output, device='cpu', updates=10000, workers=4):
+def recondition_bootstrap(output, device='cpu', updates=10000, workers=4, *, isolate=False):
     """Repair a development checkpoint only after a fixed-policy heldout audit.
 
     The actor, replay, simulator, environment-step counter and training RNG are
@@ -145,12 +174,16 @@ def recondition_bootstrap(output, device='cpu', updates=10000, workers=4):
     config = copy.deepcopy(saved['config'])
     if config['training']['seed'] not in (42,101) or config['interaction']['arm'] == 'arboids_cbf':
         raise ValueError('Only development joint-critic checkpoints may be reconditioned.')
+    if isolate and (config['interaction']['arm'] not in ('no_peer','model_value') or
+                    saved['step']>250000 or saved['agent']['stage']!='gate'):
+        raise ValueError('Exact evaluator isolation is limited to the existing development controls.')
     if config['interaction'].get('bootstrap_source','coupled') != 'coupled':
         raise ValueError('This checkpoint already uses the independent bootstrap protocol.')
     if updates <= 0:
         raise ValueError('A fixed positive recovery budget is required.')
     before = dict(config=config, actor=saved['agent']['actor'], critic=saved['agent']['critic'],
-        target=saved['agent']['target'], alpha=float(saved['agent']['log_alpha'].exp()), gamma=config['rl']['GAMMA'])
+        target=saved['agent']['target'], stage=saved['agent']['stage'],
+        alpha=float(saved['agent']['log_alpha'].exp()), gamma=config['rl']['GAMMA'])
     config = copy.deepcopy(config)
     config['interaction']['bootstrap_source'] = 'real_td'
     validate(config)
@@ -167,13 +200,13 @@ def recondition_bootstrap(output, device='cpu', updates=10000, workers=4):
         # CPU/CUDA exp can differ by one ulp. Both audit branches use the
         # unchanged temperature evaluated on the learner's actual device.
         before['alpha'] = float(agent.alpha)
-        if same_info:
-            # The auxiliary-free reference already is its own real-TD teacher.
-            # Duplicating it must preserve the original learner exactly.
+        if same_info or isolate:
+            # Preserve the complete current value function while separating future
+            # real-TD updates from auxiliary gradients. This is no claim of repair.
             for name in ('critic','bootstrap_critic'):
                 getattr(agent,name).load_state_dict(saved['agent']['critic'])
             for name in ('critic_optimizer','bootstrap_optimizer'):
-                getattr(agent,name).load_state_dict(saved['agent']['critic_optimizer'])
+                getattr(agent,name).load_state_dict(copy.deepcopy(saved['agent']['critic_optimizer']))
             agent.target.load_state_dict(saved['agent']['target'])
             actual_updates, checks = 0, saved.get('learning_checks',{})
         else:
@@ -183,8 +216,7 @@ def recondition_bootstrap(output, device='cpu', updates=10000, workers=4):
                 checks = agent.learn_bootstrap(replay)
                 if count % 1000 == 0 or count == updates:
                     print('[IA-BOOTSTRAP] '+json.dumps(dict(update=count, **checks)),flush=True)
-            agent.critic.load_state_dict(agent.bootstrap_critic.state_dict())
-            agent.critic_optimizer.load_state_dict(agent.bootstrap_optimizer.state_dict())
+            agent.initialize_critic_from_bootstrap()
             del replay
             actual_updates = updates
         learning_seconds = time.perf_counter()-started
@@ -195,7 +227,8 @@ def recondition_bootstrap(output, device='cpu', updates=10000, workers=4):
         a,b = (calibration['summary'][k]['all'] for k in ('before','repaired'))
         identity_split = all(torch.equal(before[name][k],after[name][k])
                              for name in ('actor','critic','target') for k in before[name])
-        passed = identity_split if same_info else (b['horizon_100_label_mae'] <= .5*a['horizon_100_label_mae'] and
+        finite = all(torch.isfinite(v).all().item() for name in ('actor','critic','target') for v in after[name].values())
+        passed = (identity_split and finite and calibration['summary']['before']==calibration['summary']['repaired']) if (same_info or isolate) else (b['horizon_100_label_mae'] <= .5*a['horizon_100_label_mae'] and
             b['tail_value_mae'] is not None and b['tail_value_mae'] <= .5*a['tail_value_mae'] and
             b['environment_mae'] <= max(a['environment_mae'],1.05*b['zero_prediction_mae']))
         record = dict(protocol='real-transition-only-bootstrap-v1',complete=False,
@@ -207,6 +240,14 @@ def recondition_bootstrap(output, device='cpu', updates=10000, workers=4):
             acceptance='At the fixed recovery endpoint, halve H100 label and tail-value errors; root delta error must not worsen. '
                        'Same-info is a numerically identical teacher split, without reconditioning updates.')
         record_path=study/f'reviews/bootstrap-repair/{config["training"]["seed"]}-{config["interaction"]["arm"]}/completed.json'
+        if isolate:
+            record.update(protocol='exact-development-bootstrap-isolation-v1',
+                acceptance='Actor, critic, target and fixed-policy calibration must be identical and finite; only future bootstrap updates are isolated. This does not establish improved accuracy or task performance.')
+        if record_path.exists():
+            prior=json.loads(record_path.read_text())
+            if prior.get('complete'):
+                raise RuntimeError('A completed recovery cannot be silently replaced.')
+            record['prior_attempts']=prior.pop('prior_attempts',[])+[prior]
         atomic_json(record_path,record)
         if not passed or not record['actor_unchanged']:
             raise RuntimeError('Bootstrap reconditioning failed heldout calibration; the checkpoint is unchanged.')
@@ -233,6 +274,13 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
     validate(config)
     torch.set_num_threads(1)
     t, interaction = config['training'], config['interaction']
+    warmup_kind = t.get('critic_warmup_target', 'real_td')
+    if warmup_kind not in ('real_td', 'complete_real_return', 'complete_real_state_return'):
+        raise ValueError('Unknown critic warmup target.')
+    warmup_from_returns = warmup_kind in ('complete_real_return', 'complete_real_state_return')
+    if warmup_from_returns and (not t.get('critic_warmup_updates') or
+            t['warm_steps'] > t['replay_capacity'] or interaction['arm'] == 'arboids_cbf'):
+        raise ValueError('Complete-return warmup requires a fixed pre-actor budget and intact joint replay.')
     output = Path(output if output is not None else exp.exp_dir)
     output.mkdir(parents=True, exist_ok=True)
     resume = Path(t['resume']) if t.get('resume') else output / 'resume.pth'
@@ -255,7 +303,9 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
     agent = make_agent(config, device)
     replay, pool = JointReplay(t['replay_capacity']), SnapshotPool(interaction['snapshot_capacity'])
     step, simulated, episodes, prior_elapsed, auxiliary, losses = 0, 0, 0, 0., None, {}
-    bootstrap_updates, bootstrap_repair = 0, None
+    bootstrap_updates, bootstrap_repair, actor_updates, critic_updates = 0, None, 0, 0
+    critic_warmup_updates = 0
+    critic_warmup_complete = not t.get('critic_warmup_updates',0)
     env, packet, done = None, None, True
     if saved is not None:
         agent.load_state_dict(saved['agent'])
@@ -265,6 +315,10 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
         prior_elapsed, auxiliary, done = saved['elapsed'], saved['auxiliary'], saved['done']
         losses = saved.get('learning_checks', {})
         bootstrap_updates, bootstrap_repair = saved.get('bootstrap_updates',0), saved.get('bootstrap_repair')
+        actor_updates = saved.get('actor_updates', max(0, step - t['warm_steps'] + 1))
+        critic_updates = saved.get('critic_updates', max(0, step - t['warm_steps'] + 1))
+        critic_warmup_updates = saved.get('critic_warmup_updates',0)
+        critic_warmup_complete = saved.get('critic_warmup_complete',not t.get('critic_warmup_updates',0))
         if saved['snapshot'] is not None:
             env = copy.deepcopy(saved['snapshot'].environment)
             packet = public_packet(env)
@@ -321,7 +375,9 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
             agent=agent.state_dict(), replay=replay.state_dict(), pool=pool, step=step, simulated_steps=simulated,
             episodes=episodes, elapsed=elapsed, auxiliary=auxiliary, done=bool(done),
             snapshot=None if env is None else compact_snapshot(env), random=RandomState.capture(),
-            learning_checks=losses,bootstrap_updates=bootstrap_updates,bootstrap_repair=bootstrap_repair))
+            learning_checks=losses,bootstrap_updates=bootstrap_updates,bootstrap_repair=bootstrap_repair,
+            actor_updates=actor_updates, critic_updates=critic_updates,
+            critic_warmup_updates=critic_warmup_updates,critic_warmup_complete=critic_warmup_complete))
         export_policy(agent, output, step)
         if step in (t['gate_steps'], total):
             export_policy(agent, output, step, endpoint=True)
@@ -330,7 +386,9 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
             export_probe(agent, output, step, losses)
         atomic_json(output / 'progress.json', dict(step=step, total=total, stage=agent.stage,
                     simulated_steps=simulated, elapsed=elapsed, complete=step == total,
-                    updates=max(0, step-t['warm_steps']+1), bootstrap_updates=bootstrap_updates, learning_checks=losses))
+                    updates=max(actor_updates, critic_updates), bootstrap_updates=bootstrap_updates,
+                    actor_updates=actor_updates, critic_updates=critic_updates,
+                    critic_warmup_updates=critic_warmup_updates, learning_checks=losses))
 
     try:
         while step < stop_at:
@@ -348,17 +406,37 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
                     obs, _ = env.reset(agility, noisy_agility=True)
                 packet, done = public_packet(env, obs), False
                 episodes += 1
+            warmup_target=t.get('critic_warmup_updates',0)
+            if step+1>=t['warm_steps'] and not critic_warmup_complete:
+                # Finish before collecting the next transition, so interruption
+                # and resume retain the same replay and policy-update boundary.
+                real_returns = replay.complete_returns(agent.gamma) if warmup_from_returns else None
+                while critic_warmup_updates<warmup_target:
+                    with preserved_random_state():
+                        seed_random(709000000+int(t['seed'])*10000+critic_warmup_updates)
+                        losses=(agent.learn_bootstrap_returns(replay,real_returns) if real_returns is not None
+                                else agent.learn_bootstrap(replay))
+                    critic_warmup_updates+=1;bootstrap_updates+=1
+                    if critic_warmup_updates%1000==0 or critic_warmup_updates==warmup_target:
+                        print('[IA-CRITIC-WARMUP] '+json.dumps(dict(updates=critic_warmup_updates,**losses)),flush=True)
+                agent.initialize_critic_from_bootstrap()
+                if real_returns is not None:
+                    agent.target.load_state_dict(agent.bootstrap_critic.state_dict())
+                auxiliary=None;critic_warmup_complete=True
             if step % interaction['snapshot_interval'] == 0 and interaction['auxiliary'] != 'none':
                 pool.add(env)
-            action, _ = agent.choose_action(packet)
+            action, logp = agent.choose_action(packet)
             attacker_action = None
             if attacker is not None:
                 _, att_obs = env._get_obs()
                 attacker_action = attacker(att_obs)
-            following, reward, outcome, thrust, _, _ = execute(env, packet, action, attacker_action=attacker_action)
-            replay.store(packet, action, thrust, reward, following, bool(outcome))
+            following, reward, outcome, thrust, _, _ = execute(env, packet, action, attacker_action=attacker_action,
+                reward_objective=interaction.get('reward_objective', 'paper-reward-v1'))
+            replay.store(packet, action, thrust, reward, following, bool(outcome),
+                policy_cost=float(agent.alpha)*logp if warmup_from_returns else None)
             packet, done, step = following, bool(outcome), step + 1
-            if interaction['auxiliary'] != 'none' and step % interaction['intervention_interval'] == 0:
+            if (interaction['auxiliary'] != 'none' and step % interaction['intervention_interval'] == 0
+                    and (not warmup_target or critic_warmup_updates==warmup_target)):
                 auxiliary, used = sampler.generate(agent, pool, step=step,
                     attacker=None if attacker is None else attacker.state_dict())
                 simulated += used
@@ -367,8 +445,12 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
                     losses = agent.learn(replay, auxiliary)
                 else:
                     losses = agent.learn(replay, auxiliary,
-                        diagnostics=step % t['log_interval'] == 0 or step == stop_at)
-                    bootstrap_updates += int(agent.bootstrap_critic is not None)
+                        diagnostics=step % t['log_interval'] == 0 or step == stop_at,
+                        update_actor=(stage != 'gate' or interaction.get('gate_objective') != 'paired-improvement-v1'
+                            or step % interaction['intervention_interval'] < interaction.get('gate_updates_per_batch', 64)))
+                    bootstrap_updates += int(losses.get('bootstrap_updated', agent.bootstrap_critic is not None))
+                actor_updates += int(losses.get('actor_updated', True))
+                critic_updates += int(losses.get('critic_updated', True))
             if step % t['eval_interval'] == 0 or step in (t['gate_steps'], total):
                 scores = evaluate(agent, t['eval_episodes'], 310000000 + int(t['seed']) * 10000,
                                   config['agent']['defender_num'], attacker=attacker)
@@ -384,7 +466,8 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
             if step % t['log_interval'] == 0:
                 status = dict(step=step, total=total, stage=stage, simulated_steps=simulated,
                               elapsed=prior_elapsed + time.perf_counter()-started, complete=False,
-                              bootstrap_updates=bootstrap_updates, **losses)
+                              bootstrap_updates=bootstrap_updates, actor_updates=actor_updates,
+                              critic_updates=critic_updates, **losses)
                 atomic_json(output / 'progress.json', status)
                 print('[IA-TRAIN] ' + json.dumps(status), flush=True)
             if step % t['checkpoint_interval'] == 0 or step in (stop_at, t['gate_steps']):
@@ -414,6 +497,20 @@ def main():
     parser.add_argument('--formal', action='store_true')
     parser.add_argument('--repair-bootstrap', action='store_true')
     parser.add_argument('--recondition-bootstrap-if-needed', action='store_true')
+    parser.add_argument('--isolate-bootstrap-if-needed', action='store_true')
+    parser.add_argument('--critic-control-coordinates', choices=['raw-v1','nominal-thrust-v2'])
+    parser.add_argument('--entropy-objective', choices=['joint-sum-v1','stage-mean-v2','proposal-mean-v3','task-return-v4'])
+    parser.add_argument('--reward-objective', choices=['paper-reward-v1','capped-time-v1'])
+    parser.add_argument('--gate-objective', choices=['critic-v1','paired-improvement-v1'])
+    parser.add_argument('--intervention-scope', choices=['single','team'])
+    parser.add_argument('--defenders', type=int)
+    parser.add_argument('--bootstrap-estimator', choices=['min','mean'])
+    parser.add_argument('--critic-warmup-target', choices=['real_td','complete_real_return','complete_real_state_return'])
+    parser.add_argument('--policy-learning-rate', type=float)
+    parser.add_argument('--long-horizon-steps', type=int)
+    parser.add_argument('--label-repetitions', type=int)
+    parser.add_argument('--critic-warmup-updates', type=int)
+    parser.add_argument('--warm-steps', type=int)
     parser.add_argument('--smoke', action='store_true')
     args = parser.parse_args()
     if args.repair_bootstrap:
@@ -429,6 +526,40 @@ def main():
         return
     config = arm_config(yaml.safe_load(args.config.read_text(encoding='utf-8')), args.arm)
     config['training'].update(seed=args.seed, pretrain_checkpoint=None if args.pretrain is None else str(args.pretrain))
+    if args.critic_control_coordinates is not None:
+        config['interaction']['critic_control_coordinates']=args.critic_control_coordinates
+    if args.entropy_objective is not None:
+        config['interaction']['entropy_objective']=args.entropy_objective
+    if args.reward_objective is not None:
+        config['interaction']['reward_objective'] = args.reward_objective
+        if args.reward_objective == 'capped-time-v1':
+            config['rl']['GAMMA'] = 1.
+            config['interaction']['entropy_objective'] = 'task-return-v4'
+    if args.gate_objective is not None:
+        config['interaction']['gate_objective'] = args.gate_objective
+        if args.gate_objective == 'paired-improvement-v1':
+            config['interaction'].update(deterministic_rollouts=True, gate_updates_per_batch=64,
+                                          gate_anchor_weight=.05)
+    if args.defenders is not None:
+        config['agent']['defender_num'] = args.defenders
+    if args.intervention_scope is not None:
+        config['interaction']['intervention_scope'] = args.intervention_scope
+    if args.bootstrap_estimator is not None:
+        config['interaction']['bootstrap_estimator']=args.bootstrap_estimator
+    if args.critic_warmup_target is not None:
+        config['training']['critic_warmup_target']=args.critic_warmup_target
+    if args.policy_learning_rate is not None:
+        if args.policy_learning_rate <= 0: parser.error('Policy learning rate must be positive.')
+        config['rl'].update(actor_learning_rate=args.policy_learning_rate,temperature_learning_rate=args.policy_learning_rate)
+    if args.long_horizon_steps is not None:
+        if args.long_horizon_steps <= 0: parser.error('Long horizon must be positive.')
+        if args.arm != 'short': config['interaction']['horizon_steps']=args.long_horizon_steps
+    if args.label_repetitions is not None:
+        config['interaction']['label_repetitions']=args.label_repetitions
+    if args.critic_warmup_updates is not None:
+        config['training']['critic_warmup_updates']=args.critic_warmup_updates
+    if args.warm_steps is not None:
+        config['training']['warm_steps'] = args.warm_steps
     if args.formal:
         # The new confirmatory budget is one million additional real transitions in total.
         config['training'].update(joint_steps=750000, curriculum_interval=187500)
@@ -439,10 +570,12 @@ def main():
         config['rl']['batch_size'] = 16
         config['interaction'].update(workers=0, pairs_per_batch=2, intervention_interval=10,
                                      horizon_steps=2, snapshot_interval=2)
-    if args.recondition_bootstrap_if_needed and (args.output/'resume.pth').exists():
+    if args.recondition_bootstrap_if_needed and args.isolate_bootstrap_if_needed:
+        parser.error('Choose either evaluator rebuilding or exact isolation.')
+    if (args.recondition_bootstrap_if_needed or args.isolate_bootstrap_if_needed) and (args.output/'resume.pth').exists():
         previous=yaml.safe_load((args.output/'config.yaml').read_text(encoding='utf-8'))
         if previous['interaction'].get('bootstrap_source','coupled') == 'coupled':
-            recondition_bootstrap(args.output,args.device)
+            recondition_bootstrap(args.output,args.device,isolate=args.isolate_bootstrap_if_needed)
     print(json.dumps(run_training(config, device=args.device, output=args.output, max_steps=args.max_steps,
                                   stop_after_stage=args.stop_after_stage, stop_at_step=args.stop_at_step)), flush=True)
 
