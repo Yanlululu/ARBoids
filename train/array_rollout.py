@@ -13,7 +13,7 @@ import jax.numpy as jnp
 
 from compiled_source_policy import CompiledSourcePolicy
 from feedback_joint_control import nominal_scene, observe, minimum_separation
-from feedback_joint_fast import FastNominalEnvironment, model
+from feedback_joint_fast import FastNominalEnvironment
 from predictive_interception import constant_turn_displacement
 from predictive_interception_v2 import reachable_capture_time
 from rollout_interception import RolloutInterceptionController

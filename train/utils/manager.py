@@ -65,7 +65,7 @@ class ExperimentManager:
         self.git_hash = None
 
         # write files
-        print(f"[ExperimentManager] run_id =", run_id, "repeat_idx =", repeat_idx)
+        print("[ExperimentManager] run_id =", run_id, "repeat_idx =", repeat_idx)
         self._save_config()
 
         # runtime attrs
@@ -80,7 +80,7 @@ class ExperimentManager:
 
     def save_model(self, model, filename=None, step=None):
         if filename is None:
-            filename = f'model.pth'
+            filename = 'model.pth'
         
         base, ext = os.path.splitext(filename)
         if not ext:

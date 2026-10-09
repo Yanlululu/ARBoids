@@ -11,10 +11,9 @@ import pickle
 import time
 
 import numpy as np
-import torch
 
 import evaluate_gate_contribution as original_study
-from source_arboids import SourcePolicy, sha256, verify_source, snapshot, source_mixture
+from source_arboids import sha256, verify_source, snapshot, source_mixture
 from feedback_joint_control import FeedbackJointController, observe, project_thrust
 from gate_mechanism_diagnostics import restore, stable_number
 

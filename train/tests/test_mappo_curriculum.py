@@ -12,7 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import parallel_mappo
 from parallel_mappo import ParallelRollouts, collision_branch_cases, restore_branch_start
 from policy.mappo import PredictiveMAPPO
-from policy.rollout_buffer import RolloutBuffer
 from train_mappo import make_env, play_episode, continue_episode, collect_episodes
 
 

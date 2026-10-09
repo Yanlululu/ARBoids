@@ -1,6 +1,6 @@
 """Parallel execution of the same causally chosen planning interval."""
 from adaptive_interval_rollout import AdaptiveIntervalController
-from parallel_jit_rollout import JitPredictionPool, _forecast
+from parallel_jit_rollout import _forecast
 from predictive_interception_v2 import TEMPLATES
 
 

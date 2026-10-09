@@ -1,5 +1,5 @@
 """Synchronous candidate messages and fixed, zero-current 3-DOF prediction."""
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 import numpy as np
 
 from envs.modules import WAMV

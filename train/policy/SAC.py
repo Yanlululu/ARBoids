@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import copy
-from policy.networks import *
+from policy.networks import ActorAdap, ActorAtt, ActorSAC, CriticAtt, CriticSAC
         
 class SAC():
     def __init__(self, 

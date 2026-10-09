@@ -12,8 +12,7 @@ import numpy as np
 import torch
 from scipy.stats import binomtest
 
-from source_arboids import (SourcePolicy, numerical_source, verify_source, snapshot,
-                           sha256, SOURCE_ROOT, source_mixture, verify_source_config)
+from source_arboids import SourcePolicy, numerical_source, verify_source, snapshot, sha256, source_mixture, verify_source_config
 from gate_study_control import GateController, METHODS
 
 

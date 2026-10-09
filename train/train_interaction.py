@@ -128,6 +128,8 @@ def validate(config):
         raise ValueError('Invalid bootstrap source.')
     if i.get('critic_control_coordinates','raw-v1') not in ('raw-v1','nominal-thrust-v2'):
         raise ValueError('Invalid critic control coordinates.')
+    if i.get('critic_state_coordinates', 'dynamics-v1') not in ('dynamics-v1', 'execution-v2'):
+        raise ValueError('Invalid critic state coordinates.')
     if not isinstance(i.get('label_repetitions',1),int) or i.get('label_repetitions',1)<1:
         raise ValueError('A positive integer label continuation count is required.')
     if not isinstance(t.get('critic_warmup_updates',0),int) or t.get('critic_warmup_updates',0)<0:
@@ -499,6 +501,7 @@ def main():
     parser.add_argument('--recondition-bootstrap-if-needed', action='store_true')
     parser.add_argument('--isolate-bootstrap-if-needed', action='store_true')
     parser.add_argument('--critic-control-coordinates', choices=['raw-v1','nominal-thrust-v2'])
+    parser.add_argument('--critic-state-coordinates', choices=['dynamics-v1', 'execution-v2'])
     parser.add_argument('--entropy-objective', choices=['joint-sum-v1','stage-mean-v2','proposal-mean-v3','task-return-v4'])
     parser.add_argument('--reward-objective', choices=['paper-reward-v1','capped-time-v1'])
     parser.add_argument('--gate-objective', choices=['critic-v1','paired-improvement-v1'])
@@ -528,6 +531,8 @@ def main():
     config['training'].update(seed=args.seed, pretrain_checkpoint=None if args.pretrain is None else str(args.pretrain))
     if args.critic_control_coordinates is not None:
         config['interaction']['critic_control_coordinates']=args.critic_control_coordinates
+    if args.critic_state_coordinates is not None:
+        config['interaction']['critic_state_coordinates'] = args.critic_state_coordinates
     if args.entropy_objective is not None:
         config['interaction']['entropy_objective']=args.entropy_objective
     if args.reward_objective is not None:

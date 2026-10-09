@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import shlex
-import signal
 import subprocess
 import time
 

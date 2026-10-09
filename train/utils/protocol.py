@@ -7,6 +7,12 @@ def environment_kwargs(cfg):
     return {} if options is None else dict(options if isinstance(options, dict) else vars(options))
 
 
+def controller_name(agent):
+    if not agent.residual:
+        return 'RL'
+    return 'AdaRes' if agent.adaptive else 'Res'
+
+
 def apply_adapter_exploration(action, training):
     distribution = getattr(training, 'adapter_noise_distribution', 'uniform')
     scale = float(getattr(training, 'adapter_noise_scale', 0.1))

@@ -11,7 +11,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'train'))
-from formal_study_training import load_sac, save_sac, rng_state, restore_rng, mappo_config, initialize_matched_agent
+from formal_study_training import load_sac, save_sac, mappo_config, initialize_matched_agent
 from policy.SAC import SAC, ReplayBuffer
 from policy.mappo import PredictiveMAPPO
 from policy.networks import ActorAdap

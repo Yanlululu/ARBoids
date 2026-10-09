@@ -49,6 +49,58 @@ def equal(test, a, b):
         test.assertEqual(a, b)
 
 
+class FusionOpportunityContracts(unittest.TestCase):
+    def test_centered_value_preserves_baseline_without_blocking_intervention_gradient(self):
+        from diagnose_conditional_critic import centered_scores
+        from policy.interaction_sac import TwinTeamCritic, tensor_packet
+        seed_random(723119)
+        env = TADEnv(3, protocol='paper-parameters-v1')
+        env.reset(2.25, noisy_agility=False)
+        packet = {k:v[None] for k,v in tensor_packet(public_packet(env)).items()}
+        actions = torch.zeros((1,2,3,3))
+        actions[:,0,:,2] = .5
+        actions[:,1] = actions[:,0]
+        actions[:,1,0,2] = 1.
+        model = TwinTeamCritic(32,16,'nominal-thrust-v2')
+        values = (torch.tensor([[7.]]),torch.tensor([[9.]]))
+        scores = centered_scores(model,values,packet,actions)
+        self.assertTrue(torch.allclose(scores[0][:,:1],values[0],atol=1e-6))
+        baseline_gradient = torch.autograd.grad(sum(q[:,0].sum() for q in scores),tuple(model.parameters()),retain_graph=True)
+        self.assertTrue(all(torch.count_nonzero(g)==0 for g in baseline_gradient))
+        intervention_gradient = torch.autograd.grad(sum(q[:,1].sum() for q in scores),tuple(model.parameters()))
+        self.assertTrue(any(torch.count_nonzero(g)>0 for g in intervention_gradient))
+
+    def test_current_intervention_changes_only_one_gate(self):
+        from diagnose_fusion_opportunity import single_boat_actions
+        original = np.array([[.2, -.3, .4], [-.5, .1, .7], [.6, .4, .2]], dtype=np.float32)
+        actions, interventions = single_boat_actions(original)
+        np.testing.assert_array_equal(actions[0], original)
+        for action, intervention in zip(actions[1:], interventions[1:]):
+            np.testing.assert_array_equal(action[:, :2], original[:, :2])
+            boat = intervention['boat']
+            np.testing.assert_array_equal(np.delete(action, boat, 0), np.delete(original, boat, 0))
+            self.assertEqual(action[boat, 2], intervention['gate'])
+
+    def test_identical_real_branches_match_without_mutating_root(self):
+        from diagnose_fusion_opportunity import complete_branch
+        from interaction_rollout import compact_snapshot
+        class FixedPolicy:
+            def choose_action(self, packet, deterministic=True):
+                return np.tile(np.array([.1, .2, .5], dtype=np.float32), (len(packet['obs']), 1)), 0.
+        seed_random(1720000000)
+        env = TADEnv(3, protocol='paper-parameters-v1')
+        env.reset(2.25, noisy_agility=False)
+        env.Current_T = 59.6
+        snapshot = compact_snapshot(env)
+        action = FixedPolicy().choose_action(public_packet(env))[0]
+        with patch('diagnose_fusion_opportunity.POLICY', FixedPolicy()):
+            left = complete_branch(snapshot, action, 1721000000)
+            right = complete_branch(snapshot, action, 1721000000)
+        self.assertEqual(left, right)
+        self.assertEqual(snapshot.environment.Current_T, 59.6)
+        self.assertIn(left['outcome'], (1, 2, 3, 4))
+
+
 class CandidateRoles(unittest.TestCase):
     def test_linked_strata_bootstrap_retains_cross_stratum_pairs(self):
         from analyze_candidate_roles import analyze_linked_strata

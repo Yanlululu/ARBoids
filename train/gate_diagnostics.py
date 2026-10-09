@@ -13,7 +13,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from envs.TADgame import TADEnv
 from envs.snapshot import SimulationSnapshot, preserved_random_state, seed_random
 from policy.interaction_prediction import InteractionPredictor, PredictionConfig
 from policy.networks import ActorAdap

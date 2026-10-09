@@ -2,10 +2,12 @@
 import ast
 import importlib.util
 from pathlib import Path
+import runpy
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -13,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'train'))
 from envs.TADgame import TADEnv
 from utils.config import load_config
-from utils.protocol import environment_kwargs, apply_adapter_exploration
+from utils.protocol import environment_kwargs, apply_adapter_exploration, controller_name
 
 
 def placed(protocol='paper-parameters-v1', attacker=(30, 0), defenders=((40, 0), (50, 0), (60, 0)), form=False):
@@ -111,6 +113,70 @@ class PaperProtocolTests(unittest.TestCase):
         self.assertTrue(np.isfinite([score, reward]).all())
         self.assertEqual(created[0].protocol, 'paper-parameters-v1')
         self.assertEqual(created[0].Total_T, 60.)
+
+    def test_attacker_observations_remain_live_for_a_frozen_policy_and_large_teams(self):
+        for count in (2, 3, 6, 8):
+            env = TADEnv(count, LearningSide='Def')
+            env.reset()
+            env.attacker.pos = np.array([30., 0.])
+            env.attacker.theta = 0.
+            for i, defender in enumerate(env.defender_list):
+                defender.pos = np.array([30. + count - i, 0.])
+            _, frozen_observation = env._get_obs()
+            env.LearningSide = 'Att'
+            _, learning_observation = env._get_obs()
+            np.testing.assert_array_equal(frozen_observation, learning_observation)
+            self.assertEqual(frozen_observation.shape, (8,))
+            self.assertEqual(frozen_observation[0], 30.)
+            np.testing.assert_array_equal(frozen_observation[2:2+2*min(count, 3):2],
+                                          np.arange(1, min(count, 3)+1))
+
+    def test_adversarial_training_and_validation_honor_environment_and_noise(self):
+        spec = importlib.util.spec_from_file_location('adversarial_entry_test', ROOT/'train/adversarial-learning.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        cfg = load_config(ROOT/'train/configs/adversarial.yaml')
+        cfg.training.warm_steps = 1
+        cfg.training.total_steps = 3
+        cfg.training.eval_interval = 2
+        cfg.training.eval_episodes = 1
+        cfg.training.adapter_noise_distribution = 'normal'
+        cfg.training.adapter_noise_scale = 0.07
+        cfg.environment = SimpleNamespace(protocol='paper-parameters-v1', total_time=.4,
+                                           agility_noise_half_width=.1)
+        created = []
+
+        def factory(*args, **kwargs):
+            env = TADEnv(*args, **kwargs)
+            created.append(env)
+            return env
+
+        agent = Mock()
+        agent.choose_action.side_effect = lambda state, deterministic: np.zeros((3, 3))
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(module, 'TADEnv', side_effect=factory), \
+                patch.object(module, 'SAC', return_value=agent), \
+                patch.object(module, 'ReplayBuffer'), \
+                patch.object(module, 'apply_adapter_exploration', wraps=apply_adapter_exploration) as noise:
+            module.main(cfg, SimpleNamespace(exp_dir=directory, record_metrics=Mock()))
+        self.assertEqual(len(created), 3)  # Training plus both scheduled evaluations.
+        self.assertTrue(all(env.protocol == 'paper-parameters-v1' and env.Total_T == .4
+                            and env.agility_noise_half_width == .1 for env in created))
+        self.assertEqual(noise.call_count, 2)
+        self.assertTrue(all(call.args[1] is cfg.training for call in noise.call_args_list))
+
+    def test_generic_training_entry_forwards_seed_to_interaction_training(self):
+        arguments = [str(ROOT/'train/train.py'), '--config', str(ROOT/'train/configs/interaction-aware-sac.yaml'),
+                     '--seed', '101', '--device', 'cpu']
+        with patch.object(sys, 'argv', arguments), patch('utils.manager.ExperimentManager'), \
+                patch('utils.manager.set_seed'), patch('train_interaction.run_training') as train:
+            runpy.run_path(arguments[0], run_name='__main__')
+        self.assertEqual(train.call_args.args[0]['training']['seed'], 101)
+
+    def test_residual_configuration_selects_the_same_training_and_evaluation_control(self):
+        for residual, adaptive, expected in ((False, False, 'RL'), (False, True, 'RL'),
+                                             (True, False, 'Res'), (True, True, 'AdaRes')):
+            self.assertEqual(controller_name(SimpleNamespace(residual=residual, adaptive=adaptive)), expected)
 
     def test_vrx_paper_termination_matches_2d_geometry(self):
         tree = ast.parse((ROOT/'vrx/run_experiment.py').read_text(encoding='utf-8'))

@@ -8,11 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import study_runtime
 import numpy as np
 
-from source_arboids import numerical_source, snapshot, source_mixture
+from source_arboids import snapshot, source_mixture
 from evaluate_gate_contribution import setup_scene
 from gate_study_control import GateController, joint_indices
-from gate_mechanism_diagnostics import (freeze, restore, held_paths, state_paths,
-    project_to_segments, ranking_metrics, shortlist, branch, geometry, FineGate, oracle_key)
+from gate_mechanism_diagnostics import freeze, restore, held_paths, state_paths, project_to_segments, ranking_metrics, shortlist, branch, FineGate, oracle_key
 
 
 def policy(observation):

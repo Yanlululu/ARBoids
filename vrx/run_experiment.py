@@ -31,10 +31,9 @@ from tad_vrx_experiment import (
 
 class Trial(ExperimentManager):
     def __init__(self, args):
-        super().__init__(args.num_robots, False, device=args.device)
+        super().__init__(args.num_robots, device=args.device)
         self.args = args
         self.total_time = args.duration
-        self.defend_r = 5.0  # Published capture radius (the legacy VRX script used 5.5).
         self.node = rclpy.create_node('arboids_trial')
         self.last_stamp = np.full(args.num_robots, np.nan)
         self.last_received = np.zeros(args.num_robots)
@@ -437,7 +436,9 @@ def main():
                 np.savez_compressed(path, **arrays)
                 result['trajectory'] = str(path.resolve())
             trial.node.destroy_node()
-            trial.unpause_signal_node.destroy_node()
+            # The pinned source adapter still owns its legacy signal node.
+            if hasattr(trial, 'unpause_signal_node'):
+                trial.unpause_signal_node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
         (output / 'result.json').write_text(json.dumps(result, indent=2), encoding='utf-8')

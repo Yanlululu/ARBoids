@@ -7,7 +7,6 @@ import multiprocessing as mp
 import numpy as np
 import torch
 
-from envs.TADgame import TADEnv
 from envs.snapshot import SimulationSnapshot, preserved_random_state
 from policy.interaction_sac import InteractionActor, TwinTeamCritic, tensor_packet, bootstrap_value
 
@@ -107,7 +106,8 @@ class FrozenPolicy:
             entropy_objective=config['interaction'].get('entropy_objective', 'joint-sum-v1')).eval().requires_grad_(False)
         self.actor.stage = payload.get('stage', 'gate')
         self.critic = TwinTeamCritic(hidden, relation,
-            config['interaction'].get('critic_control_coordinates','raw-v1')).eval().requires_grad_(False)
+            config['interaction'].get('critic_control_coordinates','raw-v1'),
+            config['interaction'].get('critic_state_coordinates', 'dynamics-v1')).eval().requires_grad_(False)
         self.actor.load_state_dict(payload['actor'])
         self.critic.load_state_dict(payload['critic'])
         self.alpha, self.gamma = payload['alpha'], payload['gamma']

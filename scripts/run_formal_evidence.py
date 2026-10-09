@@ -9,7 +9,6 @@ from pathlib import Path
 import random
 import statistics
 import subprocess
-import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]

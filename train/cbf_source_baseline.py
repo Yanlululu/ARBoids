@@ -6,7 +6,6 @@ The original ARBoids action is the nominal command for every comparison.
 """
 import hashlib
 import importlib.metadata
-import os
 from pathlib import Path
 import sys
 

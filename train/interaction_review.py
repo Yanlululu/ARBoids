@@ -634,7 +634,8 @@ def _screen_initializer(payload, source_path):
     _diagnostic_initializer(payload, source_path)
     config = payload['config']
     target = TwinTeamCritic(config['rl']['hidden_dim'], config['interaction']['relation_dim'],
-        config['interaction'].get('critic_control_coordinates','raw-v1')).eval().requires_grad_(False)
+        config['interaction'].get('critic_control_coordinates','raw-v1'),
+        config['interaction'].get('critic_state_coordinates', 'dynamics-v1')).eval().requires_grad_(False)
     target.load_state_dict(payload['target'])
     _DIAGNOSTIC_POLICY.label_critic = target
 
@@ -974,7 +975,8 @@ def _bootstrap_check_initializer(payloads, source):
         policy = FrozenPolicy(payload)
         cfg = payload['config']
         target = TwinTeamCritic(cfg['rl']['hidden_dim'], cfg['interaction']['relation_dim'],
-            cfg['interaction'].get('critic_control_coordinates','raw-v1')).eval().requires_grad_(False)
+            cfg['interaction'].get('critic_control_coordinates','raw-v1'),
+            cfg['interaction'].get('critic_state_coordinates', 'dynamics-v1')).eval().requires_grad_(False)
         target.load_state_dict(payload['target'])
         policy.label_critic = target
         _BOOTSTRAP_POLICIES[name] = policy

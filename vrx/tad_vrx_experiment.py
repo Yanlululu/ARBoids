@@ -1,24 +1,6 @@
-import launch
-import rclpy
-import time
-from std_msgs.msg import Empty, Float64
-import threading
+"""Shared VRX control and scene geometry; execution lives in run_experiment."""
 import numpy as np
-import subprocess
-import math
-import argparse
-import os
-
-from launch.actions import RegisterEventHandler
-from launch.event_handlers import OnProcessExit
-from launch.actions import EmitEvent
-from launch.events import Shutdown
-
-from tf2_msgs.msg import TFMessage
-
 import torch
-from models import ActorSAC, ActorAdap
-from utils import NPZLogger
 
 def force_to_thruster(force, phi, is_attacker=True, min_thrust=-500.0, max_thrust=1000.0):
     force = force / np.linalg.norm(force)
@@ -55,7 +37,6 @@ def APF_navi_control(position, goal, obstacles, phi, min_thrust=-500.0, max_thru
     k_att = 0.1
     goal_direction = goal - position
     att_force = k_att * goal_direction
-    goal_direction = goal_direction / np.linalg.norm(goal_direction)
 
     k_rep = 2000.0
     influence_radius = 20.0
@@ -139,38 +120,30 @@ def RL_navi_control(actor, observations, boids_actions=None, controller='AdaRes'
         a = a.cpu().numpy().flatten()
     actions = a.reshape(observations.shape[0], -1)
     if controller == 'Res':
-        actions = action_to_thrust(actions) + boids_actions
+        actions = action_to_thrust(actions, min_thrust, max_thrust) + boids_actions
     elif controller == 'AdaRes':
         adas = actions[:, 2]
-        actions = action_to_thrust(np.copy(actions[:, :2]))
+        actions = action_to_thrust(np.copy(actions[:, :2]), min_thrust, max_thrust)
         for i in range(len(adas)):
             actions[i] = adas[i] * actions[i] + (1 - adas[i]) * boids_actions[i]
     elif controller == 'RL':
-        actions = action_to_thrust(actions)
+        actions = action_to_thrust(actions, min_thrust, max_thrust)
+    else:
+        raise ValueError('Unknown learned controller: '+controller)
     return np.clip(actions, min_thrust, max_thrust)
 
 class ExperimentManager:
-    def __init__(self, num_robots, save_traj=False, save_file='exp_traj.npz', device='cpu'):
-        self.ls = None
-        self.lock = threading.Lock()
-        self.unpause_signal_node = rclpy.create_node('unpause_signal_node')
-        self.unpause_signal_publishers = []
-        
-        self.defend_r = 5.5
+    def __init__(self, num_robots, device='cpu'):
+        self.defend_r = 5.0
         self.collision_r = 5.0
         self.target_r = 15.0
         self.sensing_r = 60.0
-        self.total_time = 100.0
+        self.total_time = 60.0
         self.origin = np.array([-448.7194, 234.3858])
         self.num_robots = num_robots
 
-        self.save_traj = save_traj
-        self.save_file = save_file
-        self.timestamp_data = {}
         self.pose_data = {}
-        self.vel_data = {}
 
-        self.curr_time = 0.0
         self.curr_pos = np.zeros((num_robots, 2))
         self.curr_phi = np.zeros(num_robots)
         self.curr_vel = np.zeros((num_robots, 2))
@@ -181,14 +154,7 @@ class ExperimentManager:
         self.device = torch.device(device)
 
         for i in range(self.num_robots):
-            self.unpause_signal_publishers.append(self.unpause_signal_node.create_publisher(Empty, 
-                                                  f'/wamv{i+1}/unpause_signal', 10))
-            self.timestamp_data[f'wamv{i+1}'] = []
             self.pose_data[f'wamv{i+1}'] = []
-            self.vel_data[f'wamv{i+1}'] = []
-        
-        if self.save_traj:
-            self.logger = NPZLogger(self.save_file)
         
     def generate_init_info(self, agility=2.0, setting=0):
         '''
@@ -266,235 +232,9 @@ class ExperimentManager:
         
         return init_poses   
 
-    def launch_simulation(self, init_poses, world_name, headless=False,
-                          controller='AdaRes', modelname='adares1.pth'):
-        # Create launch description
-        ld = launch.LaunchDescription()
 
-        # Add action to launch competition environment
-        competition_launch_file = launch.actions.ExecuteProcess(
-            cmd= ['ros2', 'launch', 'vrx_gz', 'tad.launch.py', 
-                 "init_poses:="+init_poses, "world:="+world_name,
-                 "headless:="+str(headless)],
-            output='screen'
-        )
-
-        vrx_exit_event_handler = RegisterEventHandler(
-            OnProcessExit(
-                target_action=competition_launch_file,\
-                on_exit=[
-                    EmitEvent(event=Shutdown(reason='VRX Sim Ended'))
-                ]
-                
-                )
-        )
-
-        ld.add_action(competition_launch_file)
-        ld.add_action(vrx_exit_event_handler)
-
-        self.unpause_signal_thread = threading.Thread(target=self.start_unpause_signal_thread)
-        self.unpause_signal_thread.start()
-
-        self.robot_info_thread = threading.Thread(target=self.start_robot_info_subscribers)
-        self.robot_info_thread.start()
-
-        self.robot_action_thread = threading.Thread(target=self.start_robot_action_controllers, args=(controller, modelname))
-        self.robot_action_thread.start()
-
-        self.experiment_monitoring_thread = threading.Thread(target=self.experiment_monitoring)
-        self.experiment_monitoring_thread.start()
-
-        # Launch simulation
-        ls = launch.LaunchService()
-        ls.include_launch_description(ld)
-
-        self.ls = ls.run()
-
-        self.unpause_signal_thread.join()
-        self.robot_info_thread.join()
-        self.experiment_monitoring_thread.join()
-
-    def start_robot_info_subscribers(self):
-        self.robot_info_node = rclpy.create_node('robot_info_node')
-        self.robot_info_subscribers = []
-
-        for i in range(self.num_robots):
-            self.robot_info_subscribers.append(self.robot_info_node.create_subscription(
-                                               TFMessage, f'/wamv{i+1}/pose', self.robot_info_callback, 10))
-
-        executor = rclpy.executors.MultiThreadedExecutor(num_threads=1)
-        executor.add_node(self.robot_info_node)
-        executor.spin()
     
-    def start_robot_action_controllers(self, controller='AdaRes', modelname='adares-iapf1.pth'):
-        self.robot_action_node = rclpy.create_node('robot_action_node')
-        self.robot_action_publishers = []
-        
-        for i in range(self.num_robots):
-            self.robot_action_publishers.append(self.robot_action_node.create_publisher(
-                Float64, f'/wamv{i+1}/thrusters/left/thrust', 10
-            ))
-            self.robot_action_publishers.append(self.robot_action_node.create_publisher(
-                Float64, f'/wamv{i+1}/thrusters/right/thrust', 10
-            ))
-        
-        def control_loop(controller='AdaRes',
-                         modelname='adares-iapf1.pth',
-                         boids_state=True):
-            '''
-                Define the USV controller
 
-                Args:
-                    controller: Types include 'AdaRes', 'Res', 'RL', 'Boids'
-                    modelname: File path
-                    boids_state: 
-            '''
-            
-            feature1_dim = 6
-            if boids_state:
-                feature2_dim = 8
-            else:
-                feature2_dim = 0
-            if controller == 'Res' or controller == 'RL':
-                actor = ActorSAC(feature1_dim, feature2_dim, 2, hidden_dim=512)
-                actor.load(modelname)
-                actor.to(self.device)
-            elif controller == 'AdaRes':
-                actor = ActorAdap(feature1_dim, feature2_dim, 3, hidden_dim=512)
-                actor.load(modelname)
-                actor.to(self.device)
-
-            time.sleep(15.0)
-            thrust_limits = np.array([-500.0, 1000.0])
-            while rclpy.ok():
-                with self.lock:
-                    actions = np.zeros((self.num_robots, 2))
-
-                    # Attacker control
-                    position = self.curr_pos[0]
-                    phi = self.curr_phi[0]
-                    goal = np.zeros(2)
-                    obstacles = self.curr_pos[1:, :]
-                    min_thrust, max_thrust = thrust_limits * self.agility
-                    actions[0] = APF_navi_control(position, goal, obstacles, phi, min_thrust, max_thrust)
-
-                    # Defenders control
-                    positions = self.curr_pos[1:, :]
-                    velocities = self.curr_vel[1:, :]
-                    phis = self.curr_phi[1:]
-                    goal = self.curr_pos[0, :]
-                    att_vel = self.curr_vel[0]
-
-                    boids_actions, boids_states = Boids_navi_control(positions, velocities, phis, goal)
-                    if controller == 'Boids':
-                        actions[1:, :] = boids_actions
-                    else:
-                        observations = self.get_observations(positions, phis, goal, att_vel, boids_states, boids_actions)
-                        actions[1:, :] = RL_navi_control(actor, observations, boids_actions, controller, self.device)
-
-                    for i in range(self.num_robots):
-                        l_thrust = Float64()
-                        r_thrust = Float64()
-                        l_thrust.data, r_thrust.data = actions[i, 0], actions[i, 1]
-
-                        self.robot_action_publishers[2*i].publish(l_thrust)
-                        self.robot_action_publishers[2*i+1].publish(r_thrust)
-                    
-                    new_entry = {
-                        'timestamp': self.curr_time,
-                        'AttPos': self.curr_pos[0],
-                        'AttPhi': self.curr_phi[0],
-                        'AttVel': self.curr_vel[0],
-                        'AttAct': actions[0],
-                        'DefPos': self.curr_pos[1:].flatten(),
-                        'DefPhi': self.curr_phi[1:].flatten(),
-                        'DefVel': self.curr_vel[1:].flatten(),
-                        'DefAct': actions[1:].flatten(),
-                    }
-
-                    if self.save_traj:
-                        self.logger.log(new_entry)
-
-                time.sleep(0.1)
-
-        executor = rclpy.executors.MultiThreadedExecutor(num_threads=1)
-        executor.add_node(self.robot_action_node)
-
-        robot_action_spin_thread = threading.Thread(target=executor.spin, daemon=True)
-        robot_action_spin_thread.start()
-
-        control_thread = threading.Thread(target=control_loop, daemon=True, args=(controller, modelname,))
-        control_thread.start()
-
-    def start_unpause_signal_thread(self):
-        # Send unpause signal 10 seconds after the launch
-        time.sleep(20)
-        self.start_time = time.time()
-        msg = Empty()
-        while rclpy.ok():
-            for publisher in self.unpause_signal_publishers:
-                publisher.publish(msg)
-            time.sleep(0.05)
-
-    def robot_info_callback(self,msg:TFMessage):
-        def quaternion_to_euler(q):
-            x, y, z, w = q.x, q.y, q.z, q.w
-
-            # Roll
-            sinr_cosp = 2 * (w * x + y * z)
-            cosr_cosp = 1 - 2 * (x * x + y * y)
-            roll = math.atan2(sinr_cosp, cosr_cosp)
-
-            # Pitch
-            sinp = 2 * (w * y - z * x)
-            if abs(sinp) >= 1:
-                pitch = math.copysign(math.pi / 2, sinp)
-            else:
-                pitch = math.asin(sinp)
-            
-            # Yaw
-            siny_cosp = 2 * (w * z + x * y)
-            cosy_cosp = 1 - 2 * (y * y + z * z)
-            yaw = math.atan2(siny_cosp, cosy_cosp)
-
-            return roll, pitch, yaw
-    
-        def wrap_to_pi(theta):
-            while theta <= -math.pi:
-                theta += 2 * math.pi
-            while theta >= math.pi:
-                theta -= 2 * math.pi
-            return theta
-
-        def calculate_vel(array):
-            if len(array) < 2:
-                return [0.0, 0.0]
-            else:
-                dt = 0.05
-                curr_pos = np.array([array[-1][0], array[-1][1]])
-                last_pos = np.array([array[-2][0], array[-2][1]])
-                return (curr_pos - last_pos) / dt
-
-        for transform_stamped in msg.transforms:
-            child_frame = transform_stamped.child_frame_id   
-            timestamp = transform_stamped.header.stamp              # sec, nanosec       
-            translation = transform_stamped.transform.translation   # [x, y, z]
-            rotation = transform_stamped.transform.rotation         # [x, y, z, w]
-            if child_frame in self.pose_data.keys():
-                index = int(child_frame[-1]) - 1
-                timestamp = timestamp.sec + timestamp.nanosec * 1e-9
-                self.timestamp_data[child_frame].append(timestamp)
-
-                x, y = translation.x - self.origin[0], translation.y - self.origin[1]
-                phi = wrap_to_pi(quaternion_to_euler(rotation)[2])
-                vel = calculate_vel(self.pose_data[child_frame])
-                self.curr_time = timestamp
-                self.curr_pos[index] = [x, y]
-                self.curr_phi[index] = phi
-                self.curr_vel[index] = vel
-            
-                self.pose_data[child_frame].append([x, y, phi])
-                self.vel_data[child_frame].append(vel)
 
     def get_observations(self, positions, phis, goal, goal_vel, boids_states=None, boids_actions=None):
         def _calculate_dist_phi(vector, theta):
@@ -544,53 +284,6 @@ class ExperimentManager:
             
         return observations
 
-    def check_is_terminated(self):
-        '''
-            Check if simulation is terminated
-
-            Return:
-                0: not terminated
-                1: attacker reach
-                2: defender collide
-                3: defender capture
-                4: time out
-        '''
-        att_tar_dist = np.linalg.norm(self.curr_pos[0])
-        def_tar_dists = [np.linalg.norm(self.curr_pos[i]) for i in range(1, self.num_robots)]
-
-        # Check if attacker reached target (using exact radius)
-        if att_tar_dist < self.target_r:
-            print("\n\nAttacker Reach\n\n")
-            return 1    
-
-        elif (self.def_def_dists < self.collision_r).any():
-            print("\n\nDefender Collide\n\n")
-            return 2
-        
-        elif (self.def_att_dists < self.defend_r).any():
-            print("\n\nDefender Capture\n\n")
-            return 3
-        
-        elif self.curr_time > self.total_time - 1e-5:
-            print("\n\nTime Out\n\n")
-            return 4
-        else:
-            return 0 
-
-    def experiment_monitoring(self):
-        time.sleep(10.5)
-        while rclpy.ok():
-            with self.lock:
-                if self.check_is_terminated():
-                    self.end_simulation()
-            time.sleep(0.05)
-    
-    def end_simulation(self):
-
-        print("\n\nShutdown simulation\n\n")
-        _process = subprocess.Popen(['pkill', '-f', 'gz sim'])
-        _process.communicate()
-        rclpy.shutdown()
 
 if __name__ == "__main__":
     # Keep the published command usable with the validated simulation runner.

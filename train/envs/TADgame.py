@@ -275,18 +275,14 @@ class TADEnv():
                     k += 1
 
         observation = np.zeros(8)
-        if self.LearningSide == 'Att':
-            observation[0:2] = _calculate_dist_phi(-self.attacker.pos, self.attacker.theta)
-
-            defender_pos = np.array([defender.pos for defender in self.defender_list])
-            att_def_vec = defender_pos - self.attacker.pos
-            self.def_att_dists = np.linalg.norm(att_def_vec, axis=1)
-            sort_index = np.argsort(self.def_att_dists)
-            
-            for i in range(self.defender_num):
-                index = sort_index[i]
-                if self.def_att_dists[index] < self.Att_Sensing_R:
-                    observation[2*i+2:2*i+4] = _calculate_dist_phi(att_def_vec[index], self.attacker.theta)
+        # A frozen attacker still needs observations while defenders learn.
+        # Its fixed-width policy sees the three nearest sensed defenders.
+        observation[0:2] = _calculate_dist_phi(-self.attacker.pos, self.attacker.theta)
+        defender_pos = np.array([defender.pos for defender in self.defender_list])
+        att_def_vec = defender_pos - self.attacker.pos
+        for i, index in enumerate(np.argsort(self.def_att_dists)[:3]):
+            if self.def_att_dists[index] < self.Att_Sensing_R:
+                observation[2*i+2:2*i+4] = _calculate_dist_phi(att_def_vec[index], self.attacker.theta)
 
         return observations, observation
 
@@ -377,8 +373,9 @@ class TADEnv():
     def centralized_state(self):
         """Privileged training state, before either stochastic action stage.
 
-        Relative velocities are the Markov dynamics state; future currents are
-        sampled independently. Fixed scales are shared by training and loading.
+        Relative velocities describe the integration state; future currents are
+        sampled independently. The critic must additionally retain the measured
+        ground velocities consumed by CBF and the released APF traversal order.
         """
         states = []
         for boat in [*self.defender_list, self.attacker]:
@@ -473,7 +470,7 @@ class TADEnv():
         return agility * (action * (self.max_thrust - self.min_thrust) + self.max_thrust + self.min_thrust) / 2.0
     
     def thrust_to_action(self, thrust:np.ndarray, agility:float=1.0):
-        return (thrust * 2.0 - self.max_thrust - self.min_thrust) / (self.max_thrust - self.min_thrust) / agility
+        return (thrust * (2.0 / agility) - self.max_thrust - self.min_thrust) / (self.max_thrust - self.min_thrust)
 
     def _APF_navi_step(self, 
                        position,

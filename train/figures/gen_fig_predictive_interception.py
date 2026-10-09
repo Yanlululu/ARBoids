@@ -11,8 +11,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy.stats import beta, binomtest, norm
 
-from evaluate_predictive_interception import ROOT, METHODS, CONFIGS, frozen_inputs
-from gen_fig_gate_contribution import read_csv, save_csv, save, wilson
+from evaluate_predictive_interception import ROOT, METHODS, frozen_inputs
+from gen_fig_gate_contribution import read_csv, save_csv, save
 
 
 LABELS = dict(original='Original',cbf='CBF',previous='Previous prediction',predictive='Continuation value',

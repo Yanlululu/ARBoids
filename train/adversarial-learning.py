@@ -9,6 +9,7 @@ from policy.SAC import SAC, ReplayBuffer
 from envs.TADgame import TADEnv
 from utils.config import load_config
 from utils.manager import ExperimentManager, set_seed
+from utils.protocol import environment_kwargs, apply_adapter_exploration
 
 def evaluate(def_agent, 
              att_agent,
@@ -17,6 +18,7 @@ def evaluate(def_agent,
              defender_num : int = 3, 
              agility : float = 2.0,
              episodes: int = 50,
+             env_options=None,
              ):
     '''
         Evaluate current policies of the defenders and attacker
@@ -26,7 +28,7 @@ def evaluate(def_agent,
     '''
     with torch.no_grad():
         env = TADEnv(defender_num,
-                    LearningSide=LearningSide)
+                    LearningSide=LearningSide, **(env_options or {}))
         
         def_win_num = 0
         att_win_num = 0
@@ -79,8 +81,9 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
 
     agility = 2.0
     
+    env_options = environment_kwargs(cfg)
     env = TADEnv(defender_num,
-                 LearningSide=LearningSide)
+                 LearningSide=LearningSide, **env_options)
 
     # Attacker Agent
     state_dim = 8
@@ -159,7 +162,7 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
                 # Defenders choose actions
                 def_action = def_agent.choose_action(def_s, False)
                 def_action = def_action.reshape(env.defender_num, action_dim)
-                def_action[:, -1] = np.clip(def_action[:, -1] + np.random.uniform(-0.1, 0.1), 0.0, 1.0)
+                def_action = apply_adapter_exploration(def_action, cfg.training)
 
                 # Attacker chooses action
                 if LearningSide == 'Att' or Round > 1:
@@ -187,7 +190,8 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
                 if train_steps % eval_interval == 0 or train_steps == total_steps:
                     eval_num += 1
                     def_sr, def_col, att_sr, reward = evaluate(
-                        def_agent, att_agent, LearningSide, Round, defender_num, agility, eval_episodes)
+                        def_agent, att_agent, LearningSide, Round, defender_num, agility, eval_episodes,
+                        env_options)
                     if not np.isfinite([def_sr, def_col, att_sr, reward]).all():
                         raise FloatingPointError("Evaluation returned non-finite metrics.")
                     

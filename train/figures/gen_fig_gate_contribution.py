@@ -277,7 +277,6 @@ def case_examples(root,folder):
                 raise RuntimeError(f'Illustration replay does not match the formal result: {seed}, {method}')
             t=np.array([r['time'] for r in trace])
             d=np.array([r['minimum_distance'] for r in trace])
-            outcome='success' if result['success'] else ('collision' if result['collision'] else 'loss')
             ax.plot(t,d,color=COLORS[method],label=LABELS[method])
             ax.scatter(t[-1],d[-1],color=COLORS[method],s=15,zorder=3)
             selected.append(dict(panel=panel+1,scene_seed=seed,method=method,
@@ -466,7 +465,7 @@ def main():
     if args.case_examples:
         case_examples(args.root,folder)
     if args.include_vrx:
-        vrx=validate_vrx_subset(args.root)
+        validate_vrx_subset(args.root)
         vrx_results(args.root,folder)
         write_report(args.root)
     print(json.dumps({'passed':True,'figures':sorted(p.name for p in folder.glob('*.pdf'))}))

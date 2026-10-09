@@ -15,7 +15,8 @@ from develop_adaptive_prediction import CONFIGS
 import evaluate_predictive_interception as prior
 from feedback_joint_control import observe
 from adaptive_interval_rollout import AdaptiveIntervalController
-from parallel_adaptive_prediction import JitPredictionPool, ParallelAdaptiveController
+from parallel_adaptive_prediction import ParallelAdaptiveController
+from parallel_jit_rollout import JitPredictionPool
 from predictive_interception_v2 import TEMPLATES
 from source_arboids import SourcePolicy, sha256
 

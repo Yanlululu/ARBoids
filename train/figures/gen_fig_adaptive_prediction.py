@@ -110,7 +110,6 @@ def main():
     save_csv(ROOT/'outcome_summary.csv',table)
     save_csv(ROOT/'paired_comparisons.csv',contrasts)
     save_csv(ROOT/'cell_summary.csv',common.summarize_cells(rows))
-    h = .2*spec['selected']['settings']['predictive']['block_steps']
     other_h = .2*spec['selected']['settings']['strongest_short']['block_steps']
     labels = dict(predictive='Adaptive prediction',cbf='CBF',short_value='Adaptive short',
                   strongest_short=f'{other_h:g}-s ablation',best_fixed='Fixed guard',

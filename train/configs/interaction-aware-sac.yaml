@@ -30,6 +30,9 @@ interaction:
   auxiliary: difference
   auxiliary_weight: 0.1
   bootstrap_source: real_td
+  # New critics include the measured CBF velocity and released APF traversal order.
+  # Configurations saved before the audit retain dynamics-v1 on load.
+  critic_state_coordinates: execution-v2
   horizon_steps: 100
   intervention_interval: 1000
   pairs_per_batch: 64

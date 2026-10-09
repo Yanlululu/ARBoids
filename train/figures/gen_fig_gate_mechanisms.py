@@ -1,7 +1,6 @@
 """Scene-clustered descriptive analysis of the fixed mechanism diagnostics."""
 import argparse
-from collections import defaultdict, Counter
-import csv
+from collections import defaultdict
 import json
 from pathlib import Path
 import pickle

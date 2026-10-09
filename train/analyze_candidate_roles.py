@@ -8,6 +8,20 @@ import numpy as np
 from scipy.stats import beta
 
 
+def verify_frozen_source(name, expected, source_text=None):
+    if source_text is not None:
+        variants = (source_text.encode('utf-8'),
+                    source_text.replace('\r\n', '\n').replace('\n', '\r\n').encode('utf-8'))
+        if any(hashlib.sha256(source).hexdigest() == expected for source in variants):
+            return
+    path = Path(name)
+    if not path.is_absolute() and not path.is_file():
+        path = Path(__file__).resolve().parents[1]/path
+    if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == expected:
+        return
+    raise ValueError('Frozen input cannot be verified: '+name)
+
+
 def binary_lower(delta, confidence=.95):
     n, wins, losses = len(delta), int((delta > 0).sum()), int((delta < 0).sum())
     tail = (1.-confidence)/2.
@@ -25,13 +39,7 @@ def analyze(root):
     if result.get('protocol') != protocol:
         raise ValueError('Result and frozen protocol disagree.')
     for name, expected in protocol['files'].items():
-        if hashlib.sha256(Path(name).read_bytes()).hexdigest() != expected:
-            # Completed runs retain their original source. Subsequent research
-            # edits must neither invalidate those runs nor silently replace it.
-            frozen = protocol.get('source_text', {}).get(name)
-            encodings = [] if frozen is None else [frozen.encode(), frozen.replace('\n', '\r\n').encode()]
-            if not any(hashlib.sha256(source).hexdigest() == expected for source in encodings):
-                raise ValueError('Frozen input cannot be verified: '+name)
+        verify_frozen_source(name, expected, protocol.get('source_text', {}).get(name))
     rows, count = result['episodes'], protocol['count']
     expected = {(method, n, a, bank+i) for method in protocol['methods']
                 for n, a, bank in protocol['conditions'] for i in range(count)}
@@ -42,7 +50,7 @@ def analyze(root):
     index = {(r['scene_seed'], r['method']): r for r in rows}
     strata = [np.array([bank+i for i in range(count)]) for _, _, bank in protocol['conditions']]
     seeds = np.concatenate(strata)
-    intervals, contrasts, table = {}, {}, {}
+    contrasts, table = {}, {}
     for method in protocol['methods']:
         group = [index[int(s), method] for s in seeds]
         table[method] = dict(episodes=len(group), capture_time=float(np.mean([r['capture_time'] for r in group])),
@@ -51,7 +59,7 @@ def analyze(root):
     rng = np.random.default_rng(20261008)
     draws = [rng.integers(0, len(s), size=(protocol['bootstrap_repetitions'], len(s))) for s in strata]
     for reference in references:
-        difference, ratio, boot_a, boot_b = [], [], [], []
+        boot_a, boot_b = [], []
         for s, take in zip(strata, draws):
             a = np.array([index[int(seed), primary]['capture_time'] for seed in s])
             b = np.array([index[int(seed), reference]['capture_time'] for seed in s])
@@ -132,6 +140,10 @@ def analyze_linked_strata(root):
 def analyze_learning(root):
     design_path = root/'predictive-learning-analysis-protocol.json'
     design = json.loads(design_path.read_text())
+    if (not design['training_seeds'] or len(design['training_seeds']) != len(design['runs'])
+            or len(set(design['training_seeds'])) != len(design['training_seeds'])
+            or len(set(design['runs'])) != len(design['runs'])):
+        raise ValueError('Each independent training seed requires exactly one distinct run.')
     banks, count = design['scene_banks'], design['scenes_per_stratum']
     scene_ids = [bank+i for bank in banks for i in range(count)]
     indexes, hashes = [], {str(design_path): hashlib.sha256(design_path.read_bytes()).hexdigest()}
@@ -154,13 +166,7 @@ def analyze_learning(root):
         if any(r['strength'] != (0. if r['arm'] == 'predictive' else design['fixed_strength']) for r in rows):
             raise ValueError('Evaluation used an unexpected residual strength.')
         for source, saved in protocol['source'].items():
-            current = Path(source)
-            if current.exists() and hashlib.sha256(current.read_bytes()).hexdigest() == saved['sha256']:
-                continue
-            text = saved['text']
-            choices = [text.encode(), text.replace('\n', '\r\n').encode()]
-            if not any(hashlib.sha256(x).hexdigest() == saved['sha256'] for x in choices):
-                raise ValueError('Invalid frozen training source: '+source)
+            verify_frozen_source(source, saved['sha256'], saved['text'])
         indexes.append({(r['arm'], r['scene_seed']): r for r in rows})
         for p in (directory/'results.json', directory/'protocol.json'):
             hashes[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest()
@@ -211,15 +217,87 @@ def analyze_learning(root):
         scope='Fixed residual conditional-value learning pilot; two independent training datasets, not five-seed formal evidence.')
 
 
+def analyze_student(root):
+    """Development screen; paired scenes never count as new training seeds."""
+    result = json.loads((root/'results.json').read_text())
+    protocol = json.loads((root/'protocol.json').read_text())
+    if not result['complete'] or protocol['stage'] != 'structured-student-stage-one-development':
+        raise ValueError('A completed composition-student development experiment is required.')
+    for name, saved in protocol['files'].items():
+        variants = [saved['text'].encode(), saved['text'].replace('\n', '\r\n').encode()]
+        if Path(name).is_file():
+            variants.append(Path(name).read_bytes())
+        if not any(hashlib.sha256(source).hexdigest() == saved['sha256'] for source in variants):
+            raise ValueError('Frozen source cannot be verified: '+name)
+    training_seeds = protocol['arguments']['training_seeds']
+    if not training_seeds or len(set(training_seeds)) != len(training_seeds):
+        raise ValueError('Distinct nonempty training seeds are required.')
+    methods = ['teacher43', 'teacher22', 'prior', 'source']+[
+        architecture+'-'+str(seed) for seed in training_seeds for architecture in ('flat', 'structured')]
+    scenes = [int(s) for s, _, _ in protocol['banks']['test']]
+    if (not scenes or len(set(scenes)) != len(scenes)
+            or {a for _, a, _ in protocol['banks']['test']} != {4., 6.}
+            or any(split != 'test' for _, _, split in protocol['banks']['test'])):
+        raise ValueError('Distinct held-out test scenes from both agility strata are required.')
+    expected = {(s, m, a) for s, a, _ in protocol['banks']['test'] for m in methods}
+    rows = result['episodes']
+    index = {(r['scene_seed'], r['method']):r for r in rows}
+    actual = {(r['scene_seed'], r['method'], r['agility']) for r in rows}
+    if actual != expected or len(index) != len(rows):
+        raise ValueError('Missing, duplicated or unexpected test episodes.')
+    table = {m:dict(episodes=len(scenes),
+        mean_capped_time=float(np.mean([index[s, m]['capture_time'] for s in scenes])),
+        **{k:sum(index[s, m][k] for s in scenes) for k in ('capture', 'success', 'breach', 'collision', 'timeout')})
+        for m in methods}
+    strata = [[int(s) for s, a, _ in protocol['banks']['test'] if a == agility] for agility in (4., 6.)]
+    rng = np.random.default_rng(20261009)
+    draws = [rng.integers(0, len(s), (10000, len(s))) for s in strata]
+    contrasts, gates = {}, {}
+    for seed in training_seeds:
+        for architecture in ('flat', 'structured'):
+            method = architecture+'-'+str(seed)
+            a, b = table[method], table['teacher43']
+            gates[method] = dict(
+                capture_retained=(a['capture']-b['capture'])/len(scenes) >= -.03,
+                no_extra_breach=a['breach'] <= b['breach'],
+                no_extra_collision=a['collision'] <= b['collision'],
+                time_retained=a['mean_capped_time'] <= 1.10*b['mean_capped_time'])
+            gates[method]['passed'] = all(gates[method].values())
+            for reference in ['teacher43', 'teacher22', 'prior', 'source']+(
+                    ['flat-'+str(seed)] if architecture == 'structured' else []):
+                differences = [np.array([index[s, method]['capture_time']-index[s, reference]['capture_time']
+                                          for s in group]) for group in strata]
+                bootstrap = np.average([d[take].mean(-1) for d, take in zip(differences, draws)],
+                                       axis=0, weights=[len(d) for d in differences])
+                contrasts[method+' minus '+reference] = dict(
+                    seconds=float(np.concatenate(differences).mean()),
+                    exploratory_scene_paired_95ci=np.quantile(bootstrap, [.025, .975]).tolist())
+    by_agility = {str(a):{m:dict(mean_capped_time=float(np.mean([
+        index[s, m]['capture_time'] for s, agility, _ in protocol['banks']['test'] if agility == a])),
+        capture=sum(index[s, m]['capture'] for s, agility, _ in protocol['banks']['test'] if agility == a))
+        for m in methods} for a in (4., 6.)}
+    return dict(complete=True, scope='Development BC learnability screen, not RL or formal noninferiority evidence',
+        unique_test_scenes=len(scenes), training_seeds=training_seeds, table=table, by_agility=by_agility,
+        retention_gates=gates, contrasts=contrasts,
+        structured_retained_in_both_seeds=all(gates['structured-'+str(seed)]['passed'] for seed in training_seeds),
+        checkpoint_sha256={m:hashlib.sha256((root/(m+'.pth')).read_bytes()).hexdigest()
+                           for m in gates},
+        labels_sha256=hashlib.sha256((root/'teacher-labels.npz').read_bytes()).hexdigest(),
+        results_sha256=hashlib.sha256((root/'results.json').read_bytes()).hexdigest(),
+        protocol_sha256=hashlib.sha256((root/'protocol.json').read_bytes()).hexdigest())
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
     parser.add_argument('--learning', action='store_true')
     parser.add_argument('--linked-strata', action='store_true')
+    parser.add_argument('--student', action='store_true')
     args = parser.parse_args()
-    if args.learning and args.linked_strata:
+    if sum((args.learning, args.linked_strata, args.student)) > 1:
         parser.error('Choose one analysis population.')
-    output = (analyze_linked_strata(args.directory) if args.linked_strata else
+    output = (analyze_student(args.directory) if args.student else
+              analyze_linked_strata(args.directory) if args.linked_strata else
               analyze_learning(args.directory) if args.learning else analyze(args.directory))
     destination = args.directory/('linked-strata-analysis.json' if args.linked_strata else
         'predictive-learning-analysis.json' if args.learning else 'analysis.json')

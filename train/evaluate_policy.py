@@ -12,7 +12,7 @@ from envs.TADgame import TADEnv
 from policy.SAC import SAC
 from utils.config import load_config
 from utils.manager import set_seed
-from utils.protocol import environment_kwargs
+from utils.protocol import environment_kwargs, controller_name
 
 
 def main():
@@ -60,7 +60,7 @@ def main():
     agent.actor.eval()
     if not all(torch.isfinite(p).all().item() for p in agent.actor.parameters()):
         raise FloatingPointError('Non-finite checkpoint weights')
-    controller = 'AdaRes' if cfg.agent.adaptive else ('Res' if cfg.agent.residual else 'RL')
+    controller = controller_name(cfg.agent)
     rows = []
     started = time.monotonic()
     for episode in range(args.episodes):

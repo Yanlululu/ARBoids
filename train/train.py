@@ -9,7 +9,7 @@ from policy.SAC import SAC, ReplayBuffer
 from envs.TADgame import TADEnv
 from utils.config import load_config
 from utils.manager import ExperimentManager, set_seed
-from utils.protocol import environment_kwargs, apply_adapter_exploration
+from utils.protocol import environment_kwargs, apply_adapter_exploration, controller_name
 
 def evaluate(agent, 
              defender_num=3, 
@@ -53,7 +53,6 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
 
     defender_num = cfg.agent.defender_num
     adaptive = cfg.agent.adaptive
-    residual = cfg.agent.residual
     boid_state = cfg.agent.boid_state
     form_reward = cfg.agent.form_reward
     curriculum = cfg.agent.curriculum
@@ -87,14 +86,7 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
     agent = SAC(cfg, env.feature1_dim, env.feature2_dim, action_dim, adaptive=adaptive, device=device)
     replay_buffer = ReplayBuffer(state_dim, action_dim)
 
-    # Controller type
-    if residual:
-        if adaptive:
-            controller = 'AdaRes'
-        else:
-            controller = 'Res'
-    else:
-        controller = 'RL'
+    controller = controller_name(cfg.agent)
     
     print('[INFO] Controller type is', controller)
 
@@ -159,6 +151,7 @@ if __name__ == "__main__":
     cfg = load_config(args.config)
 
     if args.seed is not None:
+        cfg.training.seed = args.seed
         set_seed(args.seed)
 
     exp = ExperimentManager(

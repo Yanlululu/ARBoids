@@ -12,7 +12,7 @@ import torch
 
 from source_arboids import SourcePolicy, sha256, verify_source
 from gate_mechanism_diagnostics import restore, stable_number
-from feedback_joint_control import FeedbackJointController, observe
+from feedback_joint_control import observe
 from feedback_joint_fast import FastFeedbackJointController
 from evaluate_feedback_joint import CHECKPOINT, DIAGNOSTIC_ROOT, code_hashes
 from evaluate_gate_contribution import write_csv

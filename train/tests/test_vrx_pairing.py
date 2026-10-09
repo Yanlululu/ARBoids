@@ -6,11 +6,20 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+import torch
 
 PATH=Path(__file__).resolve().parents[2]/'vrx/evaluate_gate_contribution.py'
 SPEC=importlib.util.spec_from_file_location('_vrx_gate_pairing',PATH)
 BATCH=importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BATCH)
+
+CONTROL_SPEC = importlib.util.spec_from_file_location('_vrx_shared_control', PATH.with_name('tad_vrx_experiment.py'))
+CONTROL = importlib.util.module_from_spec(CONTROL_SPEC)
+CONTROL_SPEC.loader.exec_module(CONTROL)
+MODEL_SPEC = importlib.util.spec_from_file_location('_vrx_deployment_models', PATH.with_name('models.py'))
+MODELS = importlib.util.module_from_spec(MODEL_SPEC)
+MODEL_SPEC.loader.exec_module(MODELS)
 
 
 def row(method,offset=0.,success=1):
@@ -63,6 +72,42 @@ class VRXPairingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'two whole-block attempts'):
                 BATCH.repair_initial_pairing(old,[self.scene],self.args)
         self.assertEqual(job.call_count,8)
+
+
+class VRXControlTests(unittest.TestCase):
+    def test_deployment_actors_use_the_training_forward_and_checkpoint_layout(self):
+        from policy.networks import ActorSAC, ActorAdap
+        for training_class, deployment_class, actions in ((ActorSAC, MODELS.ActorSAC, 2),
+                                                          (ActorAdap, MODELS.ActorAdap, 3)):
+            training = training_class(6, 8, actions, 32)
+            deployed = deployment_class(6, 8, actions, 32)
+            deployed.load_state_dict(training.state_dict(), strict=True)
+            self.assertIs(deployment_class.forward, training_class.forward)
+            for defenders in (3, 6):
+                observation = torch.randn(defenders, 14+2*(defenders-1))
+                torch.testing.assert_close(deployed(observation, True, False)[0],
+                                           training(observation, True, False)[0], rtol=0., atol=0.)
+
+    def test_shared_scene_setup_is_ros_independent_and_retains_observation_width(self):
+        for defenders in (3, 6):
+            manager = CONTROL.ExperimentManager(defenders+1)
+            poses = manager.generate_init_info(2., setting=0)
+            self.assertEqual(len(poses.split(';')), defenders+1)
+            self.assertEqual((manager.defend_r, manager.total_time), (5., 60.))
+            obs = manager.get_observations(manager.curr_pos[1:], np.zeros(defenders),
+                manager.curr_pos[0], np.zeros(2), np.zeros((defenders, 6)), np.zeros((defenders, 2)))
+            self.assertEqual(obs.shape, (defenders, 14+2*(defenders-1)))
+            self.assertTrue(np.isfinite(obs).all())
+
+    def test_custom_thruster_limits_affect_conversion_before_residual_mixing(self):
+        boids = np.array([[100., 200.]])
+        for controller, expected in (('RL', [[300., 550.]]), ('Res', [[400., 750.]]),
+                                     ('AdaRes', [[150., 287.5]])):
+            values = [[0., .5, .25]] if controller == 'AdaRes' else [[0., .5]]
+            actor = lambda *args: (torch.tensor(values), None)
+            thrust = CONTROL.RL_navi_control(actor, np.zeros((1, 14)), boids, controller,
+                                            min_thrust=-200., max_thrust=800.)
+            np.testing.assert_array_equal(thrust, expected)
 
 
 if __name__=='__main__':

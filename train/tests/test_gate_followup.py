@@ -8,7 +8,6 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from envs.TADgame import TADEnv
 from envs.snapshot import seed_random
 from gate_diagnostics import align_environment_noise, gate_options, run_branch
 from gate_followup import (choose_rolling_gate, held_forecasts, prefix_metrics,
