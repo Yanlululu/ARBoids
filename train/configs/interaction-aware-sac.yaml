@@ -25,7 +25,12 @@ environment:
   total_time: 60.0
   agility_noise_half_width: 0.5
 interaction:
+  # Original learned--Boids adapter and single-vessel conditional-value learning.
+  # Predictive controllers remain independent references unless explicitly configured.
   arm: full
+  gate_objective: critic-v1
+  intervention_scope: single
+  reward_objective: paper-reward-v1
   relation_dim: 128
   auxiliary: difference
   auxiliary_weight: 0.1

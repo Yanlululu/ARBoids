@@ -57,6 +57,8 @@ class StageSchedule(unittest.TestCase):
         self.assertEqual(protocol['real_replay_batch'], 2048)
         self.assertEqual(protocol['auxiliary_to_real_batch_ratio'], 32/2048)
         self.assertIn('32 snapshots every 500 real steps', protocol['intervention_sampling'])
+        self.assertEqual(protocol['formal_evidence']['primary_reference'],'original')
+        self.assertFalse(protocol['formal_evidence']['require_cbf_superiority'])
 
     def test_formal_vrx_pairs_scenes_and_retains_task_failures(self):
         import shlex
@@ -64,6 +66,15 @@ class StageSchedule(unittest.TestCase):
             study = Path(directory)
             with patch.object(scheduler, 'verified_existing_pretrain', return_value=None):
                 jobs, _ = scheduler.build_jobs(study, 'python', Path('/activate'))
+            graph={job['name']:job for job in jobs}
+            for seed in scheduler.FORMAL_SEEDS:
+                reference=graph[f'primary-{seed}-original']
+                command=reference['command']
+                self.assertEqual(command[command.index('--checkpoint')+1],str(study/f'pretrain/seed-{seed}/actor.pth'))
+                self.assertEqual(command[command.index('--arm')+1],'original')
+                self.assertIn('--primary-only',command)
+                self.assertEqual(reference['dependencies'],[f'pretrain-{seed}'])
+                self.assertIn(reference['name'],graph['diagnostics-formal-evidence']['dependencies'])
             vrx = [j for j in jobs if j['name'].startswith('vrx-')]
             self.assertEqual(len(vrx), 1200)
             pairs = {}
@@ -103,34 +114,6 @@ class StageSchedule(unittest.TestCase):
             self.assertEqual(len(handles), 1)
             self.assertTrue(handles[0].closed)
 
-    def test_performance_search_spends_its_budget_on_candidates_without_evidence_barriers(self):
-        previous_jobs = [dict(name=f'develop-42-{arm}-10000', command=['python', 'train/train_interaction.py',
-            '--output', f'/previous/training/seed-42/{arm}', '--arm', arm, '--stop-at-step', '10000'])
-            for arm in ('full', 'short')]
-        jobs, candidates = scheduler.performance_search_jobs('/search', 'python', '/previous', previous_jobs, '/source.pth')
-        active = {'time_single_n3', 'time_single_n6', 'time_team_n3', 'time_team_n6'}
-        self.assertEqual(set(candidates), {'long', 'short'} | active)
-        self.assertEqual(len([j for j in jobs if j['kind'] == 'gpu']), 12)
-        self.assertFalse(any(j['kind'] == 'review' or j['name'].startswith('train-') for j in jobs))
-        graph = {j['name']: j for j in jobs}; done = set()
-        while len(done) < len(graph):
-            ready = {n for n, j in graph.items() if n not in done and set(j['dependencies']) <= done}
-            self.assertTrue(ready); done.update(ready)
-        for name in active:
-            first = graph[f'develop-performance-{name}-10000']
-            self.assertEqual(first['dependencies'], [])
-            self.assertEqual(graph[f'develop-performance-{name}-50000']['dependencies'],
-                             [f'develop-performance-{name}-25000'])
-        for name in active:
-            command = candidates[name]['command']
-            self.assertEqual(command[command.index('--reward-objective') + 1], 'capped-time-v1')
-            self.assertEqual(command[command.index('--gate-objective') + 1], 'paired-improvement-v1')
-            self.assertEqual(command[command.index('--defenders') + 1], name[-1])
-            self.assertEqual(command[command.index('--intervention-scope') + 1], name.split('_')[1])
-        for name in ('long', 'short'):
-            self.assertFalse(candidates[name]['train'])
-            self.assertFalse(any(j['kind'] == 'gpu' and j.get('candidate') == name for j in jobs))
-            for step in (5000, 10000): self.assertIn(f'diagnostics-performance-{name}-{step}', graph)
 
     def test_performance_summary_pairs_all_failures_without_filtering(self):
         baseline = [dict(defenders=n, agility=2.25, scene_seed=n * 100 + i, capture_time=t, capture=int(t < 60),
@@ -813,7 +796,7 @@ class StageSchedule(unittest.TestCase):
             (root/'results.md').write_text('',encoding='utf-8')
             metrics=dict(success=1.,capture=1.,collision=0.,breach=0.,timeout=0.,capture_time=20.)
             effect=dict(difference=-2.,ci95=[-3.,-1.],seed_effects={str(s):-2. for s in scheduler.FORMAL_SEEDS})
-            formal=dict(A=dict(effects=dict(capture_time=effect)),B=dict(E_env=dict(all=effect)),
+            formal=dict(A=dict(reference='original',cell='n3-a2.25',effects=dict(capture_time=effect)),B=dict(E_env=dict(all=effect)),
                 C=dict(strong=dict(capture_time=effect)),D=dict(configuration_matching=effect,
                     conditional_interaction=effect,noise_corrected_interaction_second_moment=effect),
                 arm_summaries=[dict(arm='full',cell='n3-a2.25',mean=metrics,
@@ -846,6 +829,8 @@ class StageSchedule(unittest.TestCase):
                  patch.object(figures,'generalization',return_value=[]), patch.object(figures,'vrx_rows',return_value=vrx), \
                  patch.object(figures,'alternating',side_effect=AssertionError('Optional extension was read')):
                 figures.finish(study,output,manuscript,include_extensions=False)
+            self.assertIn('Full minus ARBoids (unfiltered)',manuscript.read_text(encoding='utf-8'))
+            self.assertNotIn('Full minus ARBoids+CBF',manuscript.read_text(encoding='utf-8'))
             result=json.loads((output/'tables.json').read_text())
             self.assertTrue(result['numerical']['complete'])
             self.assertFalse(result['extensions_complete'])

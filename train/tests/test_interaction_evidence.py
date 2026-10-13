@@ -30,23 +30,30 @@ def fixture(study):
     write(freeze/'evidence.json',dict(frozen_protocol=protocol,frozen_source={}))
     write(freeze/'decision.json',dict(decision='continue',assessment='frozen',evidence_sha256=evaluation.digest(freeze/'evidence.json')))
     for seed in evaluation.SEEDS:
-        for arm in scheduler.FORMAL_ARMS:
-            directory=study/f'training/seed-{seed}/{arm}'
-            write(directory/'progress.json',dict(step=1000000,complete=True))
-            checkpoint=directory/'policy.pth';checkpoint.write_bytes(f'fixed {seed} {arm}'.encode())
+        for arm in (*scheduler.FORMAL_ARMS,'original'):
+            if arm=='original':
+                directory=study/f'pretrain/seed-{seed}'
+                directory.mkdir(parents=True,exist_ok=True)
+                checkpoint=directory/'actor.pth'
+            else:
+                directory=study/f'training/seed-{seed}/{arm}'
+                write(directory/'progress.json',dict(step=1000000,complete=True))
+                checkpoint=directory/'policy.pth'
+            checkpoint.write_bytes(f'fixed {seed} {arm}'.encode())
             inputs=dict(checkpoint=str(checkpoint),checkpoint_sha256=evaluation.digest(checkpoint))
             primary=study/f'primary/seed-{seed}/{arm}'
             rows=[]
             for n,a in evaluation.CORE_CELLS:
                 for index in range(200):
                     scene=560000000+evaluation.SEEDS.index(seed)*1000000+evaluation.CELLS.index((n,a))*10000+index
-                    duration=18. if arm=='full' else 20.
+                    # A stronger CBF control must not replace the original-method claim.
+                    duration=16. if arm=='arboids_cbf' else 18. if arm=='full' else 20.
                     rows.append(dict(arm=arm,training_seed=seed,cell=f'n{n}-a{a:g}',scene_seed=scene,
                         capture_time=duration,duration=duration,success=1,capture=1,collision=0,breach=0,timeout=0))
             csv_rows(primary/'episodes.csv',rows)
             write(primary/'completed.json',dict(complete=True,input=inputs,episodes_per_cell=200,
                 cells=[list(c) for c in evaluation.CORE_CELLS],episodes_sha256=evaluation.digest(primary/'episodes.csv')))
-            if arm=='arboids_cbf':continue
+            if arm in ('arboids_cbf','original'):continue
             calibration=study/f'calibration/seed-{seed}/{arm}'
             error=1. if arm=='full' else 3.
             rows=[dict(state=i,scene_seed=520000000+evaluation.SEEDS.index(seed)*1000000+i,
@@ -73,7 +80,11 @@ class FormalEvidence(unittest.TestCase):
             child=dict(name='develop-42-same_info-250000',kind='gpu',command=['python','learner'])
             core=dict(name='review-formal-core',kind='review',dependencies=['primary-202-full'],
                 policy=dict(allowed_assessments=['technical_ready']))
-            manifest=dict(format='interaction-study-v6',root=str(scheduler.ROOT),jobs=[child,core],
+            references=[dict(name=f'eval-{seed}-original',kind='cpu',
+                command=['python','train/interaction_evaluation.py','task','--checkpoint',str(study/f'pretrain/seed-{seed}/actor.pth'),
+                         '--output',str(study/f'evaluation/seed-{seed}/original'),'--arm','original','--seed',str(seed)],
+                dependencies=[f'pretrain-{seed}','review-formal-core']) for seed in scheduler.FORMAL_SEEDS]
+            manifest=dict(format='interaction-study-v6',root=str(scheduler.ROOT),jobs=[child,core,*references],
                 code={'scripts/run_interaction_study.py':'old','train/train_interaction.py':'unchanged'},
                 candidate_protocol=dict(H=100),technical_review_automation=scheduler.technical_review_policy())
             scheduler.write_json(study/'manifest.json',manifest)
@@ -90,7 +101,11 @@ class FormalEvidence(unittest.TestCase):
             updated=json.loads((study/'manifest.json').read_text())
             self.assertEqual(updated['jobs'][0],child)
             self.assertEqual(updated['jobs'][1]['dependencies'],['diagnostics-formal-evidence'])
-            self.assertEqual(updated['jobs'][-1]['dependencies'],['primary-202-full'])
+            self.assertEqual(updated['jobs'][-1]['dependencies'],
+                ['primary-202-full',*[f'primary-{seed}-original' for seed in scheduler.FORMAL_SEEDS]])
+            for job in updated['jobs']:
+                if job['name'].startswith('primary-'):
+                    self.assertNotIn('review-formal-core',job['dependencies'])
             self.assertEqual(updated['candidate_protocol']['formal_evidence'],evaluation.formal_evidence_standard())
             self.assertEqual(checkpoint.read_bytes(),b'uninterrupted training state')
             scheduler.write_json(study/'reviews/review-protocol-freeze/evidence.json',{})
@@ -142,14 +157,19 @@ class FormalEvidence(unittest.TestCase):
             with patch.object(evaluation,'hierarchical_interval',side_effect=lambda v,r,repeats=10000:interval(v,r,100)):
                 result=evaluation.formal_evidence(study)
             self.assertEqual(result['A']['effects']['capture_time']['difference'],-2.)
+            self.assertEqual(result['A']['reference'],'original')
+            self.assertFalse(result['standard']['require_cbf_superiority'])
+            self.assertEqual(result['auxiliary_controls']['task']['arboids_cbf']['n3-a2.25']['capture_time']['difference'],2.)
             self.assertEqual(result['B']['E_env']['all']['difference'],-2.)
             self.assertEqual(result['C']['strong']['capture_time']['difference'],-2.)
             self.assertEqual(result['D']['configuration_matching']['difference'],2.)
             self.assertEqual(result['D']['conditional_interaction']['difference'],2.)
             self.assertEqual(result['D']['noise_corrected_interaction_second_moment']['difference'],4.)
-            self.assertTrue(all(result['statistical_checks'].values()))
+            # Faster captures with identical success do not establish an SR gain.
+            self.assertEqual(result['standard']['primary_metric'], 'success')
+            self.assertEqual(result['statistical_checks'], dict(A=False, B=True, C=False, D=True))
             self.assertFalse(result['practical_relevance_assessed'])
-            self.assertEqual(len(result['arm_summaries']),12)
+            self.assertEqual(len(result['arm_summaries']),14)
             self.assertEqual(len(result['D']['trajectory_examples']),10)
             primary=study/'primary/seed-202/full'
             with (primary/'episodes.csv').open() as f:rows=list(csv.DictReader(f))
@@ -170,6 +190,44 @@ class FormalEvidence(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'checkpoint changed'):
                 evaluation.formal_evidence(study)
 
+    def test_success_gains_drive_primary_and_interaction_claims(self):
+        with tempfile.TemporaryDirectory() as directory:
+            study = Path(directory)
+            fixture(study)
+            for seed in evaluation.SEEDS:
+                for arm in ('original', 'no_peer'):
+                    primary = study/f'primary/seed-{seed}/{arm}'
+                    with (primary/'episodes.csv').open() as stream:
+                        rows = list(csv.DictReader(stream))
+                    for index, row in enumerate(rows):
+                        if index % 10 == 0:
+                            row.update(success=0, capture=0, collision=1, capture_time=60.)
+                    csv_rows(primary/'episodes.csv', rows)
+                    record = json.loads((primary/'completed.json').read_text())
+                    record['episodes_sha256'] = evaluation.digest(primary/'episodes.csv')
+                    scheduler.write_json(primary/'completed.json', record)
+            interval = evaluation.hierarchical_interval
+            with patch.object(evaluation, 'hierarchical_interval', side_effect=lambda v,r,repeats=10000:interval(v,r,100)):
+                result = evaluation.formal_evidence(study)
+            self.assertTrue(result['statistical_checks']['A'])
+            self.assertTrue(result['statistical_checks']['C'])
+            self.assertAlmostEqual(result['A']['effects']['success']['difference'], .1)
+
+    def test_figure_reference_is_original_without_relabeling_historical_results(self):
+        import build_interaction_figures as figures
+        original=dict(reference='original',cell='n3-a2.25',metric='capture_time',difference=-2.,ci95=[-3.,-1.])
+        cbf=dict(original,reference='arboids_cbf',difference=2.,ci95=[1.,3.])
+        analysis=dict(paired_comparisons=[cbf,original])
+        reference,cell,effect=figures.primary_task_contrast(analysis)
+        self.assertEqual((reference,cell),('original','n3-a2.25'))
+        self.assertEqual(effect['difference'],-2.)
+        analysis['formal_evidence']=dict(A=dict(reference='arboids_cbf',cell=cell,effects=dict(capture_time=cbf)))
+        reference,_,effect=figures.primary_task_contrast(analysis)
+        self.assertEqual(reference,'arboids_cbf')
+        self.assertEqual(effect['difference'],2.)
+        with self.assertRaisesRegex(ValueError,'Missing paired primary'):
+            figures.primary_task_contrast(dict(paired_comparisons=[cbf]))
+
     def test_matching_and_interaction_cannot_substitute_for_each_other(self):
         interval=evaluation.hierarchical_interval
         for missing in ('matching','interaction'):
@@ -188,7 +246,7 @@ class FormalEvidence(unittest.TestCase):
                     scheduler.write_json(path.with_name('completed.json'),record)
                 with patch.object(evaluation,'hierarchical_interval',side_effect=lambda v,r,repeats=10000:interval(v,r,100)):
                     result=evaluation.formal_evidence(study)
-                self.assertTrue(all(result['statistical_checks'][k] for k in 'ABC'))
+                self.assertEqual({k:result['statistical_checks'][k] for k in 'ABC'}, dict(A=False,B=True,C=False))
                 self.assertFalse(result['statistical_checks']['D'])
 
     def test_formal_review_requires_practical_assessment_and_statistical_evidence(self):

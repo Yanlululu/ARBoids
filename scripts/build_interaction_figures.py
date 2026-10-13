@@ -367,10 +367,33 @@ def replace_results(path,block):
     path.write_text(before+start+'\n'+block+'\n'+end+after,encoding='utf-8')
 
 
+def primary_task_contrast(analysis):
+    """Use the recorded reference; never silently relabel historical CBF results."""
+    formal=analysis.get('formal_evidence')
+    if formal:
+        claim=formal['A']
+        metric=formal.get('standard',{}).get('primary_metric','capture_time')
+        return claim['reference'],claim['cell'],claim['effects'][metric]
+    reference,cell='original','n3-a2.25'
+    paired=[r for r in analysis['paired_comparisons']
+            if r['reference']==reference and r['cell']==cell and r['metric']=='capture_time']
+    if len(paired)!=1:
+        raise ValueError(f'Missing paired primary capped-time contrast against {LABELS[reference]}')
+    return reference,cell,paired[0]
+
+
 def finish(study,directory,manuscript,include_extensions=True):
     analysis=json.loads((study/'analysis.json').read_text())
     if not analysis['complete']: raise ValueError('The 90000-row fixed numerical matrix is incomplete')
     formal=analysis.get('formal_evidence')
+    primary_reference,primary_cell,contrast=primary_task_contrast(analysis)
+    primary_label=LABELS[primary_reference]
+    primary_metric=(formal or {}).get('standard',{}).get('primary_metric','capture_time')
+    primary_name='defense-success-rate' if primary_metric=='success' else 'capped-capture-time'
+    primary_unit='percentage points' if primary_metric=='success' else 's'
+    primary_scale=100. if primary_metric=='success' else 1.
+    primary_effect=contrast['difference']*primary_scale
+    primary_ci=[v*primary_scale for v in contrast['ci95']]
     blocks=[]
     blocks.append(chart(directory,'fig4-vrx',trajectories(study),
         'Recorded complete-method trajectories and blending coefficients. The first prescribed formal-seed trial is shown for three defenders in open water and six at the dock; scenarios are fixed independently of outcome. Coefficients parameterize nominal composition and do not assign maneuver roles.','fig:vrx'))
@@ -424,15 +447,13 @@ def finish(study,directory,manuscript,include_extensions=True):
         common_summary=aggregate(common,100)
         common_paired=paired_groups(common,100)
         blocks.append(table_metrics(common_summary,'Common frozen-opponent tests after defender phases. APF and the ARBoids+CBF attacker checkpoints are shared across methods. Rates are percentages.','tab:opponents'))
-    paired=[r for r in analysis['paired_comparisons'] if r['reference']=='arboids_cbf' and r['cell']=='n3-a2.25' and r['metric']=='capture_time']
     if formal:
-        contrast=formal['A']['effects']['capture_time']
-        contrasts=[('A: task','s',contrast),('B: conditional value','return',formal['B']['E_env']['all']),
-            ('C: six-defender task','s',formal['C']['strong']['capture_time']),
+        contrasts=[('A: task','probability' if primary_metric=='success' else 's',contrast),('B: conditional value','return',formal['B']['E_env']['all']),
+            ('C: six-defender task','probability' if primary_metric=='success' else 's',formal['C']['strong'][primary_metric]),
             ('D: configuration matching','return',formal['D']['configuration_matching']),
             ('D: signed interaction','return',formal['D']['conditional_interaction']),
             ('D: noise-corrected interaction','return squared',formal['D']['noise_corrected_interaction_second_moment'])]
-        blocks.append(r'\begin{table*}[t]\centering\small\caption{Prespecified A--D paired effects across all five training seeds. Task and value-error contrasts are Full minus reference; negative values favor Full. Matching contrasts are original minus permuted; interaction signs have a different meaning.}\begin{tabular}{@{}llrr@{}}\toprule Evidence & Unit & Effect & 95\% CI\\\midrule'+'\n'+
+        blocks.append(r'\begin{table*}[t]\centering\small\caption{Prespecified A--D paired effects across all five training seeds. Task and value-error contrasts are Full minus reference. Higher success and lower time or value error favor Full. Matching contrasts are original minus permuted; interaction signs have a different meaning.}\begin{tabular}{@{}llrr@{}}\toprule Evidence & Unit & Effect & 95\% CI\\\midrule'+'\n'+
             '\n'.join(escape(label)+f' & {escape(unit)} & {effect["difference"]:.3f} & [{effect["ci95"][0]:.3f}, {effect["ci95"][1]:.3f}]'+r'\\' for label,unit,effect in contrasts)+
             '\n'+r'\bottomrule\end{tabular}\end{table*}')
         with (directory/'table-formal-seed-effects.csv').open('w',newline='',encoding='utf-8') as f:
@@ -448,19 +469,17 @@ def finish(study,directory,manuscript,include_extensions=True):
             writer=csv.DictWriter(f,fieldnames=['arm','cell','metric','seed','mean']);writer.writeheader()
             writer.writerows(dict(arm=r['arm'],cell=r['cell'],metric=m,seed=seed,mean=value)
                 for r in formal['arm_summaries'] for m,means in r['seed_means'].items() for seed,value in means.items())
-    else:
-        if len(paired)!=1: raise ValueError('Missing paired primary capped-time contrast against ARBoids+CBF')
-        contrast=paired[0]
     headline=(r'\subsection{Fixed-endpoint evidence}'+'\n'+
-        f'At three defenders and agility 2.25, the Full minus ARBoids+CBF capped-capture-time difference is {contrast["difference"]:.2f} s '
-        f'(hierarchical paired 95\\% CI [{contrast["ci95"][0]:.2f}, {contrast["ci95"][1]:.2f}] s). '
+        f'For {escape(primary_cell)}, the Full minus {escape(primary_label)} {primary_name} difference is {primary_effect:.2f} {primary_unit} '
+        f'(hierarchical paired 95\\% CI [{primary_ci[0]:.2f}, {primary_ci[1]:.2f}] {primary_unit}). '
         'Tables report all task outcomes and capped capture time; the exported analysis retains condition-specific paired intervals for every metric. '
-        'The conditional-value error and matched auxiliary control are assessed alongside these task outcomes.\n')
+        'This is a complete-method comparison; safety-filter and training-budget differences are disclosed separately. '
+        'Matched ablations, rather than this contrast alone, establish the contributions of candidate interaction and conditional-value supervision.\n')
     replace_results(manuscript,headline+'\n\n'.join(blocks))
     text=manuscript.read_text(encoding='utf-8')
-    evidence=(f'At the fixed endpoint with three defenders and intruder agility 2.25, the complete-method minus common-safety baseline difference in capped capture time is '
-        f'{contrast["difference"]:.2f} s '
-        f'(paired 95\\% confidence interval [{contrast["ci95"][0]:.2f}, {contrast["ci95"][1]:.2f}] s).')
+    evidence=(f'At the fixed endpoint for {escape(primary_cell)}, the complete-method minus {escape(primary_label)} difference in {primary_name} is '
+        f'{primary_effect:.2f} {primary_unit} '
+        f'(paired 95\\% confidence interval [{primary_ci[0]:.2f}, {primary_ci[1]:.2f}] {primary_unit}).')
     text=text.replace('This manuscript currently specifies the implemented method and evaluation design; numerical claims about the new policy await completion of the fixed experiment matrix.',evidence)
     text=text.replace('Final empirical conclusions await the corresponding completed evaluations.',evidence+' The condition-specific results, auxiliary controls, and compute measurements define the scope of this empirical finding.')
     manuscript.write_text(text,encoding='utf-8')
@@ -518,8 +537,9 @@ def finish(study,directory,manuscript,include_extensions=True):
     content=('## 新论文：协同控制组成的 60 秒协议正式结果\n\n'+
         '研究对象为协同控制组成；核心机制为候选控制交互条件化的融合决策与面向组成变量的条件价值学习。'
         '融合系数表征名义控制组成，行为解释结合候选控制、执行推力与实际轨迹。\n\n'+
-        f'三艇、敏捷度 2.25：完整方法相对共同安全基线 ARBoids+CBF 的平均封顶捕获耗时差为 {contrast["difference"]:.2f} 秒，'
+        f'{primary_cell}：完整方法相对 {primary_label} 的平均封顶捕获耗时差为 {contrast["difference"]:.2f} 秒，'
         f'分层配对 95% 区间 [{contrast["ci95"][0]:.2f}, {contrast["ci95"][1]:.2f}] 秒。\n\n'+
+        '原始 ARBoids 不含 CBF。带 CBF 的继续训练对照单独列示；两项创新的收益由保持相同执行层的消融识别，不将完整方法对原法的全部差值归给创新机制。\n\n'+
         '固定训练终点、五个独立正式种子、90,000 个数值测试回合和 1,200 个 VRX 回合已汇总。'
         '旧 80 秒实验保留在下文，独立归属原方法及原协议。\n')
     if start in text:

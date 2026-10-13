@@ -39,49 +39,100 @@ class Networks(unittest.TestCase):
         torch.set_num_threads(1)
         seed_random(42)
 
-    def test_paired_gate_improvement_uses_returns_and_preserves_candidates(self):
-        c = arm_config(config(), 'full')
-        c['interaction'].update(entropy_objective='task-return-v4', gate_objective='paired-improvement-v1')
+    def test_structured_critic_separates_state_values_and_keeps_coupled_physical_controls(self):
+        from policy.interaction_sac import tensor_packet
+        c = config()
+        c['interaction'].update(critic_architecture='quadratic-control-v1',
+            critic_control_coordinates='nominal-thrust-v2', bootstrap_source='real_td')
+        c['training']['critic_warmup_target'] = 'complete_real_state_return'
         agent = InteractionSAC(c)
-        _, packet = scene()
-        action, _ = agent.choose_action(packet, deterministic=True)
-        alternative = action.copy(); alternative[0, 2] = 1.
-        auxiliary = {key: value[None] for key, value in packet.items()}
-        auxiliary.update(action=action[None], counterfactual=alternative[None],
-            **{'return': np.array([[-20.]], dtype=np.float32),
-               'counterfactual_return': np.array([[-10.]], dtype=np.float32)})
-        initial = float(agent.paired_gate_loss(auxiliary).detach())
-        swapped = dict(auxiliary, action=alternative[None], counterfactual=action[None])
-        swapped['return'], swapped['counterfactual_return'] = auxiliary['counterfactual_return'], auxiliary['return']
-        self.assertAlmostEqual(initial, float(agent.paired_gate_loss(swapped).detach()))
-        proposals = copy.deepcopy(agent.actor.base.mean_layer.state_dict())
-        agent.critic.forward = lambda *args: self.fail('Critic supplied a direct gate target')
-        for _ in range(20):
-            agent.actor_optimizer.zero_grad(set_to_none=True)
-            agent.paired_gate_loss(auxiliary).backward()
-            agent.actor_optimizer.step()
-        self.assertLess(float(agent.paired_gate_loss(auxiliary).detach()), initial)
-        after, _ = agent.choose_action(packet, deterministic=True)
-        self.assertGreater(after[0, 2], action[0, 2])
-        np.testing.assert_array_equal(after[:, :2], action[:, :2])
-        for key, value in agent.actor.base.mean_layer.state_dict().items():
-            torch.testing.assert_close(value, proposals[key], rtol=0, atol=0)
-        bad = copy.deepcopy(auxiliary); bad['counterfactual'][0, 1, 2] += .1
-        with self.assertRaisesRegex(ValueError, 'one focal gate'):
-            agent.paired_gate_loss(bad)
-        bootstrap_before = copy.deepcopy(agent.bootstrap_critic.state_dict())
-        result = agent.learn(None, auxiliary, diagnostics=True)
-        self.assertFalse(result['critic_updated']); self.assertFalse(result['bootstrap_updated'])
-        self.assertTrue(result['actor_updated'])
-        for key, value in agent.bootstrap_critic.state_dict().items():
-            torch.testing.assert_close(value, bootstrap_before[key], rtol=0, atol=0)
-        self.assertEqual(len(agent.critic_optimizer.state), 0)
+        _, raw = scene()
+        packet = {key: value[None] for key, value in tensor_packet(raw).items()}
+        action = torch.zeros((1, 3, 3)); action[..., 2] = .5
+        changed = action.clone(); changed[:, 0, 0] = .5
+        agent.fit_bootstrap(packet, action, torch.ones((1, 1)), state_only=True)
+        for left, right in zip(agent.bootstrap_critic(packet, action), agent.bootstrap_critic(packet, changed)):
+            torch.testing.assert_close(left, right, rtol=0, atol=0)
+        head = agent.critic.q1
+        with torch.no_grad():
+            head.pair_control.bias.fill_(1.)
+        gap = head(packet, action)-head(packet, changed)
+        gap.sum().backward()
+        self.assertTrue(all(torch.count_nonzero(p.grad)==0 for p in head.output.parameters()))
+        action.requires_grad_()
+        first = torch.autograd.grad(head(packet, action).sum(), action, create_graph=True)[0]
+        second = torch.autograd.grad(first[0, 0, 0], action)[0]
+        self.assertGreater(float(second[0, 1, 0]), 0.)
+        boids = packet['obs'][..., 12:14]
+        alias_a = torch.cat((boids*.5, torch.ones_like(boids[..., :1])), -1)
+        alias_b = torch.cat((torch.zeros_like(boids), .5*torch.ones_like(boids[..., :1])), -1)
+        torch.testing.assert_close(head(packet, alias_a), head(packet, alias_b), rtol=0, atol=0)
+        restored = FrozenPolicy(frozen_payload(agent))
+        for left, right in zip(agent.target(packet, action), restored.critic(packet, action)):
+            torch.testing.assert_close(left, right, rtol=0, atol=0)
+
+    def test_proposal_trust_prior_is_frozen_restorable_and_opposes_drift(self):
+        from policy.interaction_sac import tensor_packet
+        c = config()
+        c['interaction']['proposal_kl_weight'] = 10.
+        agent = InteractionSAC(c)
+        _, raw = scene()
+        packet = {key: value[None] for key, value in tensor_packet(raw).items()}
+        self.assertIsNone(agent.proposal_reference)
+        agent.set_stage('joint')
+        self.assertAlmostEqual(float(agent.proposal_kl(packet)), 0., places=6)
+        reference = copy.deepcopy(agent.proposal_reference.state_dict())
+        with torch.no_grad():
+            agent.actor.base.mean_layer.bias.add_(.1)
+        loss = agent.proposal_kl(packet)
+        self.assertGreater(float(loss), 0.)
+        loss.backward()
+        self.assertTrue(torch.all(agent.actor.base.mean_layer.bias.grad > 0.))
+        self.assertTrue(all(p.grad is None for p in agent.proposal_reference.parameters()))
+        restored = InteractionSAC(c)
+        restored.load_state_dict(copy.deepcopy(agent.state_dict()))
+        torch.testing.assert_close(restored.proposal_kl(packet), loss)
+        for key, value in reference.items():
+            torch.testing.assert_close(restored.proposal_reference.state_dict()[key], value, rtol=0, atol=0)
+
+    def test_frozen_proposals_preserve_the_common_policy_and_gate_exploration(self):
+        c = config()
+        c['interaction'].update(deterministic_gate_proposals=True, entropy_objective='proposal-mean-v3')
+        agent = InteractionSAC(c)
+        env, packet = scene()
+        first, _ = agent.choose_action(packet)
+        second, _ = agent.choose_action(packet)
+        np.testing.assert_array_equal(first[:, :2], second[:, :2])
+        self.assertGreater(np.max(np.abs(first[:, 2] - second[:, 2])), 0.)
+        frozen = FrozenPolicy(frozen_payload(agent))
+        pair_first, _ = frozen.action(packet, torch.Generator().manual_seed(123))
+        np.testing.assert_allclose(first[:, :2], pair_first[:, :2], atol=1e-7)
+        agent.set_stage('joint')
+        first, _ = agent.choose_action(packet)
+        second, _ = agent.choose_action(packet)
+        self.assertGreater(np.max(np.abs(first[:, :2] - second[:, :2])), 0.)
+
+
+    def test_paper_agent_rejects_retired_direct_supervision_and_team_interventions(self):
+        for key, value, message in (('gate_objective', 'paired-improvement-v1', 'direct gate supervision is retired'),
+                                    ('intervention_scope', 'team', 'single-vessel')):
+            with self.subTest(key=key):
+                c = arm_config(config(), 'full')
+                c['interaction'][key] = value
+                with self.assertRaisesRegex(ValueError, message):
+                    InteractionSAC(c)
 
     def test_task_return_has_no_entropy_reward_or_temperature_update(self):
         c = arm_config(config(), 'same_info'); c['interaction']['entropy_objective'] = 'task-return-v4'
         agent = InteractionSAC(c); env, packet = scene(); replay = JointReplay(4)
         for stage in ('gate', 'joint'):
             agent.set_stage(stage)
+            frozen = FrozenPolicy(frozen_payload(agent))
+            deployed, _ = agent.choose_action(packet, deterministic=True)
+            for seed in (1, 2):
+                continuation, continuation_logp = frozen.action(packet, torch.Generator().manual_seed(seed))
+                np.testing.assert_array_equal(continuation, deployed)
+                self.assertEqual(continuation_logp, 0.)
             action, logp = agent.choose_action(packet)
             self.assertEqual(logp, 0.)
             for _ in range(4): replay.store(packet, action, env.boids_actions, np.ones(3), packet, False)
@@ -90,25 +141,6 @@ class Networks(unittest.TestCase):
             self.assertEqual(float(agent.alpha), alpha)
             self.assertEqual(len(agent.alpha_optimizer.state), 0)
 
-    def test_team_intervention_preserves_candidates_and_supervises_the_joint_configuration(self):
-        c = arm_config(config(), 'full')
-        c['interaction'].update(intervention_scope='team', gate_objective='paired-improvement-v1',
-                                entropy_objective='task-return-v4')
-        agent = InteractionSAC(c); env, packet = scene()
-        policy = FrozenPolicy(frozen_payload(agent))
-        row = intervention_pair(policy, compact_snapshot(env), 930100, 131, None, (0., .5, 1.), 2)
-        np.testing.assert_array_equal(row['counterfactual'][:, :2], row['action'][:, :2])
-        np.testing.assert_array_equal(row['counterfactual'][:, 2], [0., .5, 1.])
-        auxiliary = {k: np.asarray(row[k])[None] for k in
-            ('obs', 'motion', 'central', 'action', 'counterfactual', 'return', 'counterfactual_return')}
-        auxiliary['return'][:] = -30.; auxiliary['counterfactual_return'][:] = -10.
-        before = float(agent.paired_gate_loss(auxiliary).detach())
-        for _ in range(10):
-            agent.actor_optimizer.zero_grad(set_to_none=True)
-            agent.paired_gate_loss(auxiliary).backward(); agent.actor_optimizer.step()
-        self.assertLess(float(agent.paired_gate_loss(auxiliary).detach()), before)
-        with self.assertRaisesRegex(ValueError, 'legal reference per vessel'):
-            intervention_pair(policy, compact_snapshot(env), 930100, 131, None, (0., 1.), 2)
 
     def test_skipped_actor_update_keeps_policy_and_temperature_exact(self):
         c = arm_config(config(), 'same_info'); c['interaction']['entropy_objective'] = 'stage-mean-v2'

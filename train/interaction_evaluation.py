@@ -33,22 +33,29 @@ def digest(path):
 
 
 def formal_evidence_standard():
-    return dict(version='AD-capped-capture-v2', primary_metric='capture_time',
-        primary_definition='Episode capture time if captured; otherwise Tmax=60 s. Average over every episode.',
-        primary_reference='arboids_cbf', primary_cell='n3-a2.25', strong_interaction_cell='n6-a2.25',
+    return dict(version='AD-defense-success-v4-original-reference', primary_metric='success',
+        primary_definition='Defense success: capture the attacker or protect the target through the full 60-second horizon under the original termination rules.',
+        primary_reference='original', primary_cell='n3-a2.25', strong_interaction_cell='n6-a2.25',
+        reference_roles=dict(
+            original='Original ARBoids policy from the common pretraining checkpoint, without CBF; the original-method task reference.',
+            arboids_cbf='Original ARBoids architecture with added fixed CBF and matched continued training; a supplementary safety-and-training control, not the original method.',
+            same_info='Matched control for conditional-value supervision, retaining the same execution filter.',
+            no_peer='Matched control for candidate interaction, retaining the same execution filter.'),
+        primary_attribution='Full versus original measures the complete method difference. Attribute the two innovations using matched ablations; do not assign CBF or additional-training gains to them.',
+        require_cbf_superiority=False, require_all_metrics_to_improve=False,
         strong_interaction_definition='Six defenders in the same task arena at agility 2.25; fixed before formal outcomes.',
-        secondary_metrics=['capture','success','collision'], formal_seeds=list(SEEDS),
+        secondary_metrics=['capture','collision','breach','timeout','capture_time'], formal_seeds=list(SEEDS),
         episodes_per_cell_per_seed=200, calibration_states_per_seed=64, calibration_repetitions=4,
         interval='10000 paired hierarchical bootstrap draws: training seeds, then scenarios/states within seed.',
-        effect='Full minus prespecified reference; seconds for capped time, native units for E_env.',
+        effect='Full minus prespecified reference; probability points for defense success, seconds for secondary capped time, native units for E_env.',
         robustness=['all five seed effects','10% trimmed paired-state sensitivity','leave-one-seed-out effects'],
         percentage_improvement_threshold=None, require_every_seed_to_win=False,
-        primary_direction='lower', calibration_definition='E_env = mean absolute error of Delta Q against complete-environment Delta G.',
-        practical_meaning='Interpret the absolute time saved and joint CR/SR/collision outcomes in the 60-s task; record the rationale. No fixed percentage cutoff.',
+        primary_direction='higher', calibration_definition='E_env = mean absolute error of Delta Q against complete-environment Delta G.',
+        practical_meaning='Interpret extra successful defenses and failure causes under unchanged task rules. Capped capture time is secondary and cannot substitute for a defense-success claim.',
         seed_rule='Keep all five independent training seeds; do not require every seed to win or select a subset.',
-        A='Full improves capped capture time against ARBoids+CBF with credible uncertainty and task relevance under common safety and comparable budgets.',
+        A='Full improves defense success against unfiltered original ARBoids with credible uncertainty and task relevance; disclose safety and training-budget differences and assess mechanism gains separately.',
         B='Full improves independent E_env against Same-info; robust across states/seeds and linked to learning efficiency, control selection or task performance.',
-        C='Full improves against no_peer in the prespecified six-defender condition; a small three-defender contrast is permitted.',
+        C='Full improves defense success against no_peer in the prespecified six-defender condition; a small three-defender contrast is permitted.',
         D='Permutation tests configuration matching; four-branch contrasts test conditional interaction; executed controls and fixed trajectories connect coefficients to behavior.',
         mechanism_rule='Require beneficial configuration matching AND credible nonzero four-branch interaction AND changed executed control; inspect all fixed trajectory examples.',
         attribution=dict(same_info='Only remove conditional-consequence supervision and its label generation.',
@@ -161,7 +168,9 @@ def task_evaluation(checkpoint, output, training_seed, arm, episodes=200, cells=
             if arm == 'long_reference':
                 row, history = long_reference_episode(policy, seed, n, agility, trajectory=i == 0)
             else:
-                row, history = episode(policy, seed, n, agility, safety=arm not in ('boids', 'original'), trajectory=i == 0)
+                safety = (False if arm in ('boids', 'original') else
+                          policy.config['interaction'].get('safety', True))
+                row, history = episode(policy, seed, n, agility, safety=safety, trajectory=i == 0)
             row = dict(arm=arm, training_seed=training_seed, cell=cell, scene_seed=seed, defenders=n, agility=agility, **row)
             exists = csv_path.exists()
             with csv_path.open('a', newline='', encoding='utf-8') as f:
@@ -211,7 +220,7 @@ def calibration(resume, common_pretrain, output, training_seed, states=64, repet
             for _ in range(10 + index % 40):
                 snapshot = compact_snapshot(env)
                 action, _ = source.choose_action(packet)
-                packet, _, done, _, _, _ = execute(env, packet, action)
+                packet, _, done, _, _, _ = execute(env, packet, action, safety=False)
                 if done:
                     break
             packet = public_packet(snapshot.environment)
@@ -313,14 +322,16 @@ def formal_evidence(study):
     def read_rows(path):
         with path.open(encoding='utf-8') as f: return list(csv.DictReader(f))
     task={}
-    arms=('full','arboids_cbf','same_info','no_peer','short','model_value')
+    learning_arms=('full','arboids_cbf','same_info','no_peer','short','model_value')
+    arms=(*learning_arms,'original')
     for seed in SEEDS:
         for arm in arms:
-            progress_path=study/f'training/seed-{seed}/{arm}/progress.json'
-            progress=json.loads(progress_path.read_text())
-            if progress.get('step')!=1000000 or progress.get('complete') is not True:
-                raise ValueError('All five seeds and six arms must reach the fixed one-million-step endpoint.')
-            bind(progress_path)
+            if arm in learning_arms:
+                progress_path=study/f'training/seed-{seed}/{arm}/progress.json'
+                progress=json.loads(progress_path.read_text())
+                if progress.get('step')!=1000000 or progress.get('complete') is not True:
+                    raise ValueError('All five seeds and six learning arms must reach the fixed one-million-step endpoint.')
+                bind(progress_path)
             directory=study/f'primary/seed-{seed}/{arm}'
             record=completed(directory,'episodes.csv','episodes_sha256',episodes_per_cell=200,cells=[list(c) for c in CORE_CELLS])
             if not record.get('input',{}).get('checkpoint_sha256'): raise ValueError('Missing task checkpoint provenance.')
@@ -362,7 +373,7 @@ def formal_evidence(study):
                   for arm in arms if arm!='full'}
     calibration={}
     for seed in SEEDS:
-        for arm in arms:
+        for arm in learning_arms:
             if arm=='arboids_cbf': continue
             directory=study/f'calibration/seed-{seed}/{arm}'
             record=completed(directory,'calibration.csv','calibration_sha256',states=64,repetitions=4)
@@ -410,7 +421,9 @@ def formal_evidence(study):
                 examples.append(dict(seed=seed,state=index,scene_seed=row['scene_seed']))
         matching.append(seed_matching);interaction.append(seed_interaction);second_moment.append(seed_second);thrust.append(seed_thrust)
     result=dict(standard=standard,complete=True,artifact_inputs=artifacts,arm_summaries=arm_summaries,
-        A=dict(reference='arboids_cbf',cell='n3-a2.25',effects=task_effects['arboids_cbf']['n3-a2.25']),
+        A=dict(reference=standard['primary_reference'],cell=standard['primary_cell'],
+            effects=task_effects[standard['primary_reference']][standard['primary_cell']],
+            interpretation=standard['primary_attribution']),
         B=dict(reference='same_info',E_env=value_effects['same_info'],task_effects=task_effects['same_info']['n3-a2.25'],
             interpretation='Value-error improvement must be linked to learning, control selection or task benefit; accuracy alone is insufficient.'),
         C=dict(reference='no_peer',strong=task_effects['no_peer']['n6-a2.25'],ordinary=task_effects['no_peer']['n3-a2.25']),
@@ -420,13 +433,15 @@ def formal_evidence(study):
             interpretation='Permutation measures matching. Signed four-branch interaction and cross-repeat squared interaction are distinct; positive absolute noisy interaction alone is not evidence.'),
         auxiliary_controls=dict(task=task_effects,conditional_value=value_effects),
         claim_status='Evidence computed; practical relevance and A--D support require the recorded evidence review. No percentage or unanimous-seed rule.')
-    a=result['A']['effects']['capture_time'];b=result['B']['E_env']['all'];c=result['C']['strong']['capture_time'];d=result['D']
-    task_link=any(result['B']['task_effects'][k]['difference']*direction<0
-                  for k,direction in (('capture_time',1),('capture',-1),('success',-1)))
+    a=result['A']['effects']['success'];b=result['B']['E_env']['all'];c=result['C']['strong']['success'];d=result['D']
+    benefit=result['B']['task_effects']
+    task_link=(benefit['success']['difference']>0 or
+        (benefit['success']['difference']>=0 and benefit['capture']['difference']>=0 and
+         benefit['collision']['difference']<=0 and benefit['capture_time']['difference']<0))
     result['statistical_checks']=dict(
-        A=a['ci95'][1]<0,
+        A=a['ci95'][0]>0,
         B=b['ci95'][1]<0 and b['trimmed_10pct_sensitivity']<0 and all(v<0 for v in b['leave_one_seed_out']) and task_link,
-        C=c['ci95'][1]<0,
+        C=c['ci95'][0]>0,
         D=d['configuration_matching']['ci95'][0]>0 and
           (d['conditional_interaction']['ci95'][0]>0 or d['conditional_interaction']['ci95'][1]<0 or
            d['noise_corrected_interaction_second_moment']['ci95'][0]>0) and

@@ -17,20 +17,20 @@ from policy.interaction_sac import JointReplay, make_agent
 from interaction_rollout import public_packet, execute, compact_snapshot, SnapshotPool, InterventionSampler
 
 
-ARMS = ('arboids_cbf', 'same_info', 'model_value', 'short', 'full', 'no_peer')
+ARMS = ('arboids_cbf', 'same_info', 'model_value', 'short', 'full', 'no_peer', 'no_both')
 
 
 def arm_config(config, arm):
     if arm not in ARMS:
         raise ValueError('Unknown study arm: ' + arm)
     config = copy.deepcopy(config)
-    config['interaction'].update(arm=arm, auxiliary=('none' if arm in ('arboids_cbf', 'same_info')
+    config['interaction'].update(arm=arm, auxiliary=('none' if arm in ('arboids_cbf', 'same_info', 'no_both')
                                                     else 'value' if arm == 'model_value' else 'difference'))
     if arm == 'short':
         config['interaction']['horizon_steps'] = 10
     # Preserve the original five configuration dictionaries and their checkpoints.
     config['interaction'].pop('peer_candidates', None)
-    if arm == 'no_peer':
+    if arm in ('no_peer', 'no_both'):
         config['interaction']['peer_candidates'] = False
     return config
 
@@ -48,6 +48,18 @@ def atomic_torch(path, data):
     temporary = path.with_name(path.name + '.tmp')
     torch.save(data, temporary)
     temporary.replace(path)
+
+
+def retain_interventions(previous, current, *, step, capacity, max_age):
+    """Keep recent on-policy label batches instead of fitting one tiny batch repeatedly."""
+    if capacity <= 0:
+        return current
+    current = dict(current, generated_step=np.full(len(current['action']), step, dtype=np.int64))
+    if previous is not None:
+        keep = previous['generated_step'] >= step-max_age
+        current = {key: np.concatenate((previous[key][keep], value), axis=0)
+                   for key, value in current.items()}
+    return {key: value[-capacity:] for key, value in current.items()}
 
 
 def outcome_row(env, outcome):
@@ -112,24 +124,36 @@ def validate(config):
     if config['environment'] != dict(protocol='paper-parameters-v1', total_time=60., agility_noise_half_width=.5):
         raise ValueError('This study requires the fixed 60-second paper protocol.')
     t, i = config['training'], config['interaction']
-    if i.get('peer_candidates', True) != (i['arm'] != 'no_peer'):
+    if i.get('peer_candidates', True) != (i['arm'] not in ('no_peer', 'no_both')):
         raise ValueError('Only the matched no-peer arm may mask peer candidates.')
     positive = ('joint_steps', 'warm_steps', 'replay_capacity', 'eval_interval',
                 'eval_episodes', 'log_interval', 'checkpoint_interval')
     if t['gate_steps'] < 0 or any(t[k] <= 0 for k in positive) or t['warm_steps'] >= t['gate_steps'] + t['joint_steps']:
         raise ValueError('Invalid training intervals or step budget.')
+    if not t['warm_steps'] <= t.get('actor_start_steps', t['warm_steps']) < t['gate_steps']+t['joint_steps']:
+        raise ValueError('Actor learning must start after replay warmup and before the endpoint.')
     if any(i[k] <= 0 for k in ('intervention_interval', 'pairs_per_batch', 'snapshot_capacity', 'snapshot_interval', 'horizon_steps')):
         raise ValueError('Invalid intervention settings.')
     if i['auxiliary'] not in ('none', 'value', 'difference') or i['auxiliary_weight'] < 0:
         raise ValueError('Invalid auxiliary objective.')
-    if not i['safety']:
-        raise ValueError('Training study arms must share the CBF filter.')
+    if not np.isfinite(i.get('proposal_kl_weight', 0.)) or i.get('proposal_kl_weight', 0.) < 0.:
+        raise ValueError('Proposal KL weight must be finite and nonnegative.')
+    if not np.isfinite(i.get('gate_reference_weight', 0.)) or i.get('gate_reference_weight', 0.) < 0.:
+        raise ValueError('Gate reference weight must be finite and nonnegative.')
+    if i.get('auxiliary_capacity', 0) < 0 or i.get('auxiliary_max_age', 1) <= 0:
+        raise ValueError('Invalid intervention replay capacity or age.')
+    if not isinstance(i['safety'], bool):
+        raise ValueError('The common execution filter must be explicitly enabled or disabled.')
+    if i['arm'] == 'arboids_cbf' and not i['safety']:
+        raise ValueError('An arm named arboids_cbf requires the CBF filter.')
     if i.get('bootstrap_source', 'coupled') not in ('coupled', 'real_td'):
         raise ValueError('Invalid bootstrap source.')
     if i.get('critic_control_coordinates','raw-v1') not in ('raw-v1','nominal-thrust-v2'):
         raise ValueError('Invalid critic control coordinates.')
     if i.get('critic_state_coordinates', 'dynamics-v1') not in ('dynamics-v1', 'execution-v2'):
         raise ValueError('Invalid critic state coordinates.')
+    if i.get('critic_architecture', 'mlp') not in ('mlp', 'quadratic-control-v1'):
+        raise ValueError('Invalid critic architecture.')
     if not isinstance(i.get('label_repetitions',1),int) or i.get('label_repetitions',1)<1:
         raise ValueError('A positive integer label continuation count is required.')
     if not isinstance(t.get('critic_warmup_updates',0),int) or t.get('critic_warmup_updates',0)<0:
@@ -143,18 +167,10 @@ def validate(config):
     if i.get('reward_objective') == 'capped-time-v1' and (
             config['rl']['GAMMA'] != 1. or i.get('entropy_objective') != 'task-return-v4'):
         raise ValueError('Capped-time training requires undiscounted task returns without entropy rewards.')
-    if i.get('gate_objective', 'critic-v1') not in ('critic-v1', 'paired-improvement-v1'):
-        raise ValueError('Unknown gate objective.')
-    if i.get('intervention_scope', 'single') not in ('single', 'team'):
-        raise ValueError('Unknown gate intervention scope.')
-    if i.get('intervention_scope') == 'team' and i.get('gate_objective') != 'paired-improvement-v1':
-        raise ValueError('Team intervention is an explicit direct-gate exploration variant.')
-    if i.get('gate_objective') == 'paired-improvement-v1':
-        if (i['auxiliary'] != 'difference' or i['horizon_steps'] < 300 or
-                not i.get('deterministic_rollouts') or i.get('reward_objective') != 'capped-time-v1'):
-            raise ValueError('Direct gate improvement requires complete paired deployment-policy task returns.')
-        if not 1 <= i.get('gate_updates_per_batch', 64) <= i['intervention_interval']:
-            raise ValueError('Invalid number of gate updates per intervention batch.')
+    if i.get('gate_objective', 'critic-v1') != 'critic-v1':
+        raise ValueError('The paper trains the adapter through the joint critic; direct gate supervision is retired.')
+    if i.get('intervention_scope', 'single') != 'single':
+        raise ValueError('The paper uses single-vessel current-coefficient interventions.')
     if config['agent']['defender_num'] < 2:
         raise ValueError('Candidate interaction requires at least two defenders.')
 
@@ -351,6 +367,8 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
             agent.actor.initialize_source(weights)
     elif not t.get('allow_random_initialization', False):
         raise ValueError('A verified common pretraining checkpoint is required.')
+    if not agent.legacy:
+        agent.initialize_gate_reference()
     (output / 'config.yaml').write_text(yaml.safe_dump(config, sort_keys=False), encoding='utf-8')
     started = time.perf_counter()
     total = t['gate_steps'] + t['joint_steps']
@@ -433,14 +451,17 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
                 _, att_obs = env._get_obs()
                 attacker_action = attacker(att_obs)
             following, reward, outcome, thrust, _, _ = execute(env, packet, action, attacker_action=attacker_action,
-                reward_objective=interaction.get('reward_objective', 'paper-reward-v1'))
+                safety=interaction['safety'], reward_objective=interaction.get('reward_objective', 'paper-reward-v1'))
             replay.store(packet, action, thrust, reward, following, bool(outcome),
                 policy_cost=float(agent.alpha)*logp if warmup_from_returns else None)
             packet, done, step = following, bool(outcome), step + 1
             if (interaction['auxiliary'] != 'none' and step % interaction['intervention_interval'] == 0
                     and (not warmup_target or critic_warmup_updates==warmup_target)):
-                auxiliary, used = sampler.generate(agent, pool, step=step,
+                fresh, used = sampler.generate(agent, pool, step=step,
                     attacker=None if attacker is None else attacker.state_dict())
+                auxiliary = retain_interventions(auxiliary, fresh, step=step,
+                    capacity=interaction.get('auxiliary_capacity', 0),
+                    max_age=interaction.get('auxiliary_max_age', interaction['intervention_interval']))
                 simulated += used
             if step >= t['warm_steps']:
                 if agent.legacy:
@@ -448,14 +469,14 @@ def run_training(config, exp=None, device='cpu', *, output=None, max_steps=None,
                 else:
                     losses = agent.learn(replay, auxiliary,
                         diagnostics=step % t['log_interval'] == 0 or step == stop_at,
-                        update_actor=(stage != 'gate' or interaction.get('gate_objective') != 'paired-improvement-v1'
-                            or step % interaction['intervention_interval'] < interaction.get('gate_updates_per_batch', 64)))
+                        update_actor=step >= t.get('actor_start_steps', t['warm_steps']))
                     bootstrap_updates += int(losses.get('bootstrap_updated', agent.bootstrap_critic is not None))
                 actor_updates += int(losses.get('actor_updated', True))
                 critic_updates += int(losses.get('critic_updated', True))
             if step % t['eval_interval'] == 0 or step in (t['gate_steps'], total):
                 scores = evaluate(agent, t['eval_episodes'], 310000000 + int(t['seed']) * 10000,
-                                  config['agent']['defender_num'], attacker=attacker)
+                                  config['agent']['defender_num'], safety=interaction['safety'], attacker=attacker,
+                                  agility=t.get('evaluation_agility', 2.25))
                 row = dict(step=step, stage=stage, elapsed=prior_elapsed + time.perf_counter()-started,
                            simulated_steps=simulated, **scores)
                 exists = (output / 'metrics.csv').exists()
@@ -504,9 +525,10 @@ def main():
     parser.add_argument('--critic-state-coordinates', choices=['dynamics-v1', 'execution-v2'])
     parser.add_argument('--entropy-objective', choices=['joint-sum-v1','stage-mean-v2','proposal-mean-v3','task-return-v4'])
     parser.add_argument('--reward-objective', choices=['paper-reward-v1','capped-time-v1'])
-    parser.add_argument('--gate-objective', choices=['critic-v1','paired-improvement-v1'])
-    parser.add_argument('--intervention-scope', choices=['single','team'])
+    parser.add_argument('--gate-objective', choices=['critic-v1'])
+    parser.add_argument('--intervention-scope', choices=['single'])
     parser.add_argument('--defenders', type=int)
+    parser.add_argument('--safety', action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument('--bootstrap-estimator', choices=['min','mean'])
     parser.add_argument('--critic-warmup-target', choices=['real_td','complete_real_return','complete_real_state_return'])
     parser.add_argument('--policy-learning-rate', type=float)
@@ -542,11 +564,10 @@ def main():
             config['interaction']['entropy_objective'] = 'task-return-v4'
     if args.gate_objective is not None:
         config['interaction']['gate_objective'] = args.gate_objective
-        if args.gate_objective == 'paired-improvement-v1':
-            config['interaction'].update(deterministic_rollouts=True, gate_updates_per_batch=64,
-                                          gate_anchor_weight=.05)
     if args.defenders is not None:
         config['agent']['defender_num'] = args.defenders
+    if args.safety is not None:
+        config['interaction']['safety'] = args.safety
     if args.intervention_scope is not None:
         config['interaction']['intervention_scope'] = args.intervention_scope
     if args.bootstrap_estimator is not None:

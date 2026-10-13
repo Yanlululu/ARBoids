@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from envs.snapshot import SimulationSnapshot, preserved_random_state
-from policy.interaction_sac import InteractionActor, TwinTeamCritic, tensor_packet, bootstrap_value
+from policy.interaction_sac import InteractionActor, TwinTeamCritic, tensor_packet, bootstrap_value, actor_kwargs
 
 
 def public_packet(env, observations=None):
@@ -101,20 +101,20 @@ class FrozenPolicy:
     def __init__(self, payload):
         config = payload['config']
         hidden, relation = config['rl']['hidden_dim'], config['interaction']['relation_dim']
-        self.actor = InteractionActor(hidden, relation,
-            peer_candidates=config['interaction'].get('peer_candidates', True),
-            entropy_objective=config['interaction'].get('entropy_objective', 'joint-sum-v1')).eval().requires_grad_(False)
+        self.actor = InteractionActor(hidden, relation, **actor_kwargs(config)).eval().requires_grad_(False)
         self.actor.stage = payload.get('stage', 'gate')
         self.critic = TwinTeamCritic(hidden, relation,
             config['interaction'].get('critic_control_coordinates','raw-v1'),
-            config['interaction'].get('critic_state_coordinates', 'dynamics-v1')).eval().requires_grad_(False)
+            config['interaction'].get('critic_state_coordinates', 'dynamics-v1'),
+            config['interaction'].get('critic_architecture', 'mlp')).eval().requires_grad_(False)
         self.actor.load_state_dict(payload['actor'])
         self.critic.load_state_dict(payload['critic'])
         self.alpha, self.gamma = payload['alpha'], payload['gamma']
         self.bootstrap_estimator = config['interaction'].get('bootstrap_estimator', 'min')
         self.safety = config['interaction'].get('safety', True)
         self.reward_objective = config['interaction'].get('reward_objective', 'paper-reward-v1')
-        self.deterministic_rollouts = config['interaction'].get('deterministic_rollouts', False)
+        self.deterministic_rollouts = (config['interaction'].get('entropy_objective') == 'task-return-v4' or
+                                       config['interaction'].get('deterministic_rollouts', False))
         self.attacker = None
         if payload.get('attacker') is not None:
             from policy.networks import ActorAtt
@@ -362,8 +362,7 @@ class DeploymentPolicy:
         else:
             self.actor = InteractionActor(self.config['rl']['hidden_dim'],
                 self.config['interaction']['relation_dim'],
-                peer_candidates=self.config['interaction'].get('peer_candidates', True),
-                entropy_objective=self.config['interaction'].get('entropy_objective', 'joint-sum-v1')).to(device)
+                **actor_kwargs(self.config)).to(device)
             self.actor.stage = saved.get('stage', 'gate')
         self.actor.load_state_dict(saved['actor'], strict=True)
         self.actor.eval().requires_grad_(False)

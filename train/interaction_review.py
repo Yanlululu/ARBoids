@@ -55,7 +55,7 @@ def validation_calibration(payload, source, seed, states=32, repetitions=2):
             for _ in range(10 + index % 40):
                 snapshot = compact_snapshot(env)
                 action, _ = source.choose_action(packet)
-                packet, _, done, _, _, _ = execute(env, packet, action)
+                packet, _, done, _, _, _ = execute(env, packet, action, safety=policy.safety)
                 if done:
                     break
             packet = public_packet(snapshot.environment)

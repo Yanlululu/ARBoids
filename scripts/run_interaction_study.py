@@ -143,6 +143,18 @@ def build_formal_jobs(study, python, vrx_activate):
     return jobs, inherited
 
 
+def original_primary_job(study, jobs, seed):
+    """Evaluate the unfiltered pretraining policy on the paired core bank."""
+    reference=next(j for j in jobs if j['name']==f'eval-{seed}-original')
+    command=list(reference['command'])
+    command[command.index('--output')+1]=str(Path(study)/f'primary/seed-{seed}/original')
+    if '--primary-only' not in command:
+        command.append('--primary-only')
+    return dict(name=f'primary-{seed}-original',kind='cpu',command=command,
+        dependencies=[name for name in reference['dependencies'] if name!='review-formal-core'],
+        phase='formal-primary')
+
+
 def protocol_specification():
     """Concrete candidate protocol; the freeze review binds this object and the source hashes."""
     config = yaml.safe_load((ROOT/'train/configs/interaction-aware-sac.yaml').read_text())
@@ -169,7 +181,7 @@ def protocol_specification():
                           vrx=540000000, primary=560000000),
         cost_counters=['environment_steps', 'model_steps', 'gradient_updates', 'wall_seconds'],
         formal_evidence=formal_evidence_standard(),
-        decision_rule='Primary task effect is Full minus ARBoids+CBF capped capture time; report CR/SR/collision jointly. Assess A--D paired evidence and task relevance without a percentage or unanimous-seed threshold.')
+        decision_rule='Primary task effect is Full minus unfiltered original ARBoids capped capture time; disclose safety and training-budget differences. ARBoids+CBF with continued training is a supplementary control, not the original baseline or a mandatory superiority gate. Attribute innovations through matched ablations and report CR/SR/collision jointly; no all-metric, percentage or unanimous-seed threshold.')
 
 
 def build_jobs(study, python, vrx_activate, resume_steps=None):
@@ -310,6 +322,9 @@ def build_jobs(study, python, vrx_activate, resume_steps=None):
                 [f'train-{seed}-{arm}'], phase='formal-primary')
             primary.append(name)
             if arm!='arboids_cbf': primary.append(f'calibration-{seed}-{arm}')
+        reference=original_primary_job(study,formal,seed)
+        jobs.append(reference)
+        primary.append(reference['name'])
         name=add(f'diagnostics-mechanism-{seed}','cpu',[python,'-X','utf8','train/interaction_review.py',
             '--study',study,'--mode','mechanism','--seed',seed,'--workers',2],
             [f'train-{seed}-full'], completion=str(study/f'mechanism/seed-{seed}/completed.json'),phase='formal-mechanism')
@@ -432,114 +447,8 @@ def source_hashes():
     return {str(p.relative_to(ROOT)).replace('\\','/'):digest(p) for p in sorted(set(paths))}
 
 
-def performance_search_jobs(study, python, previous, previous_jobs, pretrain):
-    """Spend the exploration budget on four candidate methods and paired tasks."""
-    study, previous = Path(study), Path(previous)
-    graph = {j['name']: j for j in previous_jobs}
-    candidates = {}
-    for name, arm in (('long', 'full'), ('short', 'short')):
-        command = list(graph[f'develop-42-{arm}-10000']['command'])
-        candidates[name] = dict(output=command[command.index('--output') + 1], train=False,
-            command=command, inherited_from=str(previous), training_defenders=3,
-            description=f'Continue v8 candidate interaction with H={300 if arm == "full" else 10}.')
-    for scope, defenders in (('single', 3), ('single', 6), ('team', 3), ('team', 6)):
-        name = f'time_{scope}_n{defenders}'
-        output = study/'training'/name
-        command = [python, '-X', 'utf8', 'train/train_interaction.py', '--output', str(output),
-            '--arm', 'full', '--seed', '42', '--pretrain', str(pretrain), '--device', 'cuda:0',
-            '--stop-at-step', '10000', '--critic-control-coordinates', 'nominal-thrust-v2',
-            '--warm-steps', '1000',
-            '--bootstrap-estimator', 'mean', '--policy-learning-rate', '0.00003',
-            '--long-horizon-steps', '300', '--label-repetitions', '4',
-            '--reward-objective', 'capped-time-v1', '--gate-objective', 'paired-improvement-v1',
-            '--defenders', str(defenders), '--intervention-scope', scope]
-        candidates[name] = dict(output=str(output), command=command, train=True, training_defenders=defenders,
-            intervention_scope=scope,
-            description='Direct paired gate improvement from complete deployment-policy capped-time returns.')
-    jobs = []
-    def screen(name, step, dependencies):
-        jobs.append(dict(name=f'diagnostics-performance-{name}-{step}', kind='cpu',
-            command=[python, '-X', 'utf8', 'scripts/run_interaction_study.py', 'performance-screen',
-                '--study', str(study), '--candidate', name, '--checkpoint-step', str(step)],
-            dependencies=dependencies, completion=str(study/'screens'/f'{name}-{step}'/'completed.json')))
-    screen('source', 0, [])
-    for name in ('long', 'short'):
-        screen(name, 5000, ['diagnostics-performance-source-0'])
-        screen(name, 10000, ['diagnostics-performance-source-0'])
-    latest = {}
-    for step in (10000, 25000, 50000):
-        for name, candidate in candidates.items():
-            if not candidate['train']:
-                continue
-            command = list(candidate['command'])
-            command[command.index('--stop-at-step') + 1] = str(step)
-            job = f'develop-performance-{name}-{step}'
-            jobs.append(dict(name=job, kind='gpu', command=command,
-                dependencies=[] if name not in latest else [latest[name]], endpoint_step=step,
-                phase='performance-exploration', candidate=name))
-            screen(name, step, [job, 'diagnostics-performance-source-0'])
-            latest[name] = job
-    return jobs, candidates
 
 
-def prepare_performance_search(study, previous, python):
-    import fcntl
-    from interaction_evaluation import formal_evidence_standard
-    study, previous = Path(study).resolve(), Path(previous).resolve()
-    if (study/'manifest.json').exists():
-        raise RuntimeError('Performance search already exists; resume its runner.')
-    with (previous/'runner.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        old = json.loads((previous/'manifest.json').read_text())
-        if old['root'] != str(ROOT) or old.get('superseded_by'):
-            raise ValueError('Expected the current owned development study.')
-        if (previous/'reviews/review-protocol-freeze/decision.json').exists():
-            raise RuntimeError('An assessed formal freeze cannot be changed by exploration.')
-        for path in (previous/'jobs').glob('*.json'):
-            record = json.loads(path.read_text())
-            if record.get('pid') and process_identity(record['pid']):
-                raise RuntimeError('Finish or checkpoint owned jobs before changing the source manifest.')
-        source = verified_existing_pretrain(42)
-        if source is None:
-            raise RuntimeError('Verify the shared source actor before launching candidates.')
-        jobs, candidates = performance_search_jobs(study, python, previous, old['jobs'], source['path'])
-        inherited = {}
-        for name in ('long', 'short'):
-            directory = Path(candidates[name]['output'])
-            config = yaml.safe_load((directory/'config.yaml').read_text())
-            if (config['interaction'].get('entropy_objective') != 'proposal-mean-v3' or
-                    config['interaction'].get('bootstrap_estimator') != 'mean' or
-                    not (directory/'probe-5000.pth').exists() or not (directory/'probe-10000.pth').exists()):
-                raise ValueError('Only the unchanged v8 candidate checkpoints may be continued.')
-            inherited[name] = dict(path=str(directory/'resume.pth'), sha256=digest(directory/'resume.pth'),
-                step=json.loads((directory/'progress.json').read_text())['step'],
-                previous_source_hashes=old['code'])
-        manifest = dict(format='interaction-performance-v1', root=str(ROOT), code=source_hashes(),
-            jobs=jobs, candidates=candidates, inherited_pretraining={'pretrain-42': source},
-            inherited_development=inherited, previous_study=str(previous),
-            limits=dict(gpu=4, cpu=2, vrx=1, rollout_workers=4), cpu_per_gpu=4, cpu_per_evaluation=2,
-            cpu_affinity=old['cpu_affinity'], wait_for_projects=old.get('wait_for_projects', []),
-            exploration=dict(priority='Find excellent candidate-interaction task performance, strengthen it, then complete paper evidence.',
-                maximum_endpoint_step=50000, development_seed=42, episodes_per_condition=32,
-                conditions=[dict(defenders=3, agility=2.25, bank=860000000),
-                            dict(defenders=6, agility=2.25, bank=861000000)],
-                confirmation_banks=[864000000, 865000000],
-                selection='Compare capped capture time, capture, success and physical collision jointly. Keep every fixed endpoint and scenario.',
-                reference='Shared one-million-step pretrained ARBoids+CBF; screening reference only, not the final matched-budget comparison.',
-                retired_routes=dict(long='100-episode validation time 20.384 to 33.598 s, capture .98 to .62 at 10000.',
-                                    short='100-episode validation time 20.448 to 34.472 s, capture .98 to .60 at 10000.'),
-                deferred=['complete ablations', 'cross-seed replication', 'high-precision value calibration', 'mechanism proof']),
-            formal_evidence=formal_evidence_standard(), formal_method_frozen=False, formal_jobs_released=False)
-        write_json(study/'manifest.json', manifest)
-        for job in jobs:
-            if job['name'].startswith('develop-') and valid_completion(job, study):
-                write_json(study/'jobs'/f'{job["name"]}.json', dict(name=job['name'], state='completed',
-                    returncode=0, inherited_from=str(previous), completion_basis='Existing fixed endpoint and progress verified'))
-        old['superseded_by'] = str(study)
-        old['superseded_reason'] = manifest['exploration']['priority']
-        write_json(previous/'manifest.json', old)
-        write_json(study/'status.json', dict(state='prepared', active=[], jobs=len(jobs),
-            core_evidence_complete=False, submission_evidence_complete=False))
 
 
 _PERFORMANCE_POLICIES = {}
@@ -1212,23 +1121,35 @@ def migrate_evidence_standard(study):
                 running.append(dict(name=record['name'],pid=record['pid'],
                     process_identity=verify_running_job(jobs[record['name']],record)))
         core=jobs['review-formal-core'];name='diagnostics-formal-evidence'
+        primary_references=[]
+        for seed in FORMAL_SEEDS:
+            reference=original_primary_job(study,manifest['jobs'],seed)
+            if reference['name'] not in jobs:
+                manifest['jobs'].append(reference)
+                jobs[reference['name']]=reference
+            primary_references.append(reference['name'])
         if name not in jobs:
             python=next(j['command'][0] for j in manifest['jobs'] if j['name'].startswith('develop-'))
-            manifest['jobs'].append(dict(name=name,kind='cpu',phase='formal-evidence',
+            evidence_job=dict(name=name,kind='cpu',phase='formal-evidence',
                 command=[python,'-X','utf8','train/interaction_evaluation.py','evidence','--output',str(study)],
-                dependencies=list(core['dependencies']),completion=str(study/'reviews/formal-evidence/completed.json')))
+                dependencies=list(core['dependencies']),completion=str(study/'reviews/formal-evidence/completed.json'))
+            manifest['jobs'].append(evidence_job)
+            jobs[name]=evidence_job
             core['dependencies']=[name]
+        for reference in primary_references:
+            if reference not in jobs[name]['dependencies']:
+                jobs[name]['dependencies'].append(reference)
         core.update(requires_claim_assessment=True)
         core['policy']['allowed_assessments']=['supported']
         core['policy']['criteria']=['Assess A--D using paired five-seed effects and 95% intervals.',
-            'Primary outcome is capped capture time against ARBoids+CBF; interpret absolute seconds and CR/SR/collision.',
+            'Primary outcome is capped capture time against unfiltered original ARBoids; interpret absolute seconds and CR/SR/collision. Keep ARBoids+CBF as a supplementary control, without a mandatory superiority gate.',
             'Require independent E_env attribution, the prespecified six-defender contrast, and separate matching/interaction/behavior evidence.']
         manifest.setdefault('execution_revisions',[]).append(dict(time=time.time(),prior_manifest_sha256=digest(path),
             changes=changed,preserved_running=running,
-            reason='User registered A--D formal evidence, capped capture time, paired five-seed intervals and fixed strong-interaction attribution before any formal results.'))
+            reason='Correct the original-method reference to unfiltered ARBoids before formal outcomes; retain CBF as a supplementary control and preserve matched attribution, existing learner jobs and historical results.'))
         manifest['candidate_protocol']['formal_evidence']=formal_evidence_standard()
         manifest['candidate_protocol']['decision_rule']=protocol_specification()['decision_rule']
-        manifest.update(code=current,evidence_standard_revision='AD-capped-capture-v1')
+        manifest.update(code=current,evidence_standard_revision=formal_evidence_standard()['version'])
         write_json(path,manifest)
 
 
@@ -1608,7 +1529,7 @@ def run(study, adopt_running=False):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode',choices=['prepare','prepare-composed-revision','prepare-performance-search','performance-screen','run','status','migrate-bootstrap',
+    parser.add_argument('mode',choices=['prepare','prepare-composed-revision','performance-screen','run','status','migrate-bootstrap',
                                        'migrate-technical-reviews','migrate-evidence-standard','migrate-parallel-development',
                                        'migrate-control-isolation','decide-review'])
     parser.add_argument('--study',type=Path,default=ROOT/'train/experiments/ia-crrl-20261007')
@@ -1629,9 +1550,6 @@ def main():
     elif args.mode=='prepare-composed-revision':
         if args.previous_study is None: parser.error('--previous-study is required for a scientific revision.')
         prepare_composed_revision(args.study,args.previous_study,args.python,args.vrx_activate.resolve())
-    elif args.mode=='prepare-performance-search':
-        if args.previous_study is None: parser.error('--previous-study is required.')
-        prepare_performance_search(args.study, args.previous_study, args.python)
     elif args.mode=='performance-screen':
         if args.candidate is None: parser.error('--candidate is required.')
         performance_screen(args.study, args.candidate, args.checkpoint_step)
