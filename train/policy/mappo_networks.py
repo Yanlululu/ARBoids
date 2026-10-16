@@ -12,6 +12,84 @@ def initialize(module):
         nn.init.zeros_(module.bias)
 
 
+class SourceObservationEncoder(nn.Module):
+    """Encode the released local observation, including a variable peer set."""
+    def __init__(self, width=256,public_state=False):
+        super().__init__();self.public_state=public_state
+        self.own_dim=17 if public_state else 14;self.peer_dim=7 if public_state else 2
+        self.own=nn.Sequential(nn.Linear(self.own_dim,width//2),nn.Tanh())
+        self.peers=nn.Sequential(nn.Linear(self.peer_dim,width//4 if public_state else width//2),nn.Tanh())
+        self.output=nn.Sequential(nn.Linear(width,width),nn.Tanh(),nn.Linear(width,width),nn.Tanh())
+        self.apply(initialize)
+
+    def forward(self, observation):
+        own_dim=getattr(self,'own_dim',14);peer_dim=getattr(self,'peer_dim',2)
+        peers=observation[...,own_dim:].reshape(*observation.shape[:-1],-1,peer_dim)
+        encoded=self.peers(peers);context=[encoded.mean(-2)]
+        if getattr(self,'public_state',False):context.append(encoded.amax(-2))
+        return self.output(torch.cat((self.own(observation[...,:own_dim]),*context),-1))
+
+
+class SourceGaussianPolicy(nn.Module):
+    """Shared continuous policy with no forecasts, fusion gate, or credit head."""
+    def __init__(self,width=256,state_dependent_std=False,public_state=False):
+        super().__init__();self.encoder=SourceObservationEncoder(width,public_state)
+        self.mean=nn.Linear(width,2);self.state_dependent_std=state_dependent_std
+        if state_dependent_std:self.log_std=nn.Linear(width,2)
+        else:self.log_std=nn.Parameter(torch.full((2,),-.5))
+        nn.init.orthogonal_(self.mean.weight,.01);nn.init.zeros_(self.mean.bias)
+        if state_dependent_std:
+            nn.init.zeros_(self.log_std.weight);nn.init.constant_(self.log_std.bias,-.5)
+
+    def distribution(self,observation):
+        hidden=self.encoder(observation)
+        log_std=self.log_std(hidden) if self.state_dependent_std else self.log_std.expand(*hidden.shape[:-1],2)
+        return Normal(self.mean(hidden),log_std.clamp(-5.,2.).exp())
+
+    def forward(self,observation,deterministic=False):
+        dist=self.distribution(observation);latent=dist.mean if deterministic else dist.rsample()
+        action=latent.tanh()
+        logp=(dist.log_prob(latent)-2.*(math.log(2.)-latent-F.softplus(-2.*latent))).sum(-1)
+        return action,latent,logp
+
+
+class SourceCentralValue(nn.Module):
+    def __init__(self,width=256,public_state=False):
+        super().__init__();self.encoder=SourceObservationEncoder(width,public_state)
+        self.value=nn.Sequential(nn.Linear(width*3,width),nn.Tanh(),nn.Linear(width,1))
+        self.value.apply(initialize)
+
+    def forward(self,observation):
+        hidden=self.encoder(observation);n=hidden.shape[-2]
+        context=torch.cat((hidden.mean(-2,keepdim=True),hidden.amax(-2,keepdim=True)),-1)
+        return self.value(torch.cat((hidden,context.expand(*hidden.shape[:-2],n,context.shape[-1])),-1)).squeeze(-1)
+
+
+class SourceAttentionQ(nn.Module):
+    """MAAC attention over other agents' observations and executed actions."""
+    def __init__(self,width=256,heads=4,public_state=False):
+        super().__init__();self.width=width;self.heads=heads
+        self.encoder=SourceObservationEncoder(width,public_state)
+        self.sa=nn.Sequential(nn.Linear(width+2,width),nn.LeakyReLU(.01))
+        self.query=nn.Linear(width,width,bias=False);self.key=nn.Linear(width,width,bias=False)
+        self.value=nn.Linear(width,width)
+        self.output=nn.Sequential(nn.Linear(width*2,width),nn.LeakyReLU(.01),nn.Linear(width,1))
+
+    def forward(self,observation,action,detach_peers=False,regularize=False):
+        hidden=self.encoder(observation);own=self.sa(torch.cat((hidden,action),-1))
+        others=own.detach() if detach_peers else own
+        batch,n=hidden.shape[:2];dimension=self.width//self.heads
+        q=self.query(hidden).reshape(batch,n,self.heads,dimension).transpose(1,2)
+        k=self.key(others).reshape(batch,n,self.heads,dimension).transpose(1,2)
+        v=self.value(others).reshape(batch,n,self.heads,dimension).transpose(1,2)
+        logits=q@k.transpose(-1,-2)/math.sqrt(dimension)
+        mask=torch.eye(n,dtype=torch.bool,device=action.device)[None,None]
+        weights=logits.masked_fill(mask,-torch.inf).softmax(-1)
+        context=(weights@v).transpose(1,2).reshape(batch,n,self.width)
+        values=self.output(torch.cat((own,context),-1)).squeeze(-1)
+        return (values,1e-3*logits.square().mean()) if regularize else values
+
+
 class PredictiveActor(nn.Module):
     def __init__(self, hidden_dim=512, relation_dim=64, coordination_dim=16, edge_dim=18,
                  baseline_initialization=False, baseline_gate_bound=0., theta_space_gate=False,

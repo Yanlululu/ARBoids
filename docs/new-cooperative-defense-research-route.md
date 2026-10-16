@@ -1,1177 +1,587 @@
-> 当前研究方案按用户指定版本恢复：候选控制交互条件化的协同 Adapter，以及单艇融合干预驱动的联合条件价值学习。后续分层组成学生、双层 Actor–Critic 和预测直接监督 Actor 的方案不再作为研发主线。预测相关代码、控制器和实验结果暂时全部保留，作为独立工具与对照。
->
-> 下文保留指定方案的完整内容。文中的既有数值继续归属于各自方法与原实验协议；当前 60 秒协议及后续正、负实验事实以 `results.md` 为准。恢复方案不代表尚未完成的学习证据已经成立，也不撤销已确认的执行一致性修复。
->
-> 对照口径：原论文基线是未加 CBF 的 ARBoids。CBF 最初为早期预测门控方案的额外竞争基线，后来被沿用为执行层；它不是原文模块，也不是当前两项创新的内部学习机制。现有带 CBF 的实现与消融保持同一执行层，CBF 对照单独标明用途，不设为必须全面超越的唯一主基线。原法主比较衡量完整方法差异，两项创新的收益由匹配消融识别。
+# 基于候选交互的联合策略融合与基于融合干预的条件价值学习：论文证据方案
 
-# 新论文的总体定位
+本方案以开发成功率96.09%的`joint-supported-credit-128`为唯一方法基础，保留其源检查点、六艇主任务与现有开发集作为固定开发参照。两项机制分别建立任务收益、重训消融、替代方法、学习重复性、适用范围与VRX行为的完整证据；正式五次独立运行按同一配方分别训练共同源策略及剩余学习模块。
 
-**建议将新论文确定为：**
+## 1. 研究问题与方法贡献
 
-## 《面向高机动目标防御的多无人艇交互感知协同残差强化学习》
+ARBoids通过状态相关的融合权重调节学习策略与Boids策略的参与程度，并通过队友观测及Boids特征利用群体信息。本文进一步研究融合系数的联合决策，以及融合变化对团队任务结果的条件影响。[ARBoids原文，III-A与III-E](../paper/2026_ARBoids_Adaptive_Residual_Reinforcement_Learning_With_Boids_Model_for_Cooperative_Multi-USV_Target_Defense.pdf)
 
-**Interaction-Aware Cooperative Residual Reinforcement Learning for Multi-USV Target Defense**
+**贡献一：基于候选交互的联合策略融合（Joint Policy Blending Based on Candidate Interactions）。** 提出基于候选交互的联合策略融合方法，将源策略的局部融合建议与候选机动之间的艇对交互关系纳入统一优化，使各艇对规则策略和学习策略的选择由局部偏好调节扩展为联合融合决策。
 
-论文首先研究一个独立的任务问题：
+**贡献二：基于融合干预的条件价值学习（Conditional Value Learning Based on Blending Interventions）。** 在固定前驱策略下，构造仅具有单艇融合差异的联合方案，利用配对闭环后果刻画局部融合变化的条件任务影响，并将完整方案结果与相对价值差共同纳入估计目标，学习不同融合选择之间的条件价值关系，据此修正融合决策。
 
-> **在攻击者具有机动优势、艇间交互随拦截过程增强的条件下，如何学习兼顾区域防护、机动协调与捕获效率的多无人艇联合控制策略，使防守方的数量与空间分布优势转化为有效的团队防御能力？**
+前者联合确定各艇如何融合两类策略，后者学习融合变化在当前条件下的任务价值。下文分别记为机制一、机制二，各自由独立使用、共同使用及专属替代实验支持。
 
-随后提出方法：**通过交互感知的自适应融合，协调规则控制与学习控制在不同防守艇上的作用；通过针对融合决策的条件价值学习，使这种协调能够从任务反馈中学出来。**
+## 2. 基于候选交互的联合策略融合
 
-这与ARBoids的研究组织方式一致：**先提出任务中的控制需求，再选择能够回应这些需求的学习机制，最后以对应实验支撑方法。**新文章的主语是“多无人艇协同防御与策略学习”，ARBoids是重要相关工作和对照，而不是每一节默认的叙述前提。
+为协调规则策略与学习策略在多艇系统中的联合使用，该方法将各艇的融合系数作为联合决策变量，以源策略的融合建议构造正则项，并根据不同融合候选产生的预测运动响应建立艇对交互代价。联合优化使局部策略选择同时考虑源策略偏好与队友候选机动的相容性。
 
-下面将原文分析、新方法公式、完整文章大纲、结果安排及引言文献统一起来。文中新增网络和训练公式属于拟定方法；已有实验仍归属于其实际运行的方法，不改变结果名称。
+### 2.1 融合系数与源策略建议
 
----
-
-# 一、ARBoids究竟是怎样形成一篇论文的？
-
-能够从正式期刊版还原的是作者公开呈现的论证过程，而不是未披露的实际研发顺序。其论证并非“找到一个缺失模块，然后补上”，而是完成了五次逐步收敛。
-
-## 1. 从应用领域收敛到具有挑战性的任务条件
-
-原文首先定义目标防御任务：防守艇在攻击艇进入保护区域之前实施拦截。随后突出攻击艇具有更强机动能力这一条件，由此提出防守策略需要同时具备协作与动态适应能力。2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_…
-
-它并没有以“现有Actor少了一个输入”开篇。**高机动对抗是问题背景，合作与适应是控制需求。**
-
-新论文对应地突出：高机动对抗中，多艇需要通过联合机动弥补个体能力不足；同时，拦截汇聚导致艇间行动相互影响，因此需要将局部控制组织为有效的团队行为。
-
-## 2. 从众多已有方法收敛到一组互补能力
-
-原文依次讨论解析方法、虚拟力方法、强化学习和残差强化学习。它并没有否定这些方法，而是提取其中的互补性：规则方法提供结构化的协调先验，强化学习提供根据交互经验调整行为的能力，残差框架则提供二者结合的入口。2026_ARBoids_Adaptive_Residual\_…
-
-因此，新文章不需要证明此前所有方法都无效。应当说明：
-
-> 规则控制和学习控制已经提供了有效基础，研究重点是如何使这些控制能力在团队交互中得到协调使用。
-
-## 3. 从控制需求收敛到明确的决策机制
-
-原文到了III-A，才将技术问题落实到两类控制的组成方式：
+设当前可用状态及运动信息为\(\chi\)，第\(i\)艘艇的学习候选和规则候选分别为\(a_i^L\)、\(a_i^B\)。两类策略按融合系数生成控制输入：
 
 \[
-u=u^L+u^B
-\]
-
-改为：
-
-\[
-u=\theta(s)u^L+[1-\theta(s)]u^B.
-\]
-
-其改变是允许控制组成随状态调整，融合权重由网络学习，而不是预先固定。2026_ARBoids_Adaptive_Residual\_…
-
-**这一步是ARBoids的核心：把前面提出的“合作与适应”需求，落实为一个具有明确控制含义的可学习变量。**
-
-新论文也应这样做，但变量的学术意义不再停留于“本艇使用多少规则控制”，而是：
-
-> **本艇的融合比例如何依赖队友候选控制及运动关系，从而共同形成有利的拦截行为。**
-
-## 4. 围绕变量补全信息、评价与训练
-
-原文第4页图2说明：Adapter读取本艇两类动作及决策隐特征；Critic把学习动作与融合权重共同纳入评价；训练阶段通过权重扰动探索不同融合方式。2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_…
-
-因此，原文创新不是孤立的一个公式，而是：
-
-\[
-\text{控制组成变量}
-\rightarrow
-\text{变量所需信息}
-\rightarrow
-\text{变量的任务评价}
-\rightarrow
-\text{更新变量生成机制}.
-\]
-
-新机制也必须形成这条完整链条。
-
-## 5. 实验分别回答方法主张
-
-原文图4展示协同行为，图5展示学习和消融，图6考察敏捷度与艇数，图7考察学习型攻击者。实验不是按开发时间排列，而是按论点排列。2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_…
-
-可以概括为：
-
-| ARBoids的研究推进 | 新论文的对应推进 |
-|---|---|
-| 高机动攻击者使目标防御困难 | 高机动对抗与密集交互共同增加联合控制难度 |
-| 规则与学习需要动态结合 | 不同艇对规则与学习的使用需要相互协调 |
-| 提出状态相关的融合变量 | 提出候选动作交互条件下的协同融合变量 |
-| 通过Actor–Critic训练Adapter | 通过联合价值与融合干预评价训练协同Adapter |
-| 验证学习、协同和任务适应能力 | 验证交互建模、条件价值学习和联合防御效果 |
-
----
-
-# 二、研究范围与原文保持同一层级
-
-原文采用SAC、Boids、均值嵌入和课程学习；没有证明策略全局最优；忽略风浪；VRX实验仍有碰撞；超过四艇后性能下降；真实艇实验放在未来工作。2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_…
-
-新论文据此限定即可：
-
-| 范围问题 | 原文情况 | 新论文安排 |
-|---|---|---|
-| 使用已有基础算法 | 大量使用，创新集中在融合与训练 | 保留Boids和SAC，不要求重新发明基础算法 |
-| 全局最优及严格无碰撞证明 | 没有给出 | 不作为本文额外研究任务 |
-| 风浪、复杂海况 | 忽略 | 沿用相同范围 |
-| 实艇验证 | 未完成 | 以数值训练和VRX验证为主体 |
-| 任意艇数和所有对手 | 未覆盖，部分条件退化 | 按原文相同类型检验，不承诺无限外推 |
-| 所有组件都必须单独原创 | 不是原文标准 | 评价完整新机制，而不是要求每个编码器原创 |
-
-**这些问题不再扩展成全面补强清单。**本文需要完成的是自己的策略机制、训练方法与实验结论之间的对应关系。
-
----
-
-# 三、拟定核心机制：究竟替换什么，保留什么？
-
-## 1. 不改变任务，也不把“单艇权重”简单变成“多艇权重”
-
-ARBoids本来就是多艇方法。它采用共享网络参数，各艇分别输出权重；共享参数不等于所有艇权重相同。原状态中也已经包含队友信息。2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_…
-
-所以，新机制不是：
-
-\[
-\text{一个权重}\rightarrow n\text{个权重}.
-\]
-
-而是：
-
-\[
-\boxed{
-\text{群体状态下的个体融合}
-\rightarrow
-\text{候选动作交互条件下的协同融合学习}.
-}
-\]
-
-## 2. 保留两类控制来源，改造融合策略及其训练依据
-
-仍然使用：
-
-\[
-u_i=\theta_i a_i^L+(1-\theta_i)a_i^B.
-\]
-
-改造两处。
-
-**策略侧：**让\(\theta_i\)显式依赖本艇与队友候选动作之间的关系，而不只直接读取本艇候选动作。
-
-**训练侧：**评价整组融合权重的联合效果，并通过“只改变某艘艇当前权重”的成对后果，训练价值函数辨识该调整的条件作用。
-
-因此，完整方法是：
-
-\[
-\boxed{
-\text{候选控制交互表示}
-\rightarrow
-\text{协同自适应门控}
-\rightarrow
-\text{联合价值学习}
-\rightarrow
-\text{融合干预的后果监督}.
-}
-\]
-
-其中，**协同自适应融合是主机制，后果推演是训练手段**。不再将“联合后果引导”单独用作任务名称。
-
-## 3. 三项贡献按照原文层级组织
-
-**第一项：交互感知的协同残差控制框架。**
-
-面向高机动对抗条件下的目标防御，将队友候选控制与相对运动关系纳入自适应融合，使不同防守艇对规则控制和学习控制的使用服务于统一的团队任务。
-
-**第二项：融合决策的条件价值学习机制。**
-
-在联合Critic中评价整组融合决策，并利用局部门控干预的长期后果校准价值差，使训练能够区分各艇融合调整在队友动作条件下的任务作用。
-
-**第三项：机制与任务表现的对应验证。**
-
-通过同信息学习对照、模型辅助对照、短长时消融，以及敏捷度、艇数和学习型攻击者实验，评价协同融合的学习效果与防御能力。
-
-这里不将通信、Boids、SAC、并行计算和安全过滤器分别包装成独立创新。
-
----
-
-# 四、引言文献：与原文相近数量、相近刊物层级的21篇期刊文章
-
-原文引言使用[1]—[21]，全文共28篇参考文献；引言文献本身包含期刊和会议，并非全部期刊。新稿可配置**21篇期刊文章作为引言主体文献**，方法部分再补SAC、反事实评价等基础来源。原文引用结构见其引言和参考文献。2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_…
-
-下面按实际刊物对齐，主要覆盖RA-L、T-RO、T-Cybernetics、TNNLS、TSMC、T-Mechatronics、IJRR、Automatica、JMLR等，不将未经核验的统一“一区”标签代替刊物信息。
-
-## A. 任务背景、对抗几何与协同拦截：[1]—[7]
-
-| 编号 | 期刊文章 | 在新引言中的作用 |
-|---|---|---|
-| [1] | **Qiao Y., et al.** “Survey of Deep Learning for Autonomous Surface Vehicles in Marine Environments.” *IEEE Transactions on Intelligent Transportation Systems*, 24(4):3678–3701, 2023. DOI: **10.1109/TITS.2023.3235911**。[IEEE Xplore](https://ieeexplore.ieee.org/document/10021250/) | 支撑海面自主系统中感知、决策与学习控制的研究背景 |
-| [2] | **Fu H., Liu H. H.-T.** “Guarding a Territory Against an Intelligent Intruder: Strategy Design and Experimental Verification.” *IEEE/ASME Transactions on Mechatronics*, 25(4):1765–1772, 2020. DOI: **10.1109/TMECH.2020.2996901**。[飞行系统与控制](https://flight.utias.utoronto.ca/fsc/wp-content/uploads/2023/06/TMech2020FF.pdf) | 支撑目标防御、智能入侵者及团队拦截的任务定义 |
-| [3] | **Chen Y., et al.** “A Distributed Pipeline for Collaborative Pursuit in the Target Guarding Problem.” *IEEE Robotics and Automation Letters*, 9(3):2064–2071, 2024. DOI: **10.1109/LRA.2024.3349977**。[IEEE Xplore](https://ieeexplore.ieee.org/document/10380689/) | 支撑目标守卫中的协同决策与分布式预测控制 |
-| [4] | **Yan R., et al.** “Multiplayer Homicidal Chauffeur Reach-Avoid Games: A Pursuit Enclosure Function Approach.” *Automatica*, 167:111770, 2024. DOI: **10.1016/j.automatica.2024.111770**。[科学直通车](https://www.sciencedirect.com/science/article/pii/S0005109824002644) | 支撑受运动约束的多参与者到达—规避与围堵分析 |
-| [5] | **Fang X., Wang C., Xie L., Chen J.** “Cooperative Pursuit With Multi-Pursuer and One Faster Free-Moving Evader.” *IEEE Transactions on Cybernetics*, 52(3):1405–1414, 2022。[卡内基梅隆大学机器人研究所出版物库](https://publications.ri.cmu.edu/cooperative-pursuit-with-multi-pursuer-and-one-faster-free-moving-evader) 2026_ARBoids_Adaptive_Residual\_… | 直接支持多追捕者对抗更快逃逸者这一任务条件 |
-| [6] | **Guo X., Cui R., Yan W.** “Pursuit-Evasion Games of Marine Surface Vessels Using Neural Network-Based Control.” *IEEE Transactions on Systems, Man, and Cybernetics: Systems*, 55(1):18–27, 2025。2026_ARBoids_Adaptive_Residual\_… | 支撑海面艇追逃与神经网络控制研究 |
-| [7] | **Zhou M., Wang Z., Wang J., Cao Z.** “Multi-Robot Collaborative Hunting in Cluttered Environments With Obstacle-Avoiding Voronoi Cells.” *IEEE/CAA Journal of Automatica Sinica*, 11(7):1643–1655, 2024. DOI: **10.1109/JAS.2023.124041**。[ieee-jas.net](https://www.ieee-jas.net/en/article/doi/10.1109/JAS.2023.124041) | 支撑空间组织、避碰与协同捕获之间的联系 |
-
-注意，[2]和[5]已经研究更快的入侵者或逃逸者，不能在新引言中笼统写成“已有研究都假设防守方更快”。应当强调本文关注的**动力学控制、密集交互与策略学习的结合**。
-
-## B. 强化学习追捕与海面艇决策：[8]—[11]
-
-| 编号 | 期刊文章 | 在新引言中的作用 |
-|---|---|---|
-| [8] | **de Souza C., et al.** “Decentralized Multi-Agent Pursuit Using Deep Reinforcement Learning.” *IEEE Robotics and Automation Letters*, 6(3):4552–4559, 2021。[IEEE Xplore](https://ieeexplore.ieee.org/document/9387125) | 支撑共享经验、分散策略与协同追捕 |
-| [9] | **Zhang R., et al.** “Game of Drones: Multi-UAV Pursuit-Evasion Game With Online Motion Planning by Deep Reinforcement Learning.” *IEEE Transactions on Neural Networks and Learning Systems*, 34(10):7900–7909, 2023. DOI: **10.1109/TNNLS.2022.3146976**。[IEEE Xplore](https://ieeexplore.ieee.org/document/9712866/) | 支撑多主体对抗中的在线决策和运动预测 |
-| [10] | **Xue S., et al.** “Multi-agent Self-Attention Reinforcement Learning for Multi-USV Hunting Target.” *Neural Networks*, 189:107574, 2025. DOI: **10.1016/j.neunet.2025.107574**。[科学直通车](https://www.sciencedirect.com/science/article/pii/S0893608025004538) | 与多无人艇学习型围捕直接相关，支持交互表示的重要性 |
-| [11] | **Lin X., Szenher P., Huang Y., Englot B.** “Distributional Reinforcement Learning Based Integrated Decision Making and Control for Autonomous Surface Vehicles.” *IEEE Robotics and Automation Letters*, 10(2):1194–1201, 2025. DOI: **10.1109/LRA.2024.3518839**。[IEEE Xplore](https://ieeexplore.ieee.org/document/10804093/) | 支撑海面艇决策与连续控制一体化 |
-
-## C. 群体表示、联合价值和通信：[12]—[15]
-
-| 编号 | 期刊文章 | 在新引言中的作用 |
-|---|---|---|
-| [12] | **Hüttenrauch M., Šošić A., Neumann G.** “Deep Reinforcement Learning for Swarm Systems.” *Journal of Machine Learning Research*, 20(54):1–31, 2019。[机器学习研究期刊](https://jmlr.org/papers/v20/18-476.html) | 支撑可变规模队伍的表示、共享策略与群体学习 |
-| [13] | **Rashid T., et al.** “Monotonic Value Function Factorisation for Deep Multi-Agent Reinforcement Learning.” *Journal of Machine Learning Research*, 21(178):1–51, 2020。[机器学习研究期刊](https://jmlr.org/papers/v21/20-081.html) | 支撑联合任务价值与多智能体策略学习 |
-| [14] | **Ma Z., Luo Y., Pan J.** “Learning Selective Communication for Multi-Agent Path Finding.” *IEEE Robotics and Automation Letters*, 7(2):1455–1462, 2022. DOI: **10.1109/LRA.2021.3139145**。[HKU Scholars Hub](https://hub.hku.hk/handle/10722/319777) | 支撑根据决策需求组织队友信息，而非通信本身作为目的 |
-| [15] | **Li Q., Lin W., Liu Z., Prorok A.** “Message-Aware Graph Attention Networks for Large-Scale Multi-Robot Path Planning.” *IEEE Robotics and Automation Letters*, 6(3):5533–5540, 2021. DOI: **10.1109/LRA.2021.3077863**。[IEEE Xplore](https://ieeexplore.ieee.org/document/9424371/) | 支撑消息内容和交互关系进入多机器人策略表示 |
-
-## D. 控制先验与学习融合：[16]—[18]
-
-| 编号 | 期刊文章 | 在新引言中的作用 |
-|---|---|---|
-| [16] | **Rana K., et al.** “Bayesian Controller Fusion: Leveraging Control Priors in Deep Reinforcement Learning for Robotics.” *The International Journal of Robotics Research*, 42(3):123–146, 2023. DOI: **10.1177/02783649231167210**。[Sage Journals](https://journals.sagepub.com/doi/full/10.1177/02783649231167210) | 支撑利用控制先验与学习策略互补的混合控制路线 |
-| [17] | **Jeon S. H., Lee H. J., Hong S., Kim S.** “Residual MPC: Blending Reinforcement Learning With GPU-Parallelized Model Predictive Control.” *IEEE Transactions on Robotics*, 42, 2026。[Xplore](https://xplorestaging.ieee.org/author/37537397200) | 支撑残差学习与模型控制结合，而不是要求完全抛弃已有控制器 |
-| [18] | **Tao J., Shen T., Zhao D., Zhang F.** “ARBoids: Adaptive Residual Reinforcement Learning With Boids Model for Cooperative Multi-USV Target Defense.” *IEEE Robotics and Automation Letters*, 11(3):3637–3644, 2026. DOI: **10.1109/LRA.2026.3662620**。2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_… | 作为自适应融合目标防御的代表性工作，以及主要学习基线 |
-
-## E. 长期评价、安全学习与海上预测：[19]—[21]
-
-| 编号 | 期刊文章 | 在新引言中的作用 |
-|---|---|---|
-| [19] | **Bhattacharya S., et al.** “Multiagent Reinforcement Learning: Rollout and Policy Iteration for POMDP With Application to Multirobot Problems.” *IEEE Transactions on Robotics*, 40:2003–2023, 2024. DOI: **10.1109/TRO.2023.3347128**。[Arizona State University](https://asu.elsevierpure.com/en/publications/multiagent-reinforcement-learning-rollout-and-policy-iteration-fo/) | 为后续推演与学习策略的结合提供方法基础 |
-| [20] | **Brunke L., et al.** “Safe Learning in Robotics: From Learning-Based Control to Safe Reinforcement Learning.” *Annual Review of Control, Robotics, and Autonomous Systems*, 5:411–444, 2022. DOI: **10.1146/annurev-control-042920-020211**。[Annual Reviews](https://www.annualreviews.org/content/journals/10.1146/annurev-control-042920-020211) | 支撑任务学习与安全控制的分层组织 |
-| [21] | **Yu J., et al.** “A Cooperative Hunting Method for Multi-USVs Based on Trajectory Prediction by OR-LSTM.” *IEEE Transactions on Vehicular Technology*, 73(12):18087–18101, 2024. DOI: **10.1109/TVT.2024.3432739**。[IEEE Xplore](https://ieeexplore.ieee.org/document/10607953/) | 支撑预测信息在多无人艇捕获中的作用，同时区分目标轨迹预测与本文的融合价值评价 |
-
-这21篇足以形成与原文相近规模、相近刊物层级的引言支撑。其组织顺序是：
-
-\[
-\text{任务与对抗控制}
-\rightarrow
-\text{学习型协同}
-\rightarrow
-\text{群体信息与价值}
-\rightarrow
-\text{先验融合}
-\rightarrow
-\text{预测评价与安全执行}.
-\]
-
-方法部分另引用SAC、反事实多智能体评价和模型价值扩展，明确技术来源即可，不把它们当作否定新设计的理由。[Proceedings of Machine Learning Research](https://proceedings.mlr.press/v80/haarnoja18b.html)
-
----
-
-# 五、可直接发展为正文的引言
-
-下面的编号与上述文献对应。
-
-### 第一段：任务背景
-
-多无人艇目标防御通过防守艇的联合行动阻止入侵者进入指定区域，是海上自主系统中具有代表性的对抗决策任务。相关研究已从海面艇学习控制、区域守卫和协同追捕等角度发展了多种解决方案[1]—[3]。与一般目标跟踪不同，目标防御要求控制策略同时考虑入侵者运动、保护区域位置和防守资源的空间分布，其效果取决于防守艇能否在动态过程中形成有效的联合拦截。[IEEE Xplore](https://ieeexplore.ieee.org/document/10021250/)
-
-### 第二段：提出本文研究的困难条件
-
-当入侵者具有机动优势时，防守方需要通过多方向接近、空间封堵与相互支持弥补个体控制能力的不足。对抗几何、到达—规避分析及协同围捕研究已经揭示了多主体空间关系对任务结果的重要作用[4]—[7]。与此同时，更多防守艇参与拦截会增加控制之间的相互影响：区域覆盖、局部避让与集中捕获需要在同一运动过程中协调完成。本文关注高机动对抗与密集交互共同作用下的协同目标防御，研究如何将多艇空间优势转化为持续、有效的团队机动。[科学直通车](https://www.sciencedirect.com/science/article/pii/S0005109824002644)
-
-### 第三段：引入学习型协同控制
-
-强化学习为上述问题提供了通过交互经验获得控制策略的途径。已有研究将深度强化学习用于分散追捕、多无人机对抗、多无人艇围捕及海面艇决策控制[8]—[11]。这些工作表明，复杂机动可以通过任务反馈形成，而不必完全依赖人工规定的控制序列。群体表示、联合价值学习和选择性信息交换进一步提供了处理多主体关系的技术基础[12]—[15]。[IEEE Xplore](https://ieeexplore.ieee.org/document/9387125)
-
-### 第四段：从任务需求引出混合控制路线
-
-规则控制能够提供具有明确结构的群体运动先验，学习控制则根据对抗状态调整局部机动。控制器融合、残差模型预测控制和自适应残差防御研究，为二者的结合提供了不同实现路径[16]—[18]。对于多艇系统，这种结合不仅需要适应个体状态，还需要协调不同防守艇对控制来源的使用，使局部自适应行为共同服务于区域防护和联合捕获。[Sage Journals](https://journals.sagepub.com/doi/full/10.1177/02783649231167210) 2026_ARBoids_Adaptive_Residual\_…
-
-### 第五段：提出方法层的核心研究内容
-
-为实现上述控制目标，本文将艇间候选控制关系纳入自适应融合，并研究与融合变量相对应的联合价值学习。不同于仅根据完整团队轨迹拟合策略价值，本文在相同起点下比较局部门控干预的后续任务结果，以辨识某次融合调整在队友控制条件下的作用。后续推演、模型辅助决策与安全控制已有相应研究基础[19]—[21]；本文利用这些基础构造针对融合决策的训练信息，而不将在线轨迹搜索作为最终策略的替代。[Arizona State University](https://asu.elsevierpure.com/en/publications/multiagent-reinforcement-learning-rollout-and-policy-iteration-fo/)
-
-### 第六段：方法概述
-
-本文提出交互感知的协同残差强化学习框架。该框架通过共享策略生成学习动作，并结合规则动作与艇间候选关系生成自适应融合权重。训练阶段使用联合Critic评价整组融合决策，通过门控干预的成对长期后果辅助价值学习；执行阶段，各艇根据可用观测和候选消息直接计算融合控制。该方法旨在统一规则先验的结构优势、学习控制的适应能力与团队机动的协调需求。
-
-随后接前述三项贡献。**引言至此独立成立，不需要逐段重复“ARBoids未考虑什么”。**
-
----
-
-# 六、完全对应原文的新文章大纲
-
-| 原文结构 | 新文章结构 | 保留或改变的内容 |
-|---|---|---|
-| I. Introduction | I. Introduction | 同样从任务条件和控制需求提出研究问题 |
-| II-A. USV Motion Model | II-A. USV Motion Model | 保留动力学与推进器控制 |
-| II-B. USV Target Defense Problem | II-B. Cooperative Target Defense | 保留目标防御，明确成功、捕获与效率 |
-| III-A. Adaptive Residual Policy | III-A. Interaction-Aware Cooperative Residual Policy | 改造融合权重的信息条件与联合决策表达 |
-| III-B. Soft Actor Critic | III-B. Joint Actor–Critic Learning | 保留SAC，评价整组候选动作与权重 |
-| III-C. Boids Model | III-C. Rule-Based Coordination Prior | 保留Boids四类规则 |
-| III-D. State Representation | III-D. State and Candidate-Interaction Representation | 增加双方候选控制关系 |
-| III-E. Network Structure | III-E. Cooperative Adapter and Conditional Value Learning | 给出新网络、成对后果及训练损失 |
-| III-F. Reward Function | III-F. Task Reward | 主实验保留共同任务奖励，不另加复杂奖励系统 |
-| III-G. Curriculum Learning | III-G. Curriculum and Training Procedure | 保留敏捷度课程，交代辅助训练调用 |
-| IV-A. Experimental Setup | IV-A. Experimental Setup | 沿用环境、基础策略及评价协议 |
-| IV-B. Experimental Results | IV-B. Cooperative Defense Results | 行为轨迹、门控变化、已有机制发现 |
-| IV-C. Comparison With Benchmark Methods | IV-C. Learning Performance and Ablations | 基线、同信息对照和条件价值消融 |
-| IV-D. Robustness Against Attacker Agility | IV-D. Attacker Agility Evaluation | 同类型评价 |
-| IV-E. Generalization to Unseen Team Size | IV-E. Team-Size Generalization | 同类型评价 |
-| IV-F. Robustness Against Learning-Based Attacker | IV-F. Learning-Based Attacker | 同层级扩展 |
-| V. Conclusion | V. Conclusion | 回答研究问题、机制和证据 |
-
-原文对应结构见II—IV各节。2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_…
-
----
-
-# 七、II. Problem Formulation：问题建模
-
-## A. 无人艇运动模型
-
-沿用平面三自由度训练模型：
-
-\[
-\dot{\boldsymbol\eta}_i
-=
-J(\psi_i)\boldsymbol\nu_i,
-\]
-
-\[
-M\dot{\boldsymbol\nu}_i
-+
-C(\boldsymbol\nu_i)\boldsymbol\nu_i
-+
-D(\boldsymbol\nu_i)\boldsymbol\nu_i
-=
-B\boldsymbol\tau_i.
+u_i=\theta_i a_i^L+(1-\theta_i)a_i^B,\qquad
+\boldsymbol\Theta=(\theta_1,\ldots,\theta_n)\in\mathcal G^n.
 \tag{1}
 \]
 
-其中：
+\(\mathcal G\subset[0,1]\)为融合候选集合。各候选对应两类策略的一种融合比例。
+
+源Adapter给出状态相关的融合系数，经确定映射得到\(b_i(\chi)\)。定义
 
 \[
-\boldsymbol\eta_i=[x_i,y_i,\psi_i]^\top,\qquad
-\boldsymbol\nu_i=[u_i,v_i,r_i]^\top,
+\phi_i(g;\chi)=\left(\frac{g-b_i(\chi)}{\sigma_\theta}\right)^2.
 \]
+
+\(\phi_i\)是**源策略局部融合建议的偏离代价**。该项约束融合系数相对局部建议的偏离，使源策略信息参与联合选择。候选的任务价值由第3节定义的学习目标刻画。
+
+### 2.2 候选运动响应与艇对交互代价
+
+给定融合候选\(g\)，由名义反馈预测生成路径\(\hat p_i^g(s)\)。艇对交互代价定义为
 
 \[
-\boldsymbol\tau_i=
-[\tau_{i,L},\tau_{i,R}]^\top.
+\psi_{ij}(g,h;\chi)=
+\left[r_s-\min_{s\in\mathcal T_H}
+\|\hat p_i^g(s)-\hat p_j^h(s)\|\right]_+^2.
 \]
 
-\(B\)将左右推进器推力映射为纵向力和艏摇力矩。
+其中，\(\mathcal T_H\)为预测时域内的离散时刻，\(r_s\)为接近风险尺度。交互代价依赖双方的融合候选，满足\(\psi_{ji}(h,g;\chi)=\psi_{ij}(g,h;\chi)\)。
 
-该节属于共同物理基础。原文同样以WAM-V为对象，并在数值训练中保留纵荡、横荡和艏摇。2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_…
+候选路径分别生成，反馈观测中的邻艇运动采用公开速度的名义匀速近似，再对候选路径进行两两评价。这一预测过程近似表达候选的共同运动关系；完整环境终局分支用于第3节的价值学习。
 
-攻击者机动系数继续采用推力极限之比：
+### 2.3 融合系数的联合优化
 
-\[
-L_{\mathrm{agi}}
-=
-\frac{\tau_A^{\min}}{\tau_D^{\min}}
-=
-\frac{\tau_A^{\max}}{\tau_D^{\max}}.
-\tag{2}
-\]
-
-它不是最大速度的直接比值。2026_ARBoids_Adaptive_Residual\_…
-
-## B. 协同目标防御
-
-设保护区域中心为原点。定义：
-
-\[
-d_{iA}=\|\boldsymbol p_i-\boldsymbol p_A\|,
-\qquad
-d_{ij}=\|\boldsymbol p_i-\boldsymbol p_j\|.
-\]
-
-捕获条件、目标区域和艇间碰撞规则继续采用共同任务协议。学习目标为：
-
-\[
-\max_{\Omega}
-J(\Omega)
-=
-\mathbb E_{\Pi_\Omega}
-\left[
-\sum_{t=0}^{T-1}\gamma^t r_t^{\mathrm{team}}
-\right].
-\tag{3}
-\]
-
-任务表现分别统计防御成功率、捕获率、碰撞率和封顶耗时：
-
-\[
-T_e^{\mathrm{cap}}
-=
-\begin{cases}
-t_e^{\mathrm{capture}},&\text{发生捕获},\\
-T_{\max},&\text{未发生捕获}.
-\end{cases}
-\tag{4}
-\]
-
-原文正文采用60秒时限，当前报告采用80秒及源码提前失守条件。新稿在设置表中明确采用哪套协议即可；已有数值结果继续对应80秒协议，不将“源码失守”统一改称实际突破。2026_ARBoids_Adaptive_Residual\_… results
-
----
-
-# 八、III. Method：新的创新机制及完整公式
-
-## A. 交互感知的协同残差策略
-
-### 1. 保留控制组成
-
-每艇生成学习动作\(\boldsymbol a_i^L\)与规则动作\(\boldsymbol a_i^B\)：
+整组融合系数由源策略融合建议与候选运动风险共同决定：
 
 \[
 \boxed{
-\boldsymbol\tau_i^{\mathrm{nom}}
-=
-\theta_i\boldsymbol a_i^L
-+
-(1-\theta_i)\boldsymbol a_i^B,
-\quad \theta_i\in[0,1].
+\boldsymbol\Theta^{(0)}(\chi)\in
+\arg\min_{\boldsymbol\Theta\in\mathcal G^n}
+E(\boldsymbol\Theta;\chi),\qquad
+E=\sum_i\phi_i(\theta_i;\chi)
++\lambda_c\sum_{i<j}\psi_{ij}(\theta_i,\theta_j;\chi).
+}
+\tag{2}
+\]
+
+该模型在规则策略与学习策略的融合空间中协调各艇选择。\(\psi_{ij}\)以有限权重进入目标，是**软运动风险惩罚**；最优候选仍可能具有非零风险代价。模型直接刻画融合建议与运动相容性的折中，捕获、突破和团队防御效果由闭环任务评价。
+
+固定队友配置，第\(i\)艘艇从\(g\)调整到\(g'\)时，目标变化为
+
+\[
+\begin{aligned}
+\Delta E_i={}&\phi_i(g';\chi)-\phi_i(g;\chi)\\
+&+\lambda_c\sum_{j\ne i}
+[\psi_{ij}(g',\theta_j;\chi)-\psi_{ij}(g,\theta_j;\chi)].
+\end{aligned}
+\tag{3}
+\]
+
+第二项随队友融合变化。因此，同一局部调整在不同团队配置中可以具有不同优劣，协同作用体现为明确的条件决策关系。令\(\lambda_c=0\)时，目标分解为各艇在\(\mathcal G\)中独立选择最接近融合建议的候选；这一退化形式仍使用离散候选集合，与原连续Adapter的直接输出有所区别。
+
+## 3. 基于融合干预的条件价值学习
+
+### 3.1 完整方案与条件任务价值
+
+以完整融合方案
+
+\[
+q=(q_1,\ldots,q_n),\qquad q_i\in\{\bot\}\cup\mathcal G
+\]
+
+作为价值对象。\(q_i=\bot\)表示该艇继续反馈生成融合系数，其他值表示在规定窗口内保持相应融合系数。两类候选动作仍随观测更新，因此保持融合系数不等于保持推进器推力。
+
+在第\(r\)个学习阶段，固定前驱策略\(\pi^{r-1}\)及干预窗口\(\tau_r\)。以终局任务成功指示\(Y\)为效用，定义
+
+\[
+\begin{aligned}
+V_r(q\mid\chi)&=\mathbb E[Y^{q,\tau_r;\pi^{r-1}}\mid\chi],\\
+V_r^{\mathrm{ref}}(\chi)&=\mathbb E[Y^{\pi^{r-1}}\mid\chi],\\
+\Delta_r(q\mid\chi)&=V_r(q\mid\chi)-V_r^{\mathrm{ref}}(\chi).
+\end{aligned}
+\tag{4}
+\]
+
+干预分支先执行方案与窗口，随后恢复同一前驱策略；各分支根据自身到达的状态继续反馈。事实参考从当前时刻起完整执行前驱策略，包括其当前决策窗口和未来继续干预的能力。参考行为并非永久关闭后续干预。
+
+\(Y\)采用任务成功指示，而非SAC熵正则回报。对仅在一艘艇融合系数上不同的方案\(q_a,q_b\)，条件后果差为
+
+\[
+\Delta V_{ab}^{(r)}(\chi)=V_r(q_b\mid\chi)-V_r(q_a\mid\chi).
+\]
+
+该差值在相同上下文、相同干预窗口及固定前驱策略下定义，刻画给定其余艇融合选择时，一次局部变化对完整方案价值的影响。其配对样本估计记为\(\bar d_{ab}\)。机制二既学习完整方案的任务价值，也显式学习局部融合变化所对应的相对后果。
+
+### 3.2 局部干预关系与配对闭环采样
+
+在根上下文\(\chi_k\)处构造干预图\(\mathscr G_k=(\mathcal P_k,\mathcal E_k)\)。节点\(\mathcal P_k\)对应实际采样的完整方案；有向边\((a,b)\in\mathcal E_k\)对应只改变一艘艇融合系数的有效对比。边的两个端点保持相同窗口、其他融合系数和后续决策时钟。涉及时钟改变的对比不作为单艇干预边，完整事实分支单独提供参考。
+
+图用于表达已采样方案之间的局部比较关系，待估计变量是各方案的条件价值；节点与边由采样方案及单艇差异规则确定。
+
+同一根状态的分支使用共同未来随机条件，前驱策略参数保持固定，终局结果形成节点均值\(\bar y_p\)和配对差\(\bar d_{ab}\)。价值变量仍对应完整方案，不施加\(V(q)=\sum_iV_i(q_i)\)的可加分解。
+
+### 3.3 方案结果与相对价值差的联合估计
+
+采用两种对应不同含义的节点标签：成功值标签为\(Y^q\)，改善值标签为同未来下的\(Y^q-Y^{\mathrm{ref}}\)。成功值估计的事实基准\(b_k\)为参考成功值；改善值估计取\(b_k=0\)。两类标签均使用端点后果差作为边监督。
+
+令\(B_k\)为有向边关联矩阵，使\((B_k\boldsymbol v)_{ab}=v_b-v_a\)；令\(W_k\)为非负边权对角矩阵。将方案结果、事实参考与相对价值差共同纳入估计目标：
+
+\[
+\boxed{
+\hat{\boldsymbol v}_k=\arg\min_{\boldsymbol v}
+\left[
+\|\boldsymbol v-\bar{\boldsymbol y}\|^2
++\beta\|\boldsymbol v-b_k\boldsymbol1\|^2
++\|B_k\boldsymbol v-\bar{\boldsymbol d}\|_{W_k}^{2}
+\right].
 }
 \tag{5}
 \]
 
-这是继承的混合控制形式，来源需要引用，不作为重复提出的公式创新。2026_ARBoids_Adaptive_Residual\_…
+节点项拟合完整方案的任务结果，基准项关联前驱策略的事实参考，差值项使方案间价值差贴合局部融合变化的观测后果。差值项作为软正则项允许估计残差，不施加等式约束\(B_k\boldsymbol v=\bar{\boldsymbol d}\)。
 
-### 2. 改变权重的条件信息
+与促使邻接节点值接近的普通图平滑相比，该项要求\(v_b-v_a\)接近观测差\(\bar d_{ab}\)。当局部干预产生显著任务变化时，估计保留相应价值差异。
 
-新门控为：
+式（5）等价于求解
 
 \[
 \boxed{
-\theta_i
-=
-g_\psi
-\left(
-h_i,\boldsymbol a_i^L,\boldsymbol a_i^B,\boldsymbol m_i
-\right),
+[(1+\beta)I+B_k^\top W_kB_k]\hat{\boldsymbol v}_k
+=\bar{\boldsymbol y}+\beta b_k\boldsymbol1
++B_k^\top W_k\bar{\boldsymbol d}.
 }
 \tag{6}
 \]
 
-其中，\(\boldsymbol m_i\)是由本艇与队友候选控制构成的交互表示。
-
-原文图2直接连接本艇动作与本艇隐特征；新结构将队友本次候选动作的关系显式加入门控。**两者都有多个权重，改变的是权重生成的依赖关系。**2026_ARBoids_Adaptive_Residual\_…
-
-### 3. 以联合价值定义权重的任务作用
-
-记：
+对\(\beta\ge0\)、\(W_k\succeq0\)及任意非零\(\boldsymbol x\)，有
 
 \[
-\boldsymbol A^L=(\boldsymbol a_1^L,\ldots,\boldsymbol a_n^L),
-\qquad
-\boldsymbol\Theta=(\theta_1,\ldots,\theta_n).
+\boldsymbol x^\top[(1+\beta)I+B_k^\top W_kB_k]\boldsymbol x
+=(1+\beta)\|\boldsymbol x\|^2+\|B_k\boldsymbol x\|_{W_k}^2>0.
 \]
 
-联合决策价值为：
+因此，该无约束二次估计问题具有唯一解。实现中先求解式（6），再进行值域截断；唯一性结论对应截断前的估计问题，估计准确性及控制收益由独立实验评价。
+
+节点与边可能由同一批结果构造。当\(\bar d_{ab}=\bar y_b-\bar y_a\)时，边项组织的是已有结果的相对关系，并不增加独立观测。方法的学习作用在于联合使用节点结果、参考基准和干预差值，形成面向融合决策的价值估计。
+
+### 3.4 配对估计的方差性质
+
+若有\(m\)组相互独立的配对未来样本，且两条分支保持各自正确的边际分布，则
 
 \[
-Q^\Pi(X,\boldsymbol A^L,\boldsymbol\Theta).
-\]
-
-本艇权重的作用以其他艇的选择为条件：
-
-\[
-\theta_i^\star(X;\boldsymbol\Theta_{-i})
-\in
-\arg\max_{\theta_i\in[0,1]}
-Q^\Pi
-\left(
-X,\boldsymbol A^L,\theta_i,\boldsymbol\Theta_{-i}
-\right).
+\operatorname{Var}(\bar d_{ab})
+=\frac1m\left[
+\operatorname{Var}(Y_b)+\operatorname{Var}(Y_a)
+-2\operatorname{Cov}(Y_b,Y_a)
+\right].
 \tag{7}
 \]
 
-式（7）用于说明学习对象，不表示执行阶段逐次求解全局优化。
+正协方差时，相对于相同边际分布的独立采样，配对采样降低差值估计方差。该性质依赖上述采样条件，不提供对失败回溯选根后样本代表性的保证。实验中按根状态及未来样本的实际依赖关系组织统计。
 
-当保留当前CBF时，实际控制为：
+## 4. 条件价值驱动的融合决策
+
+条件价值学习通过本节的决策规则作用于融合控制，构成机制二的执行环节。
+
+### 4.1 融合方案评价
+
+根据当前上下文查询学习所得的方案价值\(\hat v_r(q\mid\chi)\)。设\(M_q\)为方案的数据支持质量，\(s_r(q,\chi)=\min(M_q,1)\)，\(B_r(\chi)\)为与标签匹配的查询基准，\(\widehat W_r(\chi)\)为后续机会近似。方案评价为
 
 \[
-\boldsymbol\tau^{\mathrm{exec}}
-=
-\mathcal F_{\mathrm{safe}}
-\left(
-X,\boldsymbol\tau^{\mathrm{nom}}
-\right).
+A_r(q\mid\chi)=s_r(q,\chi)
+[\hat v_r(q\mid\chi)-B_r(\chi)-\widehat W_r(\chi)]
+-\eta d_H(q,q_{\mathrm{prev}}).
 \tag{8}
 \]
 
-当前带 CBF 的完整方法及其机制消融使用相同过滤层。原始 ARBoids 对照不加 CBF；ARBoids＋CBF 单独列示，若还进行了继续训练，须同时标明训练预算。CBF 的独立作用不能归给两项学习创新，也不能将带 CBF 的版本称为原论文基线。式（8）描述现有实现采用的附加执行层，不构成两项创新必须依赖 CBF 的要求。
+\(d_H\)计数相对于前驱方案改变的分量。成功值层扣除参考成功值，改善值层取\(B_r=0\)，避免重复扣除参考结果。
 
----
+支持集合\(\mathcal Q_{\mathrm{supp}}^{(r)}(\chi)\)排除缺乏有效数据支持的方案。支持权重表示局部观测支持程度，不作为已校准的统计置信界。后续机会由已采样事实轨迹估计，表示当前行动相对于未来机会的比较基准，而非最优等待价值。
 
-## B. 联合Actor–Critic学习
+### 4.2 条件修正与执行窗口
 
-保留SAC作为基础，不再另行切换MAPPO。SAC提供连续动作、熵正则与离策略学习框架。[Proceedings of Machine Learning Research](https://proceedings.mlr.press/v80/haarnoja18b.html)
-
-令一个控制周期的可学习决策为：
+用\(c_r(\chi)\)表示本层输出的干预指令，其取值为“未启动干预”或“完整方案及固定窗口”。初始化\(c_0(\chi)=\varnothing\)。支持集合非空时，定义
 
 \[
-z=(\boldsymbol A^L,\boldsymbol\Theta).
+q_r^\star(\chi)\in
+\arg\max_{q\in\mathcal Q_{\mathrm{supp}}^{(r)}(\chi)} A_r(q\mid\chi).
 \]
 
-策略分两阶段生成：
+本层修正为
 
 \[
-\Pi_\Omega(z\mid X)
-=
-\prod_{i=1}^{n}
-\pi_\omega^L(\boldsymbol a_i^L\mid o_i)
-\prod_{i=1}^{n}
-\pi_\psi^G(\theta_i\mid I_i).
+\boxed{
+c_r(\chi)=
+\begin{cases}
+(q_r^\star(\chi),\tau_r),
+&\mathcal Q_{\mathrm{supp}}^{(r)}(\chi)\ne\varnothing
+\ \text{且}\ A_r(q_r^\star\mid\chi)>\varepsilon_r,\\[3pt]
+c_{r-1}(\chi),&\text{其他情况}.
+\end{cases}
+}
 \tag{9}
 \]
 
-先生成学习候选动作并交换允许的候选信息，再生成权重。这样不要求任何艇先知道队友尚未生成的最终权重。
+\(\tau_r\)表示固定作用窗口，\(\varepsilon_r\)表示接受阈值。前驱方案\(q_{\mathrm{prev}}\)取自\(c_{r-1}\)，未启动干预时对应全部自由反馈的方案。两个分支输出相同类型的指令，前驱窗口随指令一起保留。
 
-采用联合软价值：
+后层通过接受条件时覆盖前层的整个指令，最终指令交由融合执行器实现。各层使用预先指定的作用窗口，依据估计价值进行条件覆盖；相应任务收益由独立闭环评价确定。
 
-\[
-V_{\bar\zeta}^{\Pi}(X)
-=
-\mathbb E_{z\sim\Pi}
-\left[
-\min_{\ell=1,2}Q_{\bar\zeta_\ell}(X,z)
--
-\alpha\log\Pi_\Omega(z\mid X)
-\right].
-\tag{10}
-\]
-
-真实环境转移的目标值为：
-
-\[
-y_t
-=
-r_t^{\mathrm{team}}
-+
-\gamma(1-d_t)
-V_{\bar\zeta}^{\Pi}(X_{t+1}).
-\tag{11}
-\]
-
-策略损失为：
-
-\[
-\mathcal L_\Pi
-=
-\mathbb E
-\left[
-\alpha\log\Pi_\Omega(z\mid X)
--
-\min_{\ell=1,2}Q_{\zeta_\ell}(X,z)
-\right].
-\tag{12}
-\]
-
-这里的概率对应“学习候选动作＋门控”的采样决策，不是未经推导的最终推力概率。
-
----
-
-## C. Boids规则先验
-
-四种规则保留：
-
-\[
-\begin{aligned}
-\boldsymbol F_{i,\mathrm{sep}}
-&=
--k_{\mathrm{sep}}
-\sum_{j\in\mathcal N_i}
-\frac{\boldsymbol p_j-\boldsymbol p_i}
-{\|\boldsymbol p_j-\boldsymbol p_i\|},\\
-\boldsymbol F_{i,\mathrm{ali}}
-&=
-\frac{k_{\mathrm{ali}}}{|\mathcal N_i|}
-\sum_{j\in\mathcal N_i}\boldsymbol v_j-\boldsymbol v_i,\\
-\boldsymbol F_{i,\mathrm{coh}}
-&=
-\frac{k_{\mathrm{coh}}}{|\mathcal N_i|}
-\sum_{j\in\mathcal N_i}\boldsymbol p_j-\boldsymbol p_i,\\
-\boldsymbol F_{i,\mathrm{att}}
-&=
-k_{\mathrm{att}}(\boldsymbol p_A-\boldsymbol p_i).
-\end{aligned}
-\tag{13}
-\]
-
-对齐和凝聚项在这里保留原文的书写方式，实际共同基线也保持一致。总力映射为推进器动作：
-
-\[
-\boldsymbol a_i^B
-=
-\mathcal M_B
-\left(
-\sum_{\ell}\boldsymbol F_{i,\ell},o_i
-\right).
-\tag{14}
-\]
-
-原文对应式（9）—（13）及其推力映射说明。2026_ARBoids_Adaptive_Residual\_…
-
-这一节的结论是：
-
-> 规则控制提供一致的协同先验；本文学习这种先验与学习动作在团队交互中的使用方式，而不改写规则控制本身。
-
----
-
-## D. 状态与候选动作交互表示
-
-原状态结构继续采用：
-
-\[
-s_i=[s_{i,D},s_{i,AT},s_{i,\mathrm{Boids}}].
-\]
-
-原文分别编码队友、攻击者与目标、Boids信息，并通过均值嵌入适配不同队友数量。2026_ARBoids_Adaptive_Residual\_…
-
-新加入的关系向量为：
-
-\[
-\xi_{ij}
-=
-\left[
-r_{ij},
-\boldsymbol a_i^L,\boldsymbol a_i^B,
-\boldsymbol a_j^L,\boldsymbol a_j^B
-\right],
-\tag{15}
-\]
-
-其中，\(r_{ij}\)由允许获取的相对位置、航向和运动估计组成。
-
-先进行成对编码，再聚合：
-
-\[
-e_{ij}=f_\kappa(\xi_{ij}),
-\qquad
-\boldsymbol m_i
-=
-\frac{1}{|\mathcal N_i|}
-\sum_{j\in\mathcal N_i}e_{ij}.
-\tag{16}
-\]
-
-关键不在于是否使用均值，而在于：
-
-**聚合前已经建立“特定队友的运动关系—双方候选动作”的对应。**
-
-这是与普通队友位置编码的区别。信息交换采用固定协议，不再同时增加可学习通信拓扑、角色分配和优先级模块。
-
----
-
-## E. 协同Adapter与条件价值学习
-
-这是新文章对应原文III-E和图2的重点。
-
-### 1. 协同Adapter
-
-使用可重参数化的随机权重：
-
-\[
-z_i^\theta
-=
-\mu_\psi(I_i)+
-\sigma_\psi(I_i)\epsilon_i,
-\qquad
-\epsilon_i\sim\mathcal N(0,1),
-\]
+两项机制由此形成如下联系：
 
 \[
 \boxed{
-\theta_i
-=
-\frac{\tanh z_i^\theta+1}{2}.
+\text{源策略融合建议与候选机动关系}
+\longrightarrow\text{联合融合};\qquad
+\text{配对干预后果}
+\longrightarrow\text{完整方案的条件价值学习}
+\longrightarrow\text{条件策略修正}.
 }
-\tag{17}
 \]
 
-训练时探索不同融合方式，评价时采用确定性输出。策略密度计算包含该变换对应的雅可比项。
+## 5. 学习与执行算法
 
-网络可保留原图2的状态编码和三层512单元决策网络，只新增候选关系编码，并替换门控输入。**原文已有网络尺度可以直接作为初始配置，不需要为每一层重新创造理论。**2026_ARBoids_Adaptive_Residual\_…
+### 5.1 训练／执行结构
 
-### 2. 联合Critic
+```mermaid
+flowchart TB
+    O[观测与公开艇群运动] --> P[源学习候选、Boids候选与局部融合建议]
+    P --> M1[机制一：基于候选交互的联合策略融合]
+    M1 --> Q[联合融合优化]
+    O --> X[公开上下文表示]
+    Q --> D[机制二：条件价值查询与策略修正]
+    X --> D
+    D --> U[融合执行器：方案及固定窗口]
+    U --> E[原混合控制接口与环境反馈]
+    E --> O
+    subgraph LEARN[机制二：基于融合干预的条件价值学习]
+        R[固定前驱策略的轨迹与根状态] --> G[完整方案节点与单艇变化边]
+        G --> F[共同未来配对分支及事实参考]
+        F --> Y[节点任务结果与配对后果差]
+        Y --> V[方案结果与相对价值差的联合估计]
+    end
+    Q -. 初始前驱 .-> R
+    D -. 后续阶段前驱 .-> R
+    V -. 保存价值与支持记录 .-> D
+```
 
-Critic接收：
+### 5.2 算法一：基于候选交互的联合策略融合与条件价值修正的闭环执行
+
+**输入：**当前观测、源策略、规则控制器、联合融合模型及已学习价值层。**输出：**连续反馈控制中的融合系数与推进器指令。
+
+1. 生成学习候选、规则候选和局部融合建议。
+2. 预测候选反馈响应，构造艇对风险项，求解式（2）得到\(\boldsymbol\Theta^{(0)}\)。
+3. 初始化干预指令，逐层查询条件价值并按式（9）更新指令。
+4. 没有活动干预时执行联合融合，在下一控制周期重新决策；有活动干预时，在其窗口内覆盖指定融合分量，其余艇继续反馈生成融合系数。
+5. 窗口内持续刷新学习和规则候选，经原混合控制接口执行。窗口结束后重新运行完整策略；任务终止时立即结束。
+
+### 5.3 算法二：基于融合干预的条件价值学习
+
+**输入：**固定前驱策略、阶段窗口、任务环境和采样配置。**输出：**可用于条件策略修正的新价值层。
+
+1. 采集前驱策略轨迹，选择根状态，构造完整方案及单艇变化边。
+2. 对各方案和完整事实参考采用共同未来条件；干预窗口结束后，所有分支按同一前驱策略进行自身状态反馈。
+3. 收集真实终止的任务结果，生成本阶段的节点标签和配对边差；未终止的截断分支不直接记为失败。
+4. 排除同时改变后续决策时钟的信用边，构造\(B_k\)、\(W_k\)及对应事实基准。
+5. 求解式（6），进行值域截断，形成条件价值、方案支持和后续机会记录。
+6. 完成开发选择后保存本层，将其与前驱策略组合；后续阶段在新的固定前驱下重新采集和学习。
+
+## 6. 具体实现与实验设置
+
+以下配置对应保存的128实现。模型与学习目标采用第2—4节的定义，具体参数用于复现其数值实现；正式独立重复的源策略训练与四配置学习安排见第7.6节。
+
+### 6.1 源策略与机制一参数
+
+源策略来自原三艇SAC/ARBoids预训练，新增机制在六艇目标任务中开发。源SAC候选和原Adapter保持固定。机制一通过解析目标联合优化融合系数；机制二更新完整方案的条件价值及其决策记录，通过条件策略修正影响融合选择。
+
+局部融合建议的实际映射为
 
 \[
-Q_\zeta(X,\boldsymbol A^L,\boldsymbol\Theta).
+p_i=0.02+0.96\theta_i^{\mathrm{src}},\qquad
+b_i(\chi)=\sigma\!\left(2\tanh\frac{\operatorname{logit}(p_i)}{2}\right).
 \]
 
-可以采用共享节点编码与艇对编码：
-
-\[
-Q_\zeta
-=
-f_Q
-\left(
-\operatorname{Pool}_i z_i^Q,\,
-\operatorname{Pool}_{i<j}z_{ij}^Q,\,
-X_{\mathrm{task}}
-\right).
-\tag{18}
-\]
-
-艇对编码包含双方动作和权重，使价值函数能够表达权重间的相互影响，而不强制分解为若干独立单艇价值之和。
-
-### 3. 核心训练信息：局部门控干预
-
-在相同状态下，当前联合决策为：
-
-\[
-z=(\boldsymbol A^L,\boldsymbol\Theta).
-\]
-
-仅替换第\(i\)艘艇当前权重：
-
-\[
-z^{-i}
-=
-\left(
-\boldsymbol A^L,
-\theta_1,\ldots,\vartheta_i,\ldots,\theta_n
-\right),
-\tag{19}
-\]
-
-其中，\(\vartheta_i\)是参考权重，例如从固定集合\(\{0,0.5,1\}\)中抽取。最终策略仍输出连续权重。
-
-两条推演的第一步仅在该权重上不同；从第二步开始，都使用当前策略根据各自预测状态重新生成动作。**不把某个门控固定20秒，也不固定其他艇未来的反馈。**
-
-设推演在第\(h\)步达到时域或终止，构造与软价值定义一致的后果估计：
-
-\[
-\widehat G_H(z)
-=
-\sum_{k=0}^{h-1}\gamma^k
-\left[
-\hat r_k
--
-\mathbf1_{k\ge1}
-\alpha\log\Pi_{\bar\Omega}(\hat z_k\mid\hat X_k)
-\right]
-+
-\gamma^h(1-\hat d_h)
-V_{\bar\zeta}^{\Pi}(\hat X_h).
-\tag{20}
-\]
-
-\(\bar\Omega\)表示生成该批监督目标时固定的策略参数。第一步动作已给定，因此后续决策的熵项从\(k=1\)开始。
-
-成对后果差为：
-
-\[
-\boxed{
-\widehat\Delta_i
-=
-\widehat G_H(z)
--
-\widehat G_H(z^{-i}).
-}
-\tag{21}
-\]
-
-它直接对应：
-
-> 在队友当前动作一致的比较条件下，本艇这次融合选择相对于参考选择，改变了多少后续团队价值？
-
-### 4. 条件价值辅助损失
-
-Critic对应的预测差：
-
-\[
-\Delta Q_{\zeta_\ell}
-=
-Q_{\zeta_\ell}(X,z)
--
-Q_{\zeta_\ell}(X,z^{-i}).
-\]
-
-总损失为：
-
-\[
-\boxed{
-\begin{aligned}
-\mathcal L_Q
-=
-\sum_{\ell=1}^{2}
-\Big[
-&\mathbb E_{\mathcal D}
-\big(Q_{\zeta_\ell}(X,z)-y\big)^2\\
-&+
-\lambda_\Delta
-\mathbb E_{\mathcal D_\Delta}
-\big(
-\Delta Q_{\zeta_\ell}
--
-\operatorname{sg}[\widehat\Delta_i]
-\big)^2
-\Big].
-\end{aligned}
-}
-\tag{22}
-\]
-
-第一项使用实际交互，保持任务价值的基本尺度；第二项学习融合调整引起的条件变化。`sg`表示监督目标不反向传播。
-
-成对评价和模型价值扩展有相应研究基础，本文将它们具体作用于规则—学习融合变量，而不是把这些基础概念重新命名为原创。[arXiv](https://arxiv.org/abs/1705.08926)
-
-### 5. 为什么它直接服务于新门控？
-
-对于局部变化：
-
-\[
-\Delta Q
-\approx
-(\theta_i-\vartheta_i)
-\frac{\partial Q}{\partial\theta_i}.
-\tag{23}
-\]
-
-因此，成对监督校准的是与门控更新直接相关的价值变化，而不是另加一个无关的风险分数。
-
-在模型与尾部价值准确的理想条件下，成对推演的期望差与相应策略价值差一致。该说明用于解释训练目标的一致性，不扩展为全局最优或严格安全证明。
-
-### 6. 现有长时推演怎样进入新方法？
-
-保留已有动力学、观测生成、反馈调用和并行计算，将推演对象从：
-
-\[
-\text{五种整队策略}
-\]
-
-改为：
-
-\[
-\text{两次合法门控干预}.
-\]
-
-旧规划器的“时间评分”不能直接作为式（20）的奖励；推演统一使用新训练过程中的奖励、折扣与终止规则。
-
-最终执行只运行协同Adapter。**长时推演服务于训练，不把新论文重新变成五候选在线规划。**
-
----
-
-## F. 任务奖励
-
-主机制实验先保留共同任务奖励：
-
-\[
-r_t^{\mathrm{team}}
-=
-\frac1n
-\sum_{i=1}^{n}
-\left(
-r_{i,t}^{\mathrm{main}}
-+
-r_t^{\mathrm{form}}
-+
-r_{i,t}^{\mathrm{collision}}
-\right).
-\tag{24}
-\]
-
-主任务中的捕获、协助、失守和碰撞项沿用共同协议。原文分别采用捕获100、附近协助50、目标失守−100和碰撞−50。2026_ARBoids_Adaptive_Residual\_…
-
-编队项保留：
-
-\[
-\boldsymbol g
-=
-\sum_i
-\frac{\boldsymbol p_A-\boldsymbol p_i}
-{\|\boldsymbol p_A-\boldsymbol p_i\|},
-\]
-
-\[
-r^{\mathrm{form}}
-=
-0.5\,
-\hat{\boldsymbol d}_{TA}^{\top}
-\frac{\boldsymbol g}{\|\boldsymbol g\|}
--
-\frac{\|\boldsymbol g\|}{n}.
-\tag{25}
-\]
-
-其作用是保持与威胁方向有关的防御分布。2026_ARBoids_Adaptive_Residual\_…
-
-**此阶段不再增加风险乘子、角色奖励和多层时间惩罚。**捕获效率继续作为独立评价指标；是否改善，由真实任务结果回答，不将奖励回报与成功概率或封顶耗时直接混称。
-
----
-
-## G. 课程与训练过程
-
-保留原文的敏捷度课程：
-
-\[
-L_{\mathrm{agi}}
-\sim
-U(\bar L_{\mathrm{agi}}-0.5,\bar L_{\mathrm{agi}}+0.5),
-\]
-
-\[
-\bar L_{\mathrm{agi}}
-=
-2.0+0.25k,
-\qquad k=0,1,2,3,
-\tag{26}
-\]
-
-每25万训练步进入下一阶段。2026_ARBoids_Adaptive_Residual\_…
-
-训练流程为：
-
-1. 生成学习动作和Boids动作，构造候选交互信息。
-2. 协同Adapter生成权重，融合后执行，存储真实转移。
-3. 从部分训练状态抽取门控干预对，生成式（21）的后果差。
-4. 用式（22）更新联合Critic，用式（12）更新策略。
-5. 按SAC方式更新目标网络，继续环境交互。
-
-首先冻结基础动作网络，只训练协同门控，用于识别新增机制；确认作用后，再进行动作网络与门控的联合训练。相应对照使用相同初始化和额外训练预算。
-
-这两阶段服务于贡献归因，不另设一套独立的多阶段控制理论。
-
----
-
-# 九、IV. Experiments：现有结果如何提升为论文证据，哪些结果需要新增？
-
-## A. 实验设置
-
-沿用数值训练环境和VRX平台，不重建任务。
-
-原文的训练设置为三艇、100万步、学习率\(10^{-4}\)、批量4096、折扣0.99；图5使用五次独立运行、每5000步评价。可以采用同层级配置作为起点。2026_ARBoids_Adaptive_Residual\_… 2026_ARBoids_Adaptive_Residual\_…
-
-新增参数集中为关系编码规模、后果推演时域\(H\)和辅助权重\(\lambda_\Delta\)，在开发场景中固定，不再搜索大量无关模块。
-
-## B. 总体结果与协同行为
-
-### 已有结果一：融合组织方式具有任务价值
-
-在512个场景变化试验中：
-
-| 方法 | 成功 | 碰撞 | 源码失守 |
-|---|---:|---:|---:|
-| 瞬时风险＋逐艇选择 | 403/512 | 55 | 54 |
-| 瞬时风险＋联合选择 | 433/512 | 29 | 50 |
-
-两者共享候选、评价和控制设置；成功率差为5.86个百分点，描述性配对区间为[2.54，9.18]。results results
-
-可以上升为文章中的研究发现：
-
-> **融合控制的组织方式能够改变团队防御结果，表明融合空间中存在可利用的联合决策价值。**
-
-这比将结果写成“又修复了若干碰撞”更有学术意义。
-
-### 已有结果二：持续反馈后果具有额外任务信息
-
-最新1024个六艇场景可以保留为“显式反馈策略评价参照”。
-
-| 已完成方法 | 成功 | 捕获 | 碰撞 | 平均封顶耗时／秒 |
-|---|---:|---:|---:|---:|
-| 原始ARBoids | 146 | 146 | 878 | 70.248 |
-| CBF基线 | 1000 | 998 | 0 | 21.095 |
-| 匹配短时评价 | 993 | 992 | 0 | 20.681 |
-| 较强固定2秒短时评价 | 1008 | 1007 | 0 | 19.423 |
-| 长时反馈选择参照 | 1024 | 1022 | 0 | 17.087 |
-| 固定守卫 | 1020 | 954 | 0 | 27.573 |
-| 固定1秒长时参照 | 1024 | 1022 | 0 | 16.907 |
-
-上述数值来自当前报告，未捕获回合统一记为80秒。results
-
-可形成三项论断：
-
-**其一，安全满足没有消除控制策略之间的任务差异。**
-
-多个方法都没有碰撞，但捕获与效率不同。
-
-**其二，长期后续评价相对匹配短时评价具有增量价值。**
-
-封顶耗时降低17.38%，配对差为−3.594秒，98.75%区间为[−4.806，−2.462]。results
-
-**其三，成功率不足以单独描述防御行为。**
-
-固定守卫虽然成功1020次，但有66次超时成功，捕获数明显少于长时参照。results
-
-这些结果共同支持：
-
-> **团队控制不仅需要避免相互干扰，还需要识别能够持续产生有效拦截的控制组合。**
-
-自适应间隔没有额外收益，保留为次级结果，不进入新论文主贡献。results
-
-### 新策略需要增加的行为结果
-
-参照原文图4，展示一个完整的：
-
-\[
-\text{初始防护}
-\rightarrow
-\text{接近与交汇}
-\rightarrow
-\text{协调调整}
-\rightarrow
-\text{联合捕获}.
-\]
-
-在轨迹之外增加\(\theta_i(t)\)，把控制行为与学习变量联系起来。图中应能解释：不同艇为什么产生不同权重，以及这些变化如何形成有效机动。
-
-已有五候选规划器的轨迹继续按原名称展示；新门控策略需要生成自己的轨迹。这只是结果归属的基本区别，不意味着已有结果不能进入文章。
-
----
-
-## C. 学习性能与机制消融
-
-### 主学习对照
-
-| 方法 | 与完整方法的差别 | 对应的研究问题 |
-|---|---|---|
-| 原始 ARBoids | 保留原法自适应融合，不加 CBF，无两项新增机制 | 完整方法相对原法的任务表现如何？ |
-| ARBoids＋CBF | 原法结构加固定安全过滤；正式学习对照另含匹配预算的继续训练 | 在附加执行层和训练预算下提供补充参照；不作为必须全面超越的唯一门槛 |
-| 同信息普通协同学习 | 同样输入候选关系、同样联合Critic，无后果差监督 | 改善是否不只是更多信息或更大网络？ |
-| 去除队友候选交互 | 保留队友状态、自身候选、条件价值学习和相同执行层 | 候选控制交互是否带来额外收益？ |
-| 普通模型辅助学习 | 相近推演预算，使用普通回报监督 | 门控条件评价是否比一般模型辅助更有效？ |
-| 短时条件评价 | 保留结构，缩短推演时域 | 长期任务后果是否有额外作用？ |
-| 完整方法 | 候选交互＋长期条件价值学习 | 完整机制的学习效果 |
-
-Boids、固定残差RP和纯SAC仍可按原文保留为基础对照；CBF和现有长时选择器作为补充参照，不将“在所有指标全面超过这些控制器”设为发表或开发前置条件。完整方法与原始 ARBoids 的差异可能同时包含 CBF 和额外训练的作用，不能仅凭该差异宣称两项创新成立；两项创新分别通过保留相同执行层、匹配信息和学习预算的消融验证。
-
-### 应当得到什么结果？
-
-不预先规定“必须提高10%”之类的发表数字，而检验三项明确关系。
-
-**学习效果：**在相同环境步数下，完整方法获得更好的成功或捕获表现，或更早达到同等表现。
-
-**机制作用：**完整方法优于同信息普通协同学习，并且相比普通模型辅助具有额外收益。
-
-**长期信息作用：**短时与长时版本的差异能够对应真实任务表现，而不只是预测评分更低。
-
-建议增加一个直接对应核心机制的指标：
-
-\[
-E_{\Delta}
-=
-\mathbb E
-\left[
-\left|
-\Delta Q_\zeta-\Delta G_{\mathrm{env}}
-\right|
-\right],
-\tag{27}
-\]
-
-其中，\(\Delta G_{\mathrm{env}}\)通过测试状态的成对环境分支得到。这样可以检查：
-
-> 条件价值估计的改善，是否伴随融合决策和防御表现的改善？
-
-这项实验比再添加很多外围场景更直接。
-
----
-
-## D. 攻击者敏捷度
-
-按照原文图6(a)，固定艇数，改变攻击者敏捷度。
-
-已有六艇长时参照可保留：
-
-| 敏捷度 | CBF耗时／秒 | 长时参照耗时／秒 | 长时参照成功 |
-|---|---:|---:|---:|
-| 1.5 | 15.355 | 13.005 | 256/256 |
-| 2.0 | 19.480 | 15.145 | 256/256 |
-| 2.5 | 22.873 | 19.458 | 256/256 |
-| 3.0 | 26.671 | 20.741 | 256/256 |
-
-results
-
-新策略按同类设置增加曲线，检验高机动条件下交互融合的作用。原文也以这一变化作为主要任务难度实验。2026_ARBoids_Adaptive_Residual\_…
-
-## E. 未见艇数泛化
-
-沿用三艇训练、其他艇数测试的方式，建议保持原文图6(b)的二至七艇范围。
-
-主要呈现：
-
-\[
-SR(n),\qquad CR(n),\qquad
-\overline T^{\mathrm{cap}}(n).
-\]
-
-研究问题是：
-
-> 随着交互增多，交互感知门控是否比普通融合保持更好的团队表现？
-
-原文在三、四艇表现较好，超过四艇开始下降。新文章无需要求所有规模都完美，而应呈现新机制对这一变化的影响。2026_ARBoids_Adaptive_Residual\_…
-
-## F. 学习型攻击者
-
-保留原文五阶段攻守交替训练作为最后一项扩展实验，评价对手变化后策略能否继续调整。原文总计250万训练步，并报告防守成功、碰撞和攻击成功曲线。2026_ARBoids_Adaptive_Residual\_…
-
-这一节不扩展成多攻击者、策略集成、通信对抗和复杂海况的综合工程。
-
----
-
-# 十、图表应当如何与原文一一对应？
-
-| 原文图 | 新论文图 | 要支撑的论点 |
-|---|---|---|
-| 图1：任务场景 | 高机动目标防御与密集交互示意 | 定义任务，不从已有算法缺点开篇 |
-| 图2：Actor、Adapter、Critic | 学习动作、候选交互编码、协同Adapter、联合Critic及训练期成对推演 | 完整展示新可学习机制 |
-| 图3：状态与队形奖励 | 状态关系及单艇门控干预示意 | 解释条件价值评价的对象 |
-| 图4：VRX过程 | 新策略轨迹＋各艇融合权重 | 从变量变化解释联合机动 |
-| 图5：学习曲线 | 完整方法与同信息、普通模型辅助、短时消融 | 证明学习和训练机制有效 |
-| 图6：敏捷度与艇数 | 相同两类参数变化，增加捕获效率 | 证明任务适应性 |
-| 图7：交替训练 | 相同类型的学习型攻击者曲线 | 评价对手变化适应 |
-| 新增一张表 | 保留两批现有机制结果 | 支撑联合组织与长期评价的研究动机 |
-
-原文第4页图2、第6页图5和第7页图6是最应对应的三处：**新机制、学习证据、任务变化。**它们共同构成文章主轴，而不是把新文章写成大量结果表的汇总。
-
----
-
-# 十一、已有工作中，哪些进入正文，哪些不必继续占据主线？
-
-| 已有内容 | 最终安排 |
+| 参数或实现 | 数值与含义 |
 |---|---|
-| 三艇门控相对原方法提高5.08个百分点 | 作为融合层可改善性的前期证据 |
-| 瞬时联合相对逐艇选择提高5.86个百分点 | 作为联合组织价值的直接证据 |
-| 长时相对匹配短时降低17.38%封顶耗时 | 作为持续反馈评价具有额外信息的证据 |
-| 长时相对CBF降低19.00%封顶耗时 | 作为安全约束之外仍存在任务决策空间的证据 |
-| 固定守卫高成功、较低捕获 | 支撑成功与效率的分别评价 |
-| 新增协同Adapter与条件价值训练 | 成为文章的方法中心和主学习结果 |
-| 自适应重选间隔 | 保留次级结果，不再主打 |
-| 进程、编译和哈希核验 | 放实验设置或补充材料 |
-| 旧版本VRX结果 | 保留其原方法归属；新策略在同平台生成对应结果 |
-| 原五候选长时规划器 | 保留为强参照与训练工具，不改称新强化学习策略 |
+| 融合候选\(\mathcal G\) | \(\{0,0.5,1\}\) |
+| 先验尺度\(\sigma_\theta\) | 0.4 |
+| 交互权重\(\lambda_c\) | 32 |
+| 接近风险尺度\(r_s\) | 7 m |
+| 名义预测时域 | 3.2 s |
+| 预测积分步长 | 0.1 s |
+| 候选反馈更新周期 | 0.2 s |
+| 联合求解 | 六艇时枚举729组融合系数，共享同一批候选路径 |
 
-前两批实验已经建立了两项有价值的研究认识：**融合的组织方式影响团队表现；长期任务评价影响控制选择。**新学习机制的任务，是把这两项认识转化为能够直接执行的协同融合策略，而不是重复证明已有规划器运行成功。results results results
+预测过程中，各艇融合候选固定，学习和Boids候选每0.2秒按预测观测刷新；邻艇反馈采用名义匀速近似。联合目标中的交互项为接近风险，任务捕获效果通过闭环实验评价。
 
----
+### 6.2 任务标签、固定窗口与价值估计参数
 
-# 十二、文章应当形成的最终论证
+终局效用为作者环境返回捕获或超时防守成功的指示。价值估计采用上述终局效用作为标签，采样记录中的其他奖励与折扣回报用于辅助记录。
 
-整篇文章的中心不再是：
+| 阶段 | 固定窗口\(\tau_r\) | 节点标签 | 六艇上下文维数 | 核带宽\(h_r\) | 接受阈值\(\varepsilon_r\) |
+|---|---:|---|---:|---:|---:|
+| 1 | 10步，2 s | 方案成功值 | 48 | 0.15 | 0.15 |
+| 2 | 2步，0.4 s | 方案成功值 | 48 | 0.05 | 0.05 |
+| 3 | 10步，2 s | 相对前驱的配对改善值 | 51 | 0.03 | 0.05 |
+| 4 | 20步，4 s | 相对前驱的配对改善值 | 51 | 0.03 | 0.05 |
 
-> ARBoids还有碰撞，所以增加交互模块、预测模块和辅助损失。
+式（5）取\(\beta=0.25\)。边权形式为\(w_{ab}=\lambda_\Delta(1+4|\bar d_{ab}|)\)，最新阶段保存的\(\lambda_\Delta=4\)。线性求解后，成功值截断到\([0,1]\)，改善值截断到\([-1,1]\)。
 
-而是：
+训练根包含失败轨迹的回溯状态。失败时间、随机数状态与后续结果用于离线采样和标签生成，执行只使用当前公开上下文。选中学习路径的轨迹和分支采样累计682,306个环境步，不包含源策略预训练、评估和未选中的开发尝试。
 
-> **高机动对抗中的多艇防御需要把局部适应组织为有效联合机动。本文采用规则与学习互补的控制结构，通过候选动作交互条件化生成融合权重，并利用融合干预的长期后果改善联合价值学习，使训练能够辨识不同控制组合的团队作用。**
+### 6.3 上下文查询、支持与机会近似
 
-对应的证据链为：
+围绕攻击艇及其指向保护目标的方向建立坐标，按相对方位规范排列防守艇。每艇包含相对位置、速度、航向、角速度及到保护目标的距离；后两阶段增加攻击艇的观测速度和归一化时间。该表示不使用本回合的未来扰动或终局标签。
+
+查询最近4个训练上下文，计算
 
 \[
-\boxed{
-\begin{aligned}
-&\text{任务：高机动对抗下的有效联合防御}\\
-&\Downarrow\\
-&\text{机制：交互感知的协同自适应融合}\\
-&\Downarrow\\
-&\text{变量：依赖候选控制关系的融合权重}\\
-&\Downarrow\\
-&\text{学习：实际交互与条件后果共同评价}\\
-&\Downarrow\\
-&\text{证据：学习改善、机制作用与任务表现}
-\end{aligned}
-}
+K_k=\exp[-\|\chi-\chi_k\|^2/(2h_r^2)],\quad
+M_q=\sum_kK_kI_{kq},\quad
+\hat v_r(q\mid\chi)=\frac{\sum_kK_kI_{kq}v_{kq}}{\max(M_q,\epsilon_{\mathrm{num}})}.
 \]
 
-**ARBoids提供的范例，是把“规则与学习如何动态结合”组织成一套可学习控制方法。新论文对应地把“这种动态结合如何在团队交互中形成有效机动”组织成一套独立方法。**
+\(I_{kq}\)为方案可用标记，\(\epsilon_{\mathrm{num}}>0\)用于数值稳定。支持集合采用\(M_q\ge10^{-6}\)的方案；早期阶段保留有采样支持的方案，最新阶段还要求方案曾在配对事实未来中修复相应失败。这一支持条件来自离线数据。
 
-研究路线至此可以固定：**保留物理任务、规则先验、SAC和现有实验基础；完成候选交互门控与条件价值训练这一套核心机制；围绕三项主张生成新的学习证据。**不再改成五策略在线规划论文，不再通过增加无关模块体现创新，也不把原文未完成的全部开放条件变成你必须承担的研究任务。
+成功值层的事实基准采用按轨迹平衡的核估计，每条事实轨迹仅贡献一个最近状态。改善值层不再次扣除该基准。
+
+后续机会记录由事实轨迹中稍后的正改善估计形成：
+
+\[
+\omega_k=\operatorname{Average}_{\ell\ni k}
+\max_{t'>t_k}\left[e^{-\kappa(t'-t_k)}\operatorname{peak}(\chi_{t'})\right],
+\qquad
+\operatorname{peak}(\chi)=\max(0,\max_{q:I_{\chi q}=1}v_{\chi q}),
+\]
+
+其中\(\kappa=0.02\)，无后续机会时取0。查询时对\(\omega_k\)作核加权得到\(\widehat W_r\)。保存实现中仅第4阶段包含非零机会记录。方案改动代价系数为\(\eta=0.005\)。
+
+### 6.4 窗口内执行与任务协议
+
+干预窗口内，被指定艇保持融合系数，其他艇更新机制一给出的融合系数；随后覆盖被指定的固定分量。该实现未将固定伙伴系数作为自由艇联合求解的附加约束。两类候选持续更新，窗口内不嵌套启动新干预，窗口结束后恢复完整策略。全自由方案不启动持续干预。
+
+任务沿用作者`source`协议：时限80 s，控制周期0.2 s，保留原动力学、奖励、攻击策略、推力接口与终止优先级。攻击者比所有防守艇更接近保护目标时同样触发作者的提前失败判据。该设置与论文60 s参数重跑有所区别；所有同版对照使用相同协议。
+
+## 7. 最终论文证据方案
+
+本节完整保留既定执行方案的实验内容、比较对象、学习安排与贡献目标。两项正式机制分别为**基于候选交互的联合策略融合**和**基于融合干预的条件价值学习**，下文简称机制一与机制二。每项机制均独立建立“任务收益—重训消融—替代方法—学习重复—适用范围—VRX行为”的证据，完整方法用于评价二者共同作用的整体价值。
+
+### 7.1 方法基础、评价协议与证据结构
+
+**方法基础。** 唯一开发参照为96.09%的`joint-supported-credit-128`，不混用其他版本的实验数字。
+
+| 项目 | 已有开发结果 | 证据位置 |
+|---|---:|---|
+| 完整方法 | 246/256，96.09%；全部为捕获 | 方法开发起点 |
+| 彻底移除机制一，剩余机制未重训 | 44/256，17.19% | 已学策略的执行依赖，不能代替重训贡献 |
+| 彻底移除机制二 | 204/256，79.69%；下降16.41个百分点 | 已有开发消融，仍需独立学习重复 |
+| 同版四配置重训、完整专属替代、跨条件与VRX | 尚未形成完整证据 | 本方案待完成的研究内容 |
+
+实验沿用作者代码的80 s协议、原三艇预训练基础策略、六艇新增机制开发，以及64个布局、每布局4组扰动、覆盖机动性2.0和2.5的现有开发集。动力学、奖励、终止规则、控制周期和控制来源保持一致。原开发集可反复调优，正式评价另设未参与开发的配对场景。128源检查点保留为固定开发参照；正式重复训练的新源策略采用相同训练设置，属于同配方独立运行。
+
+成功、捕获、碰撞、实际突破、源协议提前判负和超时分别统计，捕获时间在捕获回合内统计。原文报告值用于说明研究背景，方法间数值比较使用本研究同协议下取得的结果。[ARBoids原文](../paper/2026_ARBoids_Adaptive_Residual_Reinforcement_Learning_With_Boids_Model_for_Cooperative_Multi-USV_Target_Defense.pdf)
+
+两项贡献具有相同的实验深度和正文地位。
+
+| 证据层次 | 机制一：基于候选交互的联合策略融合 | 机制二：基于融合干预的条件价值学习 |
+|---|---|---|
+| 科学问题 | 候选机动之间的交互能否提供普通状态交互和独立预测未充分利用的信息，并改善联合融合决策？ | 融合干预的配对后果及后续团队影响能否改善普通回报或评论家反事实优势所提供的价值判断？ |
+| 单独作用 | 机制二关闭时的任务增益 | 机制一关闭时的任务增益 |
+| 组合中的作用 | 机制二开启时的额外贡献 | 机制一开启时的额外贡献 |
+| 特定设计价值 | 同信息表达、预测方式及独立／联合选择对照 | 同数据价值学习、队友决策条件、时间机会及支持约束对照 |
+| 决策证据 | 冲突预测、候选排序及联合选择的实际收益 | 干预排序、救回与误干预，以及等待／执行的实际收益 |
+| 行为解释 | 接近顺序、会合位置、避碰与拦截分工的变化 | 干预时机、持续时间、后续队形与拦截机会的变化 |
+| 重复性与迁移 | 独立运行及不同难度、艇数和对手下的贡献 | 相同范围内的独立贡献 |
+| 高保真验证 | VRX中的任务贡献与冲突消解行为 | VRX中的任务贡献与有效干预行为 |
+
+### 7.2 四配置重训消融
+
+四配置重训是辨识两项机制贡献的主要实验。在固定128源策略的开发比较中共享该检查点；在正式独立运行中，共享该次运行独立训练所得的源策略。
+
+| 配置 | 机制一 | 机制二 | 学习安排 |
+|---|---|---|---|
+| F00：共同基础配置 | 关闭 | 关闭 | 使用该次运行的共同基础控制 |
+| F10：仅机制一 | 开启 | 关闭 | 保留候选预测、交互评价与联合融合；该配置内的学习部分独立训练 |
+| F01：仅机制二 | 关闭 | 开启 | 在没有机制一的条件下，重新采样并学习机制二全部四阶段 |
+| F11：完整方法 | 开启 | 开启 | 按128完整配方采样并训练两项机制的组合 |
+
+128中的机制一采用确定性预测和解析联合优化，没有新增神经网络学习参数。F00、F10的基础控制来自各次运行的共同源策略，新增机制阶段按固定控制器评价；F01、F11分别学习全部新增价值阶段。
+
+设各配置成功率为\(p_{00},p_{10},p_{01},p_{11}\)，必须同时报告
+
+\[
+\begin{aligned}
+\Delta_1^{\mathrm{alone}}&=p_{10}-p_{00},&
+\Delta_1^{\mathrm{with\,2}}&=p_{11}-p_{01},\\
+\Delta_2^{\mathrm{alone}}&=p_{01}-p_{00},&
+\Delta_2^{\mathrm{with\,1}}&=p_{11}-p_{10}.
+\end{aligned}
+\]
+
+同时报告交互效应\(p_{11}-p_{10}-p_{01}+p_{00}\)，说明二者在成功率尺度上的互补、重叠或干扰。交互效应与四项独立贡献分别解释。
+
+移除机制一时，删除候选交互预测、相应预测评分及联合决策功能，恢复原Adapter直接给出的融合系数，移除新增先验映射和网格投影。保留公共状态、SAC／Boids候选及机制二自身的干预价值能力，重新学习机制二。
+
+移除机制二时，删除全部四阶段条件价值、继承价值、事实基准、等待机会评价、相关支持约束及持续干预状态，保留完整机制一。
+
+剩余学习模块从各次共同初始化出发，不继承被移除机制产生的价值、教师输出或中间结果。单机制配置获得充分且匹配的开发调优机会。主表报告同预算结果，学习曲线反映各配置是否仍有明显上升趋势。
+
+### 7.3 机制一的完整专属替代实验
+
+机制一保留以下全部对照，分别考察状态关系、候选信息表达、运动预测及联合决策的作用。
+
+| 机制一配置 | 保留与改变的内容 | 检验问题 |
+|---|---|---|
+| 原始Adapter | 使用原有状态及自身控制候选 | 原有自适应融合能够达到何种性能？ |
+| 状态交互Adapter | 增加普通状态关系聚合或注意力 | 收益是否仅来自邻艇状态信息？ |
+| 普通候选表达 | 提供相同候选信息，采用拼接或通用注意力 | 所提出的候选交互组织是否具有独立作用？ |
+| 单艇预测 | 保留自身候选预测，邻艇采用统一参考运动 | 是否需要考虑邻艇不同候选的运动后果？ |
+| 独立融合选择 | 使用相同候选预测资源，各艇分别选择 | 联合融合是否优于各艇独立选择？ |
+| 完整机制一 | 候选后果交互与联合融合选择 | 完整设计能否稳定优于上述替代？ |
+
+全部对照首先在机制二关闭时完成。随后依据开发结果选取两个最强替代方法，开启机制二并分别重新学习全部价值阶段，与完整机制一比较。主要替代方法在正式五次运行中使用对应的共同源策略。
+
+各对照按表中信息与决策差异构建，共享任务条件和可比的开发预算。独立融合选择保留相同候选预测与艇对代价，仅将联合选择替换为各艇分别决策；普通候选表达保留相同候选信息，改变其组织方式。
+
+机制一同时交付三类结果：
+
+- **任务结果：**成功率、碰撞率、捕获效率，以及\(\Delta_1^{\mathrm{alone}}\)和\(\Delta_1^{\mathrm{with\,2}}\)。
+- **决策结果：**候选冲突预测的准确性、候选排序，以及选中联合方案经环境执行后相对于独立选择和普通候选表达的实际收益。
+- **行为结果：**同场景的候选轨迹、实际轨迹、融合选择和最小艇间距离，呈现接近顺序、会合位置、避碰及拦截分工的变化。
+
+决策诊断采用相同初始状态与配对未来扰动下的环境执行后果，检验预测关系及选择结果。预测误差和融合权重变化作为辅助指标，任务收益与闭环行为支撑机制结论；拦截分工等行为由轨迹分析获得，不作为当前艇对目标已显式包含的优化项。
+
+### 7.4 机制二的完整专属替代实验
+
+机制二保留以下全部对照，分别考察价值目标、反事实估计、队友决策条件、时间机会及事实支持的作用。
+
+| 机制二配置 | 保留与改变的内容 | 检验问题 |
+|---|---|---|
+| 普通联合回报学习 | 使用相同干预数据、候选方案和模型容量，学习绝对团队回报 | 收益是否仅来自增加数据和价值学习？ |
+| COMA式反事实优势改编 | 在其他决策固定时，利用评论家估计局部反事实优势 | 实际干预后果是否比评论家估计提供更有效的决策信用？ |
+| 去队友决策条件 | 保留自身状态与干预信息，弱化其他艇决策条件 | 团队决策条件是否必要？ |
+| 去时间机会评价 | 保留条件价值，取消立即行动与后续机会的比较 | 时间机会评价是否改善干预和等待的选择？ |
+| 去事实支持约束 | 保留价值与时序决策，移除对应支持限制 | 事实支持能否减少误干预？ |
+| 完整机制二 | 条件干预价值、时间机会与事实支持共同作用 | 完整设计能否稳定优于上述替代？ |
+
+全部对照首先在机制一关闭时完成。随后依据开发结果选取两个最强替代方法，开启机制一并重新训练，与完整机制二比较。普通联合回报学习与COMA式反事实优势对照使用同一批干预数据，以区分学习目标与估计方式的作用。
+
+同数据比较固定共同前驱、根状态、候选方案、窗口及未来样本；方案评价采用与各自标签对应的事实基准。多阶段前驱分化后的闭环比较按各自策略重新采样，并匹配交互与开发预算。
+
+机制二同时交付三类结果：
+
+- **任务结果：**成功率、碰撞率、捕获效率，以及\(\Delta_2^{\mathrm{alone}}\)和\(\Delta_2^{\mathrm{with\,1}}\)。
+- **决策结果：**干预排序准确性、选中干预的实际收益、救回数量和误干预损失数量。
+- **行为结果：**同场景下立即干预、等待后干预及不干预的过程，展示干预时机、持续时间、后续队形及拦截机会的变化。
+
+相对价值和干预收益由独立环境执行后果评价。配对修复指干预成功而事实参考失败，配对损害指干预失败而事实参考成功。持续时间按各阶段既定窗口记录，时间机会实验检验当前执行与等待的价值判断。
+
+两项机制均通过环境后果检验决策，不以各自内部评分作为选择正确性的唯一依据。
+
+### 7.5 整体性能与六类基线
+
+| 基线 | 论文中的作用 |
+|---|---|
+| Boids | 规则协同先验的基础能力 |
+| 参数共享SAC | 纯学习控制的竞争力 |
+| 标准残差策略RP | 普通规则控制与学习控制叠加的收益 |
+| ARBoids | 最直接的已有自适应融合基线 |
+| MAPPO | 通用合作型多智能体学习的竞争力 |
+| MAAC | 普通注意力交互与联合价值学习的竞争力 |
+
+ARBoids包含同任务充分训练及追加预算结果。主要性能结论围绕ARBoids、MAPPO、MAAC和机制专属替代展开。主性能结果同时给出完整方法与两个单机制配置，使各机制的独立性能与整体收益对应。
+
+所有方法遵循共同观测与通信权限、动力学、控制约束及评价场景。样本成本计入源策略预训练、事实轨迹和干预分支。同预算性能与达到90%成功率所需样本量分别报告，开发调参开销单列。128选定学习路径的682,306步作为已有成本记录，不将未计入其中的预训练、评价或开发搜索视为免费资源。
+
+### 7.6 五次独立训练与明确贡献目标
+
+先在128固定源策略上完成同版四配置和完整专属对照，明确新增机制的作用。正式学习重复采用同一128算法结构与训练配方，执行五个独立训练运行：
+
+1. 每个训练种子独立训练该次运行的共同源策略，源任务与训练设置保持一致。
+2. 从该次共同源策略分出四配置，分别采样并训练剩余学习模块。
+3. 主要专属替代方法使用该次运行对应的共同起点，按各自配置独立训练。
+4. 每个模型在每个主机动性条件（2.0、2.5）下至少评价100个未参与开发的新场景，各方法逐场景配对。
+5. 报告五次结果、学习曲线的均值与标准差、四项机制贡献及其置信区间。
+
+随机种子变化属于同配方独立重复，128历史模型继续保留为固定开发参照。机制一的确定性预测与搜索如实标注，其重复性体现为不同源策略和独立运行中的配对贡献。F00、F10在每次新增机制学习过程中作为该次固定参考，五次运行分别评价，不能将同一模型的五次评估当作五次独立训练。
+
+| 重复证据 | 机制一 | 机制二 |
+|---|---|---|
+| 单独贡献 | 五次\(p_{10}-p_{00}\) | 五次\(p_{01}-p_{00}\) |
+| 条件贡献 | 五次\(p_{11}-p_{01}\) | 五次\(p_{11}-p_{10}\) |
+| 专属对照 | 完整候选交互融合与主要替代的配对结果 | 完整条件价值学习与主要替代的配对结果 |
+| 学习过程 | 有无机制一时的样本效率与终点表现 | 各阶段学习形成的任务收益及样本效率 |
+
+论文与开发目标保持为：
+
+- **完整方法性能：**正式主场景中的平均成功率超过90%。
+- **两项机制贡献：**单独贡献和条件贡献均达到实质量级；四项贡献各自的跨运行平均开发目标至少为10个百分点，两项条件贡献争取15个百分点以上。
+- **学习稳定性：**两项机制的增益在独立运行中方向稳定，主要结论不依赖单个最佳种子。
+
+场景回合用于估计任务表现，独立训练运行用于估计学习重复性。统计保留训练运行、初始布局及布局内扰动的层次，按配对关系报告效应量和95%置信区间；全部运行及不利结果均纳入。
+
+### 7.7 适用范围与适应恢复
+
+| 实验 | 具体设置 | 必须报告的内容 |
+|---|---|---|
+| 机动性变化 | 六艇，机动性1.50—3.00，间隔0.25，即1.50、1.75、2.00、2.25、2.50、2.75、3.00 | 完整方法、四配置和强基线的性能曲线；两项机制的增益随难度的变化 |
+| 艇数变化 | 冻结方法，测试3、4、5、6、7、8艇 | 成功与失败构成；两项机制在稀疏和密集协同中的贡献 |
+| 对手策略迁移 | APF及多个独立学习型攻击者，保留不同训练阶段的策略 | 冻结迁移表现；两项机制分别保留或损失的能力 |
+| 适应与恢复 | 在共同新对手上给予相同适应预算，随后回测APF | 恢复速度、恢复后的性能及原任务保持程度 |
+
+新增机制只在六艇条件下学习，源策略曾在三艇条件训练。三艇实验检验两项新增机制从六艇向三艇的跨规模迁移，同时回测源策略训练规模；四、五、七、八艇为源策略与新增机制均未训练的规模，六艇作为主任务参照。跨艇数实验采用冻结方法，不使用目标艇数的任务结果重新训练或调参。128现有价值记录具有固定六艇维数，跨规模上下文及融合方案的对应需在机制内部完成，并在正式跨规模评价前冻结；这一实现工作不替代或取消直接迁移实验。
+
+跨艇数同时报告两项机制实际参与决策的情况，包括联合选择的变化及条件价值干预的有效支持与触发情况，以识别性能变化是否伴随某一机制作用减弱。两项机制分别绘制跨条件效应图，并提供代表性行为案例。
+
+机动性和全部3—8艇规模实验至少包含四配置与ARBoids，同时呈现相关强基线；三艇同样分别报告两项机制的单独贡献、条件贡献及实际决策作用。对手适应实验重点比较完整方法、两个单机制配置及最强相关基线。所有方法面对相同的冻结攻击者与配对场景；学习型攻击者的独立运行和不同训练阶段策略均保留。适应后在原APF任务重新评价，分别报告新对手恢复与原任务保持情况。
+
+### 7.8 VRX中的机制贡献与八艇迁移
+
+**六艇、机动性2.5**作为高保真主条件，至少使用100个共同初始场景，评价以下全部配置：
+
+- 四配置F00、F10、F01、F11；
+- 同任务训练的ARBoids；
+- 二维实验中的最强协同学习基线。
+
+VRX主实验直接计算两项机制的四项贡献。随后以**八艇密集条件**开展相同方法的冻结迁移，保持机动性2.5，并保留四配置、ARBoids及最强协同学习基线，其中两个单机制配置必须独立呈现。目标艇数与VRX测试场景不用于重新训练或选择参数。
+
+所有方法采用相同任务规则和执行接口。分别统计成功、捕获、碰撞、实际突破、源协议提前判负、超时与捕获时间。
+
+| VRX证据 | 机制一 | 机制二 |
+|---|---|---|
+| 配对任务结果 | 开启机制一后救回与损失的场景数，分别对应单独加入和联合加入 | 开启机制二后救回与损失的场景数，分别对应单独加入和联合加入 |
+| 时序行为图 | 控制冲突、接近顺序和拦截分工的变化 | 干预时机、持续时间及后续机会的变化 |
+| 失败案例 | 候选预测或联合选择失效的情形 | 价值误判、过早或过晚干预的情形 |
+| 跨环境一致性 | 二维仿真中的协同收益是否保留 | 二维仿真中的干预收益是否保留 |
+
+典型案例按预先确定的事件类别选择，并与批量统计对应。六艇主实验和八艇迁移分别报告，两项机制各具有定量结果、行为解释与失败分析。
+
+### 7.9 论文图表与实施顺序
+
+| 证据单元 | 主要表格 | 主要图形 |
+|---|---|---|
+| 任务与版本 | 128方法、任务、训练来源、预算和评价协议 | 任务及双机制结构图 |
+| 整体性能 | 六类基线与完整方法，并列两个单机制配置 | 五次学习曲线 |
+| 四配置贡献 | 四配置、四项增益及重复间波动 | 两项机制效应量及学习阶段变化 |
+| 机制一专属证据 | 全部机制一替代对照 | 冲突预测、联合选择及协同行为图 |
+| 机制二专属证据 | 全部机制二替代对照 | 干预排序、救回与误干预及时序行为图 |
+| 学习重复性 | 各独立运行结果与样本效率 | 两项机制各自的增益分布 |
+| 适用范围 | 机动性、3—8艇泛化、对手迁移、适应与APF回测 | 两项机制各自的跨条件贡献曲线 |
+| VRX验证 | 六艇和八艇的四配置、强基线及失败构成 | 两项机制分别对应的时序截图与轨迹 |
+
+执行时先完成128同版四配置、机制一完整专属对照、机制二完整专属对照三组核心证据。固定开发集允许反复调优，修改限于两项核心机制内部。随后完成包含源策略重训的五次独立运行、六类整体基线、适用范围、适应恢复与VRX实验。
+
+两项机制的证据同步推进，每项均独立完成任务收益、重训贡献、替代方法、学习重复、适用范围及高保真验证。机制作用不足时，优化对应内部算法并重新学习受影响的配置；实验项目、比较对象与既定贡献目标保持完整。
+
+## 8. 复现入口
+
+| 内容 | 实现或记录 |
+|---|---|
+| 候选响应、联合策略融合及窗口执行 | [develop_source_fusion.py](../train/develop_source_fusion.py)：`candidate_risk`、`risk_scores`、`JointLearningActor.forward`、`joint_advance` |
+| 配对干预采样与条件价值估计 | 同文件：`joint_episode`、`joint_graph_value` |
+| 上下文、事实基准与条件策略修正 | [conditional_fusion_value.py](../train/conditional_fusion_value.py)：`public_return_context`、`FactualReturnSupport`、`JointInterventionValue.select_action` |
+| 作者环境及源策略接口 | [source_arboids.py](../train/source_arboids.py)，发布版`9eb6df464808af6b9729f39644b4d658e1695e2d` |
+| 保存模型 | [128检查点](../train/experiments/author-source-fusion-20261011/joint-supported-credit-128/policy.pth) |
+| 开发记录及模型、源策略和实现标识 | [ablation.json](../train/experiments/author-source-fusion-20261011/joint-supported-credit-128/ablation.json)、[development.json](../train/experiments/author-source-fusion-20261011/joint-supported-credit-128/development.json) |
+
+数值实现以保存模型启用的配置为准。学习数据分别对应`joint-ordinary-context-102`、`joint-short-credit-116`、`joint-paired-temporal-121`和`joint-extended-credit-125`。现有开发结果对应上述保存模型与任务协议。

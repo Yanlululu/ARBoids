@@ -1,3 +1,5 @@
+> **Historical paper-parameter rerun, separate from version 128.** Version 128 retains the author `source` environment (80 s) and the three-defender pretrained policy while developing the added mechanisms with six defenders. Its current method and evidence definitions are in [the mechanism specification](new-cooperative-defense-research-route.md). The 60 s rerun below does not define version 128.
+
 # Published-parameter rerun
 
 This is a new seed-42 run using the numerical parameters and task/reward rules

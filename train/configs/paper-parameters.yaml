@@ -15,7 +15,7 @@ training:
   adapter_noise_distribution: normal
   adapter_noise_scale: 0.1
 agent:
-  defender_num: 3
+  defender_num: 6
   curriculum: true
   residual: true
   adaptive: true
