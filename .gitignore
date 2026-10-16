@@ -35,6 +35,19 @@ logs/
 experiments/
 *.log
 .DS_Store
+
+# Generated scratch and document build files
+/tmp/
+/.pytest_cache/
+*.aux
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
 # Project-local Python runtime
 /.python/
 /work/
