@@ -439,31 +439,39 @@ def public_return_context(packet,return_order=False,version=1,reference_action=N
     return (context,order) if return_order else context
 
 
-def fleet_set_cost(context,centers):
+def fleet_context_shape(version):
+    """Vessel and global coordinates of the public intervention context."""
+    return (15,5 if version>=5 else 4) if version>=3 else (8,3 if version>=2 else 0)
+
+
+def fleet_set_cost(context,centers,context_version=1):
     """Compare public fleet states without padding or a fixed vessel count.
 
     A symmetric set distance retrieves candidate encounters. Exact injective
     matching below binds an observed control program to its physical vessels.
     The target velocity and clock remain global conditioning coordinates.
     """
-    extra=context.shape[-1]%8
-    if extra not in (0,3) or centers.shape[-1]%8!=extra:
+    width,extra=fleet_context_shape(context_version)
+    # The original public contexts are also used by the legacy role learner.
+    if context_version==1 and context.shape[-1]%width==3:extra=3
+    if (context.shape[-1]-extra)%width or (centers.shape[-1]-extra)%width:
         raise ValueError('Incompatible public fleet context versions.')
-    n=(context.shape[-1]-extra)//8;m=(centers.shape[-1]-extra)//8
-    own=context[:,:8*n].reshape(-1,n,8)
-    other=centers[:,:8*m].reshape(-1,m,8)
+    n=(context.shape[-1]-extra)//width;m=(centers.shape[-1]-extra)//width
+    own=context[:,:width*n].reshape(-1,n,width)
+    other=centers[:,:width*m].reshape(-1,m,width)
     costs=(own[:,None,:,None]-other[None,:,None]).square().sum(-1)
     distance=.5*m*(costs.amin(-1).mean(-1)+costs.amin(-2).mean(-1))
     if extra:distance=distance+(context[:,None,-extra:]-centers[None,:,-extra:]).square().sum(-1)
     return distance,costs
 
 
-def match_fleet_context(context,centers,count=4):
+def match_fleet_context(context,centers,count=4,context_version=1):
     """Transport whole intervention programs through one-to-one role matches."""
     from scipy.optimize import linear_sum_assignment
-    coarse,costs=fleet_set_cost(context,centers)
+    coarse,costs=fleet_set_cost(context,centers,context_version)
     shortlist=coarse.topk(min(max(3*count,count),len(centers)),largest=False).indices
-    b,_,n,m=costs.shape;extra=context.shape[-1]%8
+    b,_,n,m=costs.shape;_,extra=fleet_context_shape(context_version)
+    if context_version==1 and context.shape[-1]%8==3:extra=3
     distances=context.new_empty(shortlist.shape)
     mappings=torch.full((*shortlist.shape,m),-1,dtype=torch.long,device=context.device)
     for row in range(b):
@@ -503,8 +511,8 @@ class FactualReturnSupport(nn.Module):
             torch.as_tensor(root_trials,dtype=torch.float32))
         self.root_bandwidth=root_bandwidth
 
-    def forward(self,context,set_context=False):
-        distances=(torch.cat([fleet_set_cost(context,part)[0]
+    def forward(self,context,set_context=False,context_version=1):
+        distances=(torch.cat([fleet_set_cost(context,part,context_version)[0]
             for part in self.contexts.split(2048)],-1) if set_context else
             (context[:,None]-self.contexts[None]).square().sum(-1))
         per_trajectory=distances.new_full((len(context),len(self.returns)),float('inf'))
@@ -1220,7 +1228,7 @@ class JointInterventionValue(nn.Module):
         self.conditional_strata=conditional_strata
         self.paired_advantage=paired_advantage
         self.context_version=context_version
-        if context_version>=3 and (transport or effect_locality):
+        if context_version>=3 and effect_locality:
             raise ValueError('Control-conditioned values require matching all predecessor-control coordinates.')
         self.program_model=None if program_model is None else SharedProgramPotential(**program_model).eval()
         self.register_buffer('program_options',None if program_options is None else
@@ -1229,7 +1237,7 @@ class JointInterventionValue(nn.Module):
         self.prefix_refinement=prefix_refinement
         if prefix_refinement and (program_options is None or decision_tolerance or blending_penalty):
             raise ValueError('Prefix refinements use relative whole-plan options and their paired task values.')
-        if program_options is not None and (transport or effect_locality):
+        if program_options is not None and effect_locality:
             raise ValueError('Temporal program values use directly matched complete-fleet contexts.')
         if self.program_model is not None:
             learned=self.program_model.program_options
@@ -1525,7 +1533,7 @@ class JointInterventionValue(nn.Module):
         pooled only after their vessel assignments agree.
         """
         b,n=action.shape[:2]
-        nearest,index,mapping=match_fleet_context(context,self.contexts)
+        nearest,index,mapping=match_fleet_context(context,self.contexts,context_version=self.context_version)
         weights=torch.exp(-nearest/(2.*self.bandwidth**2))
         if action.shape[-1]==3:
             free=torch.full_like(action[...,:1],-1.)
@@ -1534,37 +1542,43 @@ class JointInterventionValue(nn.Module):
         if (weights.sum(-1)<=self.margin).all():
             return (result,best_gain) if return_gain else result
         m=mapping.shape[-1]
-        ids=torch.arange(self.values.shape[1],device=action.device)
-        programs=((ids[:,None]//(4**torch.arange(m,device=action.device)))%4).long()
+        ids=self.supported_program_codes
+        programs=((ids[:,None]//(self.program_radix**torch.arange(m,device=action.device)))%self.program_radix).long()
         factual=(context.new_zeros(b) if self.paired_advantage else
-            self.anchor(context,set_context=True)[0])
-        powers=4**torch.arange(n,device=action.device)
+            self.anchor(context,set_context=True,context_version=self.context_version)[0])
+        powers=self.program_radix**torch.arange(n,device=action.device)
         for row in range(b):
             candidate_codes=[];candidate_mass=[];candidate_value=[];candidate_wait=[];candidate_second=[]
             for j,source in enumerate(index[row]):
                 if weights[row,j]<1e-8:continue
                 roles=mapping[row,j];missing=roles<0
-                available=self.observed[source].clone()
+                available=self.observed[source,ids].clone()
                 if missing.any():available&=(programs[:,missing]==0).all(-1)
                 chosen=programs[available]
                 if not len(chosen):continue
                 assigned=torch.zeros((len(chosen),n),dtype=torch.long,device=action.device)
                 assigned[:,roles[~missing]]=chosen[:,~missing]
-                value=self.values[source,available]
+                value=self.values[source,ids[available]]
                 if self.conditional_strata:
                     value=(1.-factual[row])*value[...,0]+factual[row]*value[...,1]
                 mass=weights[row,j].expand(len(chosen))
                 candidate_codes.append((assigned*powers).sum(-1))
                 candidate_mass.append(mass);candidate_value.append(mass*value)
                 candidate_wait.append(mass*self.wait_values[source])
-                if self.confidence:candidate_second.append(mass*(self.gain_variance[source,available]+value.square()))
+                if self.confidence:candidate_second.append(mass*(self.gain_variance[source,ids[available]]+value.square()))
             if not candidate_codes:continue
             codes,inverse=torch.cat(candidate_codes).unique(return_inverse=True)
             mass=context.new_zeros(len(codes)).scatter_add_(0,inverse,torch.cat(candidate_mass))
             values=context.new_zeros(len(codes)).scatter_add_(0,inverse,torch.cat(candidate_value))
             waits=context.new_zeros(len(codes)).scatter_add_(0,inverse,torch.cat(candidate_wait))
-            transferred=(codes[:,None]//powers)%4
-            baseline=torch.where(action[row,:,3]>=0.,1.+2.*action[row,:,3],0.).long()[order[row]]
+            transferred=(codes[:,None]//powers)%self.program_radix
+            if self.prefix_refinement:
+                baseline=torch.zeros(n,dtype=torch.long,device=action.device)
+            elif self.program_options is not None:
+                pair=action[row][:,[3,5]]
+                pair=torch.where((action[row,:,3]<0.)[:,None],torch.full_like(pair,-1.),pair)
+                baseline=(pair[:,None]-self.program_options[None]).square().sum(-1).argmin(-1)[order[row]]
+            else:baseline=torch.where(action[row,:,3]>=0.,1.+2.*action[row,:,3],0.).long()[order[row]]
             mean=values/mass.clamp_min(1e-8)
             if self.confidence:
                 second=context.new_zeros(len(codes)).scatter_add_(0,inverse,torch.cat(candidate_second))/mass.clamp_min(1e-8)
@@ -1577,8 +1591,18 @@ class JointInterventionValue(nn.Module):
             choice=gain.argmax();best_gain[row]=gain[choice]
             if gain[choice]>self.margin:
                 selected=transferred[choice][order[row].argsort()]
-                physical=torch.where(selected>0,(selected.to(action.dtype)-1.)*.5,-1.)
-                second=torch.where((selected>0)&self.reversal,1.-physical,physical)
+                if self.prefix_refinement:
+                    # Role matching transports the edited vessel, not a new
+                    # clock or a different teammate's committed suffix.
+                    physical=torch.where(selected==0,action[row,:,3],self.program_options[selected,0])
+                    second=self.program_options[selected,1]
+                    result[row,:,3]=physical
+                    result[row,:,5]=torch.where(second==-2.,action[row,:,5],second)
+                    continue
+                if self.program_options is None:
+                    physical=torch.where(selected>0,(selected.to(action.dtype)-1.)*.5,-1.)
+                    second=torch.where((selected>0)&self.reversal,1.-physical,physical)
+                else:physical,second=self.program_options[selected].unbind(-1)
                 if self.fixed_intervention_clock and not bool((selected>0).any()):second.fill_(-2.)
                 result[row,:,3]=physical;result[row,:,4]=self.span;result[row,:,5]=second
         return (result,best_gain) if return_gain else result

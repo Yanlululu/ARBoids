@@ -2869,6 +2869,35 @@ class JointLearningActor(nn.Module):
         return -deviation.sum(-1)
 
     @torch.no_grad()
+    def stationary_fusion_candidates(self,packet,proposals,center,width=.4):
+        """Find continuous best responses before evaluating joint combinations.
+
+        Interpolate each candidate-pair cost only to propose an interior
+        coefficient. Its trajectory is then predicted afresh alongside every
+        original candidate. All selectors receive this same candidate library;
+        the proposal uses the source distribution, never a joint winner.
+        """
+        b,n=center.shape;k=self.levels
+        if k<2 or not self.peer:
+            return center
+        grid=torch.linspace(0.,1.,k,device=center.device)
+        forecast=dict(packet)
+        risk=self.candidate_risk(forecast,proposals,pairwise=True)
+        probability=(-((grid-center[...,None])/width).square()).softmax(-1)
+        mask=~torch.eye(n,dtype=torch.bool,device=center.device)
+        expected=self.risk_prior*torch.einsum('bijgh,bjh,ij->big',risk,probability,mask.to(risk.dtype))
+        precision=torch.ones_like(center)
+        if self.physical_prior_weight:
+            separation=(proposals-packet['node'][...,11:13]).square().mean(-1)
+            precision=1.-self.physical_prior_weight+self.physical_prior_weight*separation
+        slope=(expected[...,1:]-expected[...,:-1])*(k-1)
+        optimum=center[...,None]-.5*width**2*slope/precision[...,None].clamp_min(1e-6)
+        optimum=optimum.maximum(grid[:-1]).minimum(grid[1:])
+        cost=precision[...,None]*((optimum-center[...,None])/width).square()
+        cost=cost+expected[...,:-1]+slope*(optimum-grid[:-1])
+        return optimum.gather(-1,cost.argmin(-1,keepdim=True)).squeeze(-1)
+
+    @torch.no_grad()
     def fast_action(self,packet,intent):
         """Replan physical fusion every source step under a persistent preference.
 
@@ -3014,7 +3043,7 @@ class JointLearningActor(nn.Module):
         if self.graph:
             # Retain the full joint distribution. Averaging independent gates
             # would discard mutually exclusive, coordinated combinations.
-            augmented=self.adaptive_fusion_grid=='augmented' and self.interaction_enabled
+            augmented=self.adaptive_fusion_grid in ('augmented','risk_stationary') and self.interaction_enabled
             k=self.levels+int(augmented);indices=torch.arange(k**n,device=obs.device)
             choices=((indices[:,None]//(k**torch.arange(n,device=obs.device)))%k).long()
             bits=choices.to(obs.dtype)/(k-1)
@@ -3028,6 +3057,8 @@ class JointLearningActor(nn.Module):
                 # A held intervention replaces the middle candidate only for
                 # that boat, so free boats predict its actual pending motion.
                 middle=unary.sigmoid()
+                if self.adaptive_fusion_grid=='risk_stationary':
+                    middle=self.stationary_fusion_candidates(packet,proposals,middle)
                 held=packet.get('_committed_gates')
                 if held is not None:middle=torch.where(held>=0.,held,middle)
                 entries=(torch.zeros_like(middle),middle,torch.ones_like(middle))
