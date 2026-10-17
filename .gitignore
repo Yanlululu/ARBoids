@@ -43,6 +43,10 @@ experiments/
 
 /.vrx-venv/
 
+/scripts/codex_mcp/.runtime/
+
+/docs/audits/
+
 /vrx_ws/
 
 /vrx/results/
