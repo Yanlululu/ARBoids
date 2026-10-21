@@ -1,4 +1,4 @@
-"""Export the seven paper figure groups from verified, fixed-endpoint artifacts."""
+"""Export the paper figure groups from verified, fixed-endpoint artifacts."""
 import argparse
 import csv
 import json
@@ -549,14 +549,545 @@ def finish(study,directory,manuscript,include_extensions=True):
     path.write_text(text,encoding='utf-8')
 
 
+# Current source-environment study. Legacy 60-s exporters above remain callable
+# only for their own recorded study inputs.
+SOURCE_COLORS = {'F00':'#8B9198','F10':'#4477AA','F01':'#AA66AA',
+    'F11':'#00857D','ordinary':'#D17B27','M1-strong':'#204A68',
+    'M1-independent':'#C35B50','state-interaction':'#A3B7CC',
+    'candidate-interaction':'#819AB4'}
+SOURCE_LABELS = {'F00':'Transferred source','F10':'Joint fusion','F01':'Value only',
+    'F11':'Complete','ordinary':'Ordinary MLP','M1-strong':'Refined joint',
+    'M1-independent':'Independent','state-interaction':'State interaction',
+    'candidate-interaction':'Candidate interaction'}
+
+
+def source_rows(evaluations):
+    return [row for entry in evaluations.values() if entry for row in entry['rows']]
+
+
+def source_paired(left, right, repetitions=4000):
+    """Paired layout-cluster bootstrap; repeated futures never split a layout."""
+    groups = {}
+    differences = []
+    rescue = harm = 0
+    for suite in left:
+        a, b = left[suite], right[suite]
+        if not a or not b:
+            raise ValueError('A paired comparison needs both completed evaluations.')
+        if a['tasks'] != b['tasks']:
+            raise ValueError('Paired evidence differs in layout, fleet, agility, future or row order.')
+        for task, x, y in zip(a['tasks'], a['rows'], b['rows']):
+            delta = x['success']-y['success']
+            key = (suite, *task[0])
+            groups.setdefault(key, []).append(delta)
+            differences.append(delta)
+            rescue += int(delta > 0); harm += int(delta < 0)
+    strata = {}
+    for (suite, seed, defenders, agility), values in groups.items():
+        strata.setdefault((suite, defenders, agility), []).append(values)
+    rng = np.random.default_rng(432201)
+    total = np.zeros(repetitions); count = np.zeros(repetitions)
+    for values in strata.values():
+        sums = np.asarray([sum(x) for x in values], float)
+        sizes = np.asarray([len(x) for x in values], int)
+        chosen = rng.integers(len(values), size=(repetitions, len(values)))
+        total += sums[chosen].sum(1); count += sizes[chosen].sum(1)
+    interval = np.quantile(100*total/count, [.025, .975])
+    return dict(episodes=len(differences),layouts=len(groups),rescue=rescue,harm=harm,
+        difference_pp=100*float(np.mean(differences)),ci95_pp=interval.tolist(),
+        interval_scope='development layout-cluster bootstrap; no correction for adaptive model selection')
+
+
+def source_ranking_summary(measurement, repetitions=4000):
+    """Compare predicted ordering only on outcome-independent random candidates."""
+    rows = measurement['records']; labels = list(rows[0]['ranking']['predictions'])
+    counts = []; correct = {label:[] for label in labels}; errors = {label:[] for label in labels}
+    strata = {}
+    for index, row in enumerate(rows):
+        ranking = row['ranking']; lookup = {int(k):i for i,k in enumerate(ranking['indices'])}
+        positions = np.asarray([lookup[int(k)] for k in ranking['random_indices']], int)
+        factual = np.asarray([item['success'] for item in row['outcomes']['factual']], float)
+        outcomes = np.asarray([[item['success'] for item in row['outcomes'][ranking['labels'][i]]]
+                               for i in positions], float)
+        if outcomes.shape[1] != len(factual) or len(factual) != len(row['futures']):
+            raise ValueError('Ranking outcomes must retain every common paired future.')
+        measured = (outcomes-factual).mean(1)
+        left, right = np.triu_indices(len(measured), 1)
+        direction = np.sign(measured[left]-measured[right]); informative = direction != 0
+        counts.append(int(informative.sum()))
+        for label in labels:
+            predicted = np.asarray(ranking['predictions'][label]['predicted_gain'])[0, positions]
+            if not np.isfinite(predicted).all():
+                raise ValueError('Ranking predictions must be finite and precede outcome acquisition.')
+            ordering = np.sign(predicted[left]-predicted[right])
+            credit = (ordering == direction).astype(float)
+            credit[ordering == 0] = .5
+            correct[label].append(float(credit[informative].sum()))
+            errors[label].append(float(np.mean((predicted-measured)**2)))
+        strata.setdefault(tuple(row['scene'][1:]), []).append(index)
+    counts = np.asarray(counts); rng = np.random.default_rng(435801)
+    resamples = np.concatenate([rng.choice(indices, (repetitions, len(indices)), replace=True)
+                               for indices in strata.values()], axis=1)
+    totals = counts[resamples].sum(1)
+    result = dict(roots=len(rows), informative_roots=int((counts > 0).sum()),
+        comparable_pairs=int(counts.sum()), models={},
+        scope='uniform random candidates; measured outcome ties excluded; stratified root bootstrap')
+    bootstraps = {}
+    for label in labels:
+        success = np.asarray(correct[label]); error = np.asarray(errors[label])
+        values = np.divide(success[resamples].sum(1), totals,
+            out=np.full(repetitions, np.nan), where=totals > 0)
+        bootstraps[label] = values
+        result['models'][label] = dict(
+            concordance=float(success.sum()/counts.sum()) if counts.sum() else None,
+            ci95=np.nanquantile(values, [.025,.975]).tolist() if counts.sum() else None,
+            gain_mse=float(error.mean()))
+    if 'conditional' in labels and 'ordinary' in labels and counts.sum():
+        result['conditional_minus_ordinary'] = dict(
+            concordance=result['models']['conditional']['concordance']-result['models']['ordinary']['concordance'],
+            ci95=np.nanquantile(bootstraps['conditional']-bootstraps['ordinary'], [.025,.975]).tolist())
+    return result
+
+
+def _source_save(fig, directory, name):
+    directory.mkdir(parents=True, exist_ok=True)
+    for extension in ('pdf', 'png', 'svg'):
+        fig.savefig(directory/f'{name}.{extension}', dpi=300, bbox_inches='tight',
+                    facecolor='white')
+    plt.close(fig)
+
+
+def _source_rate(entry):
+    rows = entry['rows']
+    return 100*np.mean([row['success'] for row in rows])
+
+
+def _source_boxes(ax, boxes, arrows, fontsize=8):
+    from matplotlib.patches import FancyArrowPatch
+    ax.set_xlim(0,1);ax.set_ylim(0,1);ax.axis('off')
+    for x,y,w,h,text,color in boxes:
+        ax.add_patch(FancyBboxPatch((x,y),w,h,boxstyle='round,pad=0.008,rounding_size=0.015',
+            lw=.9,edgecolor=color,facecolor=color+'12'))
+        ax.text(x+w/2,y+h/2,text,ha='center',va='center',fontsize=fontsize)
+    for start,end in arrows:
+        ax.add_patch(FancyArrowPatch(start,end,arrowstyle='-|>',mutation_scale=9,
+            linewidth=.9,color='#3D4650'))
+
+
+def source_method_figures(data, directory):
+    fig,ax=plt.subplots(figsize=(3.5,2.7),layout='constrained')
+    ax.add_patch(Circle((0,0),15,color='#DDE8ED',ec='#204A68',lw=1))
+    ax.text(0,0,'Protected\nregion',ha='center',va='center',fontsize=8)
+    positions=np.array([[23,17],[28,-2],[20,-19]])
+    for i,(x,y) in enumerate(positions):
+        ax.add_patch(Polygon([[x-2,y],[x+1.3,y+1],[x+1.3,y-1]],color='#00857D'))
+        ax.text(x+1,y+2.3,f'$D_{i+1}$',fontsize=8)
+        ax.plot([x,x+8,x+15],[y,y+4,y+2],color='#4477AA',lw=1,alpha=.7)
+        ax.plot([x,x+6,x+13],[y,y-5,y-4],color='#00857D',lw=1,alpha=.7)
+    ax.plot(*positions[[0,1,2,0]].T,'--',color='#909BA4',lw=.8)
+    ax.add_patch(Polygon([[47,6],[51,8],[51,4]],color='#D17B27'))
+    ax.annotate('Intruder',xy=(49,6),xytext=(39,23),fontsize=8,
+                arrowprops=dict(arrowstyle='-',color='#D17B27'))
+    ax.annotate('',xy=(16,6),xytext=(47,6),arrowprops=dict(arrowstyle='->',color='#D17B27',lw=1.4))
+    ax.text(-17,-31,'1  Which fleet mixture is compatible?\n2  Which change improves the task?',fontsize=8)
+    ax.set(xlim=(-18,56),ylim=(-35,29),aspect='equal');ax.axis('off')
+    _source_save(fig,directory,'fig1-task')
+
+    fig,ax=plt.subplots(figsize=(3.5,3.2),layout='constrained')
+    boxes=[(.18,.86,.64,.11,'Current measured fleet state','#204A68'),
+        (.02,.65,.43,.12,'Learned SAC commands','#4477AA'),
+        (.55,.65,.43,.12,'Boids commands','#8A9198'),
+        (.12,.43,.76,.13,'M1: candidate motion + joint selection','#204A68'),
+        (.12,.20,.76,.14,'M2: factual value + intervention gain\nKeep / intervene now / intervene later','#00857D'),
+        (.18,.01,.64,.11,'Execute; observe the next state','#3D4650')]
+    arrows=[((.3,.86),(.24,.77)),((.7,.86),(.76,.77)),((.24,.65),(.35,.56)),
+        ((.76,.65),(.65,.56)),((.5,.43),(.5,.34)),((.5,.20),(.5,.12))]
+    _source_boxes(ax,boxes,arrows,fontsize=7.6)
+    _source_save(fig,directory,'fig2-architecture')
+
+    example=data.get('mechanism_illustration')
+    if example:
+        fig,axes=plt.subplots(2,2,figsize=(7.2,4.6),layout='constrained')
+        diagnostic=example['common_state_diagnosis']
+        paths=np.asarray(diagnostic['paths']);i,j=diagnostic['pair']
+        for boat,color in ((i,'#4477AA'),(j,'#D17B27')):
+            for path in paths[boat]:
+                axes[0,0].plot(path[:,0],path[:,1],color=color,alpha=.22,lw=.7)
+            for label,style in (('independent','--'),('joint','-')):
+                k=diagnostic['choices'][label][boat];path=paths[boat,k]
+                axes[0,0].plot(path[:,0],path[:,1],style,color=color,lw=1.5,
+                    label=f'D{boat+1}, {label}')
+        axes[0,0].set(title=f'(a) Common-state forecast at {diagnostic["time"]:.1f} s',
+            xlabel='x (m)',ylabel='y (m)',aspect='equal')
+        axes[0,0].legend(fontsize=6,ncol=2,loc='upper center',bbox_to_anchor=(.5,-.25))
+        heat=axes[0,1].imshow(diagnostic['pair_risk'],origin='lower',cmap='Blues',aspect='equal')
+        for label,marker,color in (('independent','x','#C35B50'),('joint','o','#00857D')):
+            k=diagnostic['choices'][label]
+            style=dict(facecolors='none',edgecolors=color) if marker=='o' else dict(color=color)
+            axes[0,1].scatter(k[j],k[i],marker=marker,s=58,linewidths=1.4,label=label,**style)
+        axes[0,1].set(title='(b) Same candidate-pair cost',xlabel=f'D{j+1} candidate',ylabel=f'D{i+1} candidate')
+        axes[0,1].set_xticks(range(9));axes[0,1].set_yticks(range(9))
+        fig.colorbar(heat,ax=axes[0,1],shrink=.8,label='Predicted interaction cost')
+        all_points=[point for trace in example['trajectories'].values() for point in trace['points']]
+        all_xy=np.concatenate([np.vstack((point['attacker'],point['defenders'])) for point in all_points])
+        bounds=np.vstack((all_xy.min(0)-4,all_xy.max(0)+4))
+        bounds[0]=np.minimum(bounds[0],[-17,-17]);bounds[1]=np.maximum(bounds[1],[17,17])
+        for ax,label,title in ((axes[1,0],'independent','(c) Independent: collision'),
+                               (axes[1,1],'joint','(d) Joint: capture')):
+            points=example['trajectories'][label]['points']
+            attacker=np.asarray([p['attacker'] for p in points]);defenders=np.asarray([p['defenders'] for p in points])
+            ax.add_patch(Circle((0,0),15,ec='#84929C',fc='#EDF2F5',lw=.8))
+            ax.plot(*attacker.T,color='#D17B27',lw=1.6,label='Intruder')
+            for boat in range(defenders.shape[1]):
+                ax.plot(*defenders[:,boat].T,color=plt.cm.Blues(.35+.6*boat/defenders.shape[1]),lw=1)
+                ax.scatter(*defenders[-1,boat],s=10,c='#204A68')
+            ax.scatter(*attacker[-1],marker='x',s=24,c='#D17B27')
+            ax.set(title=title,xlabel='x (m)',ylabel='y (m)',aspect='equal',xlim=bounds[:,0],ylim=bounds[:,1])
+        _source_save(fig,directory,'fig3-joint-fusion')
+
+    ranking = data.get('ranking_summary')
+    has_ranking = bool(ranking and ranking['comparable_pairs'])
+    fig,axes=plt.subplots(1,3 if has_ranking else 2,figsize=(7.2,2.8),layout='constrained')
+    boxes=[(.02,.39,.22,.22,'Same state\n+ frozen policy','#204A68'),
+        (.38,.66,.59,.20,'Factual choice\nFeedback → outcome $Y_0$','#4477AA'),
+        (.38,.20,.59,.20,'One-vessel change\nFeedback → outcome $Y_z$','#00857D'),
+        (.39,.01,.57,.12,'Paired gain: $Y_z-Y_0$','#3D4650')]
+    _source_boxes(axes[0],boxes,[((.24,.55),(.38,.76)),((.24,.46),(.38,.30)),
+        ((.67,.66),(.67,.40)),((.67,.20),(.67,.13))],fontsize=7)
+    axes[0].text(.67,.53,'Shared future disturbance',ha='center',fontsize=7,color='#59636E')
+    axes[0].set_title('(a) Conditional closed-loop comparison',fontsize=9)
+    measurement=data.get('choice_validation')
+    if measurement:
+        maximum=.1
+        for label,color,marker in [('conditional','#00857D','o'),('ordinary','#D17B27','x')]:
+            predicted=[];measured=[];accepted=rescues=harms=0
+            for record in measurement['records']:
+                predicted.append(record['decisions'][label]['predicted_gain'][0])
+                factual=np.asarray([r['success'] for r in record['outcomes']['factual']])
+                value=np.asarray([r['success'] for r in record['outcomes'][label]])
+                measured.append(float(np.mean(value-factual)))
+                accepted+=bool(record['decisions'][label]['accepted'][0])
+                rescues+=int(((value==1)&(factual==0)).sum())
+                harms+=int(((value==0)&(factual==1)).sum())
+            maximum=max(maximum,max(predicted))
+            axes[1].scatter(predicted,measured,s=17,alpha=.65,c=color,marker=marker,
+                label=f'{label}: {rescues} rescued, {harms} harmed')
+        axes[1].plot([0,maximum],[0,maximum],':',color='#8B9198')
+        axes[1].axhline(0,color='#CAD0D5',lw=.7)
+        axes[1].set(xlabel='Predicted executed gain',ylabel='Measured paired gain',
+            title='(b) New-state decision validation',ylim=(-1.05,1.05))
+        axes[1].legend(fontsize=6,loc='lower right')
+    else:
+        axes[1].axis('off');axes[1].text(.5,.65,'New-state decision validation',ha='center',fontsize=9)
+        axes[1].text(.5,.40,'64 factual-trajectory states\n8 new paired futures per state\nMeasurement in progress',
+                    ha='center',va='center',fontsize=8,color='#59636E')
+    if has_ranking:
+        for index,(label,color) in enumerate((('conditional','#00857D'),('ordinary','#D17B27'))):
+            value = ranking['models'][label]; center = 100*value['concordance']
+            interval = 100*np.asarray(value['ci95'])
+            axes[2].bar(index,center,color=color,width=.65)
+            axes[2].errorbar(index,center,yerr=[[center-interval[0]],[interval[1]-center]],
+                color='#3D4650',capsize=3,fmt='none',lw=.8)
+            axes[2].text(index,interval[1]+2,f'{center:.1f}',ha='center',fontsize=7)
+        axes[2].axhline(50,color='#8B9198',ls=':',lw=.8)
+        axes[2].set(xticks=(0,1),xticklabels=('Conditional','MLP'),ylim=(0,108),
+            ylabel='Measured-order concordance (%)',title='(c) Random-candidate ranking')
+        axes[2].tick_params(axis='x',labelsize=7)
+        axes[2].text(.5,-.26,f"{ranking['informative_roots']}/{ranking['roots']} informative roots;\n"
+            f"{ranking['comparable_pairs']} nontied comparisons",ha='center',
+            transform=axes[2].transAxes,fontsize=6.5)
+    _source_save(fig,directory,'fig4-intervention-value')
+
+
+def source_result_figures(data, directory):
+    numerical=data['numerical']
+    configuration_curve=None
+    configuration_spread=None
+    pipeline_runs=data.get('independent_full_pipeline',{})
+    complete_pipeline=len(pipeline_runs)==5 and all(
+        all(all(entries.values()) for entries in run['frozen_predecessors'].values()) and
+        all(run['configurations'].get(arm,{}).get(label) and
+            all(run['configurations'][arm][label]['evaluations'].values())
+            for arm in ('F01','F11') for label in ('conditional','ordinary')) and
+        all(run['configurations'][arm]['conditional']['nodes'].get(str(update)) and
+            all(run['configurations'][arm]['conditional']['nodes'][str(update)]['evaluations'].values())
+            for arm in ('F01','F11') for update in (6000,12000,18000,24000))
+        for run in pipeline_runs.values())
+    if complete_pipeline:
+        histories={label:[] for label in ('F00','F10','F01','F11')}
+        for run in pipeline_runs.values():
+            predecessors={label:{suite:dict(entry,tasks=entry['tasks'][::2],rows=entry['rows'][::2])
+                for suite,entry in entries.items() if suite in ('source-development','new4310-200')}
+                for label,entries in run['frozen_predecessors'].items()}
+            reference=predecessors['F00']
+            for label,entries in predecessors.items():
+                histories[label].append([_source_rate(dict(rows=source_rows(entries)))]*5)
+            for label,predecessor in [('F01','F00'),('F11','F10')]:
+                values=[histories[predecessor][-1][0]]
+                for update in (6000,12000,18000,24000):
+                    entries=run['configurations'][label]['conditional']['nodes'][str(update)]['evaluations']
+                    if set(entries)!=set(reference) or any(
+                            entries[suite]['tasks']!=reference[suite]['tasks'] for suite in reference):
+                        raise ValueError('Independent learning runs require the same paired task screen.')
+                    values.append(_source_rate(dict(rows=source_rows(entries))))
+                histories[label].append(values)
+        configuration_curve={label:np.mean(values,axis=0) for label,values in histories.items()}
+        configuration_spread={label:np.std(values,axis=0,ddof=1) for label,values in histories.items()}
+    for recipe in ('coverage','identity'):
+        if configuration_curve is not None:break
+        group=data.get('configuration_learning',{}).get(recipe,{})
+        configurations=group.get('configurations',{})
+        if not all(configurations.get(label) and all(
+            configurations[label]['nodes'].get(str(update)) and
+            all(configurations[label]['nodes'][str(update)]['evaluations'].values())
+            for update in (6000,12000,18000,24000)) for label in ('F01','F11')):
+            continue
+        predecessors=group['frozen_predecessors']
+        reference=predecessors['F00']
+        scores={label:[_source_rate(dict(rows=source_rows(entries)))]*5
+            for label,entries in predecessors.items()}
+        for label,predecessor in [('F01','F00'),('F11','F10')]:
+            scores[label]=[scores[predecessor][0]]
+            for update in (6000,12000,18000,24000):
+                entries=configurations[label]['nodes'][str(update)]['evaluations']
+                if set(entries)!=set(reference) or any(
+                    entries[suite]['tasks']!=reference[suite]['tasks'] for suite in reference):
+                    raise ValueError('Configuration learning requires the same complete paired screen.')
+                scores[label].append(_source_rate(dict(rows=source_rows(entries))))
+        configuration_curve=scores
+        break
+    if configuration_curve is None:
+        fig,axes=plt.subplots(1,3,figsize=(7.2,2.75),layout='constrained')
+        overall_axis,repeat_axis=axes[1:]
+    else:
+        fig,grid=plt.subplots(2,2,figsize=(7.2,5.1),layout='constrained')
+        axes=grid.ravel();overall_axis,repeat_axis=axes[2:]
+        for label in ('F00','F10','F01','F11'):
+            axes[1].plot([0,6,12,18,24],configuration_curve[label],marker='o',ms=3,
+                color=SOURCE_COLORS[label],label=label+(' (frozen)' if label in ('F00','F10') else ''))
+            if configuration_spread is not None:
+                mean=np.asarray(configuration_curve[label]);spread=configuration_spread[label]
+                axes[1].fill_between([0,6,12,18,24],np.maximum(0,mean-spread),
+                    np.minimum(100,mean+spread),color=SOURCE_COLORS[label],alpha=.13,lw=0)
+        axes[1].set(xlabel='Additional value updates (thousand)',ylabel='Success (%)',
+            ylim=(0,102),xticks=(0,6,12,18,24),title='(b) Matched refit learning')
+        axes[1].legend(fontsize=6.5,ncol=2,loc='lower right')
+        axes[1].text(.5,-.22,('Five complete pipelines; mean and SD on 228 paired episodes'
+            if complete_pipeline else 'Separate refit recipe; 228 paired development episodes'),
+            ha='center',transform=axes[1].transAxes,fontsize=6.5)
+    for family,color in [('arboids','#4477AA'),('rp','#D17B27'),('sac','#8B9198')]:
+        histories=[]
+        for curve in data['learning_curves'].get(family,[]):
+            history={int(row['step']):100*float(row['def_sr']) for row in curve['rows']}
+            if not history:continue
+            histories.append(history)
+            steps=sorted(history)
+            axes[0].plot(np.asarray(steps)/1e6,[history[step] for step in steps],color=color,lw=.5,alpha=.25)
+        if histories:
+            common=sorted(set.intersection(*(set(history) for history in histories)))
+            values=np.asarray([[history[step] for step in common] for history in histories])
+            x=np.asarray(common)/1e6;mean=values.mean(0)
+            label={'arboids':'ARBoids','rp':'RP','sac':'SAC'}[family]
+            axes[0].plot(x,mean,color=color,lw=1.2,label=f'{label} (n={len(histories)})')
+            if len(histories)>1:
+                spread=values.std(0,ddof=1)
+                axes[0].fill_between(x,np.maximum(0,mean-spread),np.minimum(100,mean+spread),color=color,alpha=.15,lw=0)
+    axes[0].set(xlim=(0,1),ylim=(0,100),xlabel='Training steps (million)',ylabel='Development success (%)',
+        title='(a) Six-vessel baseline learning')
+    complete=sum(curve['completed'] for curves in data['learning_curves'].values() for curve in curves)
+    axes[0].text(.96,.03,f'{complete}/15 runs complete',ha='right',transform=axes[0].transAxes,fontsize=7,color='#59636E')
+    axes[0].legend(loc='upper left')
+    labels=['F00','F10','F01','F11'];values=[100*np.mean([r['success'] for r in source_rows(numerical[k])]) for k in labels]
+    overall_axis.bar(labels,values,color=[SOURCE_COLORS[k] for k in labels],width=.65)
+    for i,y in enumerate(values):overall_axis.text(i,y+2,f'{y:.1f}',ha='center',fontsize=7)
+    overall_axis.set(ylim=(0,108),ylabel='Success (%)',
+        title='(b) Four configurations' if configuration_curve is None else '(c) Reference four configurations')
+    overall_axis.text(.5,-.22,'856 paired development episodes',ha='center',transform=overall_axis.transAxes,fontsize=6.5)
+    for label,color,marker in [('conditional','#00857D','o'),('ordinary','#D17B27','s')]:
+        seeds=[];scores=[]
+        repeats=({seed:{kind:list(run['configurations']['F11'][kind]['evaluations'].values())
+                    for kind in ('conditional','ordinary')} for seed,run in pipeline_runs.items()}
+                 if complete_pipeline else data['value_repeats'])
+        for seed,entry in repeats.items():
+            if all(entry[label]):
+                rows=[r for e in entry[label] for r in e['rows']]
+                seeds.append(int(seed));scores.append(100*np.mean([r['success'] for r in rows]))
+        repeat_axis.plot(seeds,scores,marker=marker,color=color,lw=1,label=label)
+    repeat_axis.set(ylim=(0,100) if complete_pipeline else (75,100),xticks=range(42,47),
+        xlabel='Independent pipeline seed' if complete_pipeline else 'Independent value-fit seed',ylabel='Success (%)',
+        title=('(d) Five complete pipelines' if complete_pipeline else
+            '(c) Five value-learning runs' if configuration_curve is None else '(d) Five value-learning runs'))
+    repeat_axis.legend(loc='lower left')
+    _source_save(fig,directory,'fig5-overall-performance')
+
+    fig,axes=plt.subplots(1,2,figsize=(7.2,2.9),layout='constrained')
+    labels=['state-interaction','candidate-interaction','M1-independent','F10','M1-strong']
+    generic=data.get('generic_replacements',{}).get('balanced',{})
+    stronger_generic=bool(generic) and all(generic.get(mode,{}).get('evaluations') and
+        all(generic[mode]['evaluations'].values()) for mode in ('state','candidate'))
+    groups=dict(numerical)
+    if stronger_generic:
+        groups.update({'state-interaction':generic['state']['evaluations'],
+            'candidate-interaction':generic['candidate']['evaluations']})
+    values=[100*np.mean([r['success'] for r in source_rows(groups[k])]) for k in labels]
+    axes[0].bar(range(len(labels)),values,color=[SOURCE_COLORS[k] for k in labels])
+    axes[0].set_xticks(range(len(labels)),['State\nattention','Candidate\nattention','Independent\nselection','Joint','Refined\njoint'],fontsize=6.5)
+    for i,y in enumerate(values):axes[0].text(i,y+1.5,f'{y:.1f}',ha='center',fontsize=7)
+    axes[0].set(ylim=(0,105),ylabel='Success (%)',title='(a) Candidate-interaction and joint selection')
+    repeat_gains=[]
+    for entry in data.get('source_backbone_repeats',{}).values():
+        if all(entry['joint']) and all(entry['independent']):
+            for joint,independent in zip(entry['joint'],entry['independent']):
+                if joint['tasks']!=independent['tasks']:
+                    raise ValueError('Source-backbone repeats require paired tasks.')
+            joint=[r['success'] for e in entry['joint'] for r in e['rows']]
+            independent=[r['success'] for e in entry['independent'] for r in e['rows']]
+            repeat_gains.append(100*np.mean(np.asarray(joint)-np.asarray(independent)))
+    if repeat_gains:
+        axes[0].text(.5,-.27,f'Separate 228-episode screens, {len(repeat_gains)} source backbones:\n'
+            f'mean joint-selection gain {np.mean(repeat_gains):.1f} pp '
+            f'(range {min(repeat_gains):.1f}–{max(repeat_gains):.1f})',
+            ha='center',transform=axes[0].transAxes,fontsize=6.5)
+    suites=list(numerical['F11'])[:2]
+    subset=lambda label:{suite:dict(numerical[label][suite],tasks=numerical[label][suite]['tasks'][::2],
+        rows=numerical[label][suite]['rows'][::2]) for suite in suites}
+    controls=[('Ordinary\nMLP',subset('ordinary'),'#D17B27')]
+    names={'F11-r107-immediate-only':'Immediate\nonly','F11-r107-no-temporal-bounds':'No time\nbounds',
+           'F11-r107-no-factual-anchor':'No factual\nanchor'}
+    pending=0
+    for stem,entries in data['components'].items():
+        if all(entries):
+            group=dict(zip(suites,entries))
+            source_paired(group,subset('F11'),repetitions=100)
+            controls.append((names[stem],group,'#99B8B3'))
+        else:pending+=1
+    controls.append(('Full\nM2',subset('F11'),'#00857D'))
+    for i,(label,group,color) in enumerate(controls):
+        y=100*np.mean([r['success'] for r in source_rows(group)])
+        axes[1].bar(i,y,color=color);axes[1].text(i,y+1.5,f'{y:.1f}',ha='center',fontsize=7)
+    axes[1].set_xticks(range(len(controls)),[x[0] for x in controls],fontsize=7)
+    axes[1].set(ylim=(0,105),ylabel='Success (%)',title='(b) Conditional value and component controls')
+    axes[1].text(.5,-.27,'228 paired screen episodes'+(f'; {pending} controls running' if pending else ''),
+        ha='center',transform=axes[1].transAxes,fontsize=6.5)
+    _source_save(fig,directory,'fig6-mechanism-controls')
+
+    fig,axes=plt.subplots(1,3,figsize=(7.2,2.8),layout='constrained')
+    for label in ['F00','F01','M1-independent','F10','M1-strong','F11']:
+        rows=source_rows(numerical[label]);agility=sorted(set(row['agility'] for row in rows))
+        scores=[100*np.mean([r['success'] for r in rows if r['agility']==a]) for a in agility]
+        axes[0].plot(agility,scores,marker='o',ms=3,color=SOURCE_COLORS[label],label=SOURCE_LABELS[label])
+        entries=data['fleet'].get(label,{})
+        counts=sorted(int(n) for n,entry in entries.items() if entry)
+        scores=[_source_rate(entries[str(n)]) for n in counts]
+        axes[1].plot(counts,scores,marker='o',ms=3,color=SOURCE_COLORS[label])
+    axes[0].set(xlabel='Intruder agility',ylabel='Success (%)',ylim=(0,102),title='(a) Agility')
+    axes[0].legend(fontsize=5.5,ncol=2)
+    axes[1].set(xlabel='Number of defenders',ylabel='Success (%)',xticks=(3,4,5,7,8),ylim=(0,102),title='(b) Fleet-size screen')
+    axes[1].text(.5,.02,'16 scenes per fleet size',ha='center',transform=axes[1].transAxes,fontsize=6.5)
+    adaptation=data.get('common_opponent',{})
+    fresh=all(adaptation.get('fresh_before',{}).get(label) and
+        adaptation.get('fresh_after',{}).get(label) for label in ('F01','F11','ordinary'))
+    before_key,after_key=('fresh_before','fresh_after') if fresh else ('before','after')
+    ready=[label for label in ('F01','F11','ordinary')
+        if adaptation.get(before_key,{}).get(label) and adaptation.get(after_key,{}).get(label)]
+    if ready:
+        for index,label in enumerate(ready):
+            before=adaptation[before_key][label];after=adaptation[after_key][label]
+            if (before['tasks']!=after['tasks'] or
+                    before['evaluation_context']['frozen_opponent_sha256']!=after['evaluation_context']['frozen_opponent_sha256']):
+                raise ValueError('Adaptation recovery needs the same layouts and frozen opponent.')
+            axes[2].bar(index-.17,_source_rate(before),width=.32,color=SOURCE_COLORS[label],alpha=.35)
+            axes[2].bar(index+.17,_source_rate(after),width=.32,color=SOURCE_COLORS[label])
+            retained=adaptation.get('retained_apf',{}).get(label,{})
+            if retained and all(retained.values()):
+                contrast=source_paired(retained,numerical[label],repetitions=100)
+                axes[2].text(index,3,f'APF {contrast["difference_pp"]:+.1f} pp',ha='center',fontsize=5.5)
+        axes[2].set(xticks=range(len(ready)),xticklabels=[SOURCE_LABELS[label] for label in ready],
+            ylim=(0,108),ylabel='Success (%)',title='(c) Common-opponent adaptation')
+        axes[2].tick_params(axis='x',labelsize=6)
+        axes[2].text(.5,-.24,('64 new layouts' if fresh else '64 adaptation-development layouts')+
+            '; light: before, dark: after\nAPF: change on the original paired episodes',
+            ha='center',transform=axes[2].transAxes,fontsize=6)
+    else:
+        axes[2].axis('off');axes[2].set_title('(c) Common-opponent adaptation')
+        axes[2].text(.5,.55,'Common attacker training\n↓\nPaired changed-opponent evaluation\n↓\nAdaptation + original-opponent retention',
+            ha='center',va='center',fontsize=7.5)
+        axes[2].text(.5,.13,'Evaluation in progress',ha='center',fontsize=7,color='#59636E')
+    _source_save(fig,directory,'fig7-scope-adaptation')
+
+    fig,axes=plt.subplots(1,3,figsize=(7.2,3.2),layout='constrained')
+    labels=['source','m1-base','independent-r33','m1-r50','m2-only-r65','full-r61',
+            'ordinary-r99-matched','full-r97-short-response','ordinary-r97-short-response']
+    pretty=['Source','Joint base','Independent','Refined joint','Value only','Reference full',
+            'Matched MLP','Refit full','Refit MLP']
+    groups={label:[r for r in data['vrx'] if r['comparison_label']==label] for label in labels}
+    if not all(len(v)==8 for v in groups.values()):
+        raise ValueError('VRX figure requires all eight paired scenes for every displayed method.')
+    identities=[[(r['setting'],r['agility'],r['seed']) for r in groups[label]] for label in labels]
+    if not all(set(x)==set(identities[0]) for x in identities):
+        raise ValueError('VRX methods must share setting, agility and seed.')
+    captures=[sum(r['success'] for r in groups[k]) for k in labels]
+    collisions=[sum(r['defender_collision'] for r in groups[k]) for k in labels]
+    breaches=[8-a-b for a,b in zip(captures,collisions)]
+    axes[0].barh(range(len(labels)),captures,color='#00857D',label='Capture')
+    axes[0].barh(range(len(labels)),collisions,left=captures,color='#C35B50',label='Collision')
+    axes[0].barh(range(len(labels)),breaches,left=np.asarray(captures)+collisions,color='#D17B27',label='Breach')
+    axes[0].set_yticks(range(len(labels)),pretty,fontsize=6.5);axes[0].invert_yaxis()
+    axes[0].set(xlim=(0,8),xticks=(0,2,4,6,8),xlabel='Episodes',title='(a) Eight paired VRX scenes')
+    axes[0].legend(fontsize=6,loc='lower left',bbox_to_anchor=(0,-.35),ncol=2)
+    scene_records=[next(r for r in groups[label] if r['seed']==432461)
+                   for label in ('full-r61','full-r97-short-response')]
+    scene_xy=np.concatenate([np.concatenate((np.asarray(r['trace']['AttPos']).reshape(-1,2),
+        np.asarray(r['trace']['DefPos']).reshape(-1,2))) for r in scene_records])
+    bounds=np.vstack((scene_xy.min(0)-4,scene_xy.max(0)+4))
+    bounds[0]=np.minimum(bounds[0],[-17,-17]);bounds[1]=np.maximum(bounds[1],[17,17])
+    for ax,label,title in ((axes[1],'full-r61','(b) Reference: breach'),
+                           (axes[2],'full-r97-short-response','(c) Refit: capture')):
+        record=next(r for r in groups[label] if r['seed']==432461)
+        trace=record['trace'];attacker=np.asarray(trace['AttPos']);defenders=np.asarray(trace['DefPos']).reshape(-1,6,2)
+        ax.add_patch(Circle((0,0),15,ec='#84929C',fc='#EDF2F5',lw=.8))
+        ax.plot(*attacker.T,color='#D17B27',lw=1.6)
+        for boat in range(6):
+            ax.plot(*defenders[:,boat].T,color=plt.cm.Blues(.35+.6*boat/6),lw=.9)
+            ax.scatter(*defenders[-1,boat],s=8,c='#204A68')
+        ax.scatter(*attacker[-1],s=25,marker='x',c='#D17B27')
+        ax.set(xlim=bounds[:,0],ylim=bounds[:,1],aspect='equal',xlabel='x (m)',ylabel='y (m)',title=title)
+    _source_save(fig,directory,'fig8-vrx-comparison')
+
+
+def build_source_evidence(path, directory):
+    data=json.loads(Path(path).read_text(encoding='utf-8'))
+    if data.get('format')!='source-mechanism-paper-evidence-v1' or data.get('role')!='development':
+        raise ValueError('This exporter requires explicitly identified development evidence.')
+    numerical=data['numerical']
+    for label,group in numerical.items():
+        if not all(group.values()):raise ValueError(f'Incomplete primary evidence: {label}')
+    comparisons={}
+    for name,left,right in [('joint_vs_independent','M1-strong','M1-independent'),
+                            ('complete_vs_predecessor','F11','F10'),
+                            ('conditional_vs_ordinary','F11','ordinary')]:
+        comparisons[name]=source_paired(numerical[left],numerical[right])
+    if data.get('catalog_ranking'):
+        data['ranking_summary'] = source_ranking_summary(data['catalog_ranking'])
+        comparisons['random_candidate_ranking'] = data['ranking_summary']
+    source_method_figures(data,directory)
+    source_result_figures(data,directory)
+    print(json.dumps(dict(role=data['role'],comparisons=comparisons,output=str(directory)),indent=2))
+
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--source-evidence',type=Path,help='Current source-environment paired evidence JSON')
     parser.add_argument('--study',type=Path,default=ROOT/'train/experiments/ia-crrl-20261007')
     parser.add_argument('--output',type=Path,default=ROOT/'paper/figures/interaction')
     parser.add_argument('--manuscript',type=Path,default=ROOT/'paper/interaction_aware_residual_rl.tex')
     parser.add_argument('--draft-only',action='store_true')
     parser.add_argument('--without-extensions',action='store_true')
     args=parser.parse_args()
+    if args.source_evidence:
+        build_source_evidence(args.source_evidence,args.output)
+        return
     schematics(args.output)
     if not args.draft_only: finish(args.study,args.output,args.manuscript,not args.without_extensions)
 

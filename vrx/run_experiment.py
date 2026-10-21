@@ -379,7 +379,9 @@ def main():
                         raise RuntimeError('Task ended before the controller produced a command')
                     attacker_positions = np.array([row['AttPos'] for row in trial.rows])
                     distance = float(np.linalg.norm(attacker_positions - attacker_positions[0], axis=1).max())
-                    if distance < 1.0:
+                    # An early collision is a task failure even when the
+                    # attacker has not yet travelled one metre.
+                    if distance < 1.0 and code > 2:
                         raise RuntimeError('No meaningful attacker motion; verify thrust delivery')
                     labels = {1: 'attacker_reached_target', 2: 'defender_collision',
                               3: 'defender_capture', 4: 'defended_until_timeout'}

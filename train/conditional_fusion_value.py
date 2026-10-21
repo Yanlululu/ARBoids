@@ -2,11 +2,101 @@
 import hashlib
 import json
 from functools import lru_cache
+from math import isfinite
 from pathlib import Path
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+
+def fusion_response_rollout(actor, packet, gates, *, targets=None, currents=None):
+    """Differentiate joint fusion responses through the unchanged source commands.
+
+    ``gates`` has shape (batch, time, vessels, 1 or 2). Both channels stay
+    inside the convex hull of their two source commands. Optional measured
+    target paths and paired disturbances are training observations; a public
+    forecast uses constant target velocity and zero future current instead.
+    The returned intermediate states support response-effect supervision,
+    which is distinct from subtracting terminal-success means.
+    """
+    batch, horizon, vessels, channels = gates.shape
+    if channels not in (1, 2):
+        raise ValueError('Fusion has one shared coefficient or two actuator coefficients.')
+    motion = packet['motion'].to(gates)
+    pose, water = motion[..., :3], (5. * packet['water']).to(gates)
+    ground = motion[..., 3:6]
+    node = packet['node'].to(gates)
+    heading = motion[:, 0, 2]
+    c, s = heading.cos(), heading.sin()
+    def world(vector):
+        return torch.stack((c*vector[:, 0]-s*vector[:, 1],
+                            s*vector[:, 0]+c*vector[:, 1]), -1)
+    target = motion[:, 0, :2] + world(node[:, 0, 2:4]*30.)
+    target_velocity = world(node[:, 0, 4:6]*5.)
+    if targets is None:
+        clock = torch.arange(horizon+1, device=gates.device, dtype=gates.dtype)*.2
+        targets = torch.cat((target[:, None]+clock[None, :, None]*target_velocity[:, None],
+                            target_velocity[:, None].expand(-1, horizon+1, -1)), -1)
+    if currents is None:
+        currents = gates.new_zeros((batch, horizon, vessels, 3))
+    eye = torch.eye(vessels, device=gates.device, dtype=gates.dtype)
+    mask = ~eye.bool()
+    observation = packet['obs'].to(device=gates.device, dtype=torch.float32)
+    rule = node[..., 11:13]
+    positions, velocities, controls, observations = [], [], [], []
+    for tick in range(horizon):
+        source = actor.proposal_distribution(observation)[0].tanh().to(gates)
+        command = gates[:, tick]*source + (1.-gates[:, tick])*rule
+        force = 750.*command + 250.
+        controls.append(command)
+        for _ in range(4):
+            ground = water+currents[:, tick]
+            pose = pose+.05*ground
+            h = pose[..., 2]; c, s = h.cos(), h.sin()
+            ur = c*water[..., 0]+s*water[..., 1]
+            vr = -s*water[..., 0]+c*water[..., 1]
+            u = c*ground[..., 0]+s*ground[..., 1]
+            v = -s*ground[..., 0]+c*ground[..., 1]
+            yaw = ground[..., 2]
+            du = (400.*yaw*v-(100.+150.*ur.abs())*ur+force.sum(-1))/380.
+            dv = (-400.*yaw*u+20.*yaw*ur-(100.+150.*vr.abs())*vr)/400.
+            dr = (-20.*ur*vr-(980.+950.*yaw.abs())*yaw
+                  +1.25*(force[..., 0]-force[..., 1]))/1430.
+            ur, vr, yaw = ur+.05*du, vr+.05*dv, yaw+.05*dr
+            water = torch.stack((c*ur-s*vr, s*ur+c*vr, yaw), -1)
+        position = pose[..., :2]
+        positions.append(position); velocities.append(water)
+        relative = position[:, None]-position[:, :, None]
+        distance = (relative+eye[None, :, :, None]).norm(dim=-1)
+        separation = (-relative/(distance-3.5).clamp_min(.01)[..., None].square()
+                      *((distance < 15.) & mask)[..., None]).sum(-2)
+        alignment = ground[..., :2].mean(1, keepdim=True).expand_as(position)
+        cohesion = position.mean(1, keepdim=True)-position
+        attraction = targets[:, tick+1, None, :2]-position
+        field = .5*attraction+10.*separation+.1*alignment+.1*cohesion
+        field = field/field.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+        forward = c*field[..., 0]+s*field[..., 1]
+        turn = torch.atan2(-s*field[..., 0]+c*field[..., 1], forward)
+        rule = ((1000.*torch.stack((forward+.75*turn, forward-.75*turn), -1))
+                .clamp(-500., 1000.)-250.)/750.
+        def polar(vector):
+            # atan2(0,0) has an undefined derivative at initially zero speed.
+            x, y = vector.unbind(-1)
+            x = torch.where((x.abs()+y.abs()) < 1e-12, x.new_full((), 1e-12), x)
+            angle = torch.atan2(y, x)-h
+            return torch.stack((vector.norm(dim=-1),
+                                torch.remainder(angle+torch.pi, 2.*torch.pi)-torch.pi), -1)
+        bearing = torch.atan2(relative[..., 1]+eye[None]*1e-12,
+                              relative[..., 0]+eye[None]*1e-12)-h[..., None]
+        neighbor = torch.stack((distance, torch.remainder(bearing+torch.pi, 2.*torch.pi)-torch.pi), -1)
+        observation = torch.cat((polar(-position), polar(attraction),
+            polar(targets[:, tick+1, None, 2:4].expand_as(position)), polar(separation),
+            polar(alignment), polar(cohesion), rule,
+            neighbor[:, mask].reshape(batch, vessels, -1)), -1).float()
+        observations.append(observation)
+    return dict(position=torch.stack(positions, 1), water=torch.stack(velocities, 1),
+                command=torch.stack(controls, 1), observation=torch.stack(observations, 1))
 
 
 def local_fusion_context(packet, proposals, left, right, peer=True):
@@ -998,10 +1088,12 @@ class SharedProgramPotential(nn.Module):
     comparisons consequently constrain a common nonlinear value function,
     rather than separate unconstrained entries of a local lookup table.
     """
-    def __init__(self,width=48,paired=True,state=None,node_width=8,global_width=3,program_options=None,probabilistic=False):
+    def __init__(self,width=48,paired=True,state=None,node_width=8,global_width=3,program_options=None,probabilistic=False,
+                 peer_conditioned=True):
         super().__init__();self.width=width;self.paired=paired
         self.probabilistic=probabilistic
         self.node_width=node_width;self.global_width=global_width
+        self.peer_conditioned=peer_conditioned
         self.register_buffer('program_options',None if program_options is None else
             torch.as_tensor(program_options,dtype=torch.float32))
         self.radix=4 if program_options is None else len(program_options)
@@ -1035,14 +1127,25 @@ class SharedProgramPotential(nn.Module):
                 change=((selected-factual)[...,None]*(source-rule)[:,:,None]).flatten(-2)
             features.extend((command,change))
         node=self.node(torch.cat(features,-1))
+        factual_node=node
+        if not self.peer_conditioned:
+            if self.node_width!=8:raise ValueError('The no-peer decision control uses public eight-feature vessel states.')
+            zero=F.one_hot(torch.zeros_like(programs),self.radix).to(rows.dtype)
+            factual_node=self.node(torch.cat((rows,zero),-1))
         difference=rows[:,None]-rows[:,:,None]
         messages=self.message(torch.cat((node[:,:,None].expand(-1,-1,n,-1),
-            node[:,None].expand(-1,n,-1,-1),difference),-1))
+            factual_node[:,None].expand(-1,n,-1,-1),difference),-1))
         mask=~torch.eye(n,dtype=torch.bool,device=context.device)[None,:,:,None]
         average=(messages*mask).sum(2)/max(1,n-1)
         maximum=messages.masked_fill(~mask,-1e6).amax(2)
         encoded=self.update(torch.cat((node,average,maximum),-1))
         global_state=context[:,-extra:] if extra==self.global_width else context.new_zeros((len(context),self.global_width))
+        if not self.peer_conditioned:
+            # Each summand sees only its own choice and the public peer
+            # states. No other vessel's choice can enter that summand.
+            pooled=torch.cat((encoded,factual_node.mean(1)[:,None].expand(-1,n,-1),
+                global_state[:,None].expand(-1,n,-1),context.new_full((len(context),n,1),n/6.)),-1)
+            return self.readout(pooled).squeeze(-1).mean(-1)
         pooled=torch.cat((encoded.mean(1),encoded.amax(1),global_state,
             context.new_full((len(context),1),n/6.)),-1)
         raw=self.readout(pooled).squeeze(-1)
@@ -1051,6 +1154,3085 @@ class SharedProgramPotential(nn.Module):
     def forward(self,context,codes):
         raw=self.logits(context,codes)
         return raw.sigmoid() if self.probabilistic else raw
+
+
+class PairedResponsePotential(SharedProgramPotential):
+    """Conditional response estimator; ordinary return potentials stay unchanged."""
+    def __init__(self,width=48,paired=False,state=None,node_width=8,global_width=3,
+                 program_options=None,probabilistic=True,outcome_scale=0.,response_rank=0):
+        super().__init__(width,paired,node_width=node_width,global_width=global_width,
+                         program_options=program_options,probabilistic=probabilistic)
+        self.outcome_scale=outcome_scale;self.response_rank=response_rank
+        if response_rank:
+            self.readout[-1]=nn.Linear(width,1+response_rank)
+            with torch.no_grad():
+                self.readout[-1].weight[1:]*=.1
+                self.readout[-1].bias[1:]=1.
+        if outcome_scale:
+            import numpy as np
+            points,weights=np.polynomial.hermite.hermgauss(15)
+            self.register_buffer('outcome_points',torch.as_tensor(points*2.**.5,dtype=torch.float32),persistent=False)
+            self.register_buffer('outcome_weights',torch.as_tensor(weights/np.pi**.5,dtype=torch.float32),persistent=False)
+        if state is not None:self.load_state_dict(state)
+
+    def response_parameters(self,context,codes):
+        raw=super().logits(context,codes)
+        return raw if self.response_rank else raw[:,None]
+
+    def logits(self,context,codes):
+        return self.response_parameters(context,codes)[:,0]
+
+    def forward(self,context,codes):
+        parameters=self.response_parameters(context,codes);raw=parameters[:,0]
+        if self.outcome_scale:
+            scale=(self.outcome_scale*parameters[:,1:].norm(dim=-1) if self.response_rank
+                   else torch.full_like(raw,self.outcome_scale))
+            return ((raw[:,None]+scale[:,None]*self.outcome_points).sigmoid()*self.outcome_weights).sum(-1)
+        return raw.sigmoid() if self.probabilistic else raw
+
+
+def load_program_potential(record):
+    if record.get('kind')=='paired_factual_task':
+        return PairedFactualTaskPotential(**{key:value for key,value in record.items() if key!='kind'}).eval()
+    if record.get('kind')=='paired_future_task':
+        return PairedFutureTaskPotential(**{key:value for key,value in record.items() if key!='kind'}).eval()
+    if record.get('kind')=='calibrated_task_potential':
+        return CalibratedTaskPotential(**{key:value for key,value in record.items() if key!='kind'}).eval()
+    if record.get('kind')=='paired_latent_task':
+        return PairedLatentTaskPotential(**{k:v for k,v in record.items() if k!='kind'}).eval()
+    if record.get('kind')=='local_intervention_task':
+        return LocalInterventionTaskPotential(**{key:value for key,value in record.items() if key!='kind'}).eval()
+    if record.get('kind')=='paired_transport_task':
+        return PairedTransportTaskPotential(**{key:value for key,value in record.items() if key!='kind'}).eval()
+    if record.get('kind')=='paired_successor_task':
+        return PairedSuccessorTaskPotential(**{key:value for key,value in record.items() if key!='kind'}).eval()
+    estimator=(PairedResponsePotential if 'response_rank' in record or 'outcome_scale' in record
+               else SharedProgramPotential)
+    return estimator(**record).eval()
+
+
+class LocalInterventionTaskPotential(nn.Module):
+    """Sparse complete-program task values learned from local interventions."""
+    def __init__(self,contexts,codes,values,observed,bandwidth=.15,program_options=None,time_bandwidth=None):
+        super().__init__()
+        self.radix=4 if program_options is None else len(program_options)
+        self.bandwidth=bandwidth
+        self.time_bandwidth=time_bandwidth
+        self.register_buffer('contexts',torch.as_tensor(contexts,dtype=torch.float32))
+        self.register_buffer('codes',torch.as_tensor(codes,dtype=torch.long))
+        self.register_buffer('values',torch.as_tensor(values,dtype=torch.float32))
+        self.register_buffer('observed',torch.as_tensor(observed,dtype=torch.bool))
+        self.register_buffer('program_options',None if program_options is None else
+                             torch.as_tensor(program_options,dtype=torch.float32))
+
+    def forward(self,context,codes):
+        distance=(context[:,None]-self.contexts[None]).square().sum(-1)
+        if self.time_bandwidth is not None:
+            distance=distance.masked_fill((context[:,None,-1]-self.contexts[None,:,-1]).abs()
+                >self.time_bandwidth,float('inf'))
+        nearest,index=distance.topk(min(4,len(self.contexts)),largest=False)
+        column=torch.searchsorted(self.codes,codes).clamp_max(len(self.codes)-1)
+        known=self.codes[column]==codes
+        weight=torch.exp(-nearest/(2*self.bandwidth**2))
+        weight=weight*self.observed[index,column[:,None]]*known[:,None]
+        mass=weight.sum(-1)
+        value=(weight*self.values[index,column[:,None]]).sum(-1)/mass.clamp_min(1e-12)
+        # Unsupported programs never enter the maximization as invented
+        # zero-success observations; they remain inadmissible alternatives.
+        return value.masked_fill(mass<1e-6,-1.)
+
+
+class CalibratedTaskPotential(nn.Module):
+    """Keep paired task-value calibration while learning state-dependent changes."""
+    def __init__(self,base,contexts,codes,residuals,observed,bandwidth=.15,time_bandwidth=None):
+        super().__init__();self.base=load_program_potential(base);self.radix=self.base.radix
+        self.bandwidth=bandwidth
+        self.time_bandwidth=time_bandwidth
+        for name,value,dtype in (('contexts',contexts,torch.float32),('codes',codes,torch.long),
+                ('residuals',residuals,torch.float32),('observed',observed,torch.bool)):
+            self.register_buffer(name,torch.as_tensor(value,dtype=dtype))
+
+    @property
+    def program_options(self):return self.base.program_options
+
+    def forward(self,context,codes):
+        value=self.base(context,codes)
+        if context.shape[-1]!=self.contexts.shape[-1]:return value
+        distance=(context[:,None]-self.contexts[None]).square().sum(-1)
+        if self.time_bandwidth is not None:
+            distance=distance.masked_fill((context[:,None,-1]-self.contexts[None,:,-1]).abs()
+                >self.time_bandwidth,float('inf'))
+        distance,index=distance.min(-1)
+        column=torch.searchsorted(self.codes,codes).clamp_max(len(self.codes)-1)
+        known=(self.codes[column]==codes)&self.observed[index,column]
+        weight=torch.exp(-distance/(2*self.bandwidth**2))*known
+        return (value+weight*self.residuals[index,column]).clamp(0.,1.)
+
+
+def calibrate_program_potential(record,estimates,bandwidth=.15,time_bandwidth=None):
+    """Fit local value residuals, never a selected-action lookup or new label."""
+    import numpy as np
+    base=load_program_potential(record)
+    codes=sorted({code for example in estimates for code in example['programs']})
+    columns={code:i for i,code in enumerate(codes)}
+    residuals=np.zeros((len(estimates),len(codes)),np.float32);observed=np.zeros_like(residuals,dtype=bool)
+    with torch.no_grad():
+        for i,example in enumerate(estimates):
+            q=torch.as_tensor(example['programs'],dtype=torch.long)
+            x=torch.as_tensor(example['context'],dtype=torch.float32).expand(len(q),-1)
+            prediction=base(x,q).numpy();indices=[columns[code] for code in example['programs']]
+            residuals[i,indices]=example['targets']-prediction;observed[i,indices]=True
+    calibrated=dict(kind='calibrated_task_potential',base=record,
+        contexts=np.asarray([example['context'] for example in estimates]),codes=codes,
+        residuals=residuals,observed=observed,bandwidth=bandwidth,time_bandwidth=time_bandwidth)
+    return load_program_potential(calibrated),calibrated
+
+
+def fit_intervention_task_potential(examples,*,conditional=True,difference_weight=4.,
+                                   anchor_weight=.25,bandwidth=.15,program_options=None):
+    """Fit the deployed task potential, including paired terminal differences.
+
+    Nodes count distinct program/future observations once. Local edges keep
+    their paired futures, which can differ from the futures of other edges.
+    Both objectives share the complete-program representation and node data.
+    """
+    import numpy as np
+    codes=sorted({sample[0] for example in examples for sample in example['samples'].values()})
+    columns={q:i for i,q in enumerate(codes)}
+    values=np.zeros((len(examples),len(codes)),np.float32)
+    observed=np.zeros_like(values,dtype=bool)
+    edge_count=0;informative=0;residual=[];node_error=[]
+    for root,example in enumerate(examples):
+        groups={};edges={};seen=set()
+        for code,_,outcome in example['samples'].values():groups.setdefault(code,[]).append(outcome)
+        programs=sorted(groups);lookup={q:i for i,q in enumerate(programs)}
+        target=np.asarray([np.mean(groups[q]) for q in programs])
+        factual=float(np.mean(groups[0]))
+        matrix=(1.+anchor_weight)*np.eye(len(programs));rhs=target+anchor_weight*factual
+        for a,b in example['pairs']:
+            if (a,b) in seen:continue
+            seen.add((a,b))
+            qa,_,ya=example['samples'][a];qb,_,yb=example['samples'][b]
+            edges.setdefault((qa,qb),[]).append(yb-ya)
+        for (a,b),outcomes in edges.items():
+            edge_count+=len(outcomes);informative+=int(np.count_nonzero(outcomes))
+            if not conditional:continue
+            delta=float(np.mean(outcomes));weight=difference_weight*(1.+4.*abs(delta))
+            i,j=lookup[a],lookup[b]
+            matrix[i,i]+=weight;matrix[j,j]+=weight;matrix[i,j]-=weight;matrix[j,i]-=weight
+            rhs[i]-=weight*delta;rhs[j]+=weight*delta
+        fitted=fit_bounded_graph_values(matrix,rhs)
+        destination=[columns[q] for q in programs]
+        values[root,destination]=fitted;observed[root,destination]=True
+        node_error.extend((fitted-target)**2)
+        residual.extend((fitted[lookup[b]]-fitted[lookup[a]]-np.mean(y))**2
+                        for (a,b),y in edges.items())
+    record=dict(kind='local_intervention_task',contexts=np.asarray([e['context'] for e in examples]),
+        codes=codes,values=values,observed=observed,bandwidth=bandwidth,program_options=program_options)
+    fit=dict(roots=len(examples),nodes=int(observed.sum()),terminal_difference_labels=edge_count if conditional else 0,
+        informative_terminal_pairs=informative,conditional=conditional,difference_weight=difference_weight if conditional else 0.,
+        node_mse=float(np.mean(node_error)),paired_difference_mse=float(np.mean(residual)),
+        task_target='true_terminal_task_success',deployed_parameters=int(observed.sum()))
+    return load_program_potential(record),record,fit
+
+
+def fit_future_conditioned_task_potential(examples,*,bandwidth=.15,program_options=None,
+                                        contrast_weight=.25,future_precision=.5,anchor_weight=.25,
+                                        conditional_ordering=False,residual_calibration=False):
+    """Fit paired task consequences before marginalizing the shared future.
+
+    A nuisance offset is shared by all programs measured under one future.
+    Local intervention differences constrain probabilities under that SAME
+    future. Deployment contains only the marginalized complete-program task
+    values, with no future identifier or selected-control target.
+    """
+    import numpy as np
+    from scipy.optimize import minimize
+    from scipy.special import expit
+    codes=sorted({sample[0] for example in examples for sample in example['samples'].values()})
+    columns={q:i for i,q in enumerate(codes)}
+    values=np.zeros((len(examples),len(codes)),np.float32);observed=np.zeros_like(values,dtype=bool)
+    fits=[]
+    for root,example in enumerate(examples):
+        programs=sorted({sample[0] for sample in example['samples'].values()})
+        lookup={q:i for i,q in enumerate(programs)}
+        futures=list(dict.fromkeys(key[1] for key in example['samples']))
+        future_index={future:i for i,future in enumerate(futures)}
+        keys=list(example['samples']);sample_index={key:i for i,key in enumerate(keys)}
+        q=np.asarray([lookup[key[0]] for key in keys]);f=np.asarray([future_index[key[1]] for key in keys])
+        y=np.asarray([example['samples'][key][2] for key in keys],dtype=float)
+        pairs=list(dict.fromkeys(example['pairs']))
+        left=np.asarray([sample_index[a] for a,_ in pairs]);right=np.asarray([sample_index[b] for _,b in pairs])
+        if not np.array_equal(f[left],f[right]):raise ValueError('A task contrast must share its continuation future.')
+        discordant=y[left]!=y[right]
+        ordering_left=q[left[discordant]];ordering_right=q[right[discordant]]
+        ordering_sign=y[right[discordant]]-y[left[discordant]]
+        count=np.bincount(q,minlength=len(programs));success=np.bincount(q,weights=y,minlength=len(programs))
+        factual=float(y[q==lookup[0]].mean());mean=(success+anchor_weight*factual)/(count+anchor_weight)
+        initial=np.r_[np.log(np.clip(mean,.01,.99)/np.clip(1.-mean,.01,.99)),np.zeros(len(futures))]
+        weight=contrast_weight*len(y)/max(1,int(discordant.sum()) if conditional_ordering else len(pairs));n=len(programs)
+        def objective(parameter):
+            a=parameter[:n];b=parameter[n:]-parameter[n:].mean();logit=a[q]+b[f];probability=expit(logit)
+            value=np.sum(np.logaddexp(0.,logit)-y*logit)
+            gradient=probability-y
+            if not conditional_ordering:
+                residual=probability[right]-probability[left]-(y[right]-y[left])
+                value+=weight*np.square(residual).sum()
+                slope=probability*(1.-probability)
+                np.add.at(gradient,left,-2.*weight*residual*slope[left])
+                np.add.at(gradient,right,2.*weight*residual*slope[right])
+            ga=np.bincount(q,weights=gradient,minlength=n)
+            gb=np.bincount(f,weights=gradient,minlength=len(futures))
+            if conditional_ordering:
+                # Conditioning on discordant paired outcomes cancels the
+                # shared future offset. Concordant outcomes still inform
+                # absolute task values; they are not labels of equal value.
+                difference=a[ordering_right]-a[ordering_left]
+                signed=ordering_sign*difference
+                value+=weight*np.logaddexp(0.,-signed).sum()
+                derivative=-weight*ordering_sign*expit(-signed)
+                np.add.at(ga,ordering_left,-derivative)
+                np.add.at(ga,ordering_right,derivative)
+            value+=anchor_weight*np.sum(np.logaddexp(0.,a)-factual*a)+.0005*np.square(a).sum()
+            ga+=anchor_weight*(expit(a)-factual)+.001*a
+            value+=.5*future_precision*np.square(b).sum();gb+=future_precision*b
+            return float(value),np.r_[ga,gb-gb.mean()]
+        result=minimize(objective,initial,jac=True,method='L-BFGS-B',
+            bounds=[(-12.,12.)]*len(initial),options=dict(maxiter=1000,ftol=1e-11,gtol=1e-7))
+        if not result.success:raise RuntimeError(f'Paired task-value fit failed: {result.message}')
+        a=result.x[:n];b=result.x[n:]-result.x[n:].mean()
+        marginalized=expit(a[:,None]+b[None]).mean(-1)
+        if residual_calibration=='complete':
+            complete=count==len(futures)
+            marginalized[complete]=success[complete]/count[complete]
+        elif residual_calibration:
+            # Standardize to the common future population, then correct the
+            # fitted response with its observed outcome residual. When all
+            # futures are observed this recovers their empirical task value
+            # exactly; a ranking objective cannot distort that known mean.
+            residual=np.bincount(q,weights=y-expit(a[q]+b[f]),minlength=n)/count
+            marginalized=np.clip(marginalized+residual,0.,1.)
+        destination=[columns[code] for code in programs]
+        values[root,destination]=marginalized;observed[root,destination]=True
+        fits.append(dict(unique_outcomes=len(y),paired_outcomes=len(pairs),future_conditions=len(futures),
+            discordant_pairs=int(discordant.sum()),objective=float(result.fun),future_offset_range=float(np.ptp(b))))
+    record=dict(kind='local_intervention_task',contexts=np.asarray([e['context'] for e in examples]),
+        codes=codes,values=values,observed=observed,bandwidth=bandwidth,program_options=program_options)
+    return load_program_potential(record),record,dict(conditional=True,roots=len(examples),
+        terminal_difference_labels=sum(item['paired_outcomes'] for item in fits),
+        task_target='future_conditioned_terminal_success_then_marginalization',
+        contrast_weight=contrast_weight,future_precision=future_precision,conditional_ordering=conditional_ordering,
+        residual_calibration=residual_calibration,
+        deployed_parameters=int(observed.sum()),fits=fits)
+
+
+def paired_block_task_estimates(examples,covariance_shrink=.9):
+    """Calibrate whole-plan values with paired, shared-outcome observations.
+
+    A program/future can occur on several local edges. Fractional edge weights
+    allocate at most one observation's mass to it; any unused mass supplies
+    its marginal outcome term. The two endpoints are fitted jointly, so their
+    absolute results and relative consequence share one covariance model.
+    """
+    import numpy as np
+    estimates=[];changes=[];nonredundant=0;edge_count=0;paired_samples=0;unique_count=0;shared_count=0
+    for example in examples:
+        groups={};edges={};seen=set();degree={key:0 for key in example['samples']}
+        for key,(code,_,outcome) in example['samples'].items():groups.setdefault(code,[]).append(outcome)
+        for a,b in example['pairs']:
+            if (a,b) in seen:continue
+            if a[1]!=b[1]:raise ValueError('Paired outcomes must share their continuation future.')
+            seen.add((a,b));degree[a]+=1;degree[b]+=1
+            qa,_,ya=example['samples'][a];qb,_,yb=example['samples'][b]
+            edges.setdefault((qa,qb),[]).append((a,b,ya,yb))
+        programs=sorted(groups);lookup={q:i for i,q in enumerate(programs)}
+        raw=np.asarray([np.mean(groups[q]) for q in programs])
+        normal=1e-6*np.eye(len(programs));rhs=1e-6*raw
+        counts=np.asarray([len(groups[q]) for q in programs])
+        probability=(raw*counts+1.)/(counts+2.)
+        variance=probability*(1.-probability)
+        used={key:0. for key in example['samples']};score_blocks={}
+        for (qa,qb),outcomes in edges.items():
+            outcomes_array=np.asarray([row[2:] for row in outcomes]);count=len(outcomes);mean=outcomes_array.mean(0)
+            indices=[lookup[qa],lookup[qb]];i,j=indices
+            covariance=covariance_shrink*np.mean((outcomes_array[:,0]-probability[i])*
+                (outcomes_array[:,1]-probability[j]))
+            limit=.95*np.sqrt(variance[i]*variance[j]);covariance=np.clip(covariance,-limit,limit)
+            precision=np.linalg.inv(np.asarray([[variance[i],covariance],[covariance,variance[j]]]))
+            for a,b,ya,yb in outcomes:
+                weight=1./max(degree[a],degree[b]);used[a]+=weight;used[b]+=weight
+                block=weight*precision;target=np.asarray([ya,yb])
+                normal[np.ix_(indices,indices)]+=block;rhs[indices]+=block@target
+                score_blocks.setdefault(a[1],[]).append((indices,block,target))
+            nonredundant+=abs(mean[1]-mean[0]-(raw[indices[1]]-raw[indices[0]]))>1e-6
+            edge_count+=1;paired_samples+=count
+        for key,(code,_,outcome) in example['samples'].items():
+            index=lookup[code];weight=max(0.,1.-used[key])/variance[index]
+            normal[index,index]+=weight;rhs[index]+=weight*outcome
+            if weight:score_blocks.setdefault(key[1],[]).append(([index],np.asarray([[weight]]),np.asarray([outcome])))
+        fitted=fit_bounded_graph_values(normal,rhs)
+        # Cluster the score by shared future. Repeated graph incidences must
+        # not be mistaken for independent training continuations.
+        scores=[]
+        for blocks in score_blocks.values():
+            score=np.zeros(len(programs))
+            for indices,precision,target in blocks:score[indices]+=precision@(target-fitted[indices])
+            scores.append(score)
+        score=np.asarray(scores);inverse=np.linalg.inv(normal)
+        covariance=inverse@(score.T@score)@inverse*len(scores)/max(1,len(scores)-1)
+        factual=lookup[0]
+        gain_variance=np.maximum(0.,np.diag(covariance)+covariance[factual,factual]-2.*covariance[:,factual])
+        changes.extend((fitted-raw).tolist())
+        unique_count+=len(example['samples']);shared_count+=sum(count>1 for count in degree.values())
+        estimates.append(dict(context=example['context'],programs=programs,targets=fitted,gain_variance=gain_variance,
+            edges=[(lookup[a],lookup[b],float(np.diff(np.asarray([row[2:] for row in y]).mean(0))[0]))
+                for (a,b),y in edges.items()]))
+    return estimates,dict(paired_future_blocks=edge_count,paired_terminal_observations=paired_samples,
+        unique_terminal_observations=unique_count,shared_graph_observations=shared_count,
+        nonredundant_block_fraction=float(nonredundant/max(1,edge_count)),
+        mean_absolute_value_correction=float(np.mean(np.abs(changes))),covariance_shrink=covariance_shrink,
+        estimation_objective='joint paired outcomes with fractional shared-observation mass and future-clustered uncertainty')
+
+
+def matched_future_task_estimates(examples,covariance_shrink=.9):
+    """Estimate task values from overlapping, jointly observed future blocks.
+
+    A future contributes one vector of outcomes. Small groups of intervention
+    edges can therefore share a factual rollout without duplicating its
+    likelihood or discarding correlations among the resulting contrasts.
+    Different groups retain independent futures and overlapping programs;
+    their task means are fitted to one common set of marginal values.
+    """
+    import numpy as np
+    estimates=[];changes=[];blocks_total=0;outcomes_total=0;futures_total=0;nonredundant=0;pairs_total=0
+    for example in examples:
+        programs=sorted({q for q,_,_ in example['samples'].values()});lookup={q:i for i,q in enumerate(programs)}
+        by_program={q:[] for q in programs};by_future={}
+        for (q,future),(_,_,outcome) in example['samples'].items():
+            by_program[q].append(outcome);by_future.setdefault(future,{})[lookup[q]]=outcome
+        raw=np.asarray([np.mean(by_program[q]) for q in programs])
+        probability=np.asarray([(sum(by_program[q])+1.)/(len(by_program[q])+2.) for q in programs])
+        variance=probability*(1.-probability);groups={}
+        for values in by_future.values():
+            indices=tuple(sorted(values));groups.setdefault(indices,[]).append([values[i] for i in indices])
+        normal=1e-6*np.eye(len(programs));rhs=1e-6*raw;score_blocks=[]
+        for indices,observations in groups.items():
+            indices=np.asarray(indices);y=np.asarray(observations);count,width=y.shape
+            centered=y-y.mean(0);empirical=centered.T@centered/max(1,count-1)
+            scale=np.sqrt(np.maximum(np.diag(empirical),variance[indices]))
+            correlation=empirical/(scale[:,None]*scale[None,:])
+            correlation[np.diag_indices(width)]+=1.-np.diag(correlation)
+            shrink=min(covariance_shrink,count/(count+width))
+            correlation=shrink*correlation+(1.-shrink)*np.eye(width)
+            sigma=np.sqrt(variance[indices]);covariance=correlation*sigma[:,None]*sigma[None,:]
+            precision=np.linalg.inv(covariance)
+            normal[np.ix_(indices,indices)]+=count*precision;rhs[indices]+=precision@y.sum(0)
+            score_blocks.append((indices,precision,y))
+            nonredundant+=np.max(np.abs(y.mean(0)-raw[indices]))>1e-6
+            blocks_total+=1
+        fitted=fit_bounded_graph_values(normal,rhs)
+        meat=np.zeros_like(normal)
+        for indices,precision,y in score_blocks:
+            scores=(y-fitted[indices])@precision
+            meat[np.ix_(indices,indices)]+=scores.T@scores
+        inverse=np.linalg.inv(normal);count=len(by_future)
+        covariance=inverse@meat@inverse*count/max(1,count-1)
+        factual=lookup[0]
+        gain_variance=np.maximum(0.,np.diag(covariance)+covariance[factual,factual]-2.*covariance[:,factual])
+        edges={}
+        for left,right in example['pairs']:
+            edges.setdefault((left[0],right[0]),[]).append(example['samples'][right][2]-example['samples'][left][2])
+        estimates.append(dict(context=example['context'],programs=programs,targets=fitted,gain_variance=gain_variance,
+            edges=[(lookup[a],lookup[b],float(np.mean(values))) for (a,b),values in edges.items()]))
+        changes.extend((fitted-raw).tolist());outcomes_total+=len(example['samples'])
+        futures_total+=count;pairs_total+=len(example['pairs'])
+    return estimates,dict(paired_future_blocks=blocks_total,unique_terminal_observations=outcomes_total,
+        independent_futures=futures_total,paired_terminal_observations=pairs_total,
+        nonredundant_block_fraction=float(nonredundant/max(1,blocks_total)),
+        mean_absolute_value_correction=float(np.mean(np.abs(changes))),covariance_shrink=covariance_shrink,
+        estimation_objective='one joint outcome vector per future with overlapping block task-value estimation')
+
+
+def successor_standardized_task_estimates(examples,rank=3,ridge=8.,task_conditioned=False):
+    """Use paired factual motion as a cross-fitted task-outcome control variate.
+
+    A factual failure bit may be constant even though its observed successor
+    distinguishes easy and difficult futures. Regress actual terminal success
+    on that shared response, then standardize every complete program to the
+    same empirical future distribution. Held-out residuals retain its observed
+    task mean if the response regression is unhelpful. No geometric cost or
+    successful-action target replaces the terminal task outcome.
+    """
+    import numpy as np
+    estimates=[];changes=[];matched=0;observations=0
+    for example in examples:
+        groups={}
+        for (q,future),(_,successor,outcome) in example['samples'].items():
+            groups.setdefault(q,{})[future]=(successor,float(outcome))
+        programs=sorted(groups);lookup={q:i for i,q in enumerate(programs)}
+        raw=np.asarray([np.mean([value[1] for value in groups[q].values()]) for q in programs])
+        pseudo={q:{future:value[1] for future,value in values.items()} for q,values in groups.items()}
+        factual=groups[0];futures=list(factual);future_index={future:i for i,future in enumerate(futures)}
+        if task_conditioned and any(future not in factual for values in groups.values() for future in values):
+            raise ValueError('Task-conditioned standardization needs the actual factual outcome for every sampled future.')
+        if len(futures)>=4:
+            state=np.asarray([factual[future][0] for future in futures],dtype=float)
+            centered=state-state.mean(0);centered/=np.maximum(centered.std(0),.01)
+            _,singular,directions=np.linalg.svd(centered,full_matrices=False)
+            dimension=min(rank,len(futures)-2,int((singular>1e-6).sum()))
+            z=centered@directions[:dimension].T/(singular[:dimension]/np.sqrt(len(futures)-1))
+            if task_conditioned:
+                # The paired factual terminal result is an offline measure
+                # of continuation difficulty beyond the short motion window.
+                # Center it over ALL factual futures before estimating each
+                # complete program's task response; never expose it online.
+                outcome=np.asarray([factual[future][1] for future in futures])
+                z=np.column_stack((z,(outcome-outcome.mean())/max(outcome.std(),.1)))
+                dimension=z.shape[1]
+            if dimension:
+                permutation=np.random.default_rng(19081987).permutation(len(futures))
+                fold=np.zeros(len(futures),dtype=int);fold[permutation[len(futures)//2:]]=1
+                for heldout in (0,1):
+                    reference=z[fold==heldout].mean(0)
+                    normal=ridge*np.eye(dimension);rhs=np.zeros(dimension);local={}
+                    for q,values in groups.items():
+                        keys=[future for future in values if future in future_index
+                            and fold[future_index[future]]!=heldout]
+                        if len(keys)<2:continue
+                        features=z[[future_index[future] for future in keys]]
+                        outcome=np.asarray([values[future][1] for future in keys])
+                        features=features-features.mean(0);outcome=outcome-outcome.mean()
+                        gram=features.T@features;cross=features.T@outcome
+                        local[q]=(gram,cross);normal+=gram;rhs+=cross
+                    shared=np.linalg.solve(normal,rhs)
+                    for q,values in groups.items():
+                        gram,cross=local.get(q,(np.zeros((dimension,dimension)),np.zeros(dimension)))
+                        coefficient=np.linalg.solve(gram+ridge*np.eye(dimension),cross+ridge*shared)
+                        for future in values:
+                            index=future_index.get(future)
+                            if index is None or fold[index]!=heldout:continue
+                            pseudo[q][future]+=float(coefficient@(reference-z[index]));matched+=1
+        target=np.asarray([np.mean(list(pseudo[q].values())) for q in programs]).clip(0.,1.)
+        variance=[];factual_values=pseudo[0];n0=len(factual_values)
+        v0=np.var(list(factual_values.values()),ddof=1)/n0 if n0>1 else .25
+        for q in programs:
+            values=pseudo[q];count=len(values);common=list(values.keys()&factual_values.keys())
+            own=np.var(list(values.values()),ddof=1)/count if count>1 else .25
+            covariance=(np.cov([values[key] for key in common],[factual_values[key] for key in common],ddof=1)[0,1]
+                if len(common)>1 else 0.)
+            variance.append(max(0.,own+v0-2.*len(common)*covariance/(count*n0)))
+        edges={}
+        for left,right in example['pairs']:
+            edges.setdefault((left[0],right[0]),[]).append(example['samples'][right][2]-example['samples'][left][2])
+        estimates.append(dict(context=example['context'],programs=programs,targets=target,
+            gain_variance=np.asarray(variance),edges=[(lookup[a],lookup[b],float(np.mean(values)))
+                for (a,b),values in edges.items()]))
+        changes.extend((target-raw).tolist());observations+=len(example['samples'])
+    return estimates,dict(unique_terminal_observations=observations,matched_factual_responses=matched,
+        mean_absolute_value_correction=float(np.mean(np.abs(changes))),response_rank=rank,
+        cross_fit_folds=2,response_ridge=ridge,duplicate_contrast_labels=0,
+        factual_terminal_condition=bool(task_conditioned),
+        estimation_objective='cross-fitted terminal task regression standardized over paired factual successors')
+
+
+def matched_duration_task_estimates(examples,physical_contexts,spans,covariance_shrink=.9,shared_factual=False):
+    """Estimate complete program/window values jointly under matched futures.
+
+    Duration is part of the intervention, not another independent root.
+    The same future therefore contributes one outcome vector across ALL
+    sampled windows. Each physical continuation appears exactly once;
+    neither a second mean-difference target nor an assumed motion cost
+    supplies additional task evidence.
+    """
+    import numpy as np
+    groups={}
+    for index,context in enumerate(physical_contexts):
+        groups.setdefault(np.asarray(context,dtype=np.float32).tobytes(),[]).append(index)
+    combined=[];mappings=[]
+    for indices in groups.values():
+        def identity(q,span):return (q,0 if shared_factual and q==0 else span)
+        # With no inherited value policy, a completely free program follows
+        # the identical predecessor at every tick, for every window length.
+        # Pool that observed factual control, not the outcomes of interventions.
+        arms=sorted({identity(q,spans[index]) for index in indices
+            for q,_,_ in examples[index]['samples'].values()})
+        lookup={arm:i for i,arm in enumerate(arms)};samples={};pairs=[]
+        for index in indices:
+            example=examples[index];span=spans[index]
+            for (q,future),(_,successor,outcome) in example['samples'].items():
+                arm=lookup[identity(q,span)];key=(arm,future)
+                if key in samples and samples[key][2]!=outcome:
+                    raise ValueError('One complete program/window/future has inconsistent task outcomes.')
+                samples[key]=(arm,successor,outcome)
+            pairs.extend(((lookup[identity(left[0],span)],left[1]),(lookup[identity(right[0],span)],right[1]))
+                for left,right in example['pairs'])
+        combined.append(dict(context=np.asarray(physical_contexts[indices[0]]),samples=samples,pairs=pairs))
+        mappings.append((indices,lookup))
+    joint,statistics=matched_future_task_estimates(combined,covariance_shrink)
+    estimates=[None]*len(examples)
+    for fitted,(indices,lookup) in zip(joint,mappings):
+        target=dict(zip(fitted['programs'],fitted['targets']))
+        variance=dict(zip(fitted['programs'],fitted['gain_variance']))
+        for index in indices:
+            example=examples[index];span=spans[index]
+            programs=sorted({q for q,_,_ in example['samples'].values()})
+            positions={q:i for i,q in enumerate(programs)};edges={}
+            for left,right in example['pairs']:
+                edges.setdefault((left[0],right[0]),[]).append(
+                    example['samples'][right][2]-example['samples'][left][2])
+            estimates[index]=dict(context=example['context'],programs=programs,
+                targets=np.asarray([target[lookup[identity(q,span)]] for q in programs]),
+                gain_variance=np.asarray([variance[lookup[identity(q,span)]] for q in programs]),
+                edges=[(positions[a],positions[b],float(np.mean(values))) for (a,b),values in edges.items()])
+    statistics.update(joint_duration_roots=len(groups),candidate_durations=sorted(set(spans)),
+        shared_factual_continuation=shared_factual,
+        estimation_objective='joint complete program/window task values from one outcome vector per future')
+    return estimates,statistics
+
+
+def paired_task_refinement_programs(examples,max_programs=3,margin=.05,standard_errors=1.,action_radix=4):
+    """Allocate paired rollouts to unresolved task-value rankings.
+
+    A high empirical return alone does not request more samples. The priority
+    uses the estimated intervention gain and its paired uncertainty, retaining
+    competitors whose upper estimate can still beat the current lower one.
+    The collector expands these programs into their single-vessel paths.
+    """
+    import numpy as np
+    estimates,_=paired_block_task_estimates(examples);requests=[]
+    for example in estimates:
+        programs=np.asarray(example['programs']);factual=int(np.flatnonzero(programs==0)[0])
+        n=(len(example['context'])-3)//8
+        changed=sum((programs//action_radix**vessel)%action_radix>0 for vessel in range(n))
+        gain=example['targets']-example['targets'][factual]-.005*changed
+        deviation=np.sqrt(example['gain_variance'])
+        lower=gain-standard_errors*deviation;upper=gain+standard_errors*deviation
+        competitor=(programs!=0)&(upper>max(margin,float(lower.max())))
+        priority=np.where(competitor,deviation/(np.maximum(0.,gain.max()-gain)+margin),0.)
+        selected=[int(i) for i in np.argsort(-priority)[:max_programs] if priority[i]>0.]
+        requests.append(dict(context=example['context'],program_codes=[0]+[int(programs[i]) for i in selected],
+            estimated_gains=[float(gain[i]) for i in selected],
+            paired_standard_errors=[float(deviation[i]) for i in selected]))
+    return requests
+
+
+@torch.no_grad()
+def task_value_program_expansion(record,examples,max_programs=8,parents=4):
+    """Propose unobserved complete programs by learned conditional task value.
+
+    A one-vessel edit is applied to a promising COMPLETE program, allowing
+    higher-order interventions to grow beyond the initial single/pair set.
+    Proposals are sampling requests only: they cannot be deployed until
+    their paired physical task outcomes have been collected and fitted.
+    """
+    network=load_program_potential(record).cpu().eval();radix=network.radix;requests=[]
+    for example in examples:
+        context=torch.as_tensor(example['context'],dtype=torch.float32)
+        n=(len(context)-network.global_width)//network.node_width
+        observed=sorted({q for q,_,_ in example['samples'].values()})
+        codes=torch.as_tensor(observed,dtype=torch.long)
+        digits=(codes[:,None]//(radix**torch.arange(n)))%radix
+        score=network(context[None].expand(len(codes),-1),codes)-.005*(digits>0).sum(-1)
+        seed_codes=codes[score.argsort(descending=True)[:parents]].tolist()
+        candidates=set();known=set(observed)
+        for code in seed_codes:
+            for vessel in range(n):
+                place=radix**vessel;current=(code//place)%radix
+                candidates.update(code+(choice-current)*place for choice in range(radix))
+        candidates=sorted(candidates-known)
+        if not candidates:
+            requests.append(dict(program_codes=[],predicted_task_values=[],parent_codes=seed_codes));continue
+        codes=torch.as_tensor(candidates,dtype=torch.long)
+        value=network(context[None].expand(len(codes),-1),codes)
+        digits=(codes[:,None]//(radix**torch.arange(n)))%radix
+        score=value-.005*(digits>0).sum(-1)
+        selected=score.argsort(descending=True)[:max_programs]
+        requests.append(dict(program_codes=codes[selected].tolist(),
+            predicted_task_values=value[selected].tolist(),parent_codes=seed_codes))
+    return requests
+
+
+class PairedFutureTaskPotential(PairedResponsePotential):
+    """Marginalize program-dependent responses to shared paired futures."""
+    def __init__(self,width=64,response_rank=2,contexts=None,future_counts=None,
+                 global_width=3,program_options=None,state=None,time_bandwidth=None):
+        super().__init__(width,False,node_width=8,global_width=global_width,
+            program_options=program_options,probabilistic=True,response_rank=response_rank)
+        self.register_buffer('contexts',torch.as_tensor(contexts,dtype=torch.float32))
+        self.time_bandwidth=time_bandwidth
+        counts=torch.as_tensor(future_counts,dtype=torch.long)
+        self.register_buffer('future_mask',torch.arange(int(counts.max()))[None]<counts[:,None])
+        self.future_latents=nn.Parameter(.05*torch.randn(len(counts),int(counts.max()),response_rank))
+        if state is not None:self.load_state_dict(state)
+
+    def centered_futures(self):
+        mask=self.future_mask[...,None]
+        mean=(self.future_latents*mask).sum(1,keepdim=True)/mask.sum(1,keepdim=True)
+        return self.future_latents-mean
+
+    def conditional_logits(self,context,codes,roots,futures):
+        parameters=self.response_parameters(context,codes)
+        latent=self.centered_futures()[roots,futures]
+        return parameters[:,0]+(parameters[:,1:]*latent).sum(-1)
+
+    def forward(self,context,codes):
+        if context.shape[-1]==self.contexts.shape[-1]:
+            distance=(context[:,None]-self.contexts[None]).square().sum(-1)
+        else:
+            distance=(SuccessorTaskDecision.summary(context)[:,None]
+                -SuccessorTaskDecision.summary(self.contexts)[None]).square().sum(-1)
+        if self.time_bandwidth is not None:
+            distance=distance.masked_fill((context[:,None,-1]-self.contexts[None,:,-1]).abs()
+                >self.time_bandwidth,float('inf'))
+        roots=distance.argmin(-1)
+        parameters=self.response_parameters(context,codes)
+        logits=parameters[:,:1]+(parameters[:,None,1:]*self.centered_futures()[roots]).sum(-1)
+        mask=self.future_mask[roots]
+        return (logits.sigmoid()*mask).sum(-1)/mask.sum(-1)
+
+
+def fit_paired_future_task_potential(examples,*,program_options=None,global_width=3,
+        width=64,response_rank=2,updates=3000,seed=42,device='cpu',difference_weight=1.):
+    """Learn conditional task ordering without equating concordance to a tie.
+
+    Each program/future outcome enters the absolute objective once. Local
+    discordant pairs train their relative conditional logits. Future factors
+    are shared across paired arms and integrated out before policy selection.
+    """
+    import numpy as np
+    contexts=[];codes=[];roots=[];futures=[];outcomes=[];pairs=[];future_counts=[]
+    for root,example in enumerate(examples):
+        future_keys=list(dict.fromkeys(key[1] for key in example['samples']))
+        lookup={key:i for i,key in enumerate(future_keys)};future_counts.append(len(lookup));indices={}
+        for key,(code,_,outcome) in example['samples'].items():
+            indices[key]=len(codes);contexts.append(example['context']);codes.append(code)
+            roots.append(root);futures.append(lookup[key[1]]);outcomes.append(outcome)
+        for a,b in dict.fromkeys(example['pairs']):
+            if a[1]!=b[1]:raise ValueError('Conditional task ordering requires a shared paired future.')
+            if example['samples'][a][2]!=example['samples'][b][2]:pairs.append((indices[a],indices[b]))
+    torch.manual_seed(seed);rng=np.random.default_rng(seed+19081987)
+    net=PairedFutureTaskPotential(width,response_rank,np.asarray([e['context'] for e in examples]),
+        future_counts,global_width,program_options).to(device)
+    x=torch.as_tensor(np.asarray(contexts),dtype=torch.float32,device=device)
+    q=torch.as_tensor(codes,dtype=torch.long,device=device)
+    root=torch.as_tensor(roots,dtype=torch.long,device=device)
+    future=torch.as_tensor(futures,dtype=torch.long,device=device)
+    y=torch.as_tensor(outcomes,dtype=torch.float32,device=device)
+    pair=torch.as_tensor(pairs,dtype=torch.long,device=device)
+    optimizer=torch.optim.AdamW(net.parameters(),lr=8e-4,weight_decay=.005);last={}
+    with torch.enable_grad():
+        for step in range(updates):
+            selected=torch.as_tensor(rng.integers(len(q),size=256),device=device)
+            absolute=F.binary_cross_entropy_with_logits(
+                net.conditional_logits(x[selected],q[selected],root[selected],future[selected]),y[selected])
+            ordering=absolute.new_zeros(())
+            if len(pairs):
+                chosen=torch.as_tensor(rng.integers(len(pair),size=128),device=device)
+                a,b=pair[chosen].unbind(-1);indices=torch.cat((a,b))
+                logits=net.conditional_logits(x[indices],q[indices],root[indices],future[indices])
+                ordering=F.softplus(-(y[b]-y[a])*(logits[128:]-logits[:128])).mean()
+            regularizer=.002*net.centered_futures().square().mean()
+            loss=absolute+difference_weight*ordering+regularizer
+            optimizer.zero_grad();loss.backward();nn.utils.clip_grad_norm_(net.parameters(),5.);optimizer.step()
+            if (step+1)%500==0 or step+1==updates:
+                last=dict(phase='paired_future_task_fit',update=step+1,
+                    absolute_task_loss=float(absolute.detach()),conditional_order_loss=float(ordering.detach()))
+                print(last,flush=True)
+    record=dict(kind='paired_future_task',width=width,response_rank=response_rank,
+        contexts=np.asarray([e['context'] for e in examples]),future_counts=future_counts,
+        global_width=global_width,program_options=program_options,
+        state={key:value.detach().cpu() for key,value in net.state_dict().items()})
+    return net.cpu().eval(),record,dict(roots=len(examples),unique_task_outcomes=len(q),
+        terminal_difference_labels=sum(len(e['pairs']) for e in examples),discordant_pairs=len(pairs),
+        task_target='conditional terminal success marginalized over shared futures',
+        deployed_parameters=sum(p.numel() for p in net.parameters()),updates=updates,
+        difference_weight=difference_weight,last=last)
+
+
+def future_task_likelihood_factors(logits,target,mask):
+    """Exact count and conditional assignment log-likelihoods for one future."""
+    count=(target*mask).sum(-1).long();length=mask.sum(-1)
+    complement=count>length//2
+    logits=torch.where(complement[:,None],-logits,logits)
+    target=torch.where(complement[:,None],mask.to(target.dtype)-target,target)*mask
+    count=torch.minimum(count,length-count);degree=int(count.max())
+    polynomial=logits.new_full((len(logits),degree+1),-1e4);polynomial[:,0]=0.
+    for column in range(logits.shape[1]):
+        shifted=torch.cat((polynomial.new_full((len(logits),1),-1e4),
+            polynomial[:,:-1]+logits[:,column,None]),-1)
+        polynomial=torch.where(mask[:,column,None],torch.logaddexp(polynomial,shifted),polynomial)
+    normalizer=polynomial.gather(1,count[:,None]).squeeze(1)
+    ordering=normalizer-(target*logits).sum(-1)
+    cardinality=(F.softplus(logits)*mask).sum(-1)-normalizer
+    return cardinality,ordering
+
+
+def fit_joint_future_task_potential(examples,*,program_options=None,global_width=3,
+        width=61,response_rank=2,updates=5000,seed=42,device='cpu',difference_weight=2.):
+    """Factor each future's task vector into cardinality and winning programs.
+
+    Conditioning on the observed success count compares WHICH complete
+    programs succeed under a common future. Cardinality retains the absolute
+    task-success evidence. At unit ordering weight the two factors recover
+    the Bernoulli vector likelihood exactly; no endpoint or contrast is
+    presented as a second independent observation. Shared latent futures are
+    marginalized before deployment, never supplied as online information.
+    """
+    import numpy as np
+    contexts=[];codes=[];roots=[];futures=[];outcomes=[];blocks=[];future_counts=[]
+    for root,example in enumerate(examples):
+        by_future={}
+        for key,sample in example['samples'].items():by_future.setdefault(key[1],[]).append(sample)
+        future_counts.append(len(by_future))
+        for future,samples in enumerate(by_future.values()):
+            block=[]
+            for code,_,outcome in samples:
+                block.append(len(codes));contexts.append(example['context']);codes.append(code)
+                roots.append(root);futures.append(future);outcomes.append(outcome)
+            blocks.append(block)
+    torch.manual_seed(seed);rng=np.random.default_rng(seed+19081987)
+    net=PairedFutureTaskPotential(width,response_rank,np.asarray([e['context'] for e in examples]),
+        future_counts,global_width,program_options).to(device)
+    x=torch.as_tensor(np.asarray(contexts),dtype=torch.float32,device=device)
+    q=torch.as_tensor(codes,dtype=torch.long,device=device)
+    root=torch.as_tensor(roots,dtype=torch.long,device=device)
+    future=torch.as_tensor(futures,dtype=torch.long,device=device)
+    y=torch.as_tensor(outcomes,dtype=torch.float32,device=device)
+    optimizer=torch.optim.AdamW(net.parameters(),lr=8e-4,weight_decay=.005);last={}
+    with torch.enable_grad():
+        for step in range(updates):
+            chosen=[blocks[i] for i in rng.integers(len(blocks),size=48)]
+            size=max(map(len,chosen));indices=np.zeros((len(chosen),size),dtype=np.int64)
+            valid=np.zeros_like(indices,dtype=bool)
+            for row,block in enumerate(chosen):indices[row,:len(block)]=block;valid[row,:len(block)]=True
+            index=torch.as_tensor(indices,device=device);mask=torch.as_tensor(valid,device=device)
+            flat=index[mask]
+            logits=x.new_zeros(index.shape).masked_scatter(mask,
+                net.conditional_logits(x[flat],q[flat],root[flat],future[flat]))
+            target=y[index]*mask;length=mask.sum(-1)
+            cardinality,ordering=future_task_likelihood_factors(logits,target,mask)
+            joint=(cardinality+difference_weight*ordering)/length
+            regularizer=.002*net.centered_futures().square().mean()
+            loss=joint.mean()+regularizer
+            optimizer.zero_grad();loss.backward();nn.utils.clip_grad_norm_(net.parameters(),5.);optimizer.step()
+            if (step+1)%500==0 or step+1==updates:
+                last=dict(phase='joint_future_task_fit',update=step+1,
+                    cardinality_nll=float((cardinality/length).mean().detach()),
+                    conditional_order_nll=float((ordering/length).mean().detach()))
+                print(last,flush=True)
+    record=dict(kind='paired_future_task',width=width,response_rank=response_rank,
+        contexts=np.asarray([e['context'] for e in examples]),future_counts=future_counts,
+        global_width=global_width,program_options=program_options,
+        state={key:value.detach().cpu() for key,value in net.state_dict().items()})
+    return net.cpu().eval(),record,dict(roots=len(examples),unique_terminal_observations=len(codes),
+        paired_future_blocks=len(blocks),updates=updates,seed=seed,duplicate_contrast_labels=0,
+        ordering_weight=difference_weight,deployed_parameters=sum(p.numel() for p in net.parameters()),
+        likelihood_factorization='future success cardinality and conditional successful-program assignment',last=last)
+
+
+class SuccessorStateEncoder(nn.Module):
+    def __init__(self,width,action_conditioned,conditioned_successor=False,action_radix=4,global_width=3):
+        super().__init__();self.action_conditioned=action_conditioned
+        self.conditioned_successor=conditioned_successor
+        self.action_radix=action_radix;self.global_width=global_width
+        self.node=nn.Sequential(nn.Linear(8+(action_radix if action_conditioned else 0)+(8+global_width if conditioned_successor else 0),width),nn.SiLU(),nn.Linear(width,width),nn.SiLU())
+        self.message=nn.Sequential(nn.Linear(2*width+8,width),nn.SiLU(),nn.Linear(width,width),nn.SiLU())
+        self.update=nn.Sequential(nn.Linear(3*width,width),nn.SiLU())
+
+    def forward(self,context,codes=None,following=None):
+        n=(context.shape[-1]-self.global_width)//8;rows=context[:,:8*n].reshape(-1,n,8)
+        inputs=rows
+        if self.action_conditioned:
+            program=(codes[:,None]//(self.action_radix**torch.arange(n,device=context.device)))%self.action_radix
+            inputs=torch.cat((rows,F.one_hot(program,self.action_radix).to(rows.dtype)),-1)
+        if self.conditioned_successor:
+            change=following-context
+            inputs=torch.cat((inputs,change[:,:8*n].reshape(-1,n,8),change[:,-self.global_width:,None].transpose(1,2).expand(-1,n,-1)),-1)
+        node=self.node(inputs)
+        difference=rows[:,None]-rows[:,:,None]
+        messages=self.message(torch.cat((node[:,:,None].expand(-1,-1,n,-1),
+            node[:,None].expand(-1,n,-1,-1),difference),-1))
+        mask=~torch.eye(n,dtype=torch.bool,device=context.device)[None,:,:,None]
+        encoded=self.update(torch.cat((node,(messages*mask).sum(2)/max(n-1,1),
+            messages.masked_fill(~mask,-1e6).amax(2)),-1))
+        pooled=torch.cat((encoded.mean(1),encoded.amax(1),context[:,-self.global_width:],
+            context.new_full((len(context),1),n/6.)),-1)
+        return encoded,pooled
+
+
+class PairedSuccessorTaskPotential(nn.Module):
+    """Complete-plan task value through a learned conditional successor.
+
+    Paired interventions supervise physical state effects. True terminal task
+    outcomes supervise the value of successor states and calibrate deployed
+    program probabilities. No stored successful action target or hand-designed
+    collision or tracking objective supplies this task value.
+    Both encoders share parameters over vessels, including unseen fleet sizes.
+    """
+    def __init__(self,width=59,response_width=24,state=None,program_options=None,global_width=3):
+        super().__init__();self.width=width;self.response_width=response_width
+        self.radix=4 if program_options is None else len(program_options);self.paired=False
+        self.global_width=global_width
+        self.register_buffer('program_options',None if program_options is None else
+            torch.as_tensor(program_options,dtype=torch.float32))
+        self.response=SuccessorStateEncoder(response_width,True,action_radix=self.radix,global_width=global_width)
+        self.response_node=nn.Linear(response_width,8)
+        self.response_global=nn.Linear(2*response_width+global_width+1,global_width)
+        self.task=SuccessorStateEncoder(width,False,global_width=global_width)
+        self.task_head=nn.Sequential(nn.Linear(2*width+global_width+1,width),nn.SiLU(),nn.Linear(width,1))
+        self.register_buffer('noise_scale',torch.zeros(8+global_width))
+        # Symmetric common-disturbance quadrature is invariant to vessel order.
+        signs=torch.tensor([[1 if (i&j).bit_count()%2==0 else -1 for j in range(1,9+global_width)]
+                            for i in range(16)],dtype=torch.float32)
+        self.register_buffer('noise_points',signs,persistent=False)
+        if state is not None:self.load_state_dict(state)
+
+    def successor(self,context,codes):
+        node,pooled=self.response(context,codes)
+        return context+torch.cat((self.response_node(node).flatten(1),self.response_global(pooled)),-1)
+
+    def task_logits(self,successor):
+        return self.task_head(self.task(successor)[1]).squeeze(-1)
+
+    def forward(self,context,codes):
+        mean=self.successor(context,codes);n=(context.shape[-1]-self.global_width)//8
+        perturbation=self.noise_points*self.noise_scale
+        perturbation=torch.cat((perturbation[:,:8,None].transpose(1,2).expand(-1,n,-1).flatten(1),
+                                perturbation[:,-self.global_width:]),-1)
+        states=mean[:,None]+perturbation[None]
+        return self.task_logits(states.flatten(0,1)).sigmoid().reshape(len(context),-1).mean(-1)
+
+
+def intervention_task_context(packet,return_order=False,absolute_frame=False):
+    context,order=public_return_context(packet,True,2)
+    if absolute_frame:
+        # The author's reset sets attacker heading to minus its world
+        # bearing. Rotating away that observable bearing therefore merges
+        # states with different future dynamics, especially at zero speed.
+        motion=packet['motion'];heading=motion[:,0,2]
+        relative=30.*packet['node'][:,0,2:4]
+        target=motion[:,0,:2]+torch.stack((heading.cos()*relative[:,0]-heading.sin()*relative[:,1],
+            heading.sin()*relative[:,0]+heading.cos()*relative[:,1]),-1)
+        bearing=target/target.norm(dim=-1,keepdim=True).clamp_min(1.)
+        context=torch.cat((context[:,:-3],bearing,context[:,-3:]),-1)
+    return (context,order) if return_order else context
+
+
+def append_vessel_identity(context, order):
+    """Retain observable physical vessel order after canonical spatial sorting."""
+    n = order.shape[-1]
+    if context.shape[:-1] != order.shape[:-1] or context.shape[-1] != 8*n+5:
+        raise ValueError('Vessel identity requires the original public context and its measured order.')
+    expected = torch.arange(n, device=order.device).expand_as(order)
+    if not torch.equal(order.sort(-1).values, expected):
+        raise ValueError('Measured vessel order must be a permutation of the physical vessel indices.')
+    identity = order.to(device=context.device, dtype=context.dtype)/max(n-1, 1)
+    return torch.cat((context[..., :-5], identity, context[..., -5:]), -1)
+
+
+def successor_task_examples(data,require_candidate_support=False,absolute_frame=False):
+    """Recover identity-aligned physical successors and terminal task labels."""
+    import numpy as np
+    groups={}
+    for rollout in data['rollouts']:
+        for branch in rollout['branches']:
+            packet={key:torch.as_tensor(value[None]) for key,value in branch['packet'].items()}
+            context,order=intervention_task_context(packet,True,absolute_frame);order=order[0]
+            key=np.round(context.numpy(),6).tobytes()
+            if key not in groups:
+                radix=len(data['program_options']) if data.get('program_options') is not None else 4
+                candidates=successor_candidate_programs(packet,order[None],
+                    data.get('include_all_vessels',False),radix)[0]
+                required=(candidates*(radix**torch.arange(len(order)))).sum(-1).tolist()
+                groups[key]=dict(context=context[0].numpy(),samples={},pairs=[],
+                    required_programs=sorted(set(required)))
+            example=groups[key]
+            pair=[]
+            observations=[('left','before'),('right','after')]
+            if branch.get('factual_outcome') is not None and branch.get('reference_action') is not None:
+                observations.append(('reference_action','factual_outcome'))
+            for side,outcome in observations:
+                if branch[side].shape[-1]==13:
+                    gates=branch[side][order.numpy(),9:11]
+                    choices=np.where((gates<0.).any(-1),0,1+6*gates[:,0]+2*gates[:,1]).astype(int)
+                    radix=10
+                else:
+                    gates=branch[side][order.numpy(),3]
+                    choices=np.where(gates<0.,0,1+2*gates).astype(int);radix=4
+                code=int((choices*radix**np.arange(len(choices))).sum())
+                record=branch[outcome];first=record.get('first_step')
+                if first is None or first.get('next') is None:
+                    raise ValueError('Successor task learning requires the observed post-intervention state.')
+                future=branch['continuation_seed'];sample_key=(code,future)
+                following={name:torch.as_tensor(value[None]) for name,value in first['next'].items()}
+                after,after_order=intervention_task_context(following,True,absolute_frame);n=len(order)
+                rows=after[0,:8*n].reshape(n,8)[after_order[0].argsort()][order]
+                successor=torch.cat((rows.flatten(),after[0,8*n:])).numpy()
+                sample=(code,successor,float(record['success']))
+                previous=example['samples'].get(sample_key)
+                if previous is not None and (previous[2]!=sample[2] or
+                        not np.allclose(previous[1],sample[1],rtol=1e-5,atol=1e-6)):
+                    raise ValueError('One program/future has conflicting physical outcomes; '
+                        'recollect with shared continuation identities before fitting paired task values.')
+                if previous is None:example['samples'][sample_key]=sample
+                if side!='reference_action':pair.append(sample_key)
+            example['pairs'].append(tuple(pair))
+    if require_candidate_support:
+        for index,example in enumerate(groups.values()):
+            observed={sample[0] for sample in example['samples'].values()}
+            missing=set(example['required_programs'])-observed
+            if missing:
+                raise ValueError(f'Successor root {index} lacks {len(missing)} deployed programs; '
+                    'recollect this root with successor_intervention_library before training.')
+    return list(groups.values())
+
+
+def fit_successor_task_potential(data,width=59,response_width=24,updates=5000,seed=42,device='cpu',
+                                 decision_weight=1.,terminal_difference_weight=4.,absolute_context=False,
+                                 paired_calibration=False,covariance_shrink=.5,
+                                 examples=None,global_width=None,conditional_ordering=False):
+    """Fit transition effects and task values from disjoint label objects."""
+    import numpy as np
+    if examples is None:examples=successor_task_examples(data,absolute_frame=absolute_context)
+    contexts=[];codes=[];successors=[];outcomes=[];pairs=[];anchors=[];groups=[]
+    if global_width is None:global_width=5 if absolute_context else 3
+    calibration,calibration_fit=(paired_block_task_estimates(examples,covariance_shrink)
+        if paired_calibration else (None,None))
+    marginal_targets=[]
+    residuals=[]
+    for root,example in enumerate(examples):
+        lookup={};programs={}
+        calibrated=(dict(zip(calibration[root]['programs'],calibration[root]['targets']))
+            if calibration is not None else None)
+        for key,(code,successor,outcome) in example['samples'].items():
+            lookup[key]=len(codes);contexts.append(example['context']);codes.append(code)
+            successors.append(successor);outcomes.append(outcome);programs.setdefault(code,[]).append(len(codes)-1)
+            marginal_targets.append(outcome if calibrated is None else float(calibrated[code]))
+        pairs.extend((lookup[a],lookup[b]) for a,b in example['pairs'])
+        groups.extend(programs.values())
+        factual=np.asarray([successors[i] for i in programs.get(0,[])])
+        if not len(factual):raise ValueError('Each conditional root needs factual successor observations.')
+        anchors.append((example['context'],factual.mean(0)))
+        residuals.extend(factual-factual.mean(0))
+    context=torch.tensor(np.asarray(contexts),dtype=torch.float32,device=device)
+    code=torch.tensor(codes,device=device);target=torch.tensor(np.asarray(successors),dtype=torch.float32,device=device)
+    outcome=torch.tensor(outcomes,dtype=torch.float32,device=device);pair=torch.tensor(pairs,device=device)
+    marginal=torch.tensor(marginal_targets,dtype=torch.float32,device=device)
+    anchor_context=torch.tensor(np.asarray([x[0] for x in anchors]),dtype=torch.float32,device=device)
+    anchor_target=torch.tensor(np.asarray([x[1] for x in anchors]),dtype=torch.float32,device=device)
+    n=(context.shape[-1]-global_width)//8
+    difference=target[pair[:,1]]-target[pair[:,0]]
+    node_scale=difference[:,:8*n].reshape(-1,n,8).square().mean((0,1)).sqrt().clamp_min(.01)
+    global_scale=difference[:,-global_width:].square().mean(0).sqrt().clamp_min(.01)
+    scale=torch.cat((node_scale.repeat(n),global_scale))
+    torch.manual_seed(seed);rng=np.random.default_rng(seed+19081987)
+    net=PairedSuccessorTaskPotential(width,response_width,program_options=data.get('program_options'),global_width=global_width).to(device)
+    residual=torch.tensor(np.asarray(residuals),dtype=torch.float32,device=device)
+    with torch.no_grad():
+        net.noise_scale[:8]=residual[:,:8*n].reshape(-1,n,8).square().mean((0,1)).sqrt()
+        net.noise_scale[-global_width:]=residual[:,-global_width:].square().mean(0).sqrt()
+    optimizer=torch.optim.AdamW(net.parameters(),lr=8e-4,weight_decay=.005)
+    last={}
+    with torch.enable_grad():
+        for step in range(updates):
+            selected=torch.as_tensor(rng.integers(len(pair),size=128),device=device)
+            a,b=pair[selected].unbind(-1)
+            predicted=net.successor(context[torch.cat((a,b))],code[torch.cat((a,b))])
+            effect_loss=((predicted[128:]-predicted[:128]-(target[b]-target[a]))/scale).square().mean()
+            anchored=net.successor(anchor_context,torch.zeros(len(anchors),dtype=torch.long,device=device))
+            anchor_loss=((anchored-anchor_target)/scale).square().mean()
+            # Uniform programs, then uniform distinct futures: a graph hub is
+            # not replicated as extra task evidence merely due to its degree.
+            task_indices=torch.tensor([rng.choice(groups[i]) for i in rng.integers(len(groups),size=256)],device=device)
+            logits=net.task_logits(target[task_indices])
+            task_loss=F.binary_cross_entropy_with_logits(logits,outcome[task_indices])
+            physical_loss=effect_loss+anchor_loss
+            # The auxiliary state coordinates have different units and can
+            # initially dominate the actual task objective by three orders
+            # of magnitude. Normalize their gradient scale while retaining
+            # the physical prediction problem itself.
+            physical_weight=1./physical_loss.detach().clamp_min(1.)
+            loss=physical_weight*physical_loss+task_loss
+            # Supervise the complete-program probabilities used to choose
+            # controls, rather than only an auxiliary physical-state effect.
+            paired_indices=torch.cat((a[:32],b[:32]))
+            paired_value=net(context[paired_indices],code[paired_indices])
+            if conditional_ordering:
+                direction=outcome[b[:32]]-outcome[a[:32]]
+                discordant=direction!=0.
+                logit=torch.logit(paired_value.clamp(1e-6,1.-1e-6))
+                terms=F.softplus(-direction*(logit[32:]-logit[:32]))
+                terminal_contrast=(terms*discordant).sum()/discordant.sum().clamp_min(1)
+            else:
+                terminal_contrast=(paired_value[32:]-paired_value[:32]
+                    -(marginal[b[:32]]-marginal[a[:32]])).square().mean()
+            loss=loss+terminal_difference_weight*terminal_contrast
+            if paired_calibration:
+                # Individual futures supervise conditional successor values.
+                # Their population-calibrated differences supervise the
+                # marginal values used for decisions. These are different
+                # targets: a single realized rescue is not a unit change in
+                # expected success probability.
+                observed=net.task_logits(target[paired_indices]).sigmoid()
+                observed_contrast=(observed[32:]-observed[:32]
+                    -(outcome[b[:32]]-outcome[a[:32]])).square().mean()
+                loss=loss+terminal_difference_weight*observed_contrast
+            if decision_weight:
+                # Calibrate the complete-program probability actually used
+                # for decisions, alongside its paired physical-effect model.
+                decision_indices=task_indices[:64]
+                probability=net(context[decision_indices],code[decision_indices])
+                decision_loss=F.binary_cross_entropy(probability,marginal[decision_indices])
+                loss=loss+decision_weight*decision_loss
+            optimizer.zero_grad();loss.backward();nn.utils.clip_grad_norm_(net.parameters(),5.);optimizer.step()
+            if (step+1)%500==0 or step+1==updates:
+                last=dict(phase='paired_successor_task_fit',update=step+1,effect_loss=float(effect_loss.detach()),
+                    factual_motion_loss=float(anchor_loss.detach()),task_value_loss=float(task_loss.detach()),
+                    deployed_terminal_contrast_loss=float(terminal_contrast.detach()),
+                    physical_objective_weight=float(physical_weight))
+                if decision_weight:last['deployed_task_value_loss']=float(decision_loss.detach())
+                if paired_calibration:last['observed_future_contrast_loss']=float(observed_contrast.detach())
+                print(last,flush=True)
+    record=dict(kind='paired_successor_task',width=width,response_width=response_width,global_width=global_width,
+        program_options=data.get('program_options'),
+        state={key:value.detach().cpu() for key,value in net.state_dict().items()})
+    net=net.cpu().eval()
+    if paired_calibration:net,record=calibrate_program_potential(record,calibration,
+        time_bandwidth=None if data.get('initial_only',True) else 1e-4)
+    return net,record,dict(roots=len(examples),unique_task_outcomes=len(codes),paired_state_effects=len(pairs),
+        terminal_difference_labels=len(pairs),task_target='true_terminal_task_success',state_target='paired_intervention_successor',
+        deployed_parameters=sum(p.numel() for p in net.parameters()),updates=updates,
+        decision_weight=decision_weight,terminal_difference_weight=terminal_difference_weight,last=last,
+        paired_calibration=calibration_fit,conditional_ordering=conditional_ordering)
+
+
+class PairedFactualTaskPotential(nn.Module):
+    """Marginal task value from paired repair and damage probabilities.
+
+    The factual successor and its terminal result identify a common sampled
+    continuation during learning. A complete program predicts whether it
+    repairs a factual failure or damages a factual success. Execution averages
+    both probabilities over the entire empirical factual distribution; no
+    realized future, selected successful action, or geometric proxy is used.
+    """
+    def __init__(self,width=62,global_width=3,support_shape=(1,1,51),state=None,program_options=None,
+                 response_supervision=False,factual_features=6,intervention_contrast=False,future_rank=0,
+                 future_normalization=False):
+        super().__init__();self.width=width;self.global_width=global_width
+        if factual_features not in (0,6,8):raise ValueError('Use terminal pairing, measured motion, or complete factual state.')
+        self.factual_features=factual_features;self.node_width=8+factual_features
+        self.intervention_contrast=intervention_contrast
+        if future_rank and factual_features:
+            raise ValueError('Factorized factual responses use separate program and future encoders.')
+        self.future_rank=future_rank
+        self.future_normalization=future_normalization
+        self.radix=4 if program_options is None else len(program_options)
+        self.register_buffer('program_options',None if program_options is None else
+            torch.as_tensor(program_options,dtype=torch.float32))
+        self.task=SharedProgramPotential(width,False,node_width=self.node_width,global_width=2*global_width,
+            program_options=program_options)
+        if self.node_width>=15:
+            # These extra columns are factual kinematics, not the source
+            # control columns used by the generic program network.
+            self.task.node[0]=nn.Linear(self.node_width+self.radix,width)
+        self.task.readout[-1]=nn.Linear(width,2*(1+future_rank))
+        if future_rank:
+            self.future_encoder=nn.Sequential(nn.Linear(16+global_width,16),nn.SiLU(),
+                nn.Linear(16,future_rank,bias=False))
+        self.response_supervision=response_supervision
+        if response_supervision:
+            self.response_node=nn.Linear(width,8,bias=False)
+            self.response_global=nn.Linear(2*width,global_width,bias=False)
+        self.register_buffer('support_contexts',torch.zeros((support_shape[0],support_shape[-1])))
+        self.register_buffer('support_delta',torch.zeros(tuple(support_shape)))
+        self.register_buffer('support_outcomes',torch.zeros(tuple(support_shape[:2])))
+        self.register_buffer('support_mask',torch.zeros(tuple(support_shape[:2]),dtype=torch.bool))
+        if future_normalization:
+            self.register_buffer('future_center',torch.zeros((support_shape[0],16+global_width)))
+            self.register_buffer('future_scale',torch.ones((support_shape[0],16+global_width)))
+        if state is not None:self.load_state_dict(state)
+
+    def conditional_encoding(self,context,codes,factual):
+        extra=self.global_width;n=(context.shape[-1]-extra)//8
+        current=context[:,:8*n].reshape(-1,n,8)
+        response=(factual[:,:8*n]-context[:,:8*n]).reshape(-1,n,8)
+        # Angular velocity carries turning inertia; radial progress carries
+        # the task consequence of a common future. Both are observed factual
+        # state, rather than an extra copy of the terminal difference label.
+        inputs=torch.cat((torch.cat((current,response[...,:self.factual_features]),-1).flatten(1),
+            context[:,-extra:],factual[:,-extra:]-context[:,-extra:] if self.factual_features
+                else torch.zeros_like(context[:,-extra:])), -1)
+        rows=inputs[:,:self.node_width*n].reshape(-1,n,self.node_width)
+        programs=(codes[:,None]//(self.radix**torch.arange(n,device=context.device)))%self.radix
+        node=self.task.node(torch.cat((rows,F.one_hot(programs,self.radix).to(rows.dtype)),-1))
+        difference=rows[:,None]-rows[:,:,None]
+        messages=self.task.message(torch.cat((node[:,:,None].expand(-1,-1,n,-1),
+            node[:,None].expand(-1,n,-1,-1),difference),-1))
+        mask=~torch.eye(n,dtype=torch.bool,device=context.device)[None,:,:,None]
+        average=(messages*mask).sum(2)/max(1,n-1)
+        maximum=messages.masked_fill(~mask,-1e6).amax(2)
+        encoded=self.task.update(torch.cat((node,average,maximum),-1))
+        pooled=torch.cat((encoded.mean(1),encoded.amax(1),inputs[:,-2*extra:],
+            context.new_full((len(context),1),n/6.)),-1)
+        return encoded,pooled
+
+    def task_parameters(self,context,codes,factual):
+        encoded,pooled=self.conditional_encoding(context,codes,factual)
+        if self.intervention_contrast:
+            baseline,_=self.conditional_encoding(context,torch.zeros_like(codes),factual)
+            pooled=self.intervention_pool(encoded-baseline,pooled)
+        return self.task.readout(pooled)
+
+    def future_state_features(self,context,factual):
+        extra=self.global_width;n=(context.shape[-1]-extra)//8
+        delta=factual-context
+        node=delta[:,:8*n].reshape(-1,n,8)
+        return torch.cat((node.mean(1),node.square().mean(1).sqrt(),delta[:,-extra:]),-1)
+
+    def future_features(self,context,factual):
+        features=self.future_state_features(context,factual)
+        if self.future_normalization:
+            root=self.factual_roots(context)
+            # Remove the root's expected motion before learning sensitivity
+            # to its common future. Otherwise large between-state motion
+            # changes can hide the much smaller paired stochastic response.
+            features=(features-self.future_center[root])/self.future_scale[root]
+        return self.future_encoder(features)
+
+    def conditional_logits(self,context,codes,factual):
+        parameters=self.task_parameters(context,codes,factual)
+        if not self.future_rank:return parameters
+        response=self.future_features(context,factual)
+        return parameters[:,:2]+(parameters[:,2:].reshape(-1,2,self.future_rank)*response[:,None]).sum(-1)
+
+    def intervention_pool(self,change,pooled):
+        # Pool program-induced feature changes before reducing across vessels.
+        # Unchanged dominant vessel features must not hide a local fusion
+        # intervention in a max over the complete factual fleet state.
+        return torch.cat((change.mean(1),change.amax(1),pooled[:,2*self.width:]),-1)
+
+    def conditional_predictions(self,context,codes,factual):
+        encoded,pooled=self.conditional_encoding(context,codes,factual)
+        base_node,base_global=self.conditional_encoding(context,torch.zeros_like(codes),factual)
+        # The same learned features must explain the observed intervention
+        # response and its terminal task consequences. The factual program
+        # has identically zero physical change, including after training.
+        change=torch.cat((F.linear(encoded-base_node,self.response_node.weight).flatten(1),
+            F.linear((pooled-base_global)[:,:2*self.width],self.response_global.weight)),-1)
+        if self.intervention_contrast:pooled=self.intervention_pool(encoded-base_node,pooled)
+        parameters=self.task.readout(pooled)
+        if self.future_rank:
+            parameters=parameters[:,:2]+(parameters[:,2:].reshape(-1,2,self.future_rank)
+                *self.future_features(context,factual)[:,None]).sum(-1)
+        return parameters,change
+
+    def factual_roots(self,context):
+        extra=self.global_width
+        def summary(value):
+            rows=value[:,:value.shape[-1]-extra].reshape(len(value),-1,8)
+            return torch.cat((rows.mean(1),rows.square().mean(1).sqrt(),value[:,-extra:]),-1)
+        return (summary(context)[:,None]-summary(self.support_contexts)[None]).square().sum(-1).argmin(-1)
+
+    def factual_particles(self,context):
+        extra=self.global_width;n=(context.shape[-1]-extra)//8
+        m=(self.support_contexts.shape[-1]-extra)//8
+        nearest=self.factual_roots(context)
+        own=context[:,:8*n].reshape(-1,n,8)
+        reference=self.support_contexts[nearest,:8*m].reshape(-1,m,8)
+        assignment=(own[:,:,None]-reference[:,None]).square().sum(-1).argmin(-1)
+        delta=self.support_delta[nearest];count=delta.shape[1]
+        node=delta[:,:,:8*m].reshape(-1,count,m,8).gather(2,
+            assignment[:,None,:,None].expand(-1,count,-1,8))
+        following=context[:,None]+torch.cat((node.flatten(2),delta[:,:,-extra:]),-1)
+        return following,self.support_outcomes[nearest],self.support_mask[nearest]
+
+    def forward(self,context,codes):
+        if self.future_rank:
+            result=[]
+            for x,q in zip(context.split(16),codes.split(16)):
+                factual,outcome,mask=self.factual_particles(x);valid=mask.any(0)
+                factual=factual[:,valid];outcome=outcome[:,valid];mask=mask[:,valid];count=factual.shape[1]
+                parameters=self.task_parameters(x,q,x)
+                response=self.future_features(x[:,None].expand(-1,count,-1).flatten(0,1),
+                    factual.flatten(0,1)).reshape(len(x),count,self.future_rank)
+                logits=parameters[:,None,:2]+(parameters[:,None,2:].reshape(-1,1,2,self.future_rank)
+                    *response[:,:,None]).sum(-1)
+                probability=logits.sigmoid()
+                value=(1.-outcome)*probability[...,0]+outcome*(1.-probability[...,1])
+                value=torch.where(q[:,None]==0,outcome,value)
+                result.append((value*mask).sum(-1)/mask.sum(-1).clamp_min(1))
+            return torch.cat(result)
+        if not self.factual_features:
+            # Integrate the two observed factual outcome strata exactly.
+            # This restricted conditional model shares repair/damage rates
+            # across future draws instead of fitting a high-dimensional
+            # successor response separately from few samples per program.
+            _,outcome,mask=self.factual_particles(context)
+            reference=(outcome*mask).sum(-1)/mask.sum(-1).clamp_min(1)
+            probability=self.conditional_logits(context,codes,context).sigmoid()
+            value=(1.-reference)*probability[:,0]+reference*(1.-probability[:,1])
+            return torch.where(codes==0,reference,value)
+        result=[]
+        for x,q in zip(context.split(4),codes.split(4)):
+            factual,outcome,mask=self.factual_particles(x)
+            valid=mask.any(0)
+            factual=factual[:,valid];outcome=outcome[:,valid];mask=mask[:,valid]
+            count=factual.shape[1]
+            probability=self.conditional_logits(x[:,None].expand(-1,count,-1).flatten(0,1),
+                q[:,None].expand(-1,count).flatten(),factual.flatten(0,1)).sigmoid().reshape(len(x),count,2)
+            value=(1.-outcome)*probability[...,0]+outcome*(1.-probability[...,1])
+            value=torch.where(q[:,None]==0,outcome,value)
+            result.append((value*mask).sum(-1)/mask.sum(-1).clamp_min(1))
+        return torch.cat(result)
+
+
+def fit_paired_factual_task_potential(examples,*,program_options=None,global_width=3,
+                                    width=62,updates=5000,seed=42,device='cpu',response_supervision=False,
+                                    response_weight=.25,factual_features=6,intervention_contrast=False,future_rank=0,
+                                    future_normalization=False):
+    """Use each observed task result once under its matched factual future."""
+    import numpy as np
+    contexts=[];codes=[];factual_states=[];factual_outcomes=[];outcomes=[];groups=[];supports=[];successors=[]
+    for example in examples:
+        factual={future:(state,outcome) for (q,future),(_,state,outcome) in example['samples'].items() if q==0}
+        if not factual:raise ValueError('Paired task learning requires factual continuations.')
+        supports.append(list(factual.values()));programs={}
+        for (q,future),(_,following,outcome) in example['samples'].items():
+            if future not in factual:raise ValueError('Collect a factual branch for every intervention future.')
+            if q==0:continue
+            reference,reference_outcome=factual[future]
+            programs.setdefault(q,[]).append(len(codes));contexts.append(example['context']);codes.append(q)
+            factual_states.append(reference);factual_outcomes.append(reference_outcome);outcomes.append(outcome)
+            successors.append(following)
+        groups.extend(programs.values())
+    if not groups:raise ValueError('Paired task learning requires observed non-factual programs.')
+    torch.manual_seed(seed);rng=np.random.default_rng(seed+19081987)
+    shape=(len(examples),max(map(len,supports)),len(examples[0]['context']))
+    net=PairedFactualTaskPotential(width,global_width,shape,program_options=program_options,
+        response_supervision=response_supervision,factual_features=factual_features,
+        intervention_contrast=intervention_contrast,future_rank=future_rank,
+        future_normalization=future_normalization).to(device)
+    with torch.no_grad():
+        for i,(example,support) in enumerate(zip(examples,supports)):
+            x=torch.as_tensor(example['context'],device=device);count=len(support)
+            net.support_contexts[i].copy_(x)
+            net.support_delta[i,:count].copy_(torch.as_tensor(np.asarray([item[0] for item in support]),device=device)-x)
+            net.support_outcomes[i,:count].copy_(torch.as_tensor([item[1] for item in support],device=device))
+            net.support_mask[i,:count]=True
+            if future_normalization:
+                features=net.future_state_features(x[None].expand(count,-1),
+                    x[None]+net.support_delta[i,:count])
+                net.future_center[i].copy_(features.mean(0))
+                net.future_scale[i].copy_(features.std(0,unbiased=False).clamp_min(.001))
+    x=torch.as_tensor(np.asarray(contexts),dtype=torch.float32,device=device)
+    q=torch.as_tensor(codes,dtype=torch.long,device=device)
+    factual=torch.as_tensor(np.asarray(factual_states),dtype=torch.float32,device=device)
+    y0=torch.as_tensor(factual_outcomes,dtype=torch.float32,device=device)
+    y=torch.as_tensor(outcomes,dtype=torch.float32,device=device)
+    delta=torch.as_tensor(np.asarray(successors),dtype=torch.float32,device=device)-factual
+    n=(x.shape[-1]-global_width)//8
+    scale=torch.cat((delta[:,:8*n].reshape(-1,n,8).square().mean((0,1)).sqrt().clamp_min(.01).repeat(n),
+        delta[:,-global_width:].square().mean(0).sqrt().clamp_min(.01)))
+    optimizer=torch.optim.AdamW(net.parameters(),lr=8e-4,weight_decay=.005);last={}
+    with torch.enable_grad():
+        for step in range(updates):
+            selected=torch.as_tensor([rng.choice(groups[i]) for i in rng.integers(len(groups),size=256)],device=device)
+            response_loss=x.new_zeros(())
+            if response_supervision:
+                logits,change=net.conditional_predictions(x[selected],q[selected],factual[selected])
+                response_loss=((change-delta[selected])/scale).square().mean()
+            else:logits=net.conditional_logits(x[selected],q[selected],factual[selected])
+            observed=logits.gather(1,y0[selected].long()[:,None]).squeeze(1)
+            target=torch.where(y0[selected]>0.,1.-y[selected],y[selected])
+            task_loss=F.binary_cross_entropy_with_logits(observed,target)
+            loss=task_loss+response_weight*response_loss/response_loss.detach().clamp_min(1.)
+            optimizer.zero_grad();loss.backward();nn.utils.clip_grad_norm_(net.parameters(),5.);optimizer.step()
+            if (step+1)%500==0 or step+1==updates:
+                last=dict(phase='paired_factual_task_fit',update=step+1,conditional_task_nll=float(task_loss.detach()),
+                    paired_response_error=float(response_loss.detach()))
+                print(last,flush=True)
+    record=dict(kind='paired_factual_task',width=width,global_width=global_width,support_shape=shape,
+        program_options=program_options,response_supervision=response_supervision,factual_features=factual_features,
+        intervention_contrast=intervention_contrast,
+        future_rank=future_rank,
+        future_normalization=future_normalization,
+        state={key:value.detach().cpu() for key,value in net.state_dict().items()})
+    return net.cpu().eval(),record,dict(roots=len(examples),unique_terminal_observations=len(q)+sum(map(len,supports)),
+        factual_future_conditions=sum(map(len,supports)),terminal_difference_labels=0,
+        task_target='terminal repair and damage probabilities integrated over paired factual futures',
+        deployed_parameters=sum(p.numel() for p in net.parameters()),updates=updates,seed=seed,last=last,
+        paired_response_supervision=response_supervision,response_weight=response_weight if response_supervision else 0.,
+        factual_state_features=factual_features,intervention_contrast=intervention_contrast,
+        factual_response_rank=future_rank,factual_future_normalization=future_normalization)
+
+
+class PairedTransportTaskPotential(nn.Module):
+    """Integrate learned intervention transport over factual future states.
+
+    The empirical support contains only factual successors, never selected
+    controls or successful-plan labels. Paired intervention states identify
+    how a plan changes each realized response. Terminal task outcomes train
+    both the successor-state value and the deployed marginal task value.
+    """
+    def __init__(self,width=59,response_width=24,support_shape=(1,32,51),state=None,program_options=None):
+        super().__init__();self.width=width;self.response_width=response_width
+        self.radix=4 if program_options is None else len(program_options);self.paired=False
+        self.register_buffer('program_options',None if program_options is None else torch.as_tensor(program_options,dtype=torch.float32))
+        self.response=SuccessorStateEncoder(response_width,True,True,self.radix)
+        self.response_node=nn.Linear(response_width,8)
+        self.response_global=nn.Linear(2*response_width+4,3)
+        self.task=SuccessorStateEncoder(width,False)
+        self.task_head=nn.Sequential(nn.Linear(2*width+4,width),nn.SiLU(),nn.Linear(width,1))
+        self.register_buffer('support_contexts',torch.zeros((support_shape[0],support_shape[-1])))
+        self.register_buffer('support_delta',torch.zeros(tuple(support_shape)))
+        if state is not None:self.load_state_dict(state)
+
+    def effect(self,context,following,codes):
+        node,pooled=self.response(context,codes,following)
+        return torch.cat((self.response_node(node).flatten(1),self.response_global(pooled)),-1)
+
+    def transport(self,context,following,left,right):
+        return following+(self.effect(context,following,right)-self.effect(context,following,left))
+
+    def task_logits(self,following):
+        return self.task_head(self.task(following)[1]).squeeze(-1)
+
+    def factual_particles(self,context,particle_indices=None):
+        n=(context.shape[-1]-3)//8;m=(self.support_contexts.shape[-1]-3)//8
+        summary=SuccessorTaskDecision.summary
+        nearest=(summary(context)[:,None]-summary(self.support_contexts)[None]).square().sum(-1).argmin(-1)
+        base=self.support_contexts[nearest]
+        own=context[:,:8*n].reshape(-1,n,8);reference=base[:,:8*m].reshape(-1,m,8)
+        assignment=(own[:,:,None]-reference[:,None]).square().sum(-1).argmin(-1)
+        delta=self.support_delta[nearest]
+        if particle_indices is not None:delta=delta[:,particle_indices]
+        count=delta.shape[1]
+        node=delta[:,:,:8*m].reshape(-1,count,m,8).gather(2,
+            assignment[:,None,:,None].expand(-1,count,-1,8))
+        return context[:,None]+torch.cat((node.flatten(2),delta[:,:,-3:]),-1)
+
+    def forward(self,context,codes,particle_indices=None):
+        factual=self.factual_particles(context,particle_indices);count=factual.shape[1]
+        x=context[:,None].expand(-1,count,-1).flatten(0,1)
+        q=codes[:,None].expand(-1,count).flatten()
+        following=self.transport(x,factual.flatten(0,1),torch.zeros_like(q),q)
+        return self.task_logits(following).sigmoid().reshape(len(context),count).mean(-1)
+
+
+class PairedLatentTaskPotential(PairedTransportTaskPotential):
+    """Separate a paired future from the fusion program that exposes it.
+
+    Encoders of both intervention arms identify one shared future. Decoding
+    that future under another program predicts its task-relevant successor.
+    Deployment integrates only factual futures, without knowing the realized
+    future or retrieving a previously successful action.
+    """
+    def __init__(self,width=54,response_width=24,support_shape=(1,32,51),state=None,program_options=None):
+        nn.Module.__init__(self);self.width=width;self.response_width=response_width
+        self.radix=4 if program_options is None else len(program_options);self.paired=False
+        self.register_buffer('program_options',None if program_options is None else torch.as_tensor(program_options,dtype=torch.float32))
+        self.encoder=SuccessorStateEncoder(response_width,True,True,self.radix)
+        self.encoder_node=nn.Linear(response_width,8)
+        self.encoder_global=nn.Linear(2*response_width+4,3)
+        self.decoder=SuccessorStateEncoder(response_width,True,True,self.radix)
+        self.decoder_node=nn.Linear(response_width,8)
+        self.decoder_global=nn.Linear(2*response_width+4,3)
+        self.task=SuccessorStateEncoder(width,False)
+        self.task_head=nn.Sequential(nn.Linear(2*width+4,width),nn.SiLU(),nn.Linear(width,1))
+        self.register_buffer('support_contexts',torch.zeros((support_shape[0],support_shape[-1])))
+        self.register_buffer('support_delta',torch.zeros(tuple(support_shape)))
+        if state is not None:self.load_state_dict(state)
+
+    def encode_future(self,context,following,codes):
+        node,pooled=self.encoder(context,codes,following)
+        return context+torch.cat((self.encoder_node(node).flatten(1),self.encoder_global(pooled)),-1)
+
+    def decode_future(self,context,future,codes):
+        node,pooled=self.decoder(context,codes,future)
+        return context+torch.cat((self.decoder_node(node).flatten(1),self.decoder_global(pooled)),-1)
+
+    def transport(self,context,following,left,right):
+        return self.decode_future(context,self.encode_future(context,following,left),right)
+
+    def forward(self,context,codes,particle_indices=None):
+        factual=self.factual_particles(context,particle_indices);count=factual.shape[1]
+        x=context[:,None].expand(-1,count,-1).flatten(0,1)
+        q=codes[:,None].expand(-1,count).flatten()
+        future=self.encode_future(x,factual.flatten(0,1),torch.zeros_like(q))
+        following=self.decode_future(x,future,q)
+        return self.task_logits(following).sigmoid().reshape(len(context),count).mean(-1)
+
+
+def fit_successor_transport_potential(data,width=59,response_width=24,updates=5000,seed=42,
+                                      device='cpu',particle_count=32,latent=False,terminal_difference_weight=4.,
+                                      paired_standardization=False,covariance_shrink=.9):
+    import numpy as np
+    examples=successor_task_examples(data)
+    contexts=[];codes=[];successors=[];outcomes=[];pairs=[];groups=[];support=[];calibration=[]
+    standardized,standardization_fit=(paired_block_task_estimates(examples,covariance_shrink)
+        if paired_standardization else (None,{}))
+    for root,example in enumerate(examples):
+        task_mean=(dict(zip(standardized[root]['programs'],standardized[root]['targets']))
+            if paired_standardization else None)
+        lookup={};programs={}
+        for key,(code,following,outcome) in example['samples'].items():
+            index=len(codes);lookup[key]=index;programs.setdefault(code,[]).append(index)
+            contexts.append(example['context']);codes.append(code);successors.append(following);outcomes.append(outcome)
+            calibration.append(task_mean[code] if task_mean is not None else outcome)
+        pairs.extend((lookup[a],lookup[b]) for a,b in example['pairs'])
+        groups.extend(programs.values())
+        factual=np.asarray([successors[i] for i in programs.get(0,[])])
+        if not len(factual):raise ValueError('Paired transport needs observed factual successor states.')
+        # Fixed coverage of all factual draws, independent of their outcomes.
+        selected=np.linspace(0,len(factual)-1,particle_count).round().astype(int)
+        support.append(factual[selected]-example['context'])
+    context=torch.tensor(np.asarray(contexts),dtype=torch.float32,device=device)
+    code=torch.tensor(codes,device=device);target=torch.tensor(np.asarray(successors),dtype=torch.float32,device=device)
+    outcome=torch.tensor(outcomes,dtype=torch.float32,device=device);pair=torch.tensor(pairs,device=device)
+    calibration=torch.tensor(calibration,dtype=torch.float32,device=device).clamp(0.,1.)
+    n=(context.shape[-1]-3)//8;difference=target[pair[:,1]]-target[pair[:,0]]
+    scale=torch.cat((difference[:,:8*n].reshape(-1,n,8).square().mean((0,1)).sqrt().clamp_min(.01).repeat(n),
+        difference[:,-3:].square().mean(0).sqrt().clamp_min(.01)))
+    torch.manual_seed(seed);rng=np.random.default_rng(seed+19081987)
+    shape=(len(examples),particle_count,context.shape[-1])
+    if latent and width==59:width=54
+    potential=PairedLatentTaskPotential if latent else PairedTransportTaskPotential
+    net=potential(width,response_width,shape,program_options=data.get('program_options')).to(device)
+    with torch.no_grad():
+        net.support_contexts.copy_(torch.tensor(np.asarray([x['context'] for x in examples]),device=device))
+        net.support_delta.copy_(torch.tensor(np.asarray(support),device=device))
+    optimizer=torch.optim.AdamW(net.parameters(),lr=8e-4,weight_decay=.005);last={}
+    with torch.enable_grad():
+        for step in range(updates):
+            selected=torch.as_tensor(rng.integers(len(pair),size=128),device=device)
+            a,b=pair[selected].unbind(-1)
+            left=torch.cat((a,b));right=torch.cat((b,a))
+            predicted=net.transport(context[left],target[left],code[left],code[right])
+            effect_loss=((predicted-target[right])/scale).square().mean()
+            contrast_loss=effect_loss.new_zeros(())
+            counterfactual_task_loss=effect_loss.new_zeros(())
+            if latent:
+                future=net.encode_future(context[left],target[left],code[left])
+                paired_future=net.encode_future(context[right],target[right],code[right])
+                reconstructed=net.decode_future(context[left],future,code[left])
+                effect_loss=.5*(effect_loss+((reconstructed-target[left])/scale).square().mean())
+                effect_loss=effect_loss+.1*((future-paired_future)/scale).square().mean()
+                # This is the terminal contrast for the SAME realized future,
+                # not the redundant difference of two marginal return means.
+                logits_left=net.task_logits(reconstructed);logits_right=net.task_logits(predicted)
+                value_left=logits_left.sigmoid();value_right=logits_right.sigmoid()
+                contrast_loss=(value_right-value_left-(outcome[right]-outcome[left])).square().mean()
+                counterfactual_task_loss=.5*(F.binary_cross_entropy_with_logits(logits_left,outcome[left])
+                    +F.binary_cross_entropy_with_logits(logits_right,outcome[right]))
+            elif paired_standardization:
+                # Calibrate the transported physical consequence to its own
+                # realized terminal task result, before integrating futures.
+                logits_left=net.task_logits(target[left]);logits_right=net.task_logits(predicted)
+                contrast_loss=(logits_right.sigmoid()-logits_left.sigmoid()
+                    -(outcome[right]-outcome[left])).square().mean()
+                counterfactual_task_loss=F.binary_cross_entropy_with_logits(logits_right,outcome[right])
+            task_indices=torch.tensor([rng.choice(groups[i]) for i in rng.integers(len(groups),size=128)],device=device)
+            task_loss=F.binary_cross_entropy_with_logits(net.task_logits(target[task_indices]),outcome[task_indices])
+            sampled=torch.as_tensor(rng.choice(particle_count,min(8,particle_count),replace=False),device=device)
+            decision_indices=task_indices[:64]
+            probability=net(context[decision_indices],code[decision_indices],sampled)
+            # Deployment integrates the pooled factual future distribution.
+            # Its target must use that same distribution, not each arm's
+            # finite, differently difficult set of sampled futures.
+            decision_loss=F.binary_cross_entropy(probability.clamp(1e-6,1.-1e-6),calibration[decision_indices])
+            # One task-label budget split across observed and deployed views.
+            physical_weight=1./effect_loss.detach().clamp_min(1.)
+            loss=(physical_weight*effect_loss+.25*(task_loss+decision_loss+counterfactual_task_loss+contrast_loss)
+                if latent or paired_standardization else physical_weight*effect_loss+.5*(task_loss+decision_loss))
+            deployed_contrast=effect_loss.new_zeros(())
+            if not paired_standardization:
+                paired_indices=torch.cat((a[:32],b[:32]))
+                paired_value=net(context[paired_indices],code[paired_indices],sampled)
+                deployed_contrast=(paired_value[32:]-paired_value[:32]
+                    -(outcome[b[:32]]-outcome[a[:32]])).square().mean()
+            # A realized future-specific difference is already supervised
+            # above. Do not also identify it with a marginal value difference.
+            loss=loss+terminal_difference_weight*deployed_contrast
+            optimizer.zero_grad();loss.backward();nn.utils.clip_grad_norm_(net.parameters(),5.);optimizer.step()
+            if (step+1)%500==0 or step+1==updates:
+                last=dict(phase='paired_latent_task_fit' if latent else 'paired_transport_task_fit',update=step+1,
+                    paired_transport_loss=float(effect_loss.detach()),paired_terminal_contrast_loss=float(contrast_loss.detach()),
+                    deployed_terminal_contrast_loss=float(deployed_contrast.detach()),
+                    physical_objective_weight=float(physical_weight),
+                    counterfactual_task_loss=float(counterfactual_task_loss.detach()),
+                    observed_task_loss=float(task_loss.detach()),deployed_task_loss=float(decision_loss.detach()))
+                print(last,flush=True)
+    record=dict(kind='paired_latent_task' if latent else 'paired_transport_task',width=width,response_width=response_width,support_shape=shape,
+        program_options=data.get('program_options'),
+        state={key:value.detach().cpu() for key,value in net.state_dict().items()})
+    return net.cpu().eval(),record,dict(roots=len(examples),unique_task_outcomes=len(codes),paired_state_effects=len(pairs),
+        terminal_difference_labels=len(pairs),task_target='true_terminal_task_success',
+        state_target='shared_future_counterfactual_successor' if latent else 'paired_realized_successor_transport',
+        paired_future_task_calibration=latent,
+        factual_particles_per_root=particle_count,deployed_parameters=sum(p.numel() for p in net.parameters()),
+        updates=updates,terminal_difference_weight=0. if paired_standardization else terminal_difference_weight,
+        paired_standardization=paired_standardization,standardization_fit=standardization_fit,last=last)
+
+
+def successor_candidate_programs(packet,order,include_all_vessels=False,radix=4):
+    """Complete fleet programs around the closest encounter and each vessel."""
+    b,n=order.shape;device=order.device
+    positions=packet['motion'][...,:2].gather(1,order[...,None].expand(-1,-1,2))
+    separation=(positions[:,:,None]-positions[:,None,:]).norm(dim=-1)
+    separation=separation.masked_fill(torch.eye(n,dtype=torch.bool,device=device)[None],float('inf'))
+    nearest=separation.flatten(1).argmin(-1);left=nearest//n;right=nearest%n
+    if radix==10:
+        index=torch.arange(9*n,device=device)
+        singles=torch.zeros((b,9*n,n),dtype=torch.long,device=device)
+        singles.scatter_(2,(index//9)[None,:,None].expand(b,-1,-1),(1+index%9)[None,:,None].expand(b,-1,-1))
+        corners=torch.tensor([1,3,7,9],device=device)
+        digits=torch.arange(16,device=device)
+        pairs=torch.zeros((b,16,n),dtype=torch.long,device=device)
+        pairs.scatter_(2,left[:,None,None].expand(-1,16,1),corners[digits//4][None,:,None].expand(b,-1,-1))
+        pairs.scatter_(2,right[:,None,None].expand(-1,16,1),corners[digits%4][None,:,None].expand(b,-1,-1))
+        return torch.cat((singles.new_zeros((b,1,n)),singles,pairs),1)
+    digits=torch.arange(16,device=device)
+    programs=torch.zeros((b,16,n),dtype=torch.long,device=device)
+    programs.scatter_(2,left[:,None,None].expand(-1,16,1),(digits//4)[None,:,None].expand(b,-1,-1))
+    programs.scatter_(2,right[:,None,None].expand(-1,16,1),(digits%4)[None,:,None].expand(b,-1,-1))
+    if include_all_vessels:
+        singles=torch.zeros((b,3*n,n),dtype=torch.long,device=device)
+        index=torch.arange(3*n,device=device)
+        singles.scatter_(2,(index//3)[None,:,None].expand(b,-1,-1),
+            (1+index%3)[None,:,None].expand(b,-1,-1))
+        programs=torch.cat((programs,singles),1)
+    return programs
+
+
+def successor_intervention_library(packet,reference,span,include_all_vessels=False,program_options=None,
+                                   joint_programs=None):
+    """Sample exactly the complete programs offered by the executing policy."""
+    import numpy as np
+    tensors={key:torch.as_tensor(value[None]) for key,value in packet.items()}
+    _,order=public_return_context(tensors,True,2)
+    radix=4 if program_options is None else len(program_options)
+    digits=successor_candidate_programs(tensors,order,include_all_vessels,radix)[0]
+    inverse=order[0].argsort()
+    if joint_programs is not None:
+        # Grow complete fleet programs along single-vessel intervention
+        # paths. A local comparison constrains the learning edge, not the
+        # number of vessels that may participate in the complete program.
+        choices=[tuple(map(int,row)) for row in digits.tolist()]
+        choices=list(dict.fromkeys(choices));lookup={q:i for i,q in enumerate(choices)}
+        zero=(0,)*len(order[0]);relations=set()
+        def insert_path(target):
+            current=zero
+            for vessel in range(len(target)):
+                if not target[vessel]:continue
+                following=list(current);following[vessel]=target[vessel];following=tuple(following)
+                if following not in lookup:
+                    lookup[following]=len(choices);choices.append(following)
+                relations.add((lookup[current],lookup[following]));current=following
+        for target in list(choices)+[tuple(map(int,q)) for q in joint_programs]:insert_path(target)
+        programs=[];n=len(order[0]);inverse=inverse.numpy()
+        for choice in choices:
+            if radix==10:
+                preferences=np.asarray(program_options,dtype=np.float32)[list(choice)][inverse]
+                programs.append(np.column_stack((reference,np.full(n,-1.),np.full(n,span),np.full(n,-2.),
+                    np.zeros((n,2)),np.full(n,span),preferences,preferences)).astype(np.float32))
+            else:
+                choice=np.asarray(choice);gates=np.where(choice>0,(choice-1)*.5,-1.)[inverse]
+                second=gates.copy()
+                if not choice.any():second.fill(-2.)
+                programs.append(np.column_stack((reference,gates,np.full(n,span),second)).astype(np.float32))
+        return programs,sorted(relations),tuple(order[0].tolist())
+    if radix==10:
+        choices=digits.numpy();lookup={tuple(choice):index for index,choice in enumerate(choices)}
+        option_array=np.asarray(program_options,dtype=np.float32);programs=[];edges=[];n=len(order[0])
+        subjects=tuple(order[0,(digits[-16:]>0).any(0)].tolist())
+        for index,choice in enumerate(choices):
+            preferences=option_array[choice][inverse.numpy()]
+            programs.append(np.column_stack((reference,np.full(n,-1.),np.full(n,span),np.full(n,-2.),
+                np.zeros((n,2)),np.full(n,span),preferences,preferences)).astype(np.float32))
+            if index:
+                parent=choice.copy();parent[np.flatnonzero(parent)[-1]]=0
+                edges.append((lookup[tuple(parent)],index))
+        return programs,edges,subjects
+    subjects=tuple(order[0,(digits[:16]>0).any(0)].tolist())
+    programs=[];edges=[];known={}
+    for original,choices in enumerate(digits):
+        gates=torch.where(choices>0,(choices.float()-1.)*.5,-1.)[inverse].numpy()
+        key=tuple(gates.tolist())
+        if key in known:continue
+        index=len(programs);known[key]=index
+        second=gates.copy()
+        if index==0:second.fill(-2.)
+        programs.append(np.column_stack((reference,gates,np.full(len(gates),span),second)).astype(np.float32))
+        if index:
+            parent=(4*(original//4) if original<16 and original%4 else 0)
+            edges.append((parent,index))
+    return programs,edges,subjects
+
+
+def transport_successor_programs(context,centers,codes,support,radix,bandwidth,absolute_frame=False,variance=None,
+                                 role_conditioned=False,time_bandwidth=None):
+    """Bind sampled intervention roles to a different-sized observed fleet.
+
+    The task network evaluates the resulting complete current-fleet program.
+    Unmatched current vessels retain their factual controller; a program that
+    needs a missing intervened vessel has no observational support.
+    """
+    extra=5 if absolute_frame else 3
+    n=(context.shape[-1]-extra)//8;m=(centers.shape[-1]-extra)//8
+    query=torch.cat((context[:,:8*n],context[:,-3:]),-1)
+    roots=torch.cat((centers[:,:8*m],centers[:,-3:]),-1)
+    distance,indices,mapping=match_fleet_context(query,roots,count=4,context_version=2)
+    if absolute_frame:
+        distance=distance+(context[:,None,8*n:8*n+2]-centers[indices,8*m:8*m+2]).square().sum(-1)
+    digits=(codes[:,None]//(radix**torch.arange(m,device=context.device)))%radix
+    b,k=indices.shape;p=len(codes)
+    programs=torch.zeros((b,k,p,n),dtype=torch.long,device=context.device)
+    present=mapping>=0
+    for vessel in range(m):
+        destination=mapping[:,:,vessel].clamp_min(0)
+        contribution=digits[None,None,:,vessel]*present[:,:,None,vessel]
+        programs.scatter_add_(3,destination[:,:,None,None].expand(-1,-1,p,1),contribution[...,None].expand(b,k,-1,1))
+    valid=~((digits[None,None]>0)&~present[:,:,None]).any(-1)
+    if support is not None:valid&=support[indices]
+    if role_conditioned:
+        # Observational support concerns the roles that a program changes.
+        # Extra factual vessels remain inputs to the learned COMPLETE-plan
+        # value, but do not invalidate an otherwise observed local action.
+        own=context[:,:8*n].reshape(b,n,8)
+        source=centers[indices,:8*m].reshape(b,k,m,8)
+        matched=own[:,None].expand(-1,k,-1,-1).gather(2,
+            mapping.clamp_min(0)[...,None].expand(-1,-1,-1,8))
+        role_distance=(matched-source).square().sum(-1)
+        changed=digits>0
+        task_distance=(context[:,None,-extra:]-centers[indices,-extra:]).square().sum(-1)
+        distance=task_distance[:,:,None]+(role_distance[:,:,None]*changed[None,None]).sum(-1)/changed.sum(-1).clamp_min(1)
+        mass=torch.exp(-distance/(2.*bandwidth**2))*valid*(distance<=bandwidth**2)
+    else:
+        mass=torch.exp(-distance/(2.*bandwidth**2))[:,:,None]*valid
+    if time_bandwidth is not None:
+        mass=mass.masked_fill((context[:,None,-1]-centers[indices,-1]).abs()[:,:,None]>time_bandwidth,0.)
+    transferred_variance=None if variance is None else variance[indices].flatten(1,2)
+    return programs.flatten(1,2),mass.flatten(1,2),transferred_variance
+
+
+class PairedOptionTaskDecision(nn.Module):
+    """Task-success transitions under complete joint programs and real delays.
+
+    Each terminal observation enters one Bernoulli likelihood. Shared factual
+    futures condition repair and damage probabilities; their distribution is
+    integrated out before an action is chosen. There is no terminal-difference
+    pseudo-observation and no future outcome is supplied by the running task.
+    """
+    def __init__(self,contexts,factual_contexts,factual_outcomes,factual_mask,
+                 options,observed,width=48,rank=4,bandwidth=.15,margin=.02,
+                 paired=True,peer_conditioned=True,use_time=True,time_bandwidth=.01,state=None,
+                 prior=None,learning_objective='conditional',anchor_contexts=None,
+                 anchor_outcomes=None,anchor_option_indices=None,marginal_likelihood=False,
+                 leave_anchor_out=False,controls=None,structured_plan=False,predecessor_wait=False):
+        super().__init__()
+        self.width=width;self.rank=rank;self.bandwidth=bandwidth;self.margin=margin
+        self.paired=paired;self.peer_conditioned=peer_conditioned;self.use_time=use_time
+        self.time_bandwidth=time_bandwidth
+        self.marginal_likelihood=marginal_likelihood
+        self.leave_anchor_out=leave_anchor_out
+        self.structured_plan=structured_plan
+        self.predecessor_wait=predecessor_wait
+        for name,value,dtype in [('contexts',contexts,torch.float32),
+                ('factual_contexts',factual_contexts,torch.float32),
+                ('factual_outcomes',factual_outcomes,torch.float32),
+                ('factual_mask',factual_mask,torch.bool),('options',options,torch.long),
+                ('observed',observed,torch.bool)]:
+            self.register_buffer(name,torch.as_tensor(value,dtype=dtype))
+        self.defenders=(self.contexts.shape[-1]-5)//8
+        self.register_buffer('controls',torch.zeros((len(self.contexts),self.defenders,6)) if controls is None
+            else torch.as_tensor(controls,dtype=torch.float32))
+        shape=self.factual_contexts.shape
+        if anchor_contexts is None:
+            anchor_contexts=torch.zeros((shape[0],shape[1],0,shape[2]))
+            anchor_outcomes=torch.zeros((shape[0],shape[1],0))
+            anchor_option_indices=torch.empty((shape[0],0),dtype=torch.long)
+        self.register_buffer('anchor_contexts',torch.as_tensor(anchor_contexts,dtype=torch.float32))
+        self.register_buffer('anchor_outcomes',torch.as_tensor(anchor_outcomes,dtype=torch.float32))
+        self.register_buffer('anchor_option_indices',torch.as_tensor(anchor_option_indices,dtype=torch.long))
+        program_options=[[-1.,-1.]]+[[left,right] for left in (0.,.5,1.) for right in (0.,.5,1.)]
+        plan=SharedProgramPotential(width,paired=False,global_width=11 if structured_plan else 7,
+            program_options=program_options,peer_conditioned=peer_conditioned)
+        if structured_plan:plan.node[0]=nn.Linear(28,width)
+        plan.readout[-1]=nn.Linear(width,2*(rank+1))
+        features=self.future_design(self.contexts,torch.arange(len(self.contexts)))
+        self.network=nn.ModuleDict(dict(plan=plan,
+            future=nn.Sequential(nn.Linear(features.shape[-1],32),nn.SiLU(),nn.Linear(32,rank),nn.Tanh())))
+        weight=self.factual_mask[...,None].to(features.dtype)
+        center=(features*weight).sum(1)/weight.sum(1).clamp_min(1.)
+        scale=(((features-center[:,None]).square()*weight).sum(1)/weight.sum(1).clamp_min(1.)).sqrt()
+        self.register_buffer('future_center',center)
+        self.register_buffer('future_scale',scale.clamp_min(.01))
+        if state is not None:self.network.load_state_dict(state)
+        if prior is None:self.prior=None
+        elif prior.get('kind')=='paired_option_task':
+            self.prior=PairedOptionTaskDecision(**{k:v for k,v in prior.items() if k!='kind'})
+        else:self.prior=SuccessorTaskDecision(**prior)
+
+    def future_features(self,context,following):
+        difference=following-context
+        nodes=difference[...,:8*self.defenders].reshape(*difference.shape[:-1],self.defenders,8)
+        return torch.cat((nodes.mean(-2),nodes.square().mean(-2).sqrt(),difference[...,-5:]),-1)
+
+    def future_design(self,context,roots,futures=None):
+        if futures is None:
+            factual=self.factual_contexts[roots];anchors=self.anchor_contexts[roots]
+            outcomes=self.anchor_outcomes[roots]
+            features=self.future_features(context[:,None],factual)
+            anchor_features=self.future_features(context[:,None,None],anchors)
+        else:
+            factual=self.factual_contexts[roots,futures];anchors=self.anchor_contexts[roots,futures]
+            outcomes=self.anchor_outcomes[roots,futures]
+            features=self.future_features(context,factual)
+            anchor_features=self.future_features(context[:,None],anchors)
+        if not self.anchor_option_indices.shape[1]:return features
+        codes=self.options[self.anchor_option_indices[roots],0]
+        digits=(codes[...,None]//(10**torch.arange(self.defenders,device=context.device)))%10
+        programs=F.one_hot(digits,10).to(features.dtype).flatten(-2)
+        if futures is None:programs=programs[:,None].expand(-1,features.shape[1],-1,-1)
+        anchors=torch.cat((anchor_features,outcomes[...,None],programs),-1)
+        return torch.cat((features,anchors.flatten(-2)),-1)
+
+    def parameters_for_options(self,context,options,controls=None):
+        extended=torch.cat((context,options[...,1:].to(context.dtype)/200.),-1)
+        plan=self.network['plan']
+        if self.structured_plan:
+            n=(context.shape[-1]-5)//8;rows=context[:,:8*n].reshape(-1,n,8)
+            programs=(options[:,0,None]//(10**torch.arange(n,device=context.device)))%10
+            source,rule,factual=controls.split(2,-1)
+            preference=plan.program_options[programs]
+            preference=torch.where(preference>=0.,preference,factual)
+            baseline=factual*source+(1.-factual)*rule
+            command=preference*source+(1.-preference)*rule
+            own=plan.node(torch.cat((rows,F.one_hot(programs,10).to(rows.dtype),controls,
+                command,command-baseline),-1))
+            if self.peer_conditioned:peers=own
+            else:
+                peers=plan.node(torch.cat((rows,F.one_hot(torch.zeros_like(programs),10).to(rows.dtype),
+                    controls,baseline,torch.zeros_like(baseline)),-1))
+            messages=plan.message(torch.cat((own[:,:,None].expand(-1,-1,n,-1),
+                peers[:,None].expand(-1,n,-1,-1),rows[:,None]-rows[:,:,None]),-1))
+            mask=~torch.eye(n,dtype=torch.bool,device=context.device)[None,:,:,None]
+            encoded=plan.update(torch.cat((own,(messages*mask).sum(2)/max(1,n-1),
+                messages.masked_fill(~mask,-1e6).amax(2)),-1))
+            # A temporal option is a response window, not a tiny perturbation
+            # of the global clock. Log-time bases resolve near-term waiting
+            # and long commitments with the same task-success likelihood.
+            delay=options[:,1].to(context.dtype).log1p()
+            span=options[:,2].to(context.dtype).log1p()
+            delay_centers=context.new_tensor((0.,5.,20.)).log1p()
+            span_centers=context.new_tensor((10.,40.,200.)).log1p()
+            timing=torch.cat((torch.exp(-((delay[:,None]-delay_centers)/.7).square()),
+                torch.exp(-((span[:,None]-span_centers)/.7).square())),-1)
+            global_state=torch.cat((context[:,-5:],timing),-1)
+            if self.peer_conditioned:
+                pooled=torch.cat((encoded.mean(1),encoded.amax(1),global_state,
+                    context.new_full((len(context),1),n/6.)),-1)
+                raw=plan.readout(pooled)
+            else:
+                pooled=torch.cat((encoded,peers.mean(1)[:,None].expand(-1,n,-1),
+                    global_state[:,None].expand(-1,n,-1),context.new_full((len(context),n,1),n/6.)),-1)
+                raw=plan.readout(pooled).mean(1)
+        elif self.peer_conditioned:raw=plan.logits(extended,options[...,0])
+        else:
+            n=self.defenders;rows=context[:,:8*n].reshape(-1,n,8)
+            programs=(options[:,0,None]//(10**torch.arange(n,device=context.device)))%10
+            own=plan.node(torch.cat((rows,F.one_hot(programs,10).to(rows.dtype)),-1))
+            factual=plan.node(torch.cat((rows,F.one_hot(torch.zeros_like(programs),10).to(rows.dtype)),-1))
+            messages=plan.message(torch.cat((own[:,:,None].expand(-1,-1,n,-1),
+                factual[:,None].expand(-1,n,-1,-1),rows[:,None]-rows[:,:,None]),-1))
+            mask=~torch.eye(n,dtype=torch.bool,device=context.device)[None,:,:,None]
+            encoded=plan.update(torch.cat((own,(messages*mask).sum(2)/max(1,n-1),
+                messages.masked_fill(~mask,-1e6).amax(2)),-1))
+            pooled=torch.cat((encoded,factual.mean(1)[:,None].expand(-1,n,-1),
+                extended[:,-7:,None].transpose(1,2).expand(-1,n,-1),
+                context.new_full((len(context),n,1),n/6.)),-1)
+            raw=plan.readout(pooled).mean(1)
+        return raw.reshape(-1,2,self.rank+1)
+
+    def conditional_logits(self,context,options,roots,futures):
+        parameters=self.parameters_for_options(context,options,self.controls[roots])
+        if not self.paired:return parameters[:,0,0]
+        features=self.future_design(context,roots,futures)
+        normalized=(features-self.future_center[roots])/self.future_scale[roots]
+        latent=self.network['future'](self.hide_target_anchor(normalized,options,roots))
+        logits=parameters[:,:,0]+(parameters[:,:,1:]*latent[:,None]).sum(-1)
+        factual=self.factual_outcomes[roots,futures]
+        return torch.where(factual>.5,-logits[:,1],logits[:,0])
+
+    def hide_target_anchor(self,features,options,roots):
+        if not self.leave_anchor_out or not self.anchor_option_indices.shape[1]:return features
+        anchors=self.options[self.anchor_option_indices[roots]]
+        visible=~(anchors==options[:,None]).all(-1)
+        block=(features.shape[-1]-21)//anchors.shape[1]
+        keep=torch.cat((torch.ones((len(roots),21),dtype=torch.bool,device=features.device),
+            visible[...,None].expand(-1,-1,block).flatten(1)),-1)
+        if features.ndim==3:keep=keep[:,None]
+        return features*keep
+
+    def marginal_values(self,context,options,roots,controls=None):
+        if controls is None:controls=self.controls[roots]
+        parameters=self.parameters_for_options(context,options,controls)
+        features=self.future_design(context,roots)
+        normalized=(features-self.future_center[roots,None])/self.future_scale[roots,None]
+        latent=self.network['future'](self.hide_target_anchor(normalized,options,roots))
+        logits=parameters[:,:,0][:,None,:]+torch.einsum('bdr,bfr->bfd',parameters[:,:,1:],latent)
+        probability=torch.where(self.factual_outcomes[roots]>.5,(-logits[...,1]).sigmoid(),logits[...,0].sigmoid())
+        mask=self.factual_mask[roots]
+        return (probability*mask).sum(-1)/mask.sum(-1).clamp_min(1)
+
+    def option_values(self,context,roots,controls=None):
+        batch=len(context);count=len(self.options)
+        if controls is None:controls=self.controls[roots]
+        parameters=self.parameters_for_options(context[:,None].expand(-1,count,-1).reshape(batch*count,-1),
+            self.options[None].expand(batch,-1,-1).reshape(-1,3),
+            controls[:,None].expand(-1,count,-1,-1).reshape(batch*count,self.defenders,6)).reshape(batch,count,2,self.rank+1)
+        mask=self.factual_mask[roots];factual=self.factual_outcomes[roots]
+        if self.paired or self.marginal_likelihood:
+            features=self.future_design(context,roots)
+            latent=self.network['future']((features-self.future_center[roots,None])/self.future_scale[roots,None])
+            logits=parameters[...,0][:,:,None,:]+torch.einsum('bcdr,bfr->bcfd',parameters[...,1:],latent)
+            probability=torch.where(factual[:,None,:]>.5,(-logits[...,1]).sigmoid(),logits[...,0].sigmoid())
+            value=(probability*mask[:,None]).sum(-1)/mask.sum(-1)[:,None].clamp_min(1)
+        else:value=parameters[:,:,0,0].sigmoid()
+        factual_value=(factual*mask).sum(-1)/mask.sum(-1).clamp_min(1)
+        value=torch.where((self.options[:,0]==0)[None],factual_value[:,None],value)
+        if self.anchor_option_indices.shape[1]:
+            columns=self.anchor_option_indices[roots]
+            if self.leave_anchor_out:
+                anchor_values=torch.stack([self.marginal_values(context,self.options[columns[:,slot]],roots,controls)
+                    for slot in range(columns.shape[1])],-1)
+            else:
+                anchor_values=(self.anchor_outcomes[roots]*mask[...,None]).sum(1)/mask.sum(-1)[:,None].clamp_min(1)
+            value=value.scatter(1,columns,anchor_values)
+        return value
+
+    def forward(self,packet,action):
+        if self.prior is not None:action=self.prior(packet,action)
+        if action.shape[-1]==14:
+            action=action.clone()
+            action[...,13]=torch.where(action[...,13]>=0,action[...,13]+1,action[...,13])
+        context,order=intervention_task_context(packet,True,True)
+        if order.shape[-1]!=self.defenders:return action
+        distance=(context[:,None]-self.contexts[None]).square().sum(-1)
+        distance=distance.masked_fill((context[:,None,-1]-self.contexts[None,:,-1]).abs()>self.time_bandwidth,
+            float('inf'))
+        separation,roots=distance.min(-1);supported=separation<=self.bandwidth**2
+        if not bool(supported.any()):return action
+        controls=torch.cat((action[...,:2],packet['node'][...,11:13],action[...,2:3].expand(-1,-1,2)),-1)
+        controls=controls.gather(1,order[...,None].expand(-1,-1,6))
+        value=self.option_values(context,roots,controls)
+        valid=self.observed[roots].clone()
+        if not self.use_time:valid&=(self.options[:,1]==0)[None]
+        gain=value-value[:,:1]
+        gain=gain.masked_fill(~valid,float('-inf'))
+        best,choice=gain.max(-1);accept=supported&(best>self.margin)&(self.options[choice,0]!=0)
+        if not bool(accept.any()):return action
+        selected=self.options[choice];code,delay,span=selected.unbind(-1)
+        programs=(code[:,None]//(10**torch.arange(self.defenders,device=code.device)))%10
+        preference=self.network['plan'].program_options[programs]
+        preference=preference.gather(1,order.argsort(-1)[...,None].expand(-1,-1,2))
+        one=torch.ones_like(action[...,:1]);free=-one
+        duration=(delay+span)[:,None,None]*one
+        first=torch.where((delay==0)[:,None,None],preference,free.expand(-1,-1,2))
+        replacement=torch.cat((action[...,:3],free,duration,2.*free,
+            torch.zeros_like(action[...,:2]),delay[:,None,None]*one,first,preference),-1)
+        if action.shape[-1]==3:
+            action=torch.cat((action,free,one,2.*free,torch.zeros_like(action[...,:2]),one,
+                free.expand(-1,-1,2),free.expand(-1,-1,2)),-1)
+        if self.predecessor_wait or action.shape[-1]==14:
+            replacement=torch.cat((replacement,one if self.predecessor_wait else free),-1)
+            if action.shape[-1]==13:action=torch.cat((action,free),-1)
+        return torch.where(accept[:,None,None],replacement,action)
+
+
+def fit_paired_option_task_policy(data,output,*,updates=3000,width=48,rank=4,
+        seed=42,device='cpu',paired=True,peer_conditioned=True,use_time=True,
+        bandwidth=.15,margin=.02,time_bandwidth=.01):
+    """Fit complete temporal plans using unique factual-conditioned outcomes."""
+    import copy
+    import numpy as np
+    roots=data['roots'];vocabulary=sorted({tuple(option) for root in roots for option in root['options']})
+    if vocabulary[0]!=(0,0,0):raise ValueError('The first option must be the actual predecessor continuation.')
+    lookup={option:i for i,option in enumerate(vocabulary)}
+    contexts=np.asarray([root['context'] for root in roots]);future_count=max(len(root['futures']) for root in roots)
+    following=np.zeros((len(roots),future_count,contexts.shape[-1]),np.float32)
+    factual=np.zeros((len(roots),future_count),np.float32);mask=np.zeros_like(factual,bool)
+    anchor_count=min(len(root.get('anchors',())) for root in roots)
+    anchor_contexts=np.zeros((len(roots),future_count,anchor_count,contexts.shape[-1]),np.float32)
+    anchor_outcomes=np.zeros((len(roots),future_count,anchor_count),np.float32)
+    anchor_columns=np.zeros((len(roots),anchor_count),np.int64)
+    observed=np.zeros((len(roots),len(vocabulary)),bool);samples=[]
+    for index,root in enumerate(roots):
+        for future in range(len(root['futures'])):
+            item=root['outcomes'][(0,future)]
+            following[index,future]=item['following'];factual[index,future]=item['success'];mask[index,future]=True
+        anchors=root.get('anchors',())[:anchor_count]
+        for slot,option_index in enumerate(anchors):
+            anchor_columns[index,slot]=lookup[tuple(root['options'][option_index])]
+            for future in range(len(root['futures'])):
+                item=root['outcomes'][(option_index,future)]
+                anchor_contexts[index,future,slot]=item['following']
+                anchor_outcomes[index,future,slot]=item['success']
+        for option_index,option in enumerate(root['options']):
+            column=lookup[tuple(option)]
+            observed[index,column]=any((option_index,f) in root['outcomes'] for f in range(len(root['futures'])))
+            if option_index==0:continue
+            for future in range(len(root['futures'])):
+                item=root['outcomes'].get((option_index,future))
+                if item is not None:samples.append((index,column,future,float(item['success'])))
+    torch.manual_seed(seed);rng=np.random.default_rng(seed+104729)
+    record=dict(kind='paired_option_task',contexts=contexts,factual_contexts=following,
+        factual_outcomes=factual,factual_mask=mask,options=vocabulary,observed=observed,
+        width=width,rank=rank,bandwidth=bandwidth,margin=margin,time_bandwidth=time_bandwidth,paired=paired,
+        peer_conditioned=peer_conditioned,use_time=use_time,
+        anchor_contexts=anchor_contexts,anchor_outcomes=anchor_outcomes,anchor_option_indices=anchor_columns,
+        marginal_likelihood=not paired,leave_anchor_out=True,
+        controls=np.asarray([root['controls'] for root in roots]) if all('controls' in root for root in roots) else None,
+        structured_plan=all('controls' in root for root in roots),
+        predecessor_wait=data.get('recipe',{}).get('wait_continuation')=='predecessor',
+        learning_objective='conditional' if paired else 'marginal',
+        prior=copy.deepcopy(data['model'].get('successor_task_value')))
+    net=PairedOptionTaskDecision(**{k:v for k,v in record.items() if k!='kind'}).to(device)
+    indices=torch.as_tensor(samples,dtype=torch.float32,device=device)
+    root_ids=indices[:,0].long();option_ids=indices[:,1].long();future_ids=indices[:,2].long();targets=indices[:,3]
+    optimizer=torch.optim.AdamW(net.network.parameters(),lr=8e-4,weight_decay=.005);last={}
+    with torch.enable_grad():
+        for step in range(updates):
+            batch=torch.as_tensor(rng.integers(len(samples),size=256),device=device)
+            r=root_ids[batch];q=option_ids[batch];f=future_ids[batch]
+            if paired:
+                logits=net.conditional_logits(net.contexts[r],net.options[q],r,f)
+                loss=F.binary_cross_entropy_with_logits(logits,targets[batch])
+            else:
+                probability=net.marginal_values(net.contexts[r],net.options[q],r).clamp(1e-6,1.-1e-6)
+                loss=F.binary_cross_entropy(probability,targets[batch])
+            optimizer.zero_grad();loss.backward();nn.utils.clip_grad_norm_(net.network.parameters(),5.);optimizer.step()
+            if (step+1)%500==0 or step+1==updates:
+                last=dict(phase='paired_temporal_task_fit',update=step+1,paired=paired,
+                    peer_conditioned=peer_conditioned,task_nll=float(loss.detach()))
+                print(last,flush=True)
+    record['state']={k:v.detach().cpu() for k,v in net.network.state_dict().items()}
+    model=copy.deepcopy(data['model']);model['successor_task_value']=record
+    removal=tuple(model.get('mechanism_ablation',(False,False,False)))+(False,)*3
+    model['mechanism_ablation']=(removal[0],False,removal[2])
+    model.update(gate_period=1,physical_interventions=True,fixed_intervention_clock=True,success_objective=True)
+    model['successor_task_fit']=dict(paired=paired,peer_conditioned=peer_conditioned,use_time=use_time,
+        roots=len(roots),unique_terminal_observations=sum(len(root['outcomes']) for root in roots),
+        conditional_targets=len(samples),anchor_plans_per_root=anchor_count,
+        duplicate_terminal_difference_labels=0,updates=updates,seed=seed,
+        task_target='joint-program success conditioned on shared factual/anchor task fates and motion, then marginalized',
+        temporal_options='actual immediate and delayed interventions followed by the same predecessor',
+        last=last,deployed_parameters=sum(p.numel() for p in net.network.parameters()))
+    output=Path(output);output.parent.mkdir(parents=True,exist_ok=True);torch.save(model,output)
+    return model
+
+
+@torch.no_grad()
+def paired_effect_controls(actor,packet,action):
+    """Condition intervention effects on the command the predecessor executes."""
+    source=action[...,:2];rule=packet['node'][...,11:13]
+    physical=action[...,:3]
+    if actor.generic_fusion_adapter is not None:
+        physical=actor.generic_fusion_adapter.control(actor,packet,physical)
+    if getattr(actor,'actuator_fusion_refinement',None):
+        query=dict(packet)
+        query['_preferred_actuator_coefficients']=action[...,2:3].expand(-1,-1,2)
+        physical=refine_actuator_interactions(actor,query,action[...,:3],physical,
+            **actor.actuator_fusion_refinement)
+    factual=physical[...,:2]*physical[...,2:3]+rule*(1.-physical[...,2:3])
+    return torch.cat((source,rule,factual),-1)
+
+
+def paired_effect_programs(packet,order,fleet_programs=False):
+    programs=successor_candidate_programs(packet,order,True,10)
+    if fleet_programs:
+        # Fleet-wide alternatives expose coordinated task effects that a
+        # library of isolated one-boat changes cannot identify.
+        b,n=order.shape
+        joint=torch.arange(1,10,device=order.device)[None,:,None].expand(b,-1,n)
+        programs=torch.cat((programs,joint),1)
+    return programs
+
+
+def paired_control_responses(context,controls,programs,timing):
+    """Nominal paired motion features, calibrated by terminal task outcomes.
+
+    Both branches start from public measured motion and refresh neither
+    source policy inside this short feature forecast. The learned task value,
+    rather than a prescribed geometric cost, determines their usefulness.
+    """
+    n=programs.shape[-1];rows=context[:,:8*n].reshape(-1,n,8)
+    source,rule,factual=controls.split(2,-1)
+    choices=context.new_tensor([[-1.,-1.]]+[[a,b] for a in (0.,.5,1.) for b in (0.,.5,1.)])
+    preference=choices[programs]
+    command=torch.where((programs>0)[...,None],preference*source+(1.-preference)*rule,factual)
+    heading=torch.atan2(rows[...,5],rows[...,4])
+    initial=torch.cat((30.*rows[...,:2],heading[...,None],3.*rows[...,2:4],rows[...,6:7]),-1)
+    state=initial[:,None].expand(-1,2,-1,-1).clone();snapshots=[]
+    delay,span=timing.to(context.dtype).unbind(-1)
+    for step in range(20):
+        held=(step>=delay)&(step<delay+span)
+        selected=torch.where(held[:,None,None],command,factual)
+        force=750.*torch.stack((factual,selected),1)+250.
+        x,y,yaw,vx,vy,r=state.unbind(-1)
+        x=x+.2*vx;y=y+.2*vy;yaw=yaw+.2*r
+        cosine,sine=yaw.cos(),yaw.sin();u=cosine*vx+sine*vy;v=-sine*vx+cosine*vy
+        du=(400.*r*v-(100.+150.*u.abs())*u+force.sum(-1))/380.
+        dv=(-380.*r*u-(100.+150.*v.abs())*v)/400.
+        dr=(-20.*u*v-(980.+950.*r.abs())*r+1.25*(force[...,0]-force[...,1]))/1430.
+        u=u+.2*du;v=v+.2*dv
+        state=torch.stack((x,y,yaw,cosine*u-sine*v,sine*u+cosine*v,r+.2*dr),-1)
+        if step in (4,9,19):snapshots.append(state)
+    path=torch.stack(snapshots,-2)
+    time=context.new_tensor((1.,2.,4.))
+    target=context[:,-3:-1]*5.
+    position=path[...,:2]-target[:,None,None,None]*time[None,None,None,:,None]
+    body=torch.stack((path[...,2].cos(),path[...,2].sin()),-1)
+    absolute=torch.cat((position/30.,path[...,3:5]/5.,body,path[...,5:6]/2.),-1)
+    delta=torch.cat(((path[:,1,...,:2]-path[:,0,...,:2])/5.,
+        (path[:,1,...,3:5]-path[:,0,...,3:5])/3.,body[:,1]-body[:,0],
+        (path[:,1,...,5:6]-path[:,0,...,5:6])/2.),-1)
+    changed=torch.cat((absolute[:,1],delta),-1).flatten(-2)
+    baseline=torch.cat((absolute[:,0],torch.zeros_like(delta)),-1).flatten(-2)
+    return changed,baseline,path
+
+
+class PairedEffectGraph(nn.Module):
+    """Fleet-shared likelihood of repair, agreement and damage of a full plan."""
+    def __init__(self,width=64,peer_conditioned=True,response_features=False):
+        super().__init__();self.width=width;self.peer_conditioned=peer_conditioned
+        self.response_features=response_features
+        self.node=nn.Sequential(nn.Linear(29+42*response_features,width),nn.SiLU(),nn.Linear(width,width),nn.SiLU())
+        self.message=nn.Sequential(nn.Linear(2*width+10+18*response_features,width),nn.SiLU(),nn.Linear(width,width),nn.SiLU())
+        self.update=nn.Sequential(nn.Linear(3*width,width),nn.SiLU())
+        self.readout=nn.Sequential(nn.Linear(4*width+12,width),nn.SiLU(),nn.Linear(width,3))
+        self.register_buffer('coefficients',torch.tensor([[-1.,-1.]]+
+            [[a,b] for a in (0.,.5,1.) for b in (0.,.5,1.)]))
+
+    def forward(self,context,controls,programs,timing,responses=None):
+        n=programs.shape[-1];rows=context[:,:8*n].reshape(-1,n,8)
+        source,rule,factual=controls.split(2,-1)
+        held=programs>0;preference=self.coefficients[programs]
+        command=torch.where(held[...,None],preference*source+(1.-preference)*rule,factual)
+        if self.response_features and responses is None:
+            responses=paired_control_responses(context,controls,programs,timing)
+        def encode(q,u,response):
+            features=(rows,controls,F.one_hot(q,10).to(rows.dtype),u,
+                u-factual,(q>0).to(rows.dtype)[...,None])
+            if response is not None:features=features+(response,)
+            return self.node(torch.cat(features,-1))
+        own=encode(programs,command,responses[0] if responses is not None else None)
+        baseline=encode(torch.zeros_like(programs),factual,responses[1] if responses is not None else None)
+        peers=own if self.peer_conditioned else baseline
+        difference=rows[:,:,None]-rows[:,None]
+        distance=difference[...,:2].square().sum(-1).clamp_min(1e-6).sqrt()
+        closing=(difference[...,:2]*difference[...,2:4]).sum(-1)/distance
+        geometry=torch.cat((difference,distance[...,None],closing[...,None]),-1)
+        if responses is not None:
+            own_path=responses[2][:,1];peer_path=responses[2][:,1 if self.peer_conditioned else 0]
+            displacement=own_path[:,:,None,...,:2]-peer_path[:,None,...,:2]
+            velocity=own_path[:,:,None,...,3:5]-peer_path[:,None,...,3:5]
+            separation=displacement.square().sum(-1).clamp_min(1e-6).sqrt()
+            approach=(displacement*velocity).sum(-1)/separation
+            forecast=torch.cat((displacement/30.,velocity/5.,separation[...,None]/10.,
+                approach[...,None]/5.),-1).flatten(-2)
+            geometry=torch.cat((geometry,forecast),-1)
+        message=self.message(torch.cat((own[:,:,None].expand(-1,-1,n,-1),
+            peers[:,None].expand(-1,n,-1,-1),geometry),-1))
+        mask=~torch.eye(n,dtype=torch.bool,device=context.device)[None,:,:,None]
+        encoded=self.update(torch.cat((own,(message*mask).sum(2)/max(1,n-1),
+            message.masked_fill(~mask,-1e6).amax(2)),-1))
+        centers=context.new_tensor((0.,5.,20.,10.,40.,200.)).log1p()
+        times=timing.to(context.dtype).log1p()
+        basis=torch.cat((torch.exp(-((times[:,:1]-centers[None,:3])/.8).square()),
+            torch.exp(-((times[:,1:]-centers[None,3:])/.8).square())),-1)
+        global_state=torch.cat((context[:,-5:],basis,context.new_full((len(context),1),n/6.)),-1)
+        if self.peer_conditioned:
+            changed=(encoded*held[...,None]).sum(1)/held.sum(1,keepdim=True).clamp_min(1)
+            pooled=torch.cat((encoded.mean(1),encoded.amax(1),baseline.mean(1),changed,global_state),-1)
+            return self.readout(pooled)
+        # Each additive factor sees public teammate states and their factual
+        # commands, but no teammate intervention. Summing factors preserves
+        # the possibility that several independent changes jointly matter.
+        pooled=torch.cat((encoded,baseline,baseline.mean(1)[:,None].expand(-1,n,-1),
+            own-baseline,global_state[:,None].expand(-1,n,-1)),-1)
+        return (self.readout(pooled)*held[...,None]).sum(1)
+
+
+class SharedPairedEffectDecision(nn.Module):
+    """Portable paired task improvement with a real delayed-action vocabulary.
+
+    There is no training-root admission gate or stored successful action.
+    The three probabilities estimate E[Y(plan)-Y(factual)] directly. One
+    observed paired terminal transition supplies one categorical likelihood.
+    """
+    def __init__(self,width=64,ensemble_size=3,states=None,spans=(10,40,200),delays=(0,5),
+                 peer_conditioned=True,use_time=True,margin=.03,uncertainty_weight=.5,
+                 decision_period=5,intervention_budget=1,learning_objective='conditional',response_features=False,
+                 fleet_programs=False,class_prior=None):
+        super().__init__();self.width=width;self.peer_conditioned=peer_conditioned
+        self.response_features=response_features
+        self.fleet_programs=fleet_programs
+        self.register_buffer('class_prior',torch.tensor(class_prior if class_prior is not None else [1.,1.,1.]))
+        self.models=nn.ModuleList([PairedEffectGraph(width,peer_conditioned,response_features) for _ in range(ensemble_size)])
+        if states is not None:
+            for model,state in zip(self.models,states):model.load_state_dict(state)
+        self.spans=tuple(spans);self.delays=tuple(delays);self.use_time=use_time
+        self.margin=margin;self.uncertainty_weight=uncertainty_weight
+        self.decision_period=decision_period;self.intervention_budget=intervention_budget
+        self.prior=None
+
+    def eligible(self,packet):
+        tick=(packet['node'][:,0,15]*400.).round().long()
+        active=tick%self.decision_period==0
+        if self.intervention_budget and '_conditional_count' in packet:
+            active&=packet['_conditional_count'].flatten()<self.intervention_budget
+        return active
+
+    @torch.no_grad()
+    def prepare_packet(self,actor,packet,action):
+        if not bool(self.eligible(packet).any()):return packet
+        result=dict(packet);result['_paired_effect_controls']=paired_effect_controls(actor,packet,action)
+        return result
+
+    def gains(self,context,controls,programs,timing):
+        predictions=[]
+        responses=paired_control_responses(context,controls,programs,timing) if self.response_features else None
+        for model in self.models:
+            probability=(model(context,controls,programs,timing,responses)+self.class_prior.clamp_min(1e-8).log()).softmax(-1)
+            predictions.append(probability[:,2]-probability[:,0])
+        value=torch.stack(predictions)
+        return value.mean(0),value.std(0,unbiased=False)
+
+    @torch.no_grad()
+    def forward(self,packet,action):
+        eligible=self.eligible(packet)
+        if not bool(eligible.any()):return action
+        context,order=intervention_task_context(packet,True,True);b,n=order.shape
+        controls=packet['_paired_effect_controls'].gather(1,order[...,None].expand(-1,-1,6))
+        programs=paired_effect_programs(packet,order,self.fleet_programs)[:,1:]
+        timings=torch.tensor([(delay,span) for span in self.spans
+            for delay in self.delays if self.use_time or delay==0],device=action.device)
+        count=programs.shape[1];number=len(timings)
+        query=programs[:,:,None].expand(-1,-1,number,-1).reshape(b,-1,n)
+        timing=timings[None,None].expand(b,count,-1,-1).reshape(b,-1,2)
+        values=[]
+        for start in range(0,query.shape[1],96):
+            q=query[:,start:start+96];t=timing[:,start:start+96];k=q.shape[1]
+            mean,deviation=self.gains(context[:,None].expand(-1,k,-1).flatten(0,1),
+                controls[:,None].expand(-1,k,-1,-1).flatten(0,1),q.flatten(0,1),t.flatten(0,1))
+            score=(mean-self.uncertainty_weight*deviation).reshape(b,k)
+            values.append(score-.002*(q>0).sum(-1))
+        best,choice=torch.cat(values,-1).max(-1)
+        accept=eligible&(best>self.margin)
+        if not bool(accept.any()):return action
+        batch=torch.arange(b,device=action.device);selected=query[batch,choice]
+        delay,span=timing[batch,choice].unbind(-1)
+        preference=self.models[0].coefficients[selected]
+        preference=preference.gather(1,order.argsort(-1)[...,None].expand(-1,-1,2))
+        one=torch.ones_like(action[...,:1]);free=-one
+        first=torch.where((delay==0)[:,None,None],preference,free.expand(-1,-1,2))
+        proposed=torch.cat((action[...,:3],free,(delay+span)[:,None,None]*one,2.*free,
+            torch.zeros_like(action[...,:2]),delay[:,None,None]*one,first,preference,one),-1)
+        factual=torch.cat((action[...,:3],free,one,2.*free,torch.zeros_like(action[...,:2]),one,
+            free.expand(-1,-1,2),free.expand(-1,-1,2),free),-1)
+        return torch.where(accept[:,None,None],proposed,factual)
+
+
+def fit_shared_paired_effect(data,output,*,updates=4000,width=64,ensemble_size=3,seed=42,
+        device='cpu',peer_conditioned=True,use_time=True,margin=.03,uncertainty_weight=.5,response_features=False,
+        balanced_likelihood=False):
+    """Fit paired terminal transitions, with roots as the bootstrap units."""
+    import copy
+    import numpy as np
+    roots=data['roots'];n=(len(roots[0]['context'])-5)//8
+    samples=[]
+    for root_id,root in enumerate(roots):
+        if 'effect_controls' not in root:raise ValueError('Collect actual predecessor commands for paired effects.')
+        for (q,future),outcome in root['outcomes'].items():
+            if q==0:continue
+            factual=root['outcomes'][0,future]['success']
+            code,delay,span=root['options'][q]
+            samples.append((root_id,code,delay,span,int(outcome['success']-factual)+1))
+    samples=np.asarray(samples,dtype=np.int64)
+    classes=[np.flatnonzero(samples[:,-1]==label) for label in range(3)]
+    available=[label for label,indices in enumerate(classes) if len(indices)]
+    class_mass=np.asarray([len(indices)/len(samples) for indices in classes])
+    x=torch.as_tensor(np.asarray([root['context'] for root in roots]),device=device,dtype=torch.float32)
+    u=torch.as_tensor(np.asarray([root['effect_controls'] for root in roots]),device=device,dtype=torch.float32)
+    root_ids=torch.as_tensor(samples[:,0],device=device)
+    digits=torch.as_tensor((samples[:,1,None]//(10**np.arange(n)))%10,device=device)
+    timing=torch.as_tensor(samples[:,2:4],device=device)
+    target=torch.as_tensor(samples[:,4],device=device)
+    responses=None
+    if response_features:
+        with torch.no_grad():
+            chunks=[paired_control_responses(x[root_ids[start:start+512]],u[root_ids[start:start+512]],
+                digits[start:start+512],timing[start:start+512]) for start in range(0,len(samples),512)]
+            responses=tuple(torch.cat([chunk[i] for chunk in chunks]) for i in range(3))
+    torch.manual_seed(seed);rng=np.random.default_rng(seed+100003)
+    recipe=dict(width=width,ensemble_size=ensemble_size,spans=tuple(data['recipe']['spans']),
+        delays=tuple(data['recipe']['delays']),peer_conditioned=peer_conditioned,use_time=use_time,
+        margin=margin,uncertainty_weight=uncertainty_weight,decision_period=data['recipe'].get('root_stride',5),
+        intervention_budget=1,response_features=response_features,
+        fleet_programs=data['recipe'].get('fleet_programs',False),
+        class_prior=class_mass.tolist() if balanced_likelihood else None)
+    learner=SharedPairedEffectDecision(**recipe).to(device);states=[];diagnostics=[]
+    for member,net in enumerate(learner.models):
+        root_weight=np.ones(len(roots)) if member==0 else rng.exponential(1.,size=len(roots))
+        weights=torch.as_tensor(root_weight,device=device,dtype=torch.float32)
+        optimizer=torch.optim.AdamW(net.parameters(),lr=8e-4,weight_decay=.005)
+        with torch.enable_grad():
+            for update in range(updates):
+                labels=rng.choice(available,size=128)
+                indices=np.asarray([rng.choice(classes[label]) for label in labels])
+                batch=torch.as_tensor(indices,device=device);r=root_ids[batch]
+                logits=net(x[r],u[r],digits[batch],timing[batch],
+                    None if responses is None else tuple(response[batch] for response in responses))
+                mass=np.ones(len(labels)) if balanced_likelihood else class_mass[labels]*len(available)
+                importance=torch.as_tensor(mass,device=device,dtype=torch.float32)*weights[r]
+                loss=(F.cross_entropy(logits,target[batch],reduction='none')*importance).mean()
+                optimizer.zero_grad();loss.backward();nn.utils.clip_grad_norm_(net.parameters(),5.);optimizer.step()
+                if (update+1)%1000==0 or update+1==updates:
+                    print(dict(phase='shared_paired_effect_fit',member=member,update=update+1,nll=float(loss.detach())),flush=True)
+        states.append({key:value.detach().cpu() for key,value in net.state_dict().items()})
+        diagnostics.append(float(loss.detach()))
+    recipe['states']=states
+    model=copy.deepcopy(data['model']);model['successor_task_value']=dict(kind='shared_paired_effect',
+        learning_objective='conditional',**recipe)
+    removal=tuple(model.get('mechanism_ablation',(False,False,False)))+(False,)*3
+    model['mechanism_ablation']=(removal[0],False,removal[2])
+    model.update(gate_period=1,physical_interventions=True,fixed_intervention_clock=True,success_objective=True)
+    model['successor_task_fit']=dict(roots=len(roots),unique_terminal_observations=sum(len(r['outcomes']) for r in roots),
+        paired_transitions=len(samples),damage_tie_repair_counts=[len(a) for a in classes],
+        duplicate_terminal_difference_labels=0,updates=updates,ensemble_size=ensemble_size,seed=seed,
+        task_target='paired damage, agreement and repair probabilities; expected terminal success improvement',
+        actual_predecessor_command_context=True,root_admission_gate=False,variable_fleet=True,
+        nominal_paired_response_features=response_features,balanced_likelihood=balanced_likelihood,last_nll=diagnostics,
+        training_data=data.get('training_data'),predecessor_sha256=data.get('predecessor_sha256'))
+    output=Path(output);output.parent.mkdir(parents=True,exist_ok=True);torch.save(model,output)
+    return model
+
+
+class OrdinaryJointReturnDecision(nn.Module):
+    """Greedy absolute return over one common program/window action space.
+
+    There is no predecessor cascade, root lookup, support weighting, or
+    intervention opportunity rule. A factual program is an ordinary action
+    in the same maximization. Its window has the same physical meaning as
+    in the observations; the underlying source/M1 controller keeps updating.
+    """
+    def __init__(self,program_model,candidate_codes,candidate_spans,defenders,
+                 learning_objective='absolute'):
+        super().__init__()
+        if learning_objective!='absolute':
+            raise ValueError('The ordinary controller requires absolute task returns.')
+        self.program_model=load_program_potential(program_model)
+        if not isinstance(self.program_model,SharedProgramPotential):
+            raise ValueError('Ordinary return execution requires a shared return regressor.')
+        if self.program_model.radix!=10 or self.program_model.global_width!=6:
+            raise ValueError('Use actuator programs and public context plus duration.')
+        self.defenders=int(defenders)
+        codes=torch.as_tensor(candidate_codes,dtype=torch.long)
+        spans=torch.as_tensor(candidate_spans,dtype=torch.long)
+        if codes.ndim!=1 or not len(codes) or codes.shape!=spans.shape:
+            raise ValueError('Provide one duration for every complete program.')
+        if (codes<0).any() or (codes>=10**self.defenders).any() or (spans<1).any():
+            raise ValueError('Invalid complete program or physical execution window.')
+        if not (codes==0).any():
+            raise ValueError('Include the factual controller as an ordinary candidate.')
+        self.register_buffer('candidate_codes',codes)
+        self.register_buffer('candidate_spans',spans)
+
+    def candidate_values(self,value_context,codes,action,order):
+        return self.program_model(value_context.flatten(0,1),codes.flatten()).reshape(codes.shape)
+
+    def forward(self,packet,action):
+        context,order=intervention_task_context(packet,True,True)
+        batch,n=order.shape
+        if n!=self.defenders or action.shape[-1]!=3:
+            raise ValueError('Ordinary return selection needs its source/M1 action and trained fleet size.')
+        count=len(self.candidate_codes)
+        value_context=torch.cat((context[:,None].expand(-1,count,-1),
+            (self.candidate_spans.to(context.dtype)/20.)[None,:,None].expand(batch,-1,-1)),-1)
+        codes=self.candidate_codes[None].expand(batch,-1)
+        value=self.candidate_values(value_context,codes,action,order)
+        choice=value.argmax(-1)
+        selected=self.candidate_codes[choice]
+        programs=(selected[:,None]//(10**torch.arange(n,device=action.device)))%10
+        preferences=self.program_model.program_options[programs]
+        preferences=preferences.gather(1,order.argsort(-1)[...,None].expand(-1,-1,2))
+        one=torch.ones_like(action[...,:1]);free=-one
+        duration=self.candidate_spans[choice,None,None].to(action.dtype)*one
+        # This is only the common action decoder. Even program zero is
+        # selected by the absolute return, never by a separate waiting rule.
+        return torch.cat((action,free,duration,2.*free,torch.zeros_like(action[...,:2]),
+            duration,preferences,preferences),-1)
+
+
+class SuccessorTaskDecision(nn.Module):
+    """Choose complete intervention preferences by learned task-success value."""
+    def __init__(self,program_model,contexts,span=10,bandwidth=.15,margin=.05,initial_only=True,
+                 learning_objective=None,include_all_vessels=False,time_bandwidth=None,
+                 candidate_codes=None,candidate_contexts=None,candidate_support=None,
+                 absolute_context=False,support_weighted=False,candidate_variance=None,confidence_scale=0.,
+                 explicit_wait=False,prior=None,candidate_spans=None,duration_conditioned=False,
+                 role_conditioned_support=False,use_factual_support=True):
+        super().__init__();self.program_model=load_program_potential(program_model)
+        self.register_buffer('contexts',torch.as_tensor(contexts,dtype=torch.float32))
+        self.span=span;self.bandwidth=bandwidth;self.margin=margin;self.initial_only=initial_only
+        self.include_all_vessels=include_all_vessels
+        self.time_bandwidth=time_bandwidth
+        self.absolute_context=absolute_context;self.support_weighted=support_weighted
+        self.confidence_scale=confidence_scale
+        self.explicit_wait=explicit_wait
+        self.duration_conditioned=duration_conditioned
+        self.role_conditioned_support=role_conditioned_support
+        self.use_factual_support=use_factual_support
+        if role_conditioned_support and (candidate_codes is None or candidate_contexts is None):
+            raise ValueError('Role-conditioned support needs observed complete programs and their contexts.')
+        if role_conditioned_support and isinstance(self.program_model,LocalInterventionTaskPotential):
+            raise ValueError('Role transfer requires a fleet-shared task-value model, not a fixed-size value table.')
+        self.register_buffer('candidate_spans',None if candidate_spans is None else
+            torch.as_tensor(candidate_spans,dtype=torch.float32))
+        if duration_conditioned and candidate_spans is None:
+            raise ValueError('Duration-conditioned task values require their sampled intervention windows.')
+        self.prior=None if prior is None else SuccessorTaskDecision(**prior)
+        self.register_buffer('candidate_codes',None if candidate_codes is None else torch.as_tensor(candidate_codes,dtype=torch.long))
+        self.register_buffer('candidate_contexts',None if candidate_contexts is None else torch.as_tensor(candidate_contexts,dtype=torch.float32))
+        self.register_buffer('candidate_support',None if candidate_support is None else torch.as_tensor(candidate_support,dtype=torch.bool))
+        self.register_buffer('candidate_variance',None if candidate_variance is None else torch.as_tensor(candidate_variance,dtype=torch.float32))
+
+    @staticmethod
+    def summary(context):
+        n=(context.shape[-1]-3)//8;rows=context[:,:8*n].reshape(-1,n,8)
+        return torch.cat((rows.mean(1),rows.square().mean(1).sqrt(),context[:,8*n:]),-1)
+
+    def forward(self,packet,action):
+        if self.prior is not None:action=self.prior(packet,action)
+        context,order=intervention_task_context(packet,True,self.absolute_context);b,n=order.shape
+        if self.use_factual_support:
+            summary=self.summary(context)
+            distance=(summary[:,None]-self.contexts[None]).square().sum(-1)
+            if self.time_bandwidth is not None:
+                distance=distance.masked_fill((summary[:,None,-1]-self.contexts[None,:,-1]).abs()
+                    >self.time_bandwidth,float('inf'))
+            distance=distance.amin(-1)
+            supported=torch.isfinite(distance) if self.role_conditioned_support else distance<=self.bandwidth**2
+        else:supported=torch.ones(b,dtype=torch.bool,device=action.device)
+        if self.initial_only:supported&=packet['node'][:,0,15]<1e-6
+        if not bool(supported.any()):return action
+        radix=self.program_model.radix
+        if not bool(supported.all()):
+            subset={key:value[supported] if isinstance(value,torch.Tensor)
+                and value.ndim and len(value)==b else value for key,value in packet.items()}
+            selected=self.forward(subset,action[supported])
+            if selected.shape[-1]!=action.shape[-1]:
+                one=torch.ones_like(action[...,:1]);free=-one
+                action=(torch.cat((action,free,one,2.*free,torch.zeros_like(action[...,:2]),one,
+                    free.expand(-1,-1,2),free.expand(-1,-1,2)),-1) if radix==10 else
+                    torch.cat((action,free,one,free),-1))
+            result=action.clone();result[supported]=selected
+            return result
+        transferred_mass=None;transferred_variance=None
+        if self.candidate_codes is None:
+            programs=successor_candidate_programs(packet,order,self.include_all_vessels,radix)
+        elif self.use_factual_support and self.candidate_contexts is not None and (self.role_conditioned_support
+                or context.shape[-1]!=self.candidate_contexts.shape[-1]):
+            programs,transferred_mass,transferred_variance=transport_successor_programs(context,self.candidate_contexts,
+                self.candidate_codes,self.candidate_support,radix,self.bandwidth,self.absolute_context,self.candidate_variance,
+                role_conditioned=self.role_conditioned_support,time_bandwidth=self.time_bandwidth)
+        else:
+            programs=((self.candidate_codes[:,None]//(radix**torch.arange(n,device=action.device)))%radix)
+            programs=programs[None].expand(b,-1,-1)
+        count=programs.shape[1]
+        codes=(programs*(radix**torch.arange(n,device=action.device))[None,None]).sum(-1)
+        value_context=context[:,None].expand(-1,count,-1)
+        durations=None
+        if self.duration_conditioned:
+            durations=self.candidate_spans.repeat(count//len(self.candidate_spans))[None].expand(b,-1)
+            value_context=torch.cat((value_context,durations[...,None]/20.),-1)
+        value=self.program_model(value_context.flatten(0,1),codes.flatten()).reshape(b,count)
+        gain=value-value[:,:1]
+        if self.use_factual_support and (self.candidate_support is not None or transferred_mass is not None):
+            if transferred_mass is not None:mass=transferred_mass
+            else:
+                separation=(context[:,None]-self.candidate_contexts[None]).square().sum(-1)
+                kernel=torch.exp(-separation/(2*self.bandwidth**2))
+                if self.time_bandwidth is not None:
+                    kernel=kernel.masked_fill((context[:,None,-1]-self.candidate_contexts[None,:,-1]).abs()
+                        >self.time_bandwidth,0.)
+                mass=kernel@self.candidate_support.to(kernel.dtype)
+            if self.duration_conditioned:
+                factual=(codes==0)&(mass>=1e-6)
+                factual_index=durations.masked_fill(~factual,float('inf')).argmin(-1)
+                gain=value-value.gather(1,factual_index[:,None])
+                supported=supported&factual.any(-1)
+            else:supported=supported&(mass[:,0]>=1e-6)
+            if self.candidate_variance is not None and self.confidence_scale:
+                variance=(transferred_variance if transferred_variance is not None else
+                    (kernel@self.candidate_variance)/mass.clamp_min(1e-12))
+                gain=gain-self.confidence_scale*variance.clamp_min(0.).sqrt()
+            if self.support_weighted:gain=gain*mass.clamp_max(1.)
+            gain=gain.masked_fill(mass<1e-6,float('-inf'))
+        gain-=.005*(programs>0).sum(-1)
+        best,choice=gain.max(-1);accept=supported&(best>self.margin)
+        selected=programs[torch.arange(b,device=action.device),choice]
+        selected_span=self.span if durations is None else durations.gather(1,choice[:,None])[:,:,None]
+        if radix==10:
+            preferences=self.program_model.program_options[selected]
+            preferences=preferences.gather(1,order.argsort(-1)[...,None].expand(-1,-1,2))
+            one=torch.ones_like(action[...,:1]);free=-one
+            replacement=torch.cat((action[...,:3],free,selected_span*one,2.*free,
+                torch.zeros_like(action[...,:2]),selected_span*one,preferences,preferences),-1)
+            if action.shape[-1]==3:
+                action=torch.cat((action,free,one,2.*free,torch.zeros_like(action[...,:2]),one,
+                    free.expand(-1,-1,2),free.expand(-1,-1,2)),-1)
+            if self.explicit_wait:
+                wait=torch.cat((action[...,:3],free,self.span*one,2.*free,
+                    torch.zeros_like(action[...,:2]),self.span*one,free.expand(-1,-1,2),free.expand(-1,-1,2)),-1)
+                action=torch.where(supported[:,None,None],wait,action)
+            return torch.where(accept[:,None,None],replacement,action)
+        gates=torch.where(selected>0,(selected.to(action.dtype)-1.)*.5,-1.)
+        gates=gates.gather(1,order.argsort(-1))
+        replacement=torch.cat((action[...,:3],gates[...,None],torch.ones_like(gates[...,None])*selected_span,gates[...,None]),-1)
+        if action.shape[-1]==3:
+            free=torch.full_like(action[...,:1],-1.)
+            action=torch.cat((action,free,torch.ones_like(free),free),-1)
+        if self.explicit_wait:
+            free=torch.full_like(action[...,:1],-1.)
+            wait=torch.cat((action[...,:3],free,-self.span*free,2.*free),-1)
+            action=torch.where(supported[:,None,None],wait,action)
+        return torch.where(accept[:,None,None],replacement,action)
+
+
+def fit_successor_task_policy(data,output,*,ordinary=False,updates=5000,seed=42,device='cpu',
+                             bandwidth=.15,margin=.05,decision_weight=1.,transport=False,
+                             task_contrasts=False,difference_weight=None,latent_transport=False,
+                             absolute_context=None,support_weighted=False,task_width=None,response_width=24,
+                              shared_task_value=False,paired_graph=False,confidence_scale=0.,retain_predecessor=False,
+                              paired_calibration=False,covariance_shrink=.5,paired_ordering=None,
+                              future_precision=.5,paired_future_rank=0,residual_calibration=None,
+                              paired_joint_likelihood=False,factual_task=False,factual_response=False,
+                              factual_features=6,factual_contrast=False,factual_rank=0,
+                              factual_normalization=False):
+    """Fit conditional task ordering, or an explicitly selected estimator.
+
+    The default marginalizes shared futures and calibrates completely
+    observed program values. Ordinary learning keeps its absolute-return
+    objective. Alternative estimators remain explicit research comparisons.
+    """
+    import copy
+    import numpy as np
+    import develop_source_fusion as development
+    if ordinary:
+        if retain_predecessor or factual_task or factual_response or factual_contrast:
+            raise ValueError('Ordinary return learning cannot retain conditional stages or factual-effect learners.')
+        datasets=data.get('duration_datasets') or [data]
+        return fit_ordinary_task_return_policy(data['model'],datasets,output,width=task_width or 64,
+            updates=updates,seed=seed,device=device)
+    if factual_response and not factual_task:
+        raise ValueError('Paired physical-response supervision requires the paired factual task-value learner.')
+    if absolute_context is None:absolute_context=not (transport or latent_transport)
+    if paired_ordering is None:
+        paired_ordering=not (ordinary or transport or latent_transport or task_contrasts
+            or shared_task_value or paired_graph or paired_future_rank or paired_calibration
+            or paired_joint_likelihood or factual_task or decision_weight!=1. or task_width is not None or response_width!=24)
+    if difference_weight is None:difference_weight=10. if paired_ordering else 4.
+    if residual_calibration is None:residual_calibration='complete' if paired_ordering else False
+    if not data.get('completed',False):
+        raise ValueError('Finish collecting the paired task branches before fitting the value.')
+    predecessor=copy.deepcopy(data['model'])
+    previous=predecessor.pop('successor_task_value',None) if data.get('policy_iteration',False) else None
+    if retain_predecessor and previous is None:
+        raise ValueError('A retained value stage requires its own sampled predecessor.')
+    if development.joint_value_objectives(predecessor):
+        raise ValueError('Whole mechanism comparisons cannot inherit another value learner.')
+    if (previous is not None and development.joint_value_objectives({'successor_task_value':previous})
+            !={'absolute' if ordinary else 'conditional'}):
+        raise ValueError('Each policy-iteration control must collect its own continuation data.')
+    if absolute_context and (transport or latent_transport):
+        raise ValueError('The transport decoder requires its original relative context.')
+    duration_data=data.get('duration_datasets')
+    duration_conditioned=duration_data is not None
+    if factual_task and ordinary:
+        raise ValueError('Paired factual task learning requires a conditional objective.')
+    global_width=(5 if absolute_context else 3)+int(duration_conditioned)
+    if duration_conditioned:
+        if not ordinary and not factual_task and (not paired_graph or paired_ordering or paired_future_rank):
+            raise ValueError('Duration-conditioned decisions require a joint task-value estimator.')
+        identity=development.joint_continuation_identity(data['model'])
+        examples=[];physical_contexts=[];example_spans=[]
+        for part in duration_data:
+            if not part.get('completed',False):raise ValueError('Finish every sampled intervention duration before fitting.')
+            if development.joint_continuation_identity(part['model'])!=identity:
+                raise ValueError('Intervention durations must be measured against the same executing predecessor.')
+            if part.get('program_options')!=data.get('program_options'):
+                raise ValueError('Duration comparisons require the same complete fusion program library.')
+            part_examples=successor_task_examples(part,require_candidate_support=(part.get('focus_codes') is None
+                and part.get('candidate_programs') is None),absolute_frame=absolute_context)
+            declared=part.get('candidate_programs')
+            if declared is not None and len(declared)!=len(part_examples):
+                raise ValueError('Declare candidates for every intervention context and duration.')
+            for root,example in enumerate(part_examples):
+                required=(set(declared[root]) if declared is not None else
+                    set(map(int,part['focus_codes']))|{0} if part.get('focus_codes') is not None else set())
+                if not required<={sample[0] for sample in example['samples'].values()}:
+                    raise ValueError('Every program/window candidate needs its own observed task outcomes.')
+                physical_contexts.append(example['context'].copy());example_spans.append(int(part['span']))
+                example['context']=np.r_[example['context'],float(part['span'])/20.].astype(np.float32)
+                if factual_task:
+                    example['samples']={key:(q,np.r_[following,float(part['span'])/20.].astype(np.float32),outcome)
+                        for key,(q,following,outcome) in example['samples'].items()}
+                examples.append(example)
+    else:
+        examples=successor_task_examples(data,require_candidate_support=(data.get('focus_codes') is None
+            and data.get('candidate_programs') is None),absolute_frame=absolute_context)
+        physical_contexts=[example['context'] for example in examples]
+        example_spans=[int(data['span'])]*len(examples)
+    if not duration_conditioned and data.get('candidate_programs') is not None:
+        if len(data['candidate_programs'])!=len(examples):raise ValueError('Declare candidates for every intervention context.')
+        for required,example in zip(data['candidate_programs'],examples):
+            if not set(required)<={sample[0] for sample in example['samples'].values()}:
+                raise ValueError('Declared candidates require observed task outcomes.')
+    if not duration_conditioned and data.get('focus_codes') is not None:
+        required=set(map(int,data['focus_codes']))|{0}
+        for example in examples:
+            if not required<={sample[0] for sample in example['samples'].values()}:
+                raise ValueError('Focused intervention candidates need their own observed task outcomes.')
+    if factual_task:
+        network,record,fit=fit_paired_factual_task_potential(examples,
+            program_options=data.get('program_options'),global_width=global_width,
+            width=62 if task_width is None else task_width,updates=updates,seed=seed,device=device,
+            response_supervision=factual_response,factual_features=factual_features,
+            intervention_contrast=factual_contrast,future_rank=factual_rank,
+            future_normalization=factual_normalization)
+    elif paired_future_rank and not ordinary:
+        trainer=fit_joint_future_task_potential if paired_joint_likelihood else fit_paired_future_task_potential
+        network,record,fit=trainer(examples,program_options=data.get('program_options'),
+            global_width=5 if absolute_context else 3,response_rank=paired_future_rank,
+            width=(61 if paired_joint_likelihood else 64) if task_width is None else task_width,
+            updates=updates,seed=seed,device=device,difference_weight=difference_weight)
+    elif paired_ordering and not ordinary:
+        network,record,fit=fit_future_conditioned_task_potential(examples,bandwidth=bandwidth,
+            program_options=data.get('program_options'),contrast_weight=difference_weight,
+            future_precision=future_precision,anchor_weight=.01,conditional_ordering=True,
+            residual_calibration=residual_calibration)
+    elif paired_graph and not ordinary:
+        estimator=((lambda examples:successor_standardized_task_estimates(examples,task_conditioned=True))
+            if paired_graph=='factual' else successor_standardized_task_estimates if paired_graph=='successor' else
+            matched_future_task_estimates if paired_graph=='blocks' else paired_block_task_estimates)
+        corrected,statistics=(matched_duration_task_estimates(examples,physical_contexts,example_spans,
+            shared_factual=not data.get('policy_iteration',False))
+            if duration_conditioned and paired_graph=='blocks' else estimator(examples))
+        network,record,fit=fit_shared_program_potential(corrected,width=64,updates=updates,
+            paired=False,conditional=False,seed=seed,device=device,
+            program_options=data.get('program_options'),global_width=global_width)
+        fit.update(statistics,task_target=('paired successor-standardized terminal task success'
+            if paired_graph in ('successor','factual') else 'paired covariance-corrected terminal task success'),
+            terminal_difference_labels=0,
+            paired_intervention_records=sum(len(example['pairs']) for example in examples),
+            deployed_parameters=sum(parameter.numel() for parameter in network.parameters()))
+    elif task_contrasts and not ordinary and not shared_task_value:
+        network,record,fit=fit_intervention_task_potential(examples,conditional=not ordinary,
+            difference_weight=difference_weight,bandwidth=bandwidth,program_options=data.get('program_options'))
+    elif ordinary or shared_task_value:
+        ordinary_examples=[]
+        for example in examples:
+            samples={};edges={}
+            for code,_,outcome in example['samples'].values():samples.setdefault(code,[]).append(outcome)
+            for a,b in example['pairs']:
+                ya=example['samples'][a][2];yb=example['samples'][b][2]
+                edges.setdefault((a[0],b[0]),[]).append(yb-ya)
+            programs=sorted(samples);index={q:i for i,q in enumerate(programs)}
+            ordinary_examples.append(dict(context=example['context'],programs=programs,
+                targets=np.asarray([np.mean(samples[q]) for q in programs]),
+                edges=[(index[a],index[b],float(np.mean(values))) for (a,b),values in edges.items()]))
+        trainer=fit_shared_program_potential if ordinary else fit_conditional_shared_program_potential
+        conditional_settings={} if ordinary else dict(bounded_success=True)
+        network,record,fit=trainer(ordinary_examples,width=64,updates=updates,
+            paired=False,conditional=not ordinary,difference_weight=difference_weight,
+            seed=seed,device=device,program_options=data.get('program_options'),
+            global_width=global_width,**conditional_settings)
+        fit.update(task_target='true_terminal_task_success',
+            terminal_difference_labels=sum(len(example['pairs']) for example in examples) if not ordinary else 0,
+            deployed_parameters=sum(parameter.numel() for parameter in network.parameters()))
+    elif transport or latent_transport:
+        network,record,fit=fit_successor_transport_potential(data,updates=updates,seed=seed,device=device,
+            latent=latent_transport,width=59 if task_width is None else task_width,response_width=response_width,
+            terminal_difference_weight=difference_weight,paired_standardization=paired_calibration,
+            covariance_shrink=covariance_shrink)
+    else:
+        network,record,fit=fit_successor_task_potential(data,updates=updates,seed=seed,
+            device=device,decision_weight=decision_weight,terminal_difference_weight=difference_weight,
+            absolute_context=absolute_context,paired_calibration=paired_calibration,covariance_shrink=covariance_shrink)
+    if record.get('kind') in ('local_intervention_task','paired_future_task') and not data.get('initial_only',True):
+        record['time_bandwidth']=1e-4
+    contexts=torch.tensor(np.asarray(physical_contexts),dtype=torch.float32)
+    candidate_actions=sorted({(q,span) for example,span in zip(examples,example_spans)
+        for q,_,_ in example['samples'].values()})
+    candidate_codes=[q for q,span in candidate_actions]
+    candidate_support=np.asarray([[window==span and q in {sample[0] for sample in example['samples'].values()}
+        for q,window in candidate_actions] for example,span in zip(examples,example_spans)])
+    candidate_variance=None
+    if paired_graph and not ordinary:
+        candidate_variance=np.asarray([[dict(zip(example['programs'],example['gain_variance'])).get(q,0.)
+            if window==span else 0. for q,window in candidate_actions]
+            for example,span in zip(corrected,example_spans)])
+    model=predecessor
+    removal=tuple(model.get('mechanism_ablation') or (False,False,False))+(False,)*3
+    # A new value learner is active even when its F00/F10 predecessor had
+    # disabled value learning. Preserve the independently removed M1 paths.
+    model['mechanism_ablation']=(removal[0],False,removal[2])
+    model['successor_task_value']=dict(program_model=record,
+        contexts=SuccessorTaskDecision.summary(contexts).numpy(),span=data['span'],
+        bandwidth=bandwidth,margin=margin,initial_only=data.get('initial_only',True),
+        time_bandwidth=None if data.get('initial_only',True) else 1e-4,
+        candidate_codes=candidate_codes,candidate_contexts=contexts.numpy(),candidate_support=candidate_support,
+        absolute_context=absolute_context,support_weighted=support_weighted,
+        candidate_variance=candidate_variance,confidence_scale=confidence_scale if not ordinary else 0.,
+        explicit_wait=data.get('policy_iteration',False),
+        prior=previous if retain_predecessor else None,
+        include_all_vessels=data.get('include_all_vessels',False),
+        learning_objective='absolute' if ordinary else 'conditional')
+    if duration_conditioned:
+        model['successor_task_value'].update(duration_conditioned=True,
+            candidate_spans=[span for q,span in candidate_actions],span=min(example_spans))
+    model['successor_task_fit']=dict(ordinary=ordinary,**fit,
+        source='identical paired interventions and true terminal continuations',
+        inherited_value_stages=(data['model'].get('successor_task_fit',{}).get('inherited_value_stages',0)+1
+            if retain_predecessor else 0),complete_mechanism_replacement=not retain_predecessor,
+        policy_iteration=(data['model'].get('successor_task_fit',{}).get('policy_iteration',0)+1
+            if data.get('policy_iteration',False) else 0),
+        continuation_objective=None if previous is None else previous['learning_objective'])
+    if duration_conditioned:
+        model['successor_task_fit'].update(duration_conditioned=True,
+            candidate_durations=sorted(set(example_spans)))
+    model['whole_mechanism_replacement']=ordinary
+    model['comparison_scope']=('whole conditional-value replacement by absolute-return learning'
+        if ordinary else 'whole conditional intervention task-value learning'
+        if paired_graph or shared_task_value or task_contrasts else 'whole conditional successor-task value learning')
+    model.pop('selection',None)
+    output=Path(output);output.parent.mkdir(parents=True,exist_ok=True);torch.save(model,output)
+    return model
+
+
+def align_task_stage_support(stage,examples):
+    """Ground every deployed candidate in this stage's actual observations.
+
+    A retained controller can have a wider candidate library than a later
+    corrected dataset. Keeping its old support would let an estimator choose
+    programs for which the replacement learner has no measured consequence.
+    Match the physical context exactly; sharing network parameters does not
+    grant new empirical support to a program at another context.
+    """
+    import numpy as np
+    contexts=np.asarray([example['context'] for example in examples])
+    reference=np.asarray(stage['candidate_contexts'])
+    codes=np.asarray(stage['candidate_codes'])
+    support=np.zeros((len(reference),len(codes)),dtype=bool)
+    for row,context in enumerate(reference):
+        matches=np.flatnonzero(np.max(np.abs(contexts-context),axis=-1)<1e-5)
+        if not len(matches):
+            raise ValueError('A deployed support context has no matching training observations.')
+        observed={sample[0] for i in matches for sample in examples[i]['samples'].values()}
+        if 0 not in observed:
+            raise ValueError('Every deployed value context needs its own factual outcome.')
+        support[row]=np.isin(codes,list(observed))
+    previous=np.asarray(stage.get('candidate_support',support),dtype=bool)
+    stage['candidate_support']=support
+    return dict(observed_candidates=int(support.sum()),
+        removed_unobserved_candidates=int((previous&~support).sum()))
+
+
+def ordinary_task_return_examples(datasets):
+    """Read unique absolute observations without paired contrasts or supports."""
+    import numpy as np
+    groups={};actions=set();options=None;defenders=None;counts=[]
+    for data in datasets:
+        if not data.get('completed',False):
+            raise ValueError('Ordinary return learning needs completed task observations.')
+        current=np.asarray(data.get('program_options'))
+        if current.shape!=(10,2):
+            raise ValueError('Use the common ten-choice actuator program encoding.')
+        if options is None:options=current
+        elif not np.array_equal(options,current):
+            raise ValueError('Every dataset must use the same physical program encoding.')
+        span=int(data['span']);dataset_samples=set()
+        for rollout in data['rollouts']:
+            for branch in rollout['branches']:
+                packet={k:torch.as_tensor(v[None]) for k,v in branch['packet'].items()}
+                raw,order=intervention_task_context(packet,True,True)
+                n=order.shape[-1]
+                if defenders is None:defenders=n
+                elif n!=defenders:raise ValueError('Fit this fixed-fleet comparison at one fleet size.')
+                context=np.r_[raw[0].numpy(),span/20.].astype(np.float32)
+                key=np.round(context,6).tobytes()
+                group=groups.setdefault(key,dict(context=context,samples={}))
+                observations=[('left','before'),('right','after')]
+                if branch.get('factual_outcome') is not None and branch.get('reference_action') is not None:
+                    observations.append(('reference_action','factual_outcome'))
+                for side,label in observations:
+                    action=np.asarray(branch[side])
+                    if action.shape!=(n,13) or not np.all(action[:,4]==span):
+                        raise ValueError('Return labels must match the complete program and its window.')
+                    preferences=action[order[0].numpy(),9:11]
+                    if not np.array_equal(preferences,action[order[0].numpy(),11:13]):
+                        raise ValueError('A phase-changing program needs its own action encoding.')
+                    matches=np.all(preferences[:,None]==options[None],axis=-1)
+                    if not np.all(matches.sum(-1)==1):
+                        raise ValueError('An observed action is outside the common candidate encoding.')
+                    code=int((matches.argmax(-1)*10**np.arange(n)).sum())
+                    outcome=float(branch[label]['success']);sample=(code,branch['continuation_seed'])
+                    if sample in group['samples'] and group['samples'][sample]!=outcome:
+                        raise ValueError('Conflicting absolute outcomes for the same context/program/future.')
+                    group['samples'][sample]=outcome
+                    dataset_samples.add((key,sample));actions.add((code,span))
+        counts.append(dict(window=span,unique_outcomes=len(dataset_samples)))
+    examples=[]
+    for group in groups.values():
+        outcomes={}
+        for (code,_),outcome in group['samples'].items():outcomes.setdefault(code,[]).append(outcome)
+        programs=sorted(outcomes)
+        examples.append(dict(context=group['context'],programs=programs,
+            targets=np.asarray([np.mean(outcomes[q]) for q in programs])))
+    if not examples:raise ValueError('No absolute task observations were supplied.')
+    return examples,sorted(actions),options,defenders,dict(datasets=counts,
+        roots=len(examples),unique_outcomes=sum(len(g['samples']) for g in groups.values()))
+
+
+def fit_ordinary_task_return_policy(base,datasets,output,*,width=91,updates=10000,seed=42,device='cpu'):
+    """Retrain and deploy ordinary return learning without the M2 executor."""
+    import copy
+    from types import SimpleNamespace
+    import develop_source_fusion as development
+    model=copy.deepcopy(base)
+    model.pop('successor_task_value',None)
+    if development.joint_value_objectives(model):
+        raise ValueError('Start ordinary return learning from the common source/M1 controller.')
+    development.require_clean_mechanism_start(model,SimpleNamespace(
+        joint_no_cf=True,without_peer=False,joint_no_interaction=False))
+    examples,actions,options,defenders,data_fit=ordinary_task_return_examples(datasets)
+    network,record,fit=fit_shared_program_potential(examples,width=width,updates=updates,
+        paired=False,conditional=False,paired_likelihood=True,seed=seed,device=device,
+        program_options=options,global_width=6)
+    model['successor_task_value']=dict(kind='ordinary_joint_return',program_model=record,
+        candidate_codes=[q for q,h in actions],candidate_spans=[h for q,h in actions],
+        defenders=defenders,learning_objective='absolute')
+    model['successor_task_fit']=dict(ordinary=True,**fit,**data_fit,
+        deployed_parameters=sum(p.numel() for p in network.parameters()),
+        candidate_program_windows=len(actions),inherited_stage_schedule=False,
+        complete_mechanism_replacement=True,terminal_difference_labels=0,
+        execution='one greedy absolute-return decision; global program/window vocabulary',
+        continuation_objectives=[sorted(development.joint_value_objectives(data['model'])) for data in datasets],
+        source='same fixed task observations; no predecessor controller is deployed')
+    model['fixed_intervention_clock']=False
+    model['whole_mechanism_replacement']=True
+    model['comparison_scope']='fixed-data ordinary return replacement with independent execution'
+    output=Path(output);output.parent.mkdir(parents=True,exist_ok=True);torch.save(model,output)
+    return model
+
+
+def fit_shared_stage_task_policy(template,stage_data,output,*,ordinary=False,
+                                 width=64,updates=5000,difference_weight=4.,
+                                 seed=42,device='cpu',successor_model=False,informative_pair_sampling=False,
+                                 peer_conditioned=True):
+    """Learn one window-conditioned value surface across intervention stages.
+
+    Conditional stage support and execution windows are kept as sampled. The
+    value function shares parameters across stages instead of replacing
+    learned values with per-context outcome tables. Both objectives receive
+    the same unique terminal outcomes and complete-program representation;
+    only conditional learning uses the direction of discordant paired
+    outcomes. Ordinary learning uses an independent greedy controller and
+    the global action vocabulary, without inheriting these stages. Window
+    length is an input, never an unobserved future label.
+    """
+    import copy
+    import numpy as np
+    import develop_source_fusion as development
+    if ordinary:
+        if successor_model:
+            raise ValueError('The paired successor objective is part of conditional learning.')
+        return fit_ordinary_task_return_policy(template,stage_data,output,width=width,
+            updates=updates,seed=seed,device=device)
+    model=copy.deepcopy(template)
+    stages=[];stage=model.get('successor_task_value')
+    while stage is not None:
+        stages.append(stage);stage=stage.get('prior')
+    if len(stages)!=len(stage_data):
+        raise ValueError('Provide the observed task data for every retained value stage.')
+    if successor_model and ordinary:
+        raise ValueError('The paired successor objective is part of conditional learning.')
+    common=[];physical_examples=[];stage_counts=[];options=None
+    for stage,data in zip(stages,stage_data):
+        if not data.get('completed',False):
+            raise ValueError('Every value stage requires completed paired continuations.')
+        if int(stage['span'])!=int(data['span']):
+            raise ValueError('The fitted window must match the measured intervention window.')
+        if options is None:options=data.get('program_options')
+        elif not np.array_equal(np.asarray(options),np.asarray(data.get('program_options'))):
+            raise ValueError('Shared value stages require the same program encoding.')
+        examples=successor_task_examples(data,absolute_frame=True)
+        support_fit=align_task_stage_support(stage,examples)
+        for example in examples:
+            physical=copy.deepcopy(example)
+            physical['context']=np.r_[example['context'],float(data['span'])/20.].astype(np.float32)
+            physical['samples']={key:(code,np.r_[following,float(data['span'])/20.].astype(np.float32),outcome)
+                for key,(code,following,outcome) in example['samples'].items()}
+            physical_examples.append(physical)
+            outcomes={};pairs={}
+            for code,_,outcome in example['samples'].values():
+                outcomes.setdefault(code,[]).append(outcome)
+            for a,b in dict.fromkeys(example['pairs']) if not ordinary else ():
+                ya=example['samples'][a][2];yb=example['samples'][b][2]
+                pairs.setdefault((a[0],b[0]),[]).append(yb-ya)
+            programs=sorted(outcomes);lookup={q:i for i,q in enumerate(programs)}
+            edges=[(lookup[a],lookup[b],float(np.mean(values)),1.,
+                    int(np.count_nonzero(np.asarray(values)>0.)),
+                    int(np.count_nonzero(np.asarray(values)<0.)))
+                   for (a,b),values in pairs.items()]
+            common.append(dict(context=np.r_[example['context'],float(data['span'])/20.].astype(np.float32),
+                programs=programs,targets=np.asarray([np.mean(outcomes[q]) for q in programs]),edges=edges))
+        stage_counts.append(dict(roots=len(examples),window=int(data['span']),
+            unique_outcomes=sum(len(e['samples']) for e in examples),
+            paired_outcomes=sum(len(set(e['pairs'])) for e in examples),**support_fit))
+    if successor_model:
+        network,record,fit=fit_successor_task_potential(dict(program_options=options),
+            width=width-5,response_width=24,updates=updates,seed=seed,device=device,
+            decision_weight=2.,terminal_difference_weight=difference_weight,
+            absolute_context=True,examples=physical_examples,global_width=6,conditional_ordering=True)
+    else:
+        trainer=fit_shared_program_potential if ordinary else fit_conditional_shared_program_potential
+        settings={} if ordinary else dict(informative_pair_sampling=informative_pair_sampling,peer_conditioned=peer_conditioned)
+        network,record,fit=trainer(common,width=width,updates=updates,paired=False,
+            conditional=not ordinary,paired_likelihood=True,difference_weight=difference_weight,
+            seed=seed,device=device,program_options=options,global_width=6,**settings)
+    for stage in stages:
+        stage.update(program_model=record,learning_objective='absolute' if ordinary else 'conditional',
+            absolute_context=True,duration_conditioned=True,
+            candidate_spans=[stage['span']]*len(stage['candidate_codes']),
+            candidate_variance=None,confidence_scale=0.)
+    fit.update(shared_stage_value=True,shared_successor_model=successor_model,
+        stages=stage_counts,complete_mechanism_replacement=False,
+        terminal_difference_labels=0 if ordinary else sum(s['paired_outcomes'] for s in stage_counts),
+        deployed_parameters=sum(p.numel() for p in network.parameters()),
+        source='identical stage observations, candidates, windows, support and optimizer budget',
+        task_target='absolute terminal success' if ordinary else 'terminal success with conditional paired ordering')
+    # This experiment freezes the sampled stage schedule and continuation
+    # policies. Refitting every value does not remove that conditional-policy
+    # scaffold, so it is an estimator comparison, not a whole-M2 replacement.
+    fit['inherited_stage_schedule']=True
+    fit['continuation_objectives']=[sorted(development.joint_value_objectives(data['model']))
+        for data in stage_data]
+    model['successor_task_fit']=dict(ordinary=ordinary,**fit)
+    model['whole_mechanism_replacement']=False
+    model['comparison_scope']='fixed-data estimator comparison with shared stage execution; not whole-mechanism replacement'
+    output=Path(output);output.parent.mkdir(parents=True,exist_ok=True);torch.save(model,output)
+    return model
+
+
+@lru_cache(maxsize=1)
+def _copula_quadrature():
+    import numpy as np
+    points,weights=np.polynomial.legendre.leggauss(24)
+    return torch.as_tensor(points),torch.as_tensor(weights)
+
+
+def paired_bernoulli_probabilities(probability,loading):
+    """A paired outcome law whose marginals remain the task-success values."""
+    probability=probability.clamp(1e-5,1.-1e-5)
+    threshold=2.**.5*torch.erfinv(2.*probability-1.)
+    correlation=(.95*loading.tanh()).prod(-1)
+    points,weights=(value.to(probability) for value in _copula_quadrature())
+    r=.5*correlation[:,None]*(1.+points)
+    a,b=threshold[:,0,None],threshold[:,1,None]
+    variance=1.-r.square()
+    density=torch.exp(-(a.square()-2.*r*a*b+b.square())/(2.*variance))/(2.*torch.pi*variance.sqrt())
+    joint=probability.prod(-1)+.5*correlation*(density*weights).sum(-1)
+    lower=(probability.sum(-1)-1.).clamp_min(0.);upper=probability.amin(-1)
+    joint=torch.minimum(torch.maximum(joint,lower),upper)
+    left,right=probability.unbind(-1)
+    return torch.stack((1.-left-right+joint,right-joint,left-joint,joint),-1).clamp_min(0.)
+
+
+def fit_response_precision_potential(examples,width=48,updates=1500,seed=42,node_width=8,
+                                     global_width=3,program_options=None,device='cpu'):
+    """Estimate values once, resolving the correlated noise of paired futures.
+
+    The intervention graph supplies joint observations, not extra difference
+    labels. A root's outcome matrix estimates the covariance of its program
+    means. Shrinkage keeps this positive definite with only a few futures;
+    whitening then discounts shared outcome noise while retaining contrasts.
+    Root sampling is proportional to the number of programs, so additional
+    continuations improve covariance estimation without multiplying a
+    program's influence. Neither future keys nor covariance are deployed.
+    """
+    import numpy as np
+    contexts=[];codes=[];targets=[];blocks=[];precision=[];future_count=0
+    for example in examples:
+        count=len(example['programs']);start=len(codes)
+        futures=list(dict.fromkeys(future for _,future,_ in example['outcomes']))
+        lookup={future:i for i,future in enumerate(futures)}
+        outcomes=np.full((count,len(futures)),np.nan)
+        for program,future,outcome in example['outcomes']:
+            previous=outcomes[program,lookup[future]]
+            if np.isfinite(previous) and previous!=outcome:
+                raise ValueError('A paired continuation has conflicting outcomes.')
+            outcomes[program,lookup[future]]=outcome
+        observed=np.isfinite(outcomes);samples=observed.sum(1)
+        if (samples==0).any():raise ValueError('Every program needs an observed continuation.')
+        mean=np.nanmean(outcomes,axis=1)
+        residual=np.where(observed,outcomes-mean[:,None],0.)
+        residual/=np.sqrt(np.maximum(samples*(samples-1),1.))[:,None]
+        # A Bernoulli variance floor and two prior continuations stabilize
+        # zero/one empirical outcomes and noisy two-future correlations.
+        diagonal=np.maximum(np.square(residual).sum(1),.05/samples)
+        standardized=residual/np.sqrt(diagonal[:,None])
+        shrink=np.sqrt(samples/(samples+2.))
+        factor=shrink[:,None]*standardized
+        correlation=factor@factor.T
+        correlation[np.diag_indices(count)]+=1.-np.square(factor).sum(1)
+        inverse=np.linalg.solve(correlation,np.eye(count))
+        inverse/=np.trace(inverse)/count
+        contexts.extend([example['context']]*count);codes.extend(example['programs']);targets.extend(mean)
+        blocks.append(np.arange(start,start+count));precision.append(torch.tensor(inverse,dtype=torch.float32,device=device))
+        future_count+=len(futures)
+    context=torch.as_tensor(np.asarray(contexts),dtype=torch.float32,device=device)
+    code=torch.as_tensor(codes,dtype=torch.long,device=device)
+    target=torch.as_tensor(targets,dtype=torch.float32,device=device)
+    torch.manual_seed(seed);rng=np.random.default_rng(seed+104729)
+    net=PairedResponsePotential(width,False,node_width=node_width,global_width=global_width,
+        program_options=program_options,probabilistic=False).to(device)
+    optimizer=torch.optim.AdamW(net.parameters(),lr=8e-4,weight_decay=.005)
+    probability=np.asarray([len(block) for block in blocks],dtype=float);probability/=probability.sum()
+    last={}
+    with torch.enable_grad():
+        for step in range(updates):
+            selected=rng.choice(len(blocks),4,p=probability)
+            indices=torch.as_tensor(np.concatenate([blocks[b] for b in selected]),device=device)
+            error=net(context[indices],code[indices])-target[indices]
+            losses=[];offset=0
+            for b in selected:
+                length=len(blocks[b]);part=error[offset:offset+length];offset+=length
+                losses.append((part@(precision[b]@part))/length)
+            loss=torch.stack(losses).mean()
+            optimizer.zero_grad();loss.backward();nn.utils.clip_grad_norm_(net.parameters(),5.);optimizer.step()
+            if (step+1)%250==0 or step+1==updates:
+                last=dict(phase='paired_response_precision_fit',update=step+1,
+                    joint_error=float(loss.detach()),node_mse=float(error.square().mean().detach()))
+                print(last,flush=True)
+    state=dict(width=width,paired=False,node_width=node_width,global_width=global_width,
+        program_options=program_options,probabilistic=False,response_rank=0,outcome_scale=0.,
+        state={key:value.detach().cpu() for key,value in net.state_dict().items()})
+    return PairedResponsePotential(**state).eval(),state,dict(nodes=len(codes),contexts=len(blocks),
+        paired_future_blocks=future_count,updates=updates,seed=seed,duplicate_contrast_labels=0,
+        deployed_parameters=sum(p.numel() for p in net.parameters()),
+        likelihood_factorization='joint_program_mean_covariance',last=last)
+
+
+def fit_block_program_potential(examples,width=48,updates=1500,seed=42,node_width=8,
+                                global_width=3,program_options=None,device='cpu',ordering_weight=1.):
+    """Fit paired response distributions without counting an outcome twice.
+
+    A Gaussian copula with plan-conditioned response loadings retains both
+    positive and negative pairing dependence without changing the predicted
+    marginal success probability. Each root/future
+    uses a disjoint matching of its single-vessel intervention graph, plus
+    marginal likelihoods for unmatched programs. This composite score keeps
+    marginal task calibration while learning paired concordance/discordance;
+    it never adds a loss on differences of the same outcome means. The latent
+    disturbance is integrated out; future IDs are absent at deployment.
+    """
+    import numpy as np
+    contexts=[];codes=[];targets=[];blocks=[];block_edges=[]
+    for example in examples:
+        groups={}
+        for program,future,outcome in example['outcomes']:
+            if outcome not in (0.,1.):
+                raise ValueError('A unique paired continuation must have one binary terminal outcome.')
+            groups.setdefault(future,{})[program]=outcome
+        for group in groups.values():
+            start=len(codes);lookup={}
+            for program,outcome in group.items():
+                lookup[program]=len(codes)
+                contexts.append(example['context']);codes.append(example['programs'][program]);targets.append(outcome)
+            blocks.append(np.arange(start,len(codes)))
+            block_edges.append(np.asarray([(lookup[a],lookup[b]) for a,b,*_ in example['edges']
+                if a != b and a in lookup and b in lookup],dtype=np.int64).reshape(-1,2))
+    context=torch.as_tensor(np.asarray(contexts),dtype=torch.float32,device=device)
+    code=torch.as_tensor(codes,dtype=torch.long,device=device)
+    target=torch.as_tensor(targets,dtype=torch.float32,device=device)
+    torch.manual_seed(seed);rng=np.random.default_rng(seed+104729)
+    # The response head uses fewer total deployed parameters than the width-
+    # matched ordinary potential; its extra signal comes from paired outcomes.
+    width=max(8,width-1)
+    net=PairedResponsePotential(width,False,node_width=node_width,global_width=global_width,
+        program_options=program_options,probabilistic=True,response_rank=1).to(device)
+    with torch.no_grad():net.readout[-1].bias[1:]=.25
+    optimizer=torch.optim.AdamW(net.parameters(),lr=8e-4,weight_decay=.005)
+    probability=np.asarray([len(block) for block in blocks],dtype=float);probability/=probability.sum()
+    last={}
+    with torch.enable_grad():
+        for step in range(updates):
+            selected=rng.choice(len(blocks),8,p=probability)
+            factors=[];factor_blocks=[]
+            for local,b in enumerate(selected):
+                used=set();edges=block_edges[b]
+                for a,c in edges[rng.permutation(len(edges))]:
+                    if a in used or c in used:continue
+                    used.update((a,c));factors.append((a,c));factor_blocks.append(local)
+                for a in blocks[b]:
+                    if a not in used:factors.append((a,));factor_blocks.append(local)
+            indices=torch.as_tensor(np.concatenate(factors),device=device)
+            lengths=np.asarray([len(factor) for factor in factors]);starts=np.r_[0,lengths.cumsum()[:-1]]
+            parameters=net.response_parameters(context[indices],code[indices])
+            logit=parameters[:,0];loading=parameters[:,1]
+            paired=np.flatnonzero(lengths==2);single=np.flatnonzero(lengths==1)
+            factor_loss=logit.new_zeros(len(factors))
+            if len(paired):
+                pair=torch.as_tensor(starts[paired,None]+np.arange(2),device=device)
+                probabilities=paired_bernoulli_probabilities(logit[pair].sigmoid(),loading[pair])
+                outcome=(2.*target[indices[pair[:,0]]]+target[indices[pair[:,1]]]).long()
+                observed=probabilities.gather(1,outcome[:,None]).squeeze(1).clamp_min(1e-8)
+                discordant=(outcome==1)|(outcome==2)
+                discordance=probabilities[:,1:3].sum(-1).clamp_min(1e-8)
+                # Factor the two observed bits into the success count and,
+                # only for a discordant pair, its winning direction. The
+                # conditional ordering score is not an additional endpoint
+                # or difference label. At unit weight this is exactly the
+                # original paired likelihood.
+                cardinality=torch.where(discordant,discordance,observed)
+                direction=torch.where(discordant,observed/discordance,torch.ones_like(observed))
+                factor_loss[torch.as_tensor(paired,device=device)]=-cardinality.log()-ordering_weight*direction.clamp_min(1e-8).log()
+            if len(single):
+                position=torch.as_tensor(starts[single],device=device)
+                factor_loss[torch.as_tensor(single,device=device)]=F.binary_cross_entropy_with_logits(
+                    logit[position],target[indices[position]],reduction='none')
+            block_loss=factor_loss.new_zeros(len(selected)).index_add(0,
+                torch.as_tensor(factor_blocks,device=device),factor_loss)
+            loss=(block_loss/torch.as_tensor([len(blocks[b]) for b in selected],device=device)).mean()
+            optimizer.zero_grad();loss.backward()
+            nn.utils.clip_grad_norm_(net.parameters(),5.);optimizer.step()
+            if (step+1)%250==0 or step+1==updates:
+                last=dict(phase='paired_block_likelihood_fit',update=step+1,
+                    joint_nll=float(loss.detach()),mean_response_loading=float((.95*loading.tanh()).abs().mean().detach()))
+                print(last,flush=True)
+    state=dict(width=width,paired=False,node_width=node_width,global_width=global_width,
+        program_options=program_options,probabilistic=True,response_rank=1,
+        outcome_scale=0.,
+        state={key:value.detach().cpu() for key,value in net.state_dict().items()})
+    network=PairedResponsePotential(**state).eval()
+    return network,state,dict(unique_outcomes=len(codes),paired_future_blocks=len(blocks),updates=updates,
+        seed=seed,duplicate_contrast_labels=0,maximum_block_size=max(map(len,blocks)),
+        deployed_parameters=sum(p.numel() for p in network.parameters()),response_rank=1,
+        likelihood_factorization='disjoint_single_vessel_pairs',response_copula='gaussian',
+        ordering_weight=ordering_weight,last=last)
 
 
 def fit_shared_program_potential(examples,width=48,updates=1500,paired=True,conditional=True,
@@ -1065,7 +4247,7 @@ def fit_shared_program_potential(examples,width=48,updates=1500,paired=True,cond
         offset=len(codes);programs=example['programs']
         contexts.extend([example['context']]*len(programs))
         codes.extend(programs);targets.extend(example['targets'])
-        for edge in example['edges']:
+        for edge in example.get('edges',()) if conditional else ():
             a,b,delta=edge[:3]
             left.append(offset+a);right.append(offset+b);differences.append(delta)
             precision.append(edge[3] if len(edge)>3 else 1.+4.*abs(delta))
@@ -1090,17 +4272,108 @@ def fit_shared_program_potential(examples,width=48,updates=1500,paired=True,cond
     last={}
     with torch.enable_grad():
         for step in range(updates):
+            if conditional:
+                nodes=torch.randint(len(code),(128,),generator=generator).to(device)
+                edges=torch.randint(len(left),(128,),generator=generator).to(device)
+                selected=torch.cat((nodes,left[edges],right[edges]))
+                batch_weight=node_weight[selected]
+            else:
+                # Ordinary return regression consumes only (context, program,
+                # return) observations. Its sampling must not use the local
+                # intervention graph, even when edge labels are available.
+                selected=torch.randint(len(code),(384,),generator=generator).to(device)
+                batch_weight=torch.ones_like(target[selected])
+            prediction=net.logits(context[selected],code[selected])
+            if paired_likelihood:
+                node_loss=(F.binary_cross_entropy_with_logits(prediction,target[selected],reduction='none')
+                    *batch_weight).mean()
+                log_odds=prediction[256:]-prediction[128:256] if conditional else None
+                # Conditioning on discordance removes the common outcome of a
+                # paired continuation. Concordant pairs supply node evidence.
+                edge_loss=((wins[edges]*F.softplus(-log_odds)+losses[edges]*F.softplus(log_odds)).mean()
+                    if conditional else prediction.new_zeros(()))
+            else:
+                node_loss=((prediction-target[selected]).square()*batch_weight).mean()
+                if conditional:
+                    contrast=(prediction[256:]-prediction[128:256]-delta[edges]).square()
+                    edge_loss=(contrast*precision[edges]).mean()
+                else:edge_loss=prediction.new_zeros(())
+            loss=node_loss+(difference_weight*edge_loss if conditional else 0.)
+            optimizer.zero_grad();loss.backward()
+            nn.utils.clip_grad_norm_(net.parameters(),5.);optimizer.step()
+            if (step+1)%250==0 or step+1==updates:
+                last=dict(phase='shared_program_value_fit',update=step+1,conditional=conditional,
+                    node_loss=float(node_loss.detach()),node_loss_kind='bernoulli' if paired_likelihood else 'squared',
+                    contrast_loss=float(edge_loss.detach()))
+                if not paired_likelihood:last['node_mse']=last['node_loss']
+                print(last,flush=True)
+    record=dict(width=width,paired=paired,node_width=node_width,global_width=global_width,
+        program_options=program_options,probabilistic=paired_likelihood,
+        state={k:v.detach().cpu() for k,v in net.state_dict().items()})
+    return net.cpu().eval(),record,dict(nodes=len(code),edges=len(left),updates=updates,seed=seed,last=last,
+        sampler='uniform nodes and intervention endpoints' if conditional else 'uniform return observations',
+        paired_input_used=conditional)
+
+
+def fit_conditional_shared_program_potential(examples,width=48,updates=1500,paired=True,conditional=True,
+                                 difference_weight=4.,seed=42,node_width=8,global_width=3,
+                                 program_options=None,device='cpu',paired_likelihood=False,
+                                 bounded_success=False,informative_pair_sampling=False,peer_conditioned=True):
+    """Fit the same node observations with or without local contrast loss."""
+    import numpy as np
+    contexts=[];codes=[];targets=[];left=[];right=[];differences=[];precision=[];wins=[];losses=[]
+    if paired_likelihood and paired:
+        raise ValueError('Paired likelihood estimates absolute success probabilities.')
+    for example in examples:
+        offset=len(codes);programs=example['programs']
+        contexts.extend([example['context']]*len(programs))
+        codes.extend(programs);targets.extend(example['targets'])
+        for edge in example['edges']:
+            a,b,delta=edge[:3]
+            left.append(offset+a);right.append(offset+b);differences.append(delta)
+            precision.append(edge[3] if len(edge)>3 else 1.+4.*abs(delta))
+            if paired_likelihood:
+                if len(edge)<6:raise ValueError('Paired likelihood needs discordant paired-outcome counts.')
+                wins.append(edge[4]);losses.append(edge[5])
+    context=torch.as_tensor(np.asarray(contexts),dtype=torch.float32,device=device)
+    code=torch.as_tensor(codes,dtype=torch.long,device=device);target=torch.as_tensor(targets,dtype=torch.float32,device=device)
+    left=torch.as_tensor(left,dtype=torch.long,device=device);right=torch.as_tensor(right,dtype=torch.long,device=device)
+    delta=torch.as_tensor(differences,dtype=torch.float32,device=device)
+    precision=torch.as_tensor(precision,dtype=torch.float32,device=device)
+    wins=torch.as_tensor(wins,dtype=torch.float32,device=device)
+    losses=torch.as_tensor(losses,dtype=torch.float32,device=device)
+    edge_pool=torch.arange(len(left),device=device)
+    edge_scale=1.
+    if informative_pair_sampling and paired_likelihood and conditional:
+        informative=torch.nonzero(wins+losses>0,as_tuple=False).flatten()
+        if len(informative):
+            edge_pool=informative
+            # Concordant pairs contribute exactly zero to this contrast
+            # objective. Concentrate its samples on nonzero contributions,
+            # retaining the original loss scale and all absolute node data.
+            edge_scale=len(informative)/len(left)
+    degree=torch.bincount(torch.cat((left[edge_pool],right[edge_pool])),minlength=len(code)).to(torch.float32)
+    node_weight=3./(1.+len(code)*degree/max(1,len(edge_pool)))
+    torch.manual_seed(seed);generator=torch.Generator().manual_seed(seed+104729)
+    net=SharedProgramPotential(width,paired,node_width=node_width,global_width=global_width,
+        program_options=program_options,probabilistic=paired_likelihood or bounded_success,
+        peer_conditioned=peer_conditioned).to(device)
+    optimizer=torch.optim.AdamW(net.parameters(),lr=8e-4,weight_decay=.005)
+    last={}
+    with torch.enable_grad():
+        for step in range(updates):
             nodes=torch.randint(len(code),(128,),generator=generator).to(device)
-            edges=torch.randint(len(left),(128,),generator=generator).to(device)
+            edges=edge_pool[torch.randint(len(edge_pool),(128,),generator=generator).to(device)]
             selected=torch.cat((nodes,left[edges],right[edges]))
             prediction=net.logits(context[selected],code[selected])
+            if bounded_success and not paired_likelihood:prediction=prediction.sigmoid()
             if paired_likelihood:
                 node_loss=(F.binary_cross_entropy_with_logits(prediction,target[selected],reduction='none')
                     *node_weight[selected]).mean()
                 log_odds=prediction[256:]-prediction[128:256]
                 # Conditioning on discordance removes the common outcome of a
                 # paired continuation. Concordant pairs supply node evidence.
-                edge_loss=(wins[edges]*F.softplus(-log_odds)+losses[edges]*F.softplus(log_odds)).mean()
+                edge_loss=edge_scale*(wins[edges]*F.softplus(-log_odds)+losses[edges]*F.softplus(log_odds)).mean()
             else:
                 node_loss=((prediction-target[selected]).square()*node_weight[selected]).mean()
                 contrast=(prediction[256:]-prediction[128:256]-delta[edges]).square()
@@ -1115,9 +4388,10 @@ def fit_shared_program_potential(examples,width=48,updates=1500,paired=True,cond
                 if not paired_likelihood:last['node_mse']=last['node_loss']
                 print(last,flush=True)
     record=dict(width=width,paired=paired,node_width=node_width,global_width=global_width,
-        program_options=program_options,probabilistic=paired_likelihood,
+        program_options=program_options,probabilistic=paired_likelihood or bounded_success,peer_conditioned=peer_conditioned,
         state={k:v.detach().cpu() for k,v in net.state_dict().items()})
-    return net.cpu().eval(),record,dict(nodes=len(code),edges=len(left),updates=updates,seed=seed,last=last)
+    return net.cpu().eval(),record,dict(nodes=len(code),edges=len(left),updates=updates,seed=seed,last=last,
+        informative_pair_sampling=informative_pair_sampling,sampled_edges=len(edge_pool),edge_loss_scale=edge_scale)
 
 
 def fit_intervention_context_metric(examples,conditional=True,difference_weight=4.,
@@ -1195,6 +4469,1133 @@ class JointInterventionOptions(nn.Module):
         return torch.stack([candidate for candidate,_ in alternatives],1)[torch.arange(len(action),device=action.device),choice]
 
 
+def continuous_program_proposals(reference,elites,count,rng,generation=0,spans=(3,5,8,12,20),asynchronous=False):
+    """Refine complete fusion sequences jointly with their switching times.
+
+    Keep the predecessor and the best measured elites, search around those
+    elites, and retain a quarter of global proposals. Each candidate blends the unchanged
+    neural and Boids controls; the proposal search runs only in development.
+    """
+    import numpy as np
+    n=len(reference)
+    original=(reference.copy() if reference.shape[-1]==9 else
+        np.concatenate((reference[:,:6],np.zeros((n,2),np.float32),
+            np.full((n,1),int(reference[0,4])//2,np.float32)),-1))
+    retained=min(len(elites),max(1,count//8),max(0,count-1))
+    programs=[original]+[action.copy() for action in elites[:retained]]
+    local_count=3*count//4-len(programs)
+    for j in range(count-len(programs)):
+        action=elites[j%len(elites)].copy() if elites and j<local_count else original.copy()
+        if j>=local_count or (not elites and j>=count//2):
+            first=rng.choice([-1.,0.,.25,.5,.75,1.],n)
+            second=rng.choice([-1.,0.,.25,.5,.75,1.],n)
+        else:
+            first=action[:,3].copy();second=action[:,5].copy()
+            for values in (first,second):
+                change=rng.random(n)<.6;held=(values>=0.)&change
+                values[held]=np.clip(values[held]+rng.normal(0.,.35/(1.+.5*generation),held.sum()),0.,1.)
+                release=(rng.random(n)<.12)&change
+                values[release]=rng.choice([-1.,0.,1.],release.sum())
+        span=(int(rng.choice(spans)) if not elites or j>=local_count or rng.random()<.25 else int(action[0,4]))
+        boundary=(rng.integers(1,span,size=n) if asynchronous else int(rng.integers(1,span))) if (
+            not elites or j>=local_count or rng.random()<.3) else np.minimum(span-1,action[:,8])
+        action[:,3]=first;action[:,5]=second;action[:,4]=span;action[:,8]=boundary
+        programs.append(action)
+    return programs
+
+
+def response_program_proposals(reference,coefficients,spans=(3,5,8,12,20)):
+    """Compress observed joint fusion responses into timed program proposals.
+
+    Each vessel keeps the least-squares two-phase approximation of its own
+    response. These are proposals only: paired environment outcomes, including
+    losses on other futures, determine their learned intervention authority.
+    """
+    import numpy as np
+    programs=[];coefficients=np.asarray(coefficients)
+    for span in spans:
+        if span>len(coefficients) or span<2:continue
+        action=np.concatenate((reference[:,:6],np.zeros((len(reference),3),np.float32)),-1)
+        action[:,4]=span
+        for vessel in range(len(reference)):
+            sequence=coefficients[:span,vessel];best=None
+            for boundary in range(1,span):
+                first=sequence[:boundary].mean();second=sequence[boundary:].mean()
+                error=np.square(sequence[:boundary]-first).sum()+np.square(sequence[boundary:]-second).sum()
+                if best is None or error<best[0]:best=(error,boundary,first,second)
+            action[vessel,3]=best[2];action[vessel,5]=best[3];action[vessel,8]=best[1]
+        programs.append(action)
+    return programs
+
+
+def continuous_program_neighborhood(reference,parent,step=.2):
+    """Single-vessel edges around a continuous, timed fusion program.
+
+    Both endpoint programs retain the same switch and end time. Reverting a
+    vessel restores its predecessor coefficients, not its predecessor clock.
+    The factual continuation is consequently evaluated separately.
+    """
+    import numpy as np
+    arms=[parent.copy()];edges=[];known={parent[:,3:].tobytes():0}
+    for subject in range(len(parent)):
+        alternatives=[]
+        deletion=parent.copy();deletion[subject,[3,5]]=reference[subject,[3,5]]
+        alternatives.append(deletion)
+        for column in (3,5):
+            if parent[subject,column]<0.:continue
+            for change in (-step,step):
+                action=parent.copy();action[subject,column]=np.clip(action[subject,column]+change,0.,1.)
+                alternatives.append(action)
+        release=parent.copy();release[subject,[3,5]]=-1.;alternatives.append(release)
+        for action in alternatives:
+            key=action[:,3:].tobytes()
+            if key not in known:known[key]=len(arms);arms.append(action)
+            if known[key]:edges.append((0,known[key]))
+    return arms,list(dict.fromkeys(edges))
+
+
+def fit_continuous_program_values(groups,difference_weight=4.,ridge=.25,bandwidth=.03,margin=.05):
+    """Learn sparse complete-program potentials from paired physical outcomes.
+
+    Programs retain real-valued mixtures and their learned phase boundary.
+    The representation scales with observed programs, rather than an
+    exponential Cartesian product of a quantized per-vessel alphabet.
+    """
+    import numpy as np
+    contexts=[];programs=[];indices=[];values=[];variances=[]
+    for group in groups:
+        outcomes=np.asarray(group['outcomes'],dtype=float)
+        factual=np.asarray(group['factual'],dtype=float)
+        candidates=group['programs'];count=len(candidates)
+        gain=outcomes-factual[:,None]
+        normal=(1.+ridge)*np.eye(count);target=gain.mean(0)
+        for left,right in group['edges']:
+            a,b=candidates[left],candidates[right]
+            changed=np.any(np.abs(a[:,[3,5]]-b[:,[3,5]])>1e-6,axis=-1)
+            if changed.sum()!=1 or not np.array_equal(a[:,[4,8]],b[:,[4,8]]):
+                raise ValueError('Conditional edges must change one vessel and preserve both decision times.')
+            contrast=outcomes[:,right]-outcomes[:,left]
+            precision=difference_weight/(.25+contrast.var())
+            normal[left,left]+=precision;normal[right,right]+=precision
+            normal[left,right]-=precision;normal[right,left]-=precision
+            target[left]-=precision*contrast.mean();target[right]+=precision*contrast.mean()
+        fitted=np.linalg.solve(normal,target).clip(-1.,1.)
+        packet={k:torch.as_tensor(v[None]) for k,v in group['packet'].items()}
+        context,order=public_return_context(packet,True,5,torch.as_tensor(group['reference'][None]))
+        root=len(contexts);contexts.append(context[0].numpy());order=order[0].numpy()
+        for index,action in enumerate(candidates):
+            programs.append(action[order][:,[3,5,4,8]])
+            indices.append(root);values.append(fitted[index])
+            variances.append(gain[:,index].var()/max(1,len(gain)))
+    return dict(contexts=np.asarray(contexts),programs=np.asarray(programs),roots=indices,
+        values=values,variances=variances,bandwidth=bandwidth,margin=margin,
+        learning_objective='paired continuous-program differences' if difference_weight else 'paired program means')
+
+
+def response_feedback_context(packet, water_relative=False):
+    context, order = public_return_context(packet, True, 2)
+    if water_relative:
+        motion = packet['motion']; n = motion.shape[1]
+        h = motion[:, 0, 2]; body = 30.*packet['node'][:, 0, 2:4]
+        target = motion[:, 0, :2] + torch.stack((h.cos()*body[:, 0]-h.sin()*body[:, 1],
+                                               h.sin()*body[:, 0]+h.cos()*body[:, 1]), -1)
+        axis = -target/target.norm(dim=-1, keepdim=True).clamp_min(1.)
+        velocity = 5.*packet['water']
+        rotated = torch.stack(((velocity[..., :2]*axis[:, None]).sum(-1),
+            axis[:, None, 0]*velocity[..., 1]-axis[:, None, 1]*velocity[..., 0]), -1)/3.
+        rows = context[:, :8*n].reshape(-1, n, 8).clone()
+        rows[..., 2:4] = rotated.gather(1, order[..., None].expand(-1, -1, 2))
+        rows[..., 6] = velocity[..., 2].gather(1, order)
+        context = torch.cat((rows.flatten(1), context[:, 8*n:]), -1)
+    return context, order
+
+
+@torch.no_grad()
+def actuator_joint_design(n,device,interaction_order=2):
+    """Balanced complete plans for pair or three-vessel feedback effects."""
+    if interaction_order not in (2,3):
+        raise ValueError('Actuator designs support pair or three-vessel interactions.')
+    if n>10:raise ValueError('The balanced actuator design supports at most ten vessels.')
+    index=torch.arange(9**interaction_order,device=device)
+    first=index//(9**(interaction_order-1))
+    second=(index//(9**(interaction_order-2)))%9
+    third=index%9 if interaction_order==3 else None
+    columns=[]
+    # Evaluate degree-one/two polynomials over GF(9)=GF(3)[a]/(a*a+1).
+    # Any selected two/three vessel columns cover every joint assignment.
+    def multiply(left,right):
+        return (((left%3)*(right%3)+2*(left//3)*(right//3))%3
+            +3*(((left%3)*(right//3)+(left//3)*(right%3))%3))
+    for vessel in range(n):
+        slope=vessel
+        if slope==9:columns.append(second if third is None else third);continue
+        product=multiply(slope,second)
+        real=first%3+product%3;imaginary=first//3+product//3
+        if third is not None:
+            quadratic=multiply(multiply(slope,slope),third)
+            real=real+quadratic%3;imaginary=imaginary+quadratic//3
+        columns.append(real%3+3*(imaginary%3))
+    return torch.stack(columns,-1)
+
+
+@torch.no_grad()
+def coupled_actuator_risk(actor,packet,source,plans,return_clearance=False,synchronized=False,horizon=None,
+                          tail_horizon=0.):
+    """Forecast unchanged source feedback inside each complete fleet plan."""
+    b,m,n=plans.shape[:3];dt=min(.05,actor.prediction_step) if synchronized else actor.prediction_step
+    initial=(torch.cat((packet['motion'][...,:3],5.*packet['water']),-1)
+        if synchronized else actor.prediction_motion(packet))
+    state=initial[:,None].expand(-1,m,-1,-1).clone()
+    measured_velocity=packet['motion'][:,None,:,3:].expand(-1,m,-1,-1)
+    force=750.*(plans*source[:,None]+(1.-plans)*packet['node'][:,None,:,11:13])+250.
+    minimum=None;feedback_steps=max(1,round(.2/dt))
+    task_guard=return_clearance=='task'
+    if task_guard:
+        target,target_velocity=actor.public_target_motion(packet)
+        captured=torch.zeros((b,m),dtype=torch.bool,device=source.device)
+        exposure=None
+    for step in range(round((actor.risk_horizon if horizon is None else horizon)/dt)):
+        if actor.risk_feedback and step and step%feedback_steps==0:
+            observed=torch.cat((state[...,:3],measured_velocity),-1) if synchronized else state
+            obs,boids=actor.feedback_observation(packet,observed,step*dt,joint=True)
+            future=actor.proposal_distribution(obs.reshape(b*m,n,-1))[0].tanh().reshape(b,m,n,2)
+            force=750.*(plans*future+(1.-plans)*boids)+250.
+        x,y,heading,vx,vy,yaw_rate=state.unbind(-1)
+        measured_velocity=state[...,3:]
+        x=x+dt*vx;y=y+dt*vy;heading=heading+dt*yaw_rate
+        cosine,sine=heading.cos(),heading.sin();u=cosine*vx+sine*vy;v=-sine*vx+cosine*vy
+        du=(400.*yaw_rate*v-(100.+150.*u.abs())*u+force.sum(-1))/380.
+        dv=(-380.*yaw_rate*u-(100.+150.*v.abs())*v)/400.
+        dr=(-20.*u*v-(980.+950.*yaw_rate.abs())*yaw_rate+1.25*(force[...,0]-force[...,1]))/1430.
+        u=u+dt*du;v=v+dt*dv
+        state=torch.stack((x,y,heading,cosine*u-sine*v,sine*u+cosine*v,yaw_rate+dt*dr),-1)
+        distance=(state[:,:,:,:2][:,:,:,None]-state[:,:,:,:2][:,:,None]).norm(dim=-1)
+        minimum=distance if minimum is None else torch.minimum(minimum,distance)
+        if task_guard:
+            time=(step+1)*dt
+            predicted_target=(actor.target_motion.predict(packet,time)[0]
+                if getattr(actor,'target_motion',None) is not None and actor.interaction_enabled
+                else target+time*target_velocity)
+            reach=(state[...,:2]-predicted_target[:,None,None]).norm(dim=-1).amin(-1)
+            if (step+1)%feedback_steps==0:
+                captured|=reach<5.
+            # The source task fails when the target passes every defender
+            # relative to the protected asset. Preserve its best interceptor,
+            # rather than summing pursuit distances and encouraging crowding.
+            outside=state[...,:2].norm(dim=-1).amin(-1)-predicted_target.norm(dim=-1)[:,None]
+            exposure=outside if exposure is None else torch.maximum(exposure,outside)
+    if tail_horizon:
+        # Short feedback forecasts can look safe while leaving two boats
+        # rapidly closing at their endpoint. Continue their predicted relative
+        # velocity to its closest approach, without compounding the source
+        # policy's long-horizon feedback prediction error.
+        displacement=state[:,:,:,:2][:,:,:,None]-state[:,:,:,:2][:,:,None]
+        velocity=state[:,:,:,3:5][:,:,:,None]-state[:,:,:,3:5][:,:,None]
+        closest=(-(displacement*velocity).sum(-1)/velocity.square().sum(-1).clamp_min(1e-8)).clamp(0.,tail_horizon)
+        continuation=(displacement+closest[...,None]*velocity).norm(dim=-1)
+        minimum=torch.minimum(minimum,continuation)
+    diagonal=torch.eye(n,dtype=torch.bool,device=source.device)[None,None]
+    clearance=minimum.masked_fill(diagonal,float('inf')).amin((-1,-2))
+    cost=(actor.distance_risk(minimum)*torch.triu(torch.ones((n,n),device=source.device),1)).sum((-1,-2))
+    if task_guard:
+        reach=torch.where(captured,reach.new_full((),5.),reach.clamp_min(5.))
+        return cost,clearance,torch.stack((reach,exposure),-1)
+    if return_clearance=='both':return cost,clearance
+    return clearance if return_clearance else cost
+
+
+def apply_actuator_preferences(packet,source_action,preferred_action,preferences):
+    """Decode task preferences inside the unchanged source-command hull."""
+    rule=packet['node'][...,11:13]
+    command=preferred_action[...,:2]*preferred_action[...,2:3]+rule*(1.-preferred_action[...,2:3])
+    proposed=preferences*source_action[...,:2]+(1.-preferences)*rule
+    command=torch.where(preferences>=0.,proposed,command)
+    return torch.cat((command,torch.ones_like(source_action[...,:1])),-1)
+
+
+def refine_pair_blocks(unary, risk, plans, risk_weight, sweeps=1):
+    """Optimize two vessels together while retaining every other fleet choice."""
+    plans = plans.clone()
+    b, n, k = unary.shape
+    for _ in range(sweeps):
+        previous = plans.clone()
+        for first in range(n):
+            for second in range(first+1, n):
+                first_cost = unary[:, first, None].expand(-1, plans.shape[1], -1).clone()
+                second_cost = unary[:, second, None].expand(-1, plans.shape[1], -1).clone()
+                for other in range(n):
+                    if other in (first, second):
+                        continue
+                    choices = plans[:, None, :, other].expand(-1, k, -1)
+                    first_cost += risk_weight*risk[:, first, other].gather(2, choices).transpose(1, 2)
+                    second_cost += risk_weight*risk[:, second, other].gather(2, choices).transpose(1, 2)
+                cost = (first_cost[..., None]+second_cost[..., None, :]
+                        +risk_weight*risk[:, first, second, None])
+                flat = cost.flatten(-2)
+                choice = flat.argmin(-1)
+                current = plans[:, :, first]*k+plans[:, :, second]
+                # Preserve the existing maneuver on an exact tie. A block
+                # change must improve this fleet's interaction objective.
+                better = flat.gather(2, choice[..., None]).squeeze(-1) < flat.gather(
+                    2, current[..., None]).squeeze(-1)
+                plans[:, :, first] = torch.where(better, choice//k, plans[:, :, first])
+                plans[:, :, second] = torch.where(better, choice % k, plans[:, :, second])
+        if torch.equal(previous, plans):
+            break
+    return plans
+
+
+def distinct_fleet_shortlist(plans, scores, limit):
+    """Retain distinct fleet maneuvers in increasing proposal-cost order."""
+    if limit < 1:
+        raise ValueError('A fleet shortlist must retain at least one plan.')
+    count = min(limit, plans.shape[1])
+    indices = []
+    for rows, ranking in zip(plans.detach().cpu().tolist(), scores.argsort(
+            dim=1, stable=True).detach().cpu().tolist()):
+        selected = []; seen = set()
+        for index in ranking:
+            code = tuple(rows[index])
+            if code in seen:
+                continue
+            seen.add(code); selected.append(index)
+            if len(selected) == count:
+                break
+        indices.append(selected+[selected[-1]]*(count-len(selected)))
+    indices = torch.tensor(indices, dtype=torch.long, device=plans.device)
+    return plans.gather(1, indices[..., None].expand(-1, -1, plans.shape[-1]))
+
+
+def pareto_fleet_refinement(unary, risk, plans, reference, risk_weight, componentwise=False):
+    """Replace a fleet plan only when both control deviation and risk improve."""
+    b, n, k = unary.shape
+    catalog = torch.cat((reference[:, None], plans), 1)
+    deviation = unary.new_zeros(catalog.shape[:2])
+    interaction = torch.zeros_like(deviation)
+    protected = torch.ones_like(deviation, dtype=torch.bool)
+    for vessel in range(n):
+        own = unary[:, vessel].gather(1, catalog[:, :, vessel])
+        deviation += own
+        if componentwise:
+            protected &= own <= own[:, :1]
+        for other in range(vessel):
+            code = catalog[:, :, other]*k+catalog[:, :, vessel]
+            pair = risk[:, other, vessel].flatten(1).gather(1, code)
+            interaction += pair
+            if componentwise:
+                protected &= pair <= pair[:, :1]
+    score = deviation+risk_weight*interaction
+    admissible = ((deviation <= deviation[:, :1]) & (interaction <= interaction[:, :1])
+                  & (score < score[:, :1]) & protected)
+    admissible[:, 0] = True
+    selected = score.masked_fill(~admissible, float('inf')).argmin(-1)
+    return catalog[torch.arange(b, device=unary.device), selected]
+
+
+def feedback_guarded_refinement(actor, packet, source, candidates, order, reference, proposed, horizons,
+                                tail_horizon=0., task_guard=False):
+    """Keep a proposal only when shared fleet feedback agrees across horizons."""
+    if not horizons or any(not isfinite(horizon) or horizon <= 0 for horizon in horizons):
+        raise ValueError('Feedback refinement requires positive forecast horizons.')
+    if not isfinite(tail_horizon) or tail_horizon < 0:
+        raise ValueError('Feedback refinement requires a finite nonnegative tail horizon.')
+    changed = (reference != proposed).any(-1)
+    if not bool(changed.any()):
+        return reference
+    subset = {key: (value[changed] if torch.is_tensor(value) and value.ndim
+                   and value.shape[0] == len(source) else value) for key, value in packet.items()}
+    choices = torch.stack((reference[changed], proposed[changed]), 1)
+    catalog = candidates[changed, None].expand(-1, 2, -1, -1, -1)
+    gates = catalog.gather(3, choices[..., None, None].expand(-1, -1, -1, 1, 2)).squeeze(3)
+    physical = gates.gather(2, order[changed].argsort(-1)[:, None, :, None].expand(-1, 2, -1, 2))
+    admissible = torch.ones(choices.shape[0], dtype=torch.bool, device=source.device)
+    for horizon in horizons:
+        settings = dict(synchronized=True, horizon=horizon)
+        if tail_horizon:
+            settings['tail_horizon'] = tail_horizon
+        forecast = coupled_actuator_risk(
+            actor, subset, source[changed], physical, 'task' if task_guard else 'both', **settings)
+        risk, clearance = forecast[:2]
+        admissible &= ((risk[:, 1] <= risk[:, 0]) & (clearance[:, 1] >= clearance[:, 0])
+                       & torch.isfinite(risk).all(-1) & torch.isfinite(clearance).all(-1))
+        if task_guard:
+            progress = forecast[2]
+            admissible &= ((progress[:, 1] <= progress[:, 0]).all(-1)
+                           & torch.isfinite(progress).all((-1, -2)))
+    result = reference.clone()
+    result[changed] = torch.where(admissible[:, None], proposed[changed], reference[changed])
+    return result
+
+
+def actuator_candidate_grid(preferred, subdivisions=1):
+    """Resolve each side of the source preference without changing its hull."""
+    if isinstance(subdivisions, bool) or not isinstance(subdivisions, int) or subdivisions < 1:
+        raise ValueError('Candidate subdivisions must be a positive integer.')
+    if subdivisions == 1:
+        values = torch.stack((torch.zeros_like(preferred), preferred, torch.ones_like(preferred)), -2)
+    else:
+        fraction = torch.arange(subdivisions, device=preferred.device, dtype=preferred.dtype)/subdivisions
+        lower = preferred[..., None, :]*fraction[:, None]
+        upper = preferred[..., None, :] + (1.-preferred[..., None, :])*fraction[:, None]
+        values = torch.cat((lower, upper, torch.ones_like(preferred[..., None, :])), -2)
+    levels = 2*subdivisions+1
+    digits = torch.arange(levels*levels, device=preferred.device)
+    return torch.stack((values[..., digits//levels, 0], values[..., digits%levels, 1]), -1)
+
+
+def independent_fleet_minimum_cost(values, probabilities):
+    """Exact expected fleet minimum when only one candidate choice is free."""
+    if values.shape != probabilities.shape or values.ndim != 3:
+        raise ValueError('Fleet candidate values and probabilities must have shape batch, vessel, candidate.')
+    support = torch.cat((values.new_zeros((len(values), 1)), values.flatten(1)), -1).sort(-1).values
+    lower, intervals = support[:, :-1], support.diff(dim=-1)
+    survives = ((values[..., None] > lower[:, None, None])*probabilities[..., None]).sum(2)
+    costs = []
+    for vessel in range(values.shape[1]):
+        peers = [other for other in range(values.shape[1]) if other != vessel]
+        survival = survives[:, peers].prod(1)
+        costs.append((intervals[:, None]*survival[:, None]*
+                      (values[:, vessel, :, None] > lower[:, None])).sum(-1))
+    return torch.stack(costs, 1)
+
+
+@torch.no_grad()
+def refine_actuator_interactions(actor,packet,source_action,preferred_action,*,beam_width=128,
+                                 risk_weight=32.,preference_width=.4,selection='joint',
+                                 source_preference=False,prior_map=None,coupled_prediction=False,
+                                 contact_distance=5.,synchronized_prediction=False,
+                                 commit_interventions=False,refine_all_plans=False,pair_refinements=0,
+                                 joint_feedback_topk=0,joint_feedback_horizon=None,
+                                 pareto_refinement=False,pareto_feedback_horizons=(),
+                                 pareto_componentwise=False,pareto_feedback_tail=0.,
+                                 pareto_task_guard=False,
+                                 coupled_horizon=None,coupled_recovery=False,recovery_horizon=.6,
+                                 recovery_distance=None,interaction_order=2,expand_interactions=False,
+                                 coupled_tail=0.,coupled_refinements=0,interior_fusion=None,
+                                 candidate_subdivisions=1,capture_weight=0.):
+    """Jointly reconcile task preferences with two-actuator candidate motion.
+
+    The conditional value proposes a fusion preference. Candidate interaction
+    remains active during its execution window, with both actuator mixtures
+    inside the original SAC/Boids hull. Beam search retains complete fleet
+    combinations; subsequent coordinate minimization removes simple pruning
+    errors. The independent selector receives exactly the same candidates.
+    """
+    if (pareto_feedback_horizons or pareto_componentwise) and (not pareto_refinement or not refine_all_plans
+                                    or selection != 'joint' or coupled_prediction or joint_feedback_topk):
+        raise ValueError('Protected refinement requires the Pareto fleet proposal and its exact reference.')
+    if (pareto_feedback_tail or pareto_task_guard) and not pareto_feedback_horizons:
+        raise ValueError('Tail and task protection require explicit feedback forecast horizons.')
+    if candidate_subdivisions != 1 and (coupled_prediction or coupled_recovery):
+        raise ValueError('The balanced coupled design uses the original three-level candidates.')
+    if not isfinite(capture_weight) or capture_weight < 0:
+        raise ValueError('Fleet interception weight must be finite and nonnegative.')
+    if capture_weight and (coupled_prediction or coupled_recovery or pair_refinements
+                           or joint_feedback_topk or pareto_refinement):
+        raise ValueError('Fleet interception uses the shared factorized candidate forecast and objective.')
+    if (selection in ('independent','single_reference') and not source_preference
+            and getattr(actor,'fusion_selection','joint')!=selection):
+        raise ValueError('Independent actuator selection requires source_preference=True; '
+            'or the preceding fusion selector must also be independent.')
+    source=source_action[...,:2];rule=packet['node'][...,11:13]
+    command=preferred_action[...,:2]*preferred_action[...,2:3]+rule*(1.-preferred_action[...,2:3])
+    difference=source-rule
+    preferred=torch.where(difference.abs()>1e-5,(command-rule)/difference.masked_fill(difference.abs()<=1e-5,1.),
+                          source_action[...,2:3]).clamp(0.,1.)
+    explicit=packet.get('_preferred_actuator_coefficients')
+    if explicit is not None:
+        # These coefficients are already the decision variables. Recovering
+        # them from a mixed force divides by source minus rule, which is
+        # ill-conditioned when the source policies produce similar commands.
+        preferred=explicit
+    else:
+        native=(preferred_action[...,:2]==source).all(-1,keepdim=True)
+        preferred=torch.where(native,preferred_action[...,2:3],preferred)
+    interior=preferred if interior_fusion is None else torch.full_like(preferred,float(interior_fusion))
+    candidates=actuator_candidate_grid(interior, candidate_subdivisions)
+    committed=packet.get('_committed_actuator_preferences') if commit_interventions else None
+    if committed is not None:
+        fixed=(committed>=0.).all((-1,-2))
+        if bool(fixed.any()):
+            # Eliminate decisions with no free fusion variables exactly.
+            # Their two source policies still refresh at every control tick.
+            command=committed*source+(1.-committed)*rule
+            result=torch.cat((command,torch.ones_like(source_action[...,2:3])),-1)
+            free=~fixed
+            if bool(free.any()):
+                subset={key:(value[free] if torch.is_tensor(value) and value.ndim
+                    and value.shape[0]==len(source) else value) for key,value in packet.items()}
+                result[free]=refine_actuator_interactions(actor,subset,source_action[free],preferred_action[free],
+                    beam_width=beam_width,risk_weight=risk_weight,preference_width=preference_width,
+                    selection=selection,source_preference=source_preference,prior_map=prior_map,
+                    coupled_prediction=coupled_prediction,contact_distance=contact_distance,
+                    synchronized_prediction=synchronized_prediction,commit_interventions=True,
+                    refine_all_plans=refine_all_plans,pair_refinements=pair_refinements,
+                    joint_feedback_topk=joint_feedback_topk,
+                    joint_feedback_horizon=joint_feedback_horizon,
+                    pareto_refinement=pareto_refinement,
+                    pareto_feedback_horizons=pareto_feedback_horizons,
+                    pareto_componentwise=pareto_componentwise,
+                    pareto_feedback_tail=pareto_feedback_tail,
+                    pareto_task_guard=pareto_task_guard,
+                    coupled_horizon=coupled_horizon,
+                    coupled_recovery=coupled_recovery,recovery_horizon=recovery_horizon,
+                    recovery_distance=recovery_distance,interaction_order=interaction_order,
+                    expand_interactions=expand_interactions,coupled_tail=coupled_tail,
+                    coupled_refinements=coupled_refinements,interior_fusion=interior_fusion,
+                    candidate_subdivisions=candidate_subdivisions,capture_weight=capture_weight)
+            return result
+        # A sampled intervention fixes these coefficients for its window.
+        # Optimize the remaining coefficients against those actual partner
+        # maneuvers, instead of projecting away the intervention afterwards.
+        candidates=torch.where((committed>=0.)[:,:,None],committed[:,:,None],candidates)
+        preferred=torch.where(committed>=0.,committed,preferred)
+    if coupled_prediction:
+        _,order=public_return_context(packet,True,2);b,n=order.shape
+        candidates=candidates.gather(1,order[...,None,None].expand_as(candidates))
+        preferred=preferred.gather(1,order[...,None].expand_as(preferred))
+        design=actuator_joint_design(n,source.device,interaction_order);count=len(design)
+        plans=candidates[:,None].expand(-1,count,-1,-1,-1).gather(3,
+            design[None,:,:,None,None].expand(b,-1,-1,1,2)).squeeze(3)
+        physical_plans=plans.gather(2,order.argsort(-1)[:,None,:,None].expand(-1,count,-1,2))
+        risk,clearance=coupled_actuator_risk(actor,packet,source,physical_plans,'both',synchronized_prediction,
+            coupled_horizon,tail_horizon=coupled_tail)
+        score=((plans-preferred[:,None])/preference_width).square().mean(-1).sum(-1)+risk_weight*risk
+        safe=clearance>=contact_distance
+        # Feasible joint forecasts take priority over the soft clearance sum.
+        # When no plan is feasible, maximize the worst predicted separation.
+        score=score+torch.where(safe.any(-1,keepdim=True),1e6*(~safe).to(score.dtype),
+            1e6*(clearance.amax(-1,keepdim=True)-clearance))
+        if interaction_order==2:
+            identical=(plans.flatten(2)[:,:,None]-plans.flatten(2)[:,None]).abs().amax(-1)<1e-6
+            duplicate=(identical & torch.tril(torch.ones((count,count),dtype=torch.bool,device=source.device),-1)).any(-1)
+        else:
+            # Coalescing equal actuator candidates before sorting complete
+            # plans avoids a quadratic fleet-by-plan distance tensor.
+            equivalent=(candidates[:,:,:,None]-candidates[:,:,None]).abs().amax(-1)<1e-6
+            labels=torch.arange(9,device=source.device)[None,None,None].expand_as(equivalent)
+            canonical=labels.masked_fill(~equivalent,9).amin(-1)
+            assignment=canonical[:,None].expand(-1,count,-1,-1).gather(3,
+                design[None,:,:,None].expand(b,-1,-1,1)).squeeze(-1)
+            codes=(assignment*(9**torch.arange(n,device=source.device))).sum(-1)
+            ordered,permutation=codes.sort(dim=-1,stable=True)
+            repeated=torch.cat((torch.zeros_like(ordered[:,:1],dtype=torch.bool),ordered[:,1:]==ordered[:,:-1]),-1)
+            duplicate=torch.zeros_like(repeated).scatter(1,permutation,repeated)
+        refining=~safe.any(-1)
+        if coupled_refinements and bool(refining.any()):
+            # A balanced library covers low-order effects, but its best fleet
+            # plan need not be locally optimal under the actual coupled
+            # feedback forecast. Refine several coordination basins, retaining
+            # every evaluated complete plan for BOTH selection controls.
+            seeds=score.masked_fill(duplicate,float('inf')).topk(min(4,count),largest=False).indices
+            current=plans.gather(1,seeds[:,:,None,None].expand(-1,-1,n,2))
+            plan_bank=[plans];risk_bank=[risk];clearance_bank=[clearance]
+            for _ in range(int(coupled_refinements)):
+                for vessel in range(n):
+                    alternatives=current[:,:,None].expand(-1,-1,9,-1,-1).clone()
+                    alternatives[:,:,:,vessel]=candidates[:,None,vessel]
+                    alternatives=torch.where(refining[:,None,None,None,None],alternatives,current[:,:,None])
+                    alternatives=alternatives.flatten(1,2)
+                    physical_alternatives=alternatives.gather(2,
+                        order.argsort(-1)[:,None,:,None].expand(-1,alternatives.shape[1],-1,2))
+                    new_risk,new_clearance=coupled_actuator_risk(actor,packet,source,physical_alternatives,
+                        'both',synchronized_prediction,coupled_horizon,tail_horizon=coupled_tail)
+                    local=((alternatives-preferred[:,None])/preference_width).square().mean(-1).sum(-1)+risk_weight*new_risk
+                    local=local.reshape(b,-1,9);separation=new_clearance.reshape(b,-1,9)
+                    feasible=separation>=contact_distance
+                    local+=torch.where(feasible.any(-1,keepdim=True),1e6*(~feasible).to(local.dtype),
+                        1e6*(separation.amax(-1,keepdim=True)-separation))
+                    selected=local.argmin(-1)
+                    current=alternatives.reshape(b,-1,9,n,2).gather(2,
+                        selected[:,:,None,None,None].expand(-1,-1,1,n,2)).squeeze(2)
+                    plan_bank.append(alternatives);risk_bank.append(new_risk);clearance_bank.append(new_clearance)
+            plans=torch.cat(plan_bank,1);risk=torch.cat(risk_bank,1);clearance=torch.cat(clearance_bank,1)
+            count=plans.shape[1];safe=clearance>=contact_distance
+            score=((plans-preferred[:,None])/preference_width).square().mean(-1).sum(-1)+risk_weight*risk
+            score+=torch.where(safe.any(-1,keepdim=True),1e6*(~safe).to(score.dtype),
+                1e6*(clearance.amax(-1,keepdim=True)-clearance))
+            matches=(plans[:,:,:,None]-candidates[:,None]).abs().amax(-1)<1e-6
+            assignment=matches.to(torch.long).argmax(-1)
+            codes=(assignment*(9**torch.arange(n,device=source.device))).sum(-1)
+            ordered,permutation=codes.sort(dim=-1,stable=True)
+            repeated=torch.cat((torch.zeros_like(ordered[:,:1],dtype=torch.bool),ordered[:,1:]==ordered[:,:-1]),-1)
+            duplicate=torch.zeros_like(repeated).scatter(1,permutation,repeated)
+        if selection=='joint':
+            choice=score.masked_fill(duplicate,float('inf')).argmin(-1)
+            gates=plans[torch.arange(b,device=source.device),choice]
+        elif selection=='independent':
+            # Both selectors see the same jointly predicted fleet library.
+            # This control chooses each vessel from its conditional marginal.
+            matches=(plans[:,:,:,None]-candidates[:,None]).abs().amax(-1)<1e-6
+            weights=matches & ~duplicate[:,:,None,None]
+            expected=(score[:,:,None,None]*weights).sum(1)/weights.sum(1).clamp_min(1)
+            choices=expected.argmin(-1)
+            gates=candidates.gather(2,choices[...,None,None].expand(-1,-1,1,2)).squeeze(2)
+        else:raise ValueError('Actuator candidate selection must be joint or independent.')
+        gates=gates.gather(1,order.argsort(-1)[...,None].expand_as(gates))
+        command=gates*source+(1.-gates)*rule
+        physical=torch.cat((command,torch.ones_like(source_action[...,2:3])),-1)
+        if expand_interactions and interaction_order==2:
+            # Expand the complete fleet search only when the pair-balanced
+            # library supplies no feasible feedback trajectory. Both joint
+            # and independent selectors receive the same expanded library.
+            expand=~safe.any(-1)
+            if bool(expand.any()):
+                subset={key:(value[expand] if torch.is_tensor(value) and value.ndim
+                    and value.shape[0]==b else value) for key,value in packet.items()}
+                physical[expand]=refine_actuator_interactions(actor,subset,source_action[expand],
+                    preferred_action[expand],beam_width=beam_width,risk_weight=risk_weight,
+                    preference_width=preference_width,selection=selection,source_preference=source_preference,
+                    prior_map=prior_map,coupled_prediction=True,contact_distance=contact_distance,
+                    synchronized_prediction=synchronized_prediction,commit_interventions=commit_interventions,
+                    coupled_horizon=coupled_horizon,interaction_order=3,coupled_tail=coupled_tail,
+                    coupled_refinements=coupled_refinements,interior_fusion=interior_fusion)
+        return physical
+    def interception_cost(paths):
+        target, velocity = actor.public_target_motion(packet)
+        times = torch.arange(1, paths.shape[-2]+1, device=source.device)*actor.prediction_step
+        target_path = (torch.stack([actor.target_motion.predict(packet, float(time))[0] for time in times], 1)
+            if actor.target_motion is not None else target[:, None]+times[None, :, None]*velocity[:, None])
+        return ((paths-target_path[:, None, None]).norm(dim=-1).amin(-1)-5.).clamp_min(0.)/5.
+
+    if selection=='single_reference':
+        # Only the subject's candidate varies. Each neighbor follows its
+        # single source-preferred trajectory; no neighbor candidate pair or
+        # joint optimizer enters this comparison.
+        paths=actor.candidate_risk(dict(packet),source,candidate_grid=candidates,return_paths=True)
+        reference=paths[:,:,candidate_subdivisions*(2*candidate_subdivisions+1)+candidate_subdivisions]
+        separation=(paths[:,:,None]-reference[:,None,:,None]).norm(dim=-1)
+        risk=actor.distance_risk(separation.amin(-1))
+        mask=~torch.eye(source.shape[1],dtype=torch.bool,device=source.device)
+        risk=(risk*mask[None,:,:,None]).sum(2)
+        unary=((candidates-preferred[:,:,None])/preference_width).square().mean(-1)
+        if capture_weight:
+            reach = interception_cost(paths)
+            index = candidate_subdivisions*(2*candidate_subdivisions+1)+candidate_subdivisions
+            others = reach[:, :, index][:, None].expand(-1, source.shape[1], -1)
+            others = others.masked_fill(~mask[None], float('inf')).amin(-1)
+            unary = unary+capture_weight*torch.minimum(reach, others[..., None])
+        choice=(unary+risk_weight*risk).argmin(-1)
+        gates=candidates.gather(2,choice[...,None,None].expand(-1,-1,1,2)).squeeze(2)
+        return torch.cat((gates*source+(1.-gates)*rule,torch.ones_like(source_action[...,2:3])),-1)
+    forecast_packet = dict(packet)
+    if capture_weight:
+        forecast_packet['_retain_candidate_paths'] = True
+    risk=actor.candidate_risk(forecast_packet,source,pairwise=True,candidate_grid=candidates)
+    reach = interception_cost(forecast_packet['_retained_candidate_paths']) if capture_weight else None
+    _,order=public_return_context(packet,True,2)
+    batch=torch.arange(len(source),device=source.device)
+    candidates=candidates.gather(1,order[...,None,None].expand_as(candidates))
+    preferred=preferred.gather(1,order[...,None].expand_as(preferred))
+    if reach is not None:
+        reach = reach.gather(1, order[..., None].expand_as(reach))
+    risk=risk[batch[:,None,None],order[:,:,None],order[:,None,:]]
+    unary=((candidates-preferred[:,:,None])/preference_width).square().mean(-1)
+    b,n,k=unary.shape
+    identical=(candidates[:,:,:,None]-candidates[:,:,None,:]).abs().amax(-1)<1e-6
+    duplicate=(identical & torch.tril(torch.ones((k,k),dtype=torch.bool,device=source.device),-1)).any(-1)
+    unary=unary.masked_fill(duplicate,float('inf'))
+    if selection=='independent':
+        probability=(-unary).softmax(-1)
+        mask=~torch.eye(n,dtype=torch.bool,device=source.device)
+        expected=torch.einsum('bijgh,bjh,ij->big',risk,probability,mask.to(source.dtype))
+        cost = unary+risk_weight*expected
+        if capture_weight:
+            cost = cost+capture_weight*independent_fleet_minimum_cost(reach, probability)
+        choices=cost.argmin(-1)
+    elif selection=='joint':
+        scores=source.new_zeros((b,1));plans=torch.empty((b,1,0),dtype=torch.long,device=source.device)
+        pursuit = source.new_zeros((b, 1))
+        for vessel in range(n):
+            cost=scores[:,:,None]+unary[:,vessel,None]
+            for other in range(vessel):
+                pair=risk[:,other,vessel]
+                cost=cost+risk_weight*pair.gather(1,plans[:,:,other,None].expand(-1,-1,k))
+            if capture_weight:
+                next_pursuit = reach[:, vessel, None].expand(-1, plans.shape[1], -1)
+                if vessel:
+                    next_pursuit = torch.minimum(pursuit[..., None], next_pursuit)
+                cost = cost+capture_weight*(next_pursuit-(pursuit[..., None] if vessel else 0.))
+            flat=cost.flatten(1);length=min(beam_width,flat.shape[-1])
+            scores,index=flat.topk(length,largest=False)
+            if capture_weight:
+                pursuit = next_pursuit.flatten(1).gather(1, index)
+            ancestor=index//k
+            plans=torch.cat((plans.gather(1,ancestor[...,None].expand(-1,-1,vessel)),(index%k)[...,None]),-1)
+        if refine_all_plans:
+            # Joint fusion is nonconvex. Refining only the cheapest beam
+            # endpoint discards the other coordination basins already found.
+            # Retain that endpoint and refine every distinct beam plan under
+            # the SAME candidate-interaction objective before choosing one.
+            proposal_plans = plans.clone() if joint_feedback_topk else None
+            if pareto_refinement:
+                if joint_feedback_topk:
+                    raise ValueError('Pareto refinement compares the same factorized risk objective.')
+                reference = plans[:, 0].clone()
+                for _ in range(3):
+                    for vessel in range(n):
+                        cost = unary[:, vessel].clone()
+                        for other in range(n):
+                            if other == vessel:
+                                continue
+                            cost += risk_weight*risk[:, vessel, other].gather(
+                                2, reference[:, other, None, None].expand(-1, k, 1)).squeeze(-1)
+                        reference[:, vessel] = cost.argmin(-1)
+            for _ in range(3):
+                for vessel in range(n):
+                    cost=unary[:,vessel,None].expand(-1,plans.shape[1],-1).clone()
+                    for other in range(n):
+                        if other==vessel:continue
+                        cost+=risk_weight*risk[:,vessel,other].gather(2,
+                            plans[:,None,:,other].expand(-1,k,-1)).transpose(1,2)
+                    if capture_weight:
+                        peer_reach = torch.stack([reach[:, other].gather(1, plans[:, :, other])
+                            for other in range(n) if other != vessel], -1).amin(-1)
+                        cost += capture_weight*torch.minimum(reach[:, vessel, None], peer_reach[..., None])
+                    plans[:,:,vessel]=cost.argmin(-1)
+            if pair_refinements:
+                plans = refine_pair_blocks(unary, risk, plans, risk_weight, pair_refinements)
+            energy=source.new_zeros(plans.shape[:2])
+            for vessel in range(n):
+                energy+=unary[:,vessel].gather(1,plans[:,:,vessel])
+                for other in range(vessel):
+                    code=plans[:,:,other]*k+plans[:,:,vessel]
+                    energy+=risk_weight*risk[:,other,vessel].flatten(1).gather(1,code)
+            if capture_weight:
+                energy += capture_weight*torch.stack([reach[:, vessel].gather(1, plans[:, :, vessel])
+                    for vessel in range(n)], -1).amin(-1)
+            if joint_feedback_topk:
+                # Factorized paths are inexpensive proposals. Re-evaluate the
+                # most promising distinct maneuvers with all boats responding
+                # to the same evolving fleet state and source-policy feedback.
+                shortlist = distinct_fleet_shortlist(torch.cat((proposal_plans, plans), 1),
+                    torch.cat((scores, energy), 1), joint_feedback_topk)
+                proposed = candidates[:, None].expand(-1, shortlist.shape[1], -1, -1, -1).gather(
+                    3, shortlist[..., None, None].expand(-1, -1, -1, 1, 2)).squeeze(3)
+                physical_proposals = proposed.gather(2, order.argsort(-1)[:, None, :, None].expand(
+                    -1, shortlist.shape[1], -1, 2))
+                feedback_risk = coupled_actuator_risk(actor, packet, source, physical_proposals,
+                    synchronized=True, horizon=joint_feedback_horizon)
+                feedback_score = (((proposed-preferred[:, None])/preference_width).square().mean(-1).sum(-1)
+                                  +risk_weight*feedback_risk)
+                choices = shortlist[torch.arange(b, device=source.device), feedback_score.argmin(-1)]
+            elif pareto_refinement:
+                choices = pareto_fleet_refinement(
+                    unary, risk, plans, reference, risk_weight, componentwise=pareto_componentwise)
+                if pareto_feedback_horizons:
+                    choices = feedback_guarded_refinement(
+                        actor, packet, source, candidates, order, reference, choices, pareto_feedback_horizons,
+                        tail_horizon=pareto_feedback_tail, task_guard=pareto_task_guard)
+            else:
+                choices=plans[torch.arange(b,device=source.device),energy.argmin(-1)]
+        else:
+            choices=plans[:,0].clone()
+            for _ in range(3):
+                for vessel in range(n):
+                    cost=unary[:,vessel].clone()
+                    for other in range(n):
+                        if other==vessel:continue
+                        cost+=risk_weight*risk[:,vessel,other].gather(2,
+                            choices[:,other,None,None].expand(-1,k,1)).squeeze(-1)
+                    if capture_weight:
+                        peer_reach = torch.stack([reach[:, other].gather(1, choices[:, other, None]).squeeze(1)
+                            for other in range(n) if other != vessel], -1).amin(-1)
+                        cost += capture_weight*torch.minimum(reach[:, vessel], peer_reach[:, None])
+                    choices[:,vessel]=cost.argmin(-1)
+            if pair_refinements:
+                choices = refine_pair_blocks(
+                    unary, risk, choices[:, None], risk_weight, pair_refinements)[:, 0]
+    else:raise ValueError('Actuator candidate selection must be joint or independent.')
+    gates=candidates.gather(2,choices[...,None,None].expand(-1,-1,1,2)).squeeze(2)
+    gates=gates.gather(1,order.argsort(-1)[...,None].expand_as(gates))
+    command=gates*source+(1.-gates)*rule
+    physical=torch.cat((command,torch.ones_like(source_action[...,2:3])),-1)
+    if coupled_recovery:
+        # A long factorized forecast that still predicts contact after joint
+        # optimization supplies no feasible continuation. Replan that state
+        # with a shorter, mutually consistent feedback forecast.
+        selected_risk=torch.stack([risk[batch,i,j,choices[:,i],choices[:,j]]
+            for i in range(n) for j in range(i+1,n)],-1).amax(-1)
+        recover=selected_risk>actor.distance_risk(source.new_tensor(5.))
+        if recovery_distance is not None:
+            # A short feedback forecast resolves an imminent encounter. It
+            # cannot replace the long pursuit forecast merely because a
+            # distant, uncertain trajectory pair crosses later in time.
+            position=packet['motion'][...,:2]
+            separation=(position[:,:,None]-position[:,None,:]).norm(dim=-1)
+            separation=separation.masked_fill(torch.eye(n,dtype=torch.bool,device=source.device)[None],float('inf'))
+            recover&=separation.flatten(1).amin(-1)<recovery_distance
+        if bool(recover.any()):
+            subset={key:(value[recover] if torch.is_tensor(value) and value.ndim and value.shape[0]==b else value)
+                for key,value in packet.items()}
+            physical[recover]=refine_actuator_interactions(actor,subset,source_action[recover],
+                preferred_action[recover],beam_width=beam_width,risk_weight=risk_weight,
+                preference_width=preference_width,selection=selection,source_preference=source_preference,
+                prior_map=prior_map,coupled_prediction=True,contact_distance=contact_distance,
+                synchronized_prediction=True,commit_interventions=commit_interventions,
+                coupled_horizon=recovery_horizon,interaction_order=interaction_order,
+                expand_interactions=expand_interactions,coupled_tail=coupled_tail,
+                coupled_refinements=coupled_refinements,interior_fusion=interior_fusion)
+    return physical
+
+
+class ResponseFeedbackValue(nn.Module):
+    """Receding joint actuator fusion conditioned on observed motion responses.
+
+    Stored controls are convex coefficients, never alternative source-policy
+    commands. Each tick refreshes both original commands before decoding the
+    selected joint response. Unsupported encounters retain their predecessor.
+    """
+    def __init__(self, contexts, gates, max_distance=.15, response_gain=None,
+                 response_horizon=None, feedback_strength=1., maximum_correction=.15,
+                 water_relative=False, target_relative=False, response_operator=None,
+                 response_endpoint=None, independent_response_gain=None, joint_response=True,
+                 state_response=False, response_velocity=None, viability_lookahead=0.,
+                 feedback_objective='tracking', learning_objective=None, prior=None,
+                 minimum_clearance=0.):
+        super().__init__()
+        self.register_buffer('contexts', torch.as_tensor(contexts, dtype=torch.float32))
+        self.register_buffer('gates', torch.as_tensor(gates, dtype=torch.float32))
+        self.register_buffer('response_gain', None if response_gain is None else
+                             torch.as_tensor(response_gain, dtype=torch.float32))
+        self.register_buffer('response_horizon', None if response_horizon is None else
+                             torch.as_tensor(response_horizon, dtype=torch.float32))
+        self.register_buffer('response_operator', None if response_operator is None else
+                             torch.as_tensor(response_operator, dtype=torch.float32))
+        self.register_buffer('response_endpoint', None if response_endpoint is None else
+                             torch.as_tensor(response_endpoint, dtype=torch.float32))
+        self.register_buffer('response_velocity', None if response_velocity is None else
+                             torch.as_tensor(response_velocity, dtype=torch.float32))
+        self.register_buffer('independent_response_gain', None if independent_response_gain is None else
+                             torch.as_tensor(independent_response_gain, dtype=torch.float32))
+        self.max_distance = max_distance
+        self.feedback_strength = feedback_strength
+        self.maximum_correction = maximum_correction
+        self.water_relative = water_relative
+        self.target_relative = target_relative
+        self.feedback_objective = feedback_objective
+        self.joint_response = joint_response
+        self.state_response = state_response
+        self.viability_lookahead = viability_lookahead
+        self.minimum_clearance = minimum_clearance
+        self.prior = None if prior is None else ResponseFeedbackValue(**prior)
+
+    def forward(self, packet, action):
+        fallback = action if self.prior is None else self.prior(packet, action)
+        context, order = response_feedback_context(packet, self.water_relative)
+        if context.shape[-1] != self.contexts.shape[-1]:
+            return fallback
+        distance = (context[:, None]-self.contexts[None]).square().sum(-1)
+        # A learned finite response window has a physical clock. A nearby
+        # later pose does not authorize extending that intervention forever.
+        distance = distance.masked_fill(
+            (context[:, None, -1]-self.contexts[None, :, -1]).abs() > .001, float('inf'))
+        closest, index = distance.min(-1)
+        supported = closest <= self.max_distance**2
+        if not bool(supported.any()):
+            return fallback
+        gates = self.gates[index]
+        if self.response_gain is not None:
+            n = action.shape[1]
+            residual = (context-self.contexts[index])[:, :8*n].reshape(-1, n, 8)
+            velocity = 3.*residual[..., 2:4]
+            if self.target_relative:
+                velocity = velocity-5.*(context-self.contexts[index])[:, None, -3:-1]
+            horizon = self.response_horizon[index, None, None]
+            innovation = 30.*residual[..., :2]+horizon*velocity
+            if self.state_response:
+                innovation = torch.cat((innovation, horizon*velocity,
+                    2.*residual[..., 4:6], 2.*horizon*residual[..., 6:7]), -1)
+            if self.feedback_objective == 'response_value':
+                if self.response_operator is None or self.independent_response_gain is None:
+                    raise ValueError('Conditional response values require joint and independent response operators.')
+                # M2 supplies the learned response-value surface. M1 solves
+                # its coupled decision problem; its removal makes each boat
+                # optimize once with its teammates fixed at their current
+                # proposals. Neither arm directly executes the stored plan.
+                decision = action[..., 2:3].expand_as(gates).gather(
+                    1, order[..., None].expand(-1, -1, 2)).clone()
+                inverse = (self.response_gain if self.joint_response else self.independent_response_gain)[index]
+                for _ in range(3 if self.joint_response else 1):
+                    error = (self.response_operator[index]@(decision-gates).flatten(1)[..., None]
+                             +innovation.flatten(1)[..., None])
+                    adjustment = -(inverse@error).reshape(-1, n, 2)
+                    decision = (decision+self.feedback_strength*adjustment).clamp(0., 1.)
+                correction = decision-gates
+            elif self.feedback_objective == 'viability':
+                if self.response_operator is None or self.response_endpoint is None:
+                    raise ValueError('Response viability requires fitted conditional effects and endpoints.')
+                operator = self.response_operator[index]
+                reference = self.response_endpoint[index]
+                reference_velocity = (self.response_velocity[index] if self.response_velocity is not None
+                                      else torch.zeros_like(reference))
+                correction = torch.zeros_like(gates)
+                pairs = torch.triu_indices(n, n, 1, device=action.device)
+                left, right = pairs
+                def approach(position, velocity):
+                    time = (-(position*velocity).sum(-1)/velocity.square().sum(-1).clamp_min(1e-6))
+                    time = time.clamp(0., self.viability_lookahead)
+                    return position+time[..., None]*velocity, time
+                baseline_relative, _ = approach(reference[:, left]-reference[:, right],
+                    reference_velocity[:, left]-reference_velocity[:, right])
+                baseline = baseline_relative.norm(dim=-1)
+                clearance = baseline.clamp_max(5.2).clamp_min(self.minimum_clearance)
+                interceptor = reference.norm(dim=-1).argmin(-1)
+                batch = torch.arange(len(action), device=action.device)
+                capture_distance = reference[batch, interceptor].norm(dim=-1)
+                width = 7 if self.state_response else 2
+                response_jacobian = operator.reshape(-1, n, width, 2*n)
+                jacobian = response_jacobian[..., :2, :]
+                velocity_jacobian = (response_jacobian[..., 2:4, :]/horizon[..., None]
+                    if self.state_response else torch.zeros_like(jacobian))
+                identity = torch.eye(2*n, device=action.device, dtype=action.dtype)
+                for _ in range(3):
+                    effect = (operator@correction.flatten(1)[..., None]).reshape(-1, n, width)
+                    forecast = reference+innovation[..., :2]+effect[..., :2]
+                    forecast_velocity = reference_velocity+(innovation[..., 2:4]+effect[..., 2:4])/horizon if self.state_response else reference_velocity
+                    relative, encounter_time = approach(forecast[:, left]-forecast[:, right],
+                        forecast_velocity[:, left]-forecast_velocity[:, right])
+                    distance = relative.norm(dim=-1).clamp_min(1e-6)
+                    normal = relative/distance[..., None]
+                    encounter_jacobian = (jacobian[:, left]-jacobian[:, right]
+                        +encounter_time[..., None, None]*(velocity_jacobian[:, left]-velocity_jacobian[:, right]))
+                    derivative = (normal[..., None]*encounter_jacobian).sum(-2)
+                    deficit = (clearance-distance).clamp_min(0.)
+                    active = deficit > 0.
+                    target = forecast[batch, interceptor]
+                    target_distance = target.norm(dim=-1).clamp_min(1e-6)
+                    target_derivative = -(target[..., None]*jacobian[batch, interceptor]).sum(-2)/target_distance[:, None]
+                    target_deficit = (target_distance-capture_distance-.05).clamp_min(0.)
+                    target_active = (capture_distance < 7.) & (target_deficit > 0.)
+                    derivative = torch.cat((derivative, target_derivative[:, None]), 1)
+                    deficit = torch.cat((deficit, target_deficit[:, None]), 1)
+                    active = torch.cat((active, target_active[:, None]), 1)
+                    derivative = derivative*active[..., None]
+                    normal_matrix = derivative.transpose(1, 2)@derivative+.01*identity
+                    rhs = (derivative.transpose(1, 2)@(deficit*active)[..., None]).squeeze(-1)
+                    step = torch.linalg.solve(normal_matrix, rhs).reshape(-1, n, 2)
+                    correction = (correction+self.feedback_strength*step).clamp(
+                        -self.maximum_correction, self.maximum_correction)
+                    correction = (gates+correction).clamp(0., 1.)-gates
+            else:
+                correction = -(self.response_gain[index]@innovation.flatten(1)[..., None])
+                correction = (self.feedback_strength*correction.reshape(-1, n, 2)).clamp(
+                    -self.maximum_correction, self.maximum_correction)
+            gates = (gates+correction).clamp(0., 1.)
+        gates = gates.gather(1, order.argsort(-1)[..., None].expand(-1, -1, 2))
+        rule = packet['node'][..., 11:13]
+        command = gates*action[..., :2] + (1.-gates)*rule
+        decoded = torch.cat((command, torch.ones_like(action[..., 2:3])), -1)
+        return torch.where(supported[:, None, None], decoded, fallback)
+
+
+@torch.no_grad()
+def collect_response_feedback(actor, trajectories, horizon=16, perturbation=.2, device='cpu',root_stride=1):
+    """Measure single-vessel response interventions on paired real futures.
+
+    A trajectory contains saved simulator states, observations, RNG states and
+    its measured fusion coefficients. All branches refresh the
+    frozen source commands. Sampling stops the whole paired group at its first
+    terminal event, so every response has the same valid physical horizon.
+    """
+    import copy
+    import numpy as np
+    original_device = next(actor.parameters()).device
+    actor.to(device); records = []; random_state = np.random.get_state()
+    try:
+        for trajectory in trajectories:
+            n = len(trajectory[0]['gates'])
+            offsets = np.concatenate((np.zeros((1, 2*n)), perturbation*np.eye(2*n),
+                                      -perturbation*np.eye(2*n))).reshape(-1, n, 2)
+            for tick in range(0,len(trajectory),root_stride):
+                root=trajectory[tick]
+                environments = [copy.deepcopy(root['environment']) for _ in offsets]
+                observations = [root['observation'].copy() for _ in offsets]
+                states = [root['random_state'] for _ in offsets]
+                sequence = []; terminals = None
+                for step in range(min(horizon, len(trajectory)-tick)):
+                    source = actor.proposal_distribution(torch.as_tensor(np.stack(observations),
+                        dtype=torch.float32, device=device))[0].tanh().cpu().numpy()
+                    reference = trajectory[tick+step]['gates']
+                    gates = np.clip(reference[None]+offsets, 0., 1.)
+                    terminals = []
+                    for i, env in enumerate(environments):
+                        np.random.set_state(states[i])
+                        rule = (env.boids_actions-250.)/750.
+                        command = gates[i]*source[i]+(1.-gates[i])*rule
+                        action = np.column_stack((command, np.ones(n))).astype(np.float32)
+                        observations[i], _, terminal, _ = env.step(action, 'AdaRes')
+                        states[i] = np.random.get_state(); terminals.append(terminal)
+                    sequence.append(reference)
+                    if any(terminals):
+                        break
+                records.append(dict(packet=root['packet'], gates=root['gates'],
+                    horizon=len(sequence), offsets=offsets,
+                    positions=np.asarray([[[boat.x, boat.y] for boat in env.defender_list]
+                                          for env in environments]),
+                    attacker_positions=np.asarray([env.attacker.pos.copy() for env in environments]),
+                    defender_motion=np.asarray([[[boat.x, boat.y, boat.theta, *boat.velocity_r]
+                                                 for boat in env.defender_list] for env in environments]),
+                    attacker_velocity=np.asarray([env.attacker.vel.copy() for env in environments]),
+                    terminal_codes=terminals, sequence=np.asarray(sequence),
+                    scene=root.get('scene'), future=root.get('future')))
+                if len(records) % 16 == 0:
+                    print(dict(phase='paired_response_sampling', roots=len(records), horizon=horizon), flush=True)
+    finally:
+        np.random.set_state(random_state); actor.to(original_device)
+    return records
+
+
+def fit_response_feedback(records, ridge=.02, response_weight=1., max_distance=.15,
+                          water_relative=True, target_relative=False, context_bandwidth=.3,
+                          state_response=False, pooled_reference=False):
+    """Learn a local conditional response value from paired physical branches.
+
+    Each branch changes one vessel's actuator fusion, sharing the initial
+    state, continuation clock and future draws with its reference. The labels
+    are joint position responses, not duplicated terminal-return differences.
+    A quadratic value around successful responses gives a receding correction
+    through the fitted, generally nonseparable response operator.
+    """
+    import numpy as np
+    contexts, controls, horizons, operators, metrics, examples, endpoints, velocities = [], [], [], [], [], [], [], []
+    for record in records:
+        packet = {key: torch.as_tensor(value[None]) for key, value in record['packet'].items()}
+        context, order = response_feedback_context(packet, water_relative)
+        order = order[0].numpy(); n = len(order)
+        h = record['packet']['motion'][0, 2]
+        target = record['packet']['motion'][0, :2] + np.array(
+            [[np.cos(h), -np.sin(h)], [np.sin(h), np.cos(h)]]) @ (30.*record['packet']['node'][0, 2:4])
+        axis = -target/max(np.linalg.norm(target), 1.)
+        rotation = np.array([[axis[0], axis[1]], [-axis[1], axis[0]]])
+        positions = np.asarray(record['positions'])
+        if target_relative:
+            positions = positions-np.asarray(record['attacker_positions'])[:, None]
+        outputs = positions@rotation.T
+        if state_response:
+            motion = np.asarray(record['defender_motion'])
+            velocity = motion[..., 3:5]-np.asarray(record['attacker_velocity'])[:, None]
+            heading = np.stack((np.cos(motion[..., 2]), np.sin(motion[..., 2])), -1)
+            time = .2*record['horizon']
+            outputs = np.concatenate((outputs, time*(velocity@rotation.T),
+                                      2.*(heading@rotation.T), 2.*time*motion[..., 5:6]), -1)
+        displacement = outputs[1:]-outputs[0]
+        response = displacement[:, order].reshape(len(displacement), -1)
+        offsets = np.asarray(record['offsets'])
+        sequence = np.asarray(record['sequence'])
+        exposure = np.clip(sequence[None]+offsets[:, None], 0., 1.)-sequence[None]
+        weight = np.arange(record['horizon'], 0, -1, dtype=float)
+        exposure = (exposure*weight[None, :, None, None]).sum(1)/weight.sum()
+        change = exposure[1:, order].reshape(len(displacement), -1)
+        # The zero-intervention response is exactly zero. No fitted factual
+        # intercept can absorb the conditional action effect.
+        operator = np.linalg.solve(change.T@change+1e-5*np.eye(2*n), change.T@response).T
+        endpoint = np.asarray(record['positions'])[0, order]
+        width = 7 if state_response else 2
+        metric = .1*np.eye(width*n)
+        for i in range(n):
+            for j in range(i+1, n):
+                relative = endpoint[i]-endpoint[j]
+                distance = np.linalg.norm(relative)
+                normal = rotation @ (relative/max(distance, 1e-8))
+                direction = np.zeros(width*n); direction[width*i:width*i+2] = normal
+                direction[width*j:width*j+2] = -normal
+                metric += response_weight*np.exp(-max(distance-5., 0.))*np.outer(direction, direction)
+        contexts.append(context[0].numpy()); controls.append(record['gates'][order])
+        operators.append(operator); metrics.append(metric); examples.append((change, response))
+        endpoints.append(positions[0, order]@rotation.T)
+        if state_response:
+            velocities.append(velocity[0, order]@rotation.T)
+        horizons.append(.2*record['horizon'])
+    contexts = np.asarray(contexts); controls = np.asarray(controls)
+    operators = np.asarray(operators); horizons = np.asarray(horizons)
+    distance = np.square(contexts[:, None]-contexts[None]).sum(-1)
+    # Share conditional effects across nearby observed responses. Identical
+    # initial contexts from several futures are repeated noise measurements,
+    # not four competing lookup entries whose first tie wins.
+    weights = np.exp(-distance/(2.*context_bandwidth**2))
+    weights *= np.abs(contexts[:, None, -1]-contexts[None, :, -1]) < .001
+    weights *= np.abs(horizons[:, None]-horizons[None]) < 1e-6
+    weights *= np.exp(-np.square(controls[:, None]-controls[None]).sum((-1, -2))/.25)
+    weights /= weights.sum(1, keepdims=True)
+    pooled = np.einsum('ij,jkl->ikl', weights, operators)
+    if pooled_reference:
+        if not target_relative or not state_response:
+            raise ValueError('Pooling factual motion requires relative positions and velocities.')
+        # Average conditional motion increments, not absolute endpoint poses.
+        # Identical public roots can have several future disturbances. The
+        # previous first-neighbor endpoint selected one of those disturbances
+        # even though the response operator was fitted over all of them.
+        rows=contexts[:,:8*controls.shape[1]].reshape(len(contexts),-1,8)
+        position=30.*rows[...,:2]
+        velocity=3.*rows[...,2:4]-5.*contexts[:,None,-3:-1]
+        drift=np.asarray(endpoints)-position-horizons[:,None,None]*velocity
+        acceleration=np.asarray(velocities)-velocity
+        endpoints=position+horizons[:,None,None]*velocity+np.einsum('ij,jkl->ikl',weights,drift)
+        velocities=velocity+np.einsum('ij,jkl->ikl',weights,acceleration)
+    gains, independent_gains, errors = [], [], []
+    for operator, metric, (change, response) in zip(pooled, metrics, examples):
+        normal = operator.T@metric@operator+ridge*np.eye(operator.shape[1])
+        right = operator.T@metric
+        gain = np.linalg.solve(normal, right)
+        independent = np.zeros_like(gain)
+        for vessel in range(operator.shape[1]//2):
+            indices = slice(2*vessel, 2*vessel+2)
+            independent[indices] = np.linalg.solve(normal[indices, indices], right[indices])
+        independent_gains.append(independent)
+        gains.append(gain); errors.append(float(np.square(change@operator.T-response).mean()))
+    model = dict(contexts=contexts, gates=controls,
+        response_gain=np.asarray(gains), response_horizon=np.asarray(horizons),
+        response_operator=pooled, response_endpoint=np.asarray(endpoints),
+        response_velocity=np.asarray(velocities) if len(velocities) else None,
+        independent_response_gain=np.asarray(independent_gains),
+        max_distance=max_distance, water_relative=water_relative, target_relative=target_relative,
+        state_response=state_response,
+        learning_objective='paired physical-response conditional value')
+    return model, dict(roots=len(records), paired_branches=sum(len(r['offsets'])-1 for r in records),
+        response_fit_mse=float(np.mean(errors)), terminal_difference_labels=0,
+        context_bandwidth=context_bandwidth,
+        pooled_reference=pooled_reference,
+        mean_effective_response_roots=float(np.mean(1./np.square(weights).sum(1))))
+
+
+class ContinuousProgramValue(nn.Module):
+    """Select supported timed programs without quantizing their coefficients."""
+    def __init__(self,contexts,programs,roots,values,variances,bandwidth=.03,margin=.05,
+                 confidence=0.,learning_objective=None):
+        super().__init__()
+        for name,value,dtype in (('contexts',contexts,torch.float32),('programs',programs,torch.float32),
+                ('roots',roots,torch.long),('values',values,torch.float32),('variances',variances,torch.float32)):
+            self.register_buffer(name,torch.as_tensor(value,dtype=dtype))
+        self.bandwidth=bandwidth;self.margin=margin;self.confidence=confidence
+
+    def forward(self,packet,action):
+        context,order=public_return_context(packet,True,5,action)
+        if context.shape[-1]!=self.contexts.shape[-1]:return action
+        distance=(context[:,None]-self.contexts[None]).square().sum(-1)
+        support=torch.exp(-distance/(2.*self.bandwidth**2))[:,self.roots]
+        gain=support*(self.values-self.confidence*self.variances.sqrt())[None]
+        best,selected=gain.max(-1);accept=best>self.margin
+        if not bool(accept.any()):return action
+        program=self.programs[selected].gather(1,order.argsort(-1)[...,None].expand(-1,-1,4))
+        replacement=torch.cat((action[...,:3],program[...,:1],program[...,2:3],program[...,1:2],
+            torch.zeros_like(action[...,:2]),program[...,3:4]),-1)
+        if action.shape[-1]==3:
+            free=torch.full_like(action[...,:1],-1.)
+            action=torch.cat((action,free,torch.ones_like(free),free),-1)
+        if action.shape[-1]<9:
+            # A legacy all-feedback instruction redecides on the next tick.
+            # Padding another batch row to an explicit program must not turn
+            # this rejected intervention into a long, all-feedback commitment.
+            holds=(action[...,[3,5]]>=0.).any(-1).any(-1)|(action[...,5]==-2.).all(-1)
+            duration=torch.where(holds[:,None,None],action[...,4:5],torch.ones_like(action[...,4:5]))
+            action=torch.cat((action[...,:4],duration,action[...,5:]),-1)
+            boundary=torch.floor(action[...,4:5]/2.)
+            offsets=action[...,6:8] if action.shape[-1]>=8 else torch.zeros_like(action[...,:2])
+            action=torch.cat((action[...,:6],offsets,boundary),-1)
+        return torch.where(accept[:,None,None],replacement,action)
+
+
 class JointInterventionValue(nn.Module):
     """Local joint potentials reconstructed from single-vessel graph edges.
 
@@ -1230,7 +5631,7 @@ class JointInterventionValue(nn.Module):
         self.context_version=context_version
         if context_version>=3 and effect_locality:
             raise ValueError('Control-conditioned values require matching all predecessor-control coordinates.')
-        self.program_model=None if program_model is None else SharedProgramPotential(**program_model).eval()
+        self.program_model=None if program_model is None else load_program_potential(program_model)
         self.register_buffer('program_options',None if program_options is None else
             torch.as_tensor(program_options,dtype=torch.float32))
         self.program_radix=4 if program_options is None else len(program_options)

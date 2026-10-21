@@ -1,342 +1,270 @@
 \documentclass[journal]{IEEEtran}
 \usepackage{amsmath,amssymb,booktabs,array,graphicx}
-\usepackage{tikz,pgfplots}
-\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit}
-\usepgfplotslibrary{groupplots,fillbetween}
-\pgfplotsset{compat=1.18}
 \usepackage[hidelinks]{hyperref}
 \newcommand{\E}{\mathbb{E}}
 \newcommand{\ind}{\mathbb{I}}
-\newcommand{\sg}{\operatorname{sg}}
-\newcommand{\mean}{\operatorname{mean}}
-\definecolor{navy}{HTML}{204A68}
-\definecolor{teal}{HTML}{00857D}
-\definecolor{orange}{HTML}{D27A32}
-\definecolor{purple}{HTML}{7E5B9B}
-\tikzset{box/.style={draw=navy,rounded corners=2pt,align=center,font=\scriptsize,
-  fill=navy!4,inner sep=5pt},flow/.style={-{Stealth[length=1.6mm]},thick,draw=navy}}
-\title{Interaction-Aware Cooperative Residual Reinforcement Learning for Multi-USV Target Defense}
+\newcommand{\clip}{\operatorname{clip}}
+\newcommand{\argmin}{\operatorname*{arg\,min}}
+\newcommand{\argmax}{\operatorname*{arg\,max}}
+\graphicspath{{figures/interaction/}}
+\title{Joint Fusion and Conditional Intervention Value Learning for Cooperative Multi-USV Target Defense}
 \author{Manuscript in preparation}
 \begin{document}
 \maketitle
+
 \begin{abstract}
-Multi-USV target defense requires individual maneuvers to form an effective team response against a more agile intruder. We develop an interaction-aware cooperative residual reinforcement learning framework that combines learned and Boids control through adaptive blending. Its policy mechanism conditions each vessel's blending coefficient on the motion relationships and concurrent candidate controls of its teammates. Its learning mechanism augments a joint critic with paired closed-loop return differences obtained by changing one vessel's current coefficient while retaining the other current decisions. Subsequent controls follow the same frozen policy on each branch's evolved state. The resulting value guides actor--critic policy optimization, while deployment uses the learned policy and a common safety filter. Matched learning, information, and model-budget controls are specified to evaluate the two mechanisms. Available fixed-policy diagnostics have not yet established a reliable task benefit from conditional-difference supervision; independent predictive-control results are retained as separate references.
+Cooperative target defense requires the control choices of individual vessels to form a successful team maneuver. We address two distinct decisions in learned--Boids controller fusion: which combination of fusion coefficients the fleet should execute, and when changing a local fusion decision improves the subsequent defense outcome. First, a candidate-interaction model predicts the motion induced by each vessel's admissible actuator mixtures and selects a joint configuration using their pairwise consequences. Second, a conditional intervention value model learns a shared task potential from complete, paired feedback continuations. Single-vessel differences identify useful changes within a joint configuration, while factual outcome calibration and intervention timing guide deployment. In completed development comparisons, the refined joint selector improves success by 10.7 percentage points over independent selection with identical candidates and predictions. The complete method achieves 95.2\% success across 856 development episodes, exceeding its frozen fusion predecessor by 9.0 points and a matched ordinary return MLP by 14.4 points. Five independent value fits retain an average 10.2-point advantage over the MLP. These results distinguish joint-selection gains from conditional-value gains; separate held-out, independently retrained baseline, opponent-adaptation, and high-fidelity evaluations determine their final empirical scope.
 \end{abstract}
 \begin{IEEEkeywords}
-Multi-robot systems, unmanned surface vehicles, cooperative residual reinforcement learning, candidate-control interaction, conditional value learning.
+Multi-USV target defense, cooperative control, controller fusion, joint decision making, conditional intervention value.
 \end{IEEEkeywords}
 
 \section{Introduction}
-Multi-USV target defense requires a team of defending vessels to intercept an intruder before it enters a protected region. Marine autonomy, territory guarding, and distributed pursuit connect this task to coordinated decision making and physical control~\cite{qiao,fu,chen}. When the intruder has a maneuverability advantage, defenders must use their spatial distribution and complementary approaches to sustain an effective interception~\cite{yan,fang,guo,zhou}. Their control decisions become increasingly coupled as vessels converge, making cooperative adaptation central to both regional defense and capture efficiency.
+A fleet defending a target against a faster intruder must coordinate how its vessels move together. Individually plausible maneuvers can send two defenders through the same narrow space, leave an interception direction uncovered, or disturb an otherwise successful approach. The central decision is therefore how available controls should be combined across the fleet, and which changes are worth making as the encounter unfolds. Target guarding and cooperative pursuit provide the task setting~\cite{fu,chen,fang}; learned marine control provides flexible individual maneuvers~\cite{guo,xue,lin}.
 
-Reinforcement learning provides a means to acquire such maneuvers from task feedback. Decentralized pursuit, aerial pursuit--evasion, multi-USV hunting, and integrated marine decision making illustrate this approach~\cite{souza,zhang,xue,lin}. Mean embeddings, joint value functions, and message-conditioned representations support learning in variable-size teams~\cite{huttenrauch,rashid,ma,li}. The present problem is how information about teammates' intended control should influence the use of each vessel's available control sources.
+ARBoids~\cite{tao} blends a learned SAC controller with a Boids controller using an adaptive coefficient. This preserves a structured coordination prior while allowing task experience to change the maneuver. We retain these two control sources and their original physical execution model. Our first contribution concerns the \emph{joint choice of mixtures}: a vessel's preferred coefficient depends on which control candidates its teammates execute. Observing teammate positions alone does not resolve this dependence. We predict the motion associated with concurrent candidate controls and select a combination using the resulting interaction costs.
 
-Rule-based coordination provides a structured control prior, while learned control can adapt maneuvers to the encounter. Residual learning and controller fusion combine these capabilities~\cite{johannink,rana,jeon}. ARBoids~\cite{tao} uses an adapter to blend learned and Boids actions as a function of individual observations, teammate relative states, and the vessel's own candidate actions. We retain these two control sources and study blending decisions conditioned additionally on the relationships between concurrent teammate candidates. The contribution concerns the decision value of those candidate relationships; teammate state information is already present in ARBoids.
+A joint selection criterion still does not determine whether a local change helps the final task. Avoiding an imminent encounter may delay capture; an early change may help where the same change after the intruder passes the fleet cannot. Our second contribution concerns the \emph{conditional value of changing a fusion decision}. We compare complete feedback continuations that differ in a specified vessel's mixture while retaining the other components of the current joint plan. Both branches encounter the same sampled future disturbances and then follow the same frozen controller on their own evolved states. These comparisons train a common task potential, so a local value difference remains consistent with the value of a complete fleet intervention.
 
-The corresponding learning problem is to evaluate how a local blending change affects the subsequent team response. Counterfactual evaluation, closed-loop rollout, and model-based value expansion provide relevant foundations~\cite{coma,bhattacharya,mve}. We compare two branches that differ in one vessel's current blending coefficient, keep all other current candidates and coefficients fixed, and resume the same feedback policy on each branch's own state. This supplies conditional return differences for the joint critic that trains the cooperative adapter. A common safety filter~\cite{brunke} separates physical execution from the attribution of task improvements; prediction in cooperative hunting~\cite{yu} provides further context for using future consequences in decision making.
+The resulting method connects physical interaction with task consequence. Joint fusion coordinates the current candidate controls. Conditional value learning decides whether to keep that configuration or execute a finite intervention, including a delayed intervention when the opportunity is more favorable. The two mechanisms have separate experimental questions: joint selection is compared with independent selection under the same candidate predictions, and conditional value learning is compared with ordinary absolute-return learning under the same observation, parameter, update, and deployment budgets.
 
-The method has three connected components. First, a cooperative residual framework preserves the complementary learned and Boids control sources. Second, candidate-interaction-conditioned adaptation and local-intervention value learning connect the blending representation to its task consequences. Third, matched learning and model-budget comparisons, together with agility, team-size, and opponent evaluations, test the mechanism's effect on defense. The current manuscript separates the implemented method and completed diagnostics from the learning results that remain to be established.
+The contributions are:
+\begin{itemize}
+\item A joint fusion rule that resolves interactions between actuator-level learned--Boids candidates while preserving the original control hull.
+\item A conditional intervention value model that connects paired single-vessel consequences to a shared complete-plan task potential, with a measured factual reference and explicit intervention timing.
+\item A mechanism-centered evaluation that separates whole-method performance, joint-selection benefit, and the increment over ordinary return learning, with paired failures and successful rescues retained in every comparison.
+\end{itemize}
 
 \begin{figure}[t]
-\centering
-\begin{tikzpicture}[scale=.058,font=\scriptsize]
-\fill[navy!5] (-52,-33) rectangle (58,35);
-\draw[navy,fill=navy!15] (0,0) circle (15);
-\node[align=center] at (0,0) {Protected\\region};
-\foreach \x/\y/\a/\name in {21/18/120/1,31/0/165/2,20/-18/225/3}{
-\begin{scope}[shift={(\x,\y)},rotate=\a]
-\draw[fill=teal!70,draw=teal] (4,0)--(-3,2)--(-3,-2)--cycle;
-\end{scope}
-\node[above] at (\x,\y+3) {$D_{\name}$};}
-\draw[fill=orange!80,draw=orange] (50,4)--(57,6)--(57,2)--cycle;
-\node[above] at (52,9) {Agile intruder};
-\draw[->,orange,thick] (49,4) .. controls (40,15) and (36,12) .. (25,6);
-\draw[dashed,teal] (21,18)--(31,0)--(20,-18)--cycle;
-\node[align=left,anchor=west] at (-49,-27) {Dashed links: same-cycle candidate messages\\Schematic geometry; not an experimental trajectory};
-\end{tikzpicture}
-\caption{Cooperative control composition for target defense. Dashed links carry concurrent candidate-control information; the drawing assigns no fixed maneuver roles. Defense succeeds through capture or survival to the 60-s deadline, with region entry and defender collision recorded separately.}
+\centering\includegraphics[width=\columnwidth]{fig1-task.pdf}
+\caption{Target defense and its two decision questions. The fleet must choose mutually compatible mixtures and determine whether a local change improves the eventual outcome. The drawing is schematic; measured trajectories appear in the mechanism and VRX comparisons.}
 \label{fig:task}
 \end{figure}
 
 \section{Task and Control Model}
-\subsection{Dynamics, observations, and outcomes}
-Let $N$ homogeneous defenders protect a circular target region of radius $15$ m against one intruder. The numerical environment follows the released three-degree-of-freedom WAM-V model~\cite{tao},
+\subsection{Dynamics and task outcomes}
+The numerical environment uses the released ARBoids vessel dynamics and task implementation~\cite{tao}. A defender obeys
 \begin{equation}
- \dot\eta_i=R(\psi_i)\nu_i,\qquad
- M\dot\nu_i+C(\nu_i)\nu_i+D(\nu_i)\nu_i=\tau_i,
+ \dot{\eta}_i=R(\psi_i)\nu_i,\qquad
+ M\dot{\nu}_i+C(\nu_i)\nu_i+D(\nu_i)\nu_i=\tau_i .
 \end{equation}
-with the source current perturbations and a $0.05$-s integration step. A command is held for four integration steps, giving a $0.2$-s control period. Differential thrust lies in $[-500,1000]$ N per thruster; intruder agility scales its thrust bounds. Observations contain target-relative and intruder-relative geometry, measured intruder velocity, Boids features, and teammate distance--bearing pairs. Candidate messages add measured defender position, heading, translational velocity, yaw rate, and both current action candidates. No future disturbance, true intruder agility, or centralized training state is an actor input.
+The integration period is $0.05$ s and the command period is $0.2$ s. Each defender thruster remains in $[-500,1000]$ N; the agility parameter scales the intruder's thrust bounds. The protected radius is $15$ m, and both capture and defender-collision thresholds are $5$ m.
 
-We use \texttt{paper-parameters-v1}: a run terminates at actual target entry ($d_{AT}\leq15$ m), a defender separation at or below $5$ m, capture ($\min_i d_{iA}<5$ m), or $60$ s. This is also the priority order for simultaneous terminal events. Independent physical collision and breach flags are retained alongside that exclusive outcome. The deadline is an absorbing task termination, with zero bootstrap value.
+We preserve the source termination order. Intrusion failure occurs when the intruder enters the protected radius \emph{or} its distance to the target becomes smaller than that of every defender. Defender collision is checked next, followed by capture, and then successful defense at the $80$-s deadline. The radial-pass condition is therefore included in reported source failures, even when the intruder has not physically crossed the target boundary. We additionally record physical boundary crossings, captures, collisions, and episode duration.
 
-\subsection{Control sources and nominal composition}
-For the learning realization, Boids supplies pursuit, separation, alignment, and cohesion forces using the released parameters. A shared learned candidate $\ell_i\in(-1,1)^2$ maps to physical thrust $u_i^L=750\ell_i+250$. The mixed nominal control is
+The controller observes current vessel geometry, measured velocity, and the available learned and Boids commands. It does not observe future disturbances or the intruder's future control sequence. Source dynamics, source policies, and the source opponent are shared across matched comparisons. The source APF opponent has an order-dependent obstacle update; canonical feature ordering does not change that simulator behavior.
+
+\subsection{Control sources and admissible mixtures}
+Let $u_i^{\mathrm{L}}$ and $u_i^{\mathrm{B}}$ be the current learned and Boids thrust vectors. We use two actuator coefficients,
 \begin{equation}
- u_i^{\rm nom}=\theta_i u_i^L+(1-\theta_i)u_i^B,\qquad 0\leq\theta_i\leq1.
+ u_i=g_i\odot u_i^{\mathrm{L}}+(1-g_i)\odot u_i^{\mathrm{B}},
+ \qquad g_i=(g_{i,1},g_{i,2})\in[0,1]^2 .
  \label{eq:mix}
 \end{equation}
-We define \emph{control composition} as the state-dependent combination of the learned and Boids sources in the nominal command of~\eqref{eq:mix}. The candidate controls and team composition configuration are
-\begin{equation}
- \mathcal A=\bigl((u_i^L,u_i^B)\bigr)_{i=1}^{N},\qquad
- \boldsymbol\Theta=(\theta_1,\ldots,\theta_N).
- \label{eq:configuration}
-\end{equation}
-Cooperative control composition seeks to match these local choices to inter-vessel interactions and the team task. Each blending coefficient describes the relative contribution of two sources to one nominal command: $\theta_i+(1-\theta_i)=1$. There is no shared cross-vessel coefficient budget or constraint $\sum_i\theta_i=1$. Local control authority is an interpretation of this relative contribution, not a transfer of actuator permissions.
+Allowing separate port and starboard coefficients gives the same admissible representation to joint and independent selectors. Both coefficients remain within the original componentwise control hull. The source adapter supplies a scalar preference, which is mapped to a bounded center $\bar g_i$ and shared by the two actuators. Each actuator chooses from $\{0,\bar g_i,1\}$, giving nine candidates per vessel. Duplicate candidates are coalesced.
 
-For fixed candidate controls,
-\begin{equation}
- \frac{\partial u_i^{\rm nom}}{\partial\theta_i}=u_i^L-u_i^B.
- \label{eq:composition-sensitivity}
-\end{equation}
-Thus coefficient variation translates into command variation through candidate disagreement. The current implementation adds a fixed second-order CBF filter, with a $7$-m barrier separation, the released relaxed quadratic-program settings, and identical physical saturation. This filter is absent from original ARBoids and is not one of the two proposed learning mechanisms. The complete method and its matched mechanism ablations share it; the original-method reference remains unfiltered. Writing $\mathbf u$ for the stacked thrust commands, execution in the filtered implementation is
-\begin{equation}
- \mathbf u^{\rm exec}=\mathcal F_{\rm CBF}(s,\mathbf u^{\rm nom}).
- \label{eq:execution}
-\end{equation}
-The blending coefficient therefore characterizes nominal composition, not the final motion's proportional contribution from each source. Pursuit, lateral interception, and region maintenance are functions to identify in recorded trajectories. They are not roles assigned by large or small coefficients: Boids itself includes pursuit, and the learned branch receives task, formation, and collision feedback. Relaxed CBF feasibility is evaluated through measured collision outcomes.
-
-\subsection{Task reward}
-The defender reward retains the paper's task, formation, and collision terms. Target entry yields $-100$ to each defender; capture yields $100$ to a defender within the capture radius, $50$ within three capture radii, and zero task reward otherwise. Each colliding defender receives one $-50$ penalty. Writing $e_i=(p_A-p_i)/\|p_A-p_i\|$, $q=\sum_i e_i$, and $e_T=p_A/\|p_A\|$, the formation term is
-\begin{equation}
- r_i^{\rm form}=\tfrac12 e_T^\top q/\max(\|q\|,\epsilon)-\|q\|/N.
-\end{equation}
-Terms are evaluated on terminal transitions too, with the exact released boundary comparisons retained in code. The joint learner uses $\bar r=N^{-1}\sum_i r_i$. Return, defense success, and capture time are distinct quantities throughout the evaluation.
-
-\section{Learning Cooperative Control Composition}
-The primary research object remains the original learned--Boids fusion. The two mechanisms below are implemented but have not yet established stable incremental task gains. A failed training run alone does not diagnose an action-space limitation.
-
-\subsection{Candidate-control interaction-conditioned blending}
-The first stage independently generates learned candidates from the shared ARBoids observation encoder. Its task and Boids encoders and masked mean teammate embedding feed the retained 512-unit decision backbone. Reparameterized Gaussian samples are squashed by $\tanh$ to form $\ell_i$. The second stage exchanges candidates from the same control instant. For each directed pair, a shared two-layer, 128-unit encoder receives
-\begin{equation}
-  z_{ij}=(\delta p_{ij}^{i}/60,\sin\delta\psi_{ij},\cos\delta\psi_{ij},
-  \delta v_{ij}^{i}/5,\delta r_{ij},\ell_i,b_i,\ell_j,b_j),
- \label{eq:candidate-relations}
-\end{equation}
-where $b_i=(u_i^B-250)/750$ and superscript $i$ denotes rotation into defender $i$'s heading frame. For valid non-self neighbors $\mathcal N_i$, the candidate-interaction message and conditional blending policy are
-\begin{equation}
- h_i^{\rm rel}=\frac{1}{|\mathcal N_i|}\sum_{j\in\mathcal N_i}f_\kappa(z_{ij}),\qquad
- \theta_i\sim\pi_\phi^g(\cdot\mid h_i,\ell_i,b_i,h_i^{\rm rel}).
- \label{eq:composition-policy}
-\end{equation}
-An empty neighbor mask yields a zero message. This representation conditions composition on current candidate relations; it imposes no requirement that different defenders use different coefficients. The gate mean adds a message-dependent residual to the original adapter logit; the residual initializes at zero. A learned gate log standard deviation initializes at $\log(0.1)$.
-
-With $h_i$ the backbone feature and $\epsilon_i^g\sim\mathcal N(0,1)$,
-\begin{equation}
- z_i^g=\mu_i^g(h_i,h_i^{\rm rel},\ell_i,b_i)+\sigma_i^g(h_i,h_i^{\rm rel})\epsilon_i^g,
- \quad \theta_i=\frac{\tanh z_i^g+1}{2}.
-\end{equation}
-Thus the joint density factorizes into a proposal stage and a conditional gate stage,
-\begin{equation}
-  \Pi_\phi(\ell,\boldsymbol\Theta\mid o)=\prod_i\pi_\phi^L(\ell_i\mid o_i)
- \prod_i\pi_\phi^g(\theta_i\mid h_i,h_i^{\rm rel},\ell_i,b_i).
-\end{equation}
-The gate log density includes both transformations:
-\begin{equation}
- \log\pi_i^g=\log\mathcal N(z_i^g;\mu_i^g,\sigma_i^g)
- -\log(1-\tanh^2 z_i^g)+\log2.
-\end{equation}
-We evaluate the log-Jacobian in a stable softplus form. Gate losses backpropagate through the candidate messages when the proposal branch is unfrozen. Deterministic evaluation uses the transformed Gaussian means in both stages.
-
-\begin{figure*}[t]
-\centering
-\begin{tikzpicture}[node distance=7mm and 10mm]
-\node[box] (obs) {Public observation\\512-unit backbone};
-\node[box,right=of obs] (cand) {Stage 1\\learned candidate $\ell_i$};
-\node[box,right=of cand] (rel) {Same-cycle pair encoding\\128 units + masked mean};
-\node[box,right=of rel] (gate) {Stage 2\\blending coefficient $\theta_i$};
-\node[box,right=of gate] (cbf) {Blend + common CBF\\executed physical thrust};
-\draw[flow] (obs)--(cand);\draw[flow] (cand)--(rel);\draw[flow] (rel)--(gate);\draw[flow] (gate)--(cbf);
-\node[box,below=of rel] (peer) {Peers' motion and candidates\\own and peer Boids commands};
-\draw[flow] (peer)--(rel);
-\node[box,below=16mm of cand] (roll) {Composition intervention\\paired feedback returns};
-\node[box,right=of roll] (critic) {Joint configuration value\\TD + conditional-difference loss};
-\draw[flow] (roll)--node[above,font=\scriptsize] {$G-G'$}(critic);
-\draw[flow,dashed] (critic.north east) to[bend right=18] node[right,font=\scriptsize] {SAC gradient} (gate.south);
-\node[draw=orange,dashed,fit=(roll)(critic),inner sep=5pt,label={[font=\scriptsize,text=orange]below:Training only: simulator and critics}] {};
-\end{tikzpicture}
-\caption{The coupled policy and learning mechanism. Candidate-control relations condition local blending; paired composition interventions supervise conditional differences in the joint configuration value. Actor--critic updates connect that evaluation to the policy. Deployment uses the actor and common CBF.}
-\label{fig:architecture}
-\end{figure*}
-
-\subsection{Joint configuration value and real-transition learning}
-For policy $\Pi$, let $\mathcal Q^\Pi(s,\mathcal A,\boldsymbol\Theta)$ denote the team's soft value conditioned on the current state, candidate controls, and complete composition configuration. Holding $\mathcal A$ fixed distinguishes a change in composition from an arbitrary replacement of the candidate controls. A local value can also be defined by averaging over teammates' coefficients under their policy. Retaining the full configuration enables the critic to represent differences across those teammate choices instead of only their average. This is value-level configuration interaction, distinct from the candidate-interaction message in~\eqref{eq:composition-policy}.
-
-In the implementation, $u_i^L$ is determined by $\ell_i$ and the Boids command by $s$, so the same value is represented as $Q^\Pi(s,a)$ with $a=(\ell,\boldsymbol\Theta)$. The transition includes the common CBF filter and subsequent vessel dynamics.
-
-Each of two critics encodes a node containing a defender's centralized kinematic state, normalized composed nominal thrust, left--right thrust difference, and Boids candidate. The action coordinates are $v_i=\theta_i\ell_i+(1-\theta_i)b_i$, where the corresponding physical thrust is $750v_i+250$ N and $b_i$ is the normalized Boids candidate. Equivalent proposal--gate factorizations therefore receive exactly the same value, as they produce the same input to the CBF; the current action's entropy is outside $Q$. The audited state representation additionally includes the measured ground velocity used by the CBF and the vessel's normalized position in the simulator's obstacle traversal order. Relative-to-water velocity alone does not determine the CBF input, and the released APF opponent is order dependent. These four additional node scalars correct the conditioned state without changing either controller. A symmetric pair encoder takes the sum and absolute difference of node embeddings and pair distance. Masked means pool nodes and non-self pairs. The critic head receives both pools, the intruder state, agility, remaining task time, and $N/7$, and outputs one team value. Shared encoders accept two through seven defenders, but invariance to changes in the simulator's traversal order is not imposed. Centralized information is restricted to critic training. This corrected representation is versioned as \texttt{execution-v2}; historical checkpoints retain their original \texttt{dynamics-v1} interpretation and cannot silently resume under the new representation.
-
-One replay record represents one complete team control cycle: observations, public kinematics, centralized state, proposals, all blending coefficients, actual filtered thrust, individual and mean rewards, next observations and states, and the terminal flag. Critic actions are $(\ell,\boldsymbol\Theta)$; filtered thrust is recorded for audit.
-
-The entropy term uses the same per-defender scale as the mean team reward. For stage $z$, define
-\begin{equation}
- e_\phi(o,a;z)=\frac{\ind[z=\mathrm{joint}]}{N}\sum_{i=1}^N
- \log\pi_\phi^L(\ell_i\mid o_i).
-\end{equation}
-During gate learning, the frozen proposal distribution supplies exogenous candidates and the gate optimizes physical task return. Joint learning regularizes the trainable proposal distribution at the per-defender scale. Gate sampling supports exploration, while its mean and variance learn through task value without a gate-density reward. For $a=(\ell,\boldsymbol\Theta)$, our real-data evaluator and soft actor--critic~\cite{sac} policy updates use
-\begin{align}
- y&=\bar r+\gamma(1-d)\left[\tfrac12\sum_{k=1,2}\bar B_k(s',a')-\alpha e_\phi(o',a';z)\right],\\
- L_B&=\sum_k\E[(B_k(s,a)-\sg(y))^2],\\
- L_{\rm TD}&=\sum_k\E[(Q_k(s,a)-\sg(y))^2],\\
- L_\pi&=\E[\alpha e_\phi(o,a;z)-\min_kQ_k(s,a)].
-\end{align}
-The real-data evaluator averages its two heads for bootstrapping; policy improvement retains the main-critic minimum. Full, Same-info, No-candidate-interaction, Short, and Model-return share this choice. Truncated rollout tails use the same evaluator average, while the registered conditional-value diagnostics retain their original definition.
-We use $\gamma=0.99$, target smoothing $0.005$, and minibatches of 4096 joint transitions. Adam learning rates are $10^{-4}$ for critics and $10^{-5}$ for the actor and temperature. Proposal temperature starts at $0.2$ and adapts during joint learning to a per-defender entropy target of $-2$; the gate stage has zero entropy cost and no temperature update. Each matched joint-learning arm has a main twin critic $Q$ and an independent twin bootstrap evaluator $B$, both with the same 512/128 widths and initialization. After initialization from complete real-episode returns, the evaluator receives only $L_B$ on real transitions, and its lagged copy follows $\bar B\leftarrow(1-\tau)\bar B+\tau B$. The main critic receives the real-transition loss and the arm's prescribed auxiliary loss. Auxiliary gradients and main-critic parameters never update $B$ or $\bar B$. Same-info retains the same evaluator updates; without auxiliary supervision its main and bootstrap critics remain identical. The additional evaluator updates are counted separately.
-
-\subsection{Local composition intervention and conditional return difference}
-Let $\boldsymbol\Theta^{(i)}=(\vartheta_i,\boldsymbol\Theta_{-i})$ mean replacing component $i$ by a reference coefficient $\vartheta_i$ while retaining the original indexing. The conditional value difference of this local composition change is
-\begin{equation}
- \begin{aligned}
- \Delta_i^\Pi(s,\mathcal A,\boldsymbol\Theta;\vartheta_i)
- &=\mathcal Q^\Pi(s,\mathcal A,\boldsymbol\Theta)\\
- &\quad-\mathcal Q^\Pi(s,\mathcal A,\boldsymbol\Theta^{(i)}).
- \end{aligned}
- \label{eq:conditional-composition-value}
-\end{equation}
-For a captured training state, sample one common first joint action and a defender index $i$. Draw $\vartheta_i$ uniformly from $\{0,0.5,1\}$. The alternate first action $a^{(i)}$ fixes $s$, $\mathcal A$, and $\boldsymbol\Theta_{-i}$ and changes only $\theta_i$. Both branches start from separate complete copies of the same simulator state and share the same external random-number stream and policy sampling noise. From the second control cycle onward, every defender recomputes both policy stages using its own branch's evolved observations under the same frozen policy. The intervention is applied once; it does not fix the subsequent coefficients. The CBF, task reward, discount, and termination rules are identical in both branches.
-
-For label batch $b$, freeze copies $(\Pi_b,\alpha_b,\bar B_b)$ of the policy, temperature, and tail evaluator. Let $H$ be the rollout horizon and $K\leq H$ the executed number of steps. Define
-\begin{align}
- G_H(s,a)&=\sum_{k=0}^{K-1}\gamma^k\bar r_k
- -\alpha_b\sum_{k=1}^{K-1}\gamma^k e_{\phi_b}(o_k,a_k;z)\nonumber\\
- &\quad+\ind[\text{not terminal at }K]\gamma^K\bar V(s_K),\\
- \bar V(s_K)&=\tfrac12\sum_{j=1,2}\bar B_{b,j}(s_K,a_K)-\alpha_b e_{\phi_b}(o_K,a_K;z).
-\end{align}
-The prescribed first action has no entropy contribution, consistent with the soft $Q$ convention. The subsequent action sample used for a truncated tail is shared by noise across branches. The actor, temperature, and real-data tail evaluator are frozen for an entire label batch, and the resulting targets stop gradients. Full, No-candidate-interaction, and Model-return use $H=300$ and reach task termination, so their labels contain no learned tail; Short uses $H=10$ and the truncated expression above. The sampled training target is
-\begin{equation}
- \widehat{\Delta G}_{H,i}=\frac{1}{R}\sum_{r=1}^{R}\bigl[G_H^{(r)}(s,a)-G_H^{(r)}(s,a^{(i)})\bigr].
- \label{eq:paired-composition-target}
-\end{equation}
-For training, $R=8$: the state, first action, and intervention remain fixed across repetitions; future environment and policy noise are independent across repetitions and shared within each pair. The label combines closed-loop simulated rewards with a frozen value tail when the horizon is truncated. Its within-state Monte Carlo standard error is recorded. Thus the supervision contains simulated consequences of the composition change, rather than only a difference between the current critic's own predictions. The ordinary-return control uses the mean of each branch over the same eight repetitions.
+The three-vessel source SAC policy is the common pretrained control source in the current six-vessel mechanism studies. Its mean teammate embedding permits the observation mapping to other fleet sizes. Training a source policy directly with six vessels is a separate baseline experiment; its results are not replaced by this transfer baseline.
 
 \begin{figure}[t]
-\centering
-\begin{tikzpicture}[node distance=6mm and 2mm]
-\node[box] (s) {Fixed state $s$ and candidates $\mathcal A$\\same initial configuration $\boldsymbol\Theta$};
-\node[box,below left=of s] (a) {Original composition\\$\boldsymbol\Theta$};
-\node[box,below right=of s] (b) {Local intervention\\$\theta_i\leftarrow\vartheta_i$};
-\node[box,below=of a] (fa) {Own-state feedback\\$\bar r_0,\bar r_1,\ldots,\bar V$};
-\node[box,below=of b] (fb) {Own-state feedback\\$\bar r'_0,\bar r'_1,\ldots,\bar V'$};
-\draw[flow] (s)--(a);\draw[flow] (s)--(b);\draw[flow] (a)--(fa);\draw[flow] (b)--(fb);
-\draw[<->,dashed,teal] (fa)--node[above,font=\scriptsize] {shared noise}(fb);
-\node[below=6mm of fa.south east,anchor=north,font=\small] {$\Delta G_H=G_H(s,a)-G_H(s,a^{(i)})$};
-\end{tikzpicture}
-\caption{A local composition intervention fixes the current state, both candidate controls of every defender, and all other current coefficients. Later actions follow the same policy on each branch's own state. The label estimates a conditional soft-return difference for the composition variable.}
-\label{fig:intervention}
+\centering\includegraphics[width=\columnwidth]{fig2-architecture.pdf}
+\caption{Execution path. The original learned and Boids controllers produce current commands. Mechanism~1 jointly selects their mixtures. Mechanism~2 evaluates finite interventions against that factual controller; accepted interventions retain the same feedback control sources throughout their execution window.}
+\label{fig:architecture}
 \end{figure}
 
-\subsection{Composition-specific conditional value supervision}
-The complete method adds
+\section{Mechanism 1: Joint Selection of Fusion Candidates}
+\subsection{Candidate motion and pairwise interaction}
+For every candidate $g_i^k$, a public-state nominal model predicts the vessel trajectory over $3.2$ s at $0.1$-s prediction steps. Learned and Boids commands are recomputed every $0.2$ s on predicted observations. The candidate coefficient is retained over this forecast, and the executed fleet replans at the physical command rate. This predictor describes the motion associated with candidate intent; it does not replace the complete task continuations used for value learning.
+
+For two candidates, define
 \begin{equation}
- L_\Delta=\sum_{j=1}^2\E\left[\left(Q_j(s,a)-Q_j(s,a^{(i)})-
-  \sg\{\widehat{\Delta G}_{H,i}\}\right)^2\right]
+ d_{ij}^{k\ell}=\min_{\tau\in[0,H]}
+ \|\hat p_i^k(\tau)-\hat p_j^\ell(\tau)\|,\qquad
+ \psi_{ij}(k,\ell)=[7-d_{ij}^{k\ell}]_+^2 .
 \end{equation}
-to the real-transition loss: $L_Q=L_{\rm TD}+0.1L_\Delta$. The ordinary model-return control uses
+The unary term penalizes departure from the source preference,
 \begin{equation}
- \begin{aligned}
-  L_G=\tfrac12\sum_j\E\bigl[&(Q_j(s,a)-\sg G_H(s,a))^2\\
-  &+(Q_j(s,a^{(i)})-\sg G_H(s,a^{(i)}))^2\bigr].
- \end{aligned}
+ \phi_i(k)=\frac12\sum_{a=1}^{2}
+       \left(\frac{g_{i,a}^k-\bar g_i}{0.4}\right)^2 .
 \end{equation}
-Both objectives consume both branches. Each method generates labels under its own current frozen policy. The random-seed rule, snapshot sampling, intervention distribution, pair count, and horizon are matched; trajectories need not coincide after policies diverge. This avoids assigning another policy's continuation return to a method's own conditional value. Real transitions learn task value, paired consequences distinguish the conditional effect of local composition, and the actor objective transmits that evaluation to the blending policy. This supervision targets the composition variable and its closed-loop consequences within actor--critic learning; it does not introduce a separate role or responsibility allocator.
+The joint fleet configuration minimizes
+\begin{equation}
+ \boldsymbol{k}^{*}\approx\argmin_{\boldsymbol{k}}
+ \left[\sum_i\phi_i(k_i)+32\sum_{i<j}\psi_{ij}(k_i,k_j)\right].
+ \label{eq:joint}
+\end{equation}
+The interaction term depends on both vessels' selected candidates. Its role is to distinguish complete combinations that can have similar individual preferences but different physical compatibility.
 
-The long variants run to actual task termination, for at most $H=300$ control cycles (the remaining portion of the 60-s episode); the short variant uses $H=10$ (2 s). After critic warmup, every 1000 real transitions produces 64 fixed root interventions drawn from a rolling pool of 256 snapshots sampled every 16 transitions. Each root uses eight paired futures. The 64 averaged labels are reused between refreshes alongside the 4096-transition real minibatch, a ratio of $1/64$; rollout generation does not cover all 4096 samples at every update. A new batch replaces the previous labels. The exact conditional-return interpretation refers to the generating snapshot $\Pi_b$; reusing labels while the actor changes introduces a policy-lag approximation. Fixed-policy critic diagnostics hold this continuation policy constant. No auxiliary rollout transition enters the ordinary replay. The implementation uses the complete training simulator for labels. Long-label error includes finite-sample variability; Short additionally depends on a bootstrapped tail. Real transitions, simulated transitions, gradient updates, and wall time are counted separately.
+\subsection{Joint search and the matched independent selector}
+A width-128 beam constructs complete configurations, followed by three coordinate sweeps. The refined selector additionally refines every retained beam endpoint and performs one pair-block sweep. It accepts a refinement only when both total preference departure and total predicted interaction cost are no worse than the original joint solution. This improves search within the same candidate library and objective.
 
-\subsection{Training procedure and curriculum}
-At each control cycle, the shared policy generates learned candidates, combines them with Boids candidates and allowed teammate messages, and samples the blending coefficients. The common CBF maps nominal controls to executed thrust, and the complete team transition enters replay. Periodically sampled training states provide single-vessel interventions and paired closed-loop consequences. Real-transition TD and the declared auxiliary objective update the joint critic; the actor is optimized through the critic. The policy, return convention, and tail evaluator are held fixed within each label batch.
+The independent comparator receives the identical candidates, trajectories, and pairwise cost tensor. With source-preference probabilities $p_j(\ell)\propto\exp[-\phi_j(\ell)]$, it chooses
+\begin{equation}
+ k_i^{\mathrm{ind}}=\argmin_k
+ \left[\phi_i(k)+32\sum_{j\ne i}\sum_\ell p_j(\ell)\psi_{ij}(k,\ell)\right].
+ \label{eq:independent}
+\end{equation}
+Thus both methods account for the same predicted candidate interactions. The comparison isolates the consequence of selecting a joint configuration instead of minimizing expected cost independently. Joint optimization has additional search cost, which is reported separately from prediction cost.
 
-The initial stage freezes the proposal branch and trains the adapter. Subsequent joint learning updates both branches under the same control structure. The agility curriculum uses $L_{\rm agi}\sim U(\bar L_{\rm agi}-0.5,\bar L_{\rm agi}+0.5)$ with $\bar L_{\rm agi}=2.0+0.25k$, $k=0,1,2,3$. All compared arms share the initial policy, real-transition budget, update schedule, CBF, and task protocol. The saved configuration specifies the stage lengths, rollout horizon, repetition count, and any evaluator warmup. Source hashes and raw episode outcomes bind results to that configuration.
+\begin{figure*}[t]
+\centering\includegraphics[width=\textwidth]{fig3-joint-fusion.pdf}
+\caption{Mechanism~1 on development scene 431019006. The top panels compare identical candidate forecasts at a common state at 1.2 s on the independent trajectory. The bottom panels replay both complete policies from the same initial state and future: independent selection collides at 1.8 s, whereas joint selection captures at 17.8 s. This illustration is the first joint rescue of an independent collision in the fixed 4310 row order.}
+\label{fig:joint}
+\end{figure*}
 
-\section{Experimental Protocol and Available Evidence}
-\subsection{Experimental setup}
-The main learning experiments use the released USV dynamics, the common CBF, and the 60-s paper termination protocol. Capture, target breach, inter-defender collision, and timeout are reported separately; every non-capture episode receives the 60-s cap when comparing capture time. Training and evaluation configurations specify team size, intruder agility, initialization, and disturbance streams. Paired comparisons share scenarios and external disturbances, while independent confirmation uses previously unused streams. Computation records distinguish real environment transitions, model transitions, optimizer updates, label generation, and deployment latency.
+\section{Mechanism 2: Conditional Intervention Value}
+\subsection{A complete intervention and its factual continuation}
+Let $\pi_0$ be the frozen predecessor: either the source fusion controller or the joint fusion controller. An intervention $z=(\boldsymbol c,d,h)$ specifies actuator mixtures, delay $d$, and duration $h$, measured in physical control ticks. For each vessel, code zero retains the predecessor's decision; the other nine codes specify actuator pairs in $\{0,0.5,1\}^2$. Before the delay and after the intervention window, the controller follows $\pi_0$. During the window, its learned and Boids commands still update from the current state while the specified mixture is held. Unchanged vessels continue to respond through the predecessor.
 
-\subsection{Cooperative behavior and prior task evidence}
-\label{sec:earlier}
-Earlier online-selection experiments motivate both the research object and the learning signal. Under the same instantaneous risk objective, independent and joint coefficient selection achieved 403/512 and 433/512 successes, respectively, with collisions decreasing from 55 to 29. The comparison shows that organizing the same local control sources differently can change team outcomes, motivating cooperative control composition.
+For public context $x$ and sampled future $\omega$, let
+\begin{align}
+ Y(x,z,\omega)&=\ind\{\text{complete continuation succeeds}\},\\
+ V(x,z)&=\E_\omega[Y(x,z,\omega)] .
+\end{align}
+The factual option $z_0$ follows $\pi_0$ throughout. Two complete options $z,z'$ define a single-vessel comparison when they share timing and all vessel codes except one. Their measured conditional difference is
+\begin{equation}
+ \widehat\Delta(x;z,z')=
+ \frac{\sum_r w_r[Y(x,z',\omega_r)-Y(x,z,\omega_r)]}{\sum_r w_r}.
+ \label{eq:paired}
+\end{equation}
+Common futures pair the outcomes; later controls are recomputed on each branch's evolved state. Full terminal outcomes include failed as well as successful branches. Sampling may emphasize development failures, but deployed decisions receive only the current context.
 
-Table~\ref{tab:legacy} retains the preceding six-defender, 1024-scenario results under the 80-s source protocol. ARBoids+CBF, the matched short selector, and the adaptive long selector all recorded zero collisions, while their capped capture times were 21.095, 20.681, and 17.087 s. The long selector reduced capped time by 17.38\% relative to the matched short selector. These results motivate evaluating sustained task consequences in addition to immediate safety. The long selector chose online among five whole-team feedback candidates using existing policies. The new experiments ask whether the proposed composition-specific learning mechanism can acquire useful choices within the policy; its results are reported separately under the 60-s protocol.
+\subsection{One task potential for local differences and complete plans}
+A candidate-conditioned graph network represents a shared scalar potential $V_\theta(x,z)\in[0,1]$. Node features contain vessel state, both source controls, the factual control, the intervention code, and its physical command change. Pair messages encode relative geometry and nominal response features. Fleet pooling and timing features produce the complete-plan value. Local differences use this same potential,
+\begin{equation}
+ \Delta_\theta(x;z,z')=V_\theta(x,z')-V_\theta(x,z).
+\end{equation}
+Consequently, reversing a comparison reverses its sign, and differences sum to zero around a closed comparison cycle. The method does not add independent local scores to approximate a fleet outcome.
+
+The learning objective combines complete outcomes with their conditional differences:
+\begin{equation}
+ \mathcal L=
+ \mathcal L_Y+4\mathcal L_{\mathrm{local}}
+ +2\mathcal L_{\mathrm{factual}\Delta}
+ +\mathcal L_{\mathrm{rank}}+4\mathcal L_{\mathrm{factual}}
+ +\mathcal L_{\mathrm{bank}} .
+ \label{eq:loss}
+\end{equation}
+Here $\mathcal L_Y$ is binary outcome cross entropy, $\mathcal L_{\mathrm{local}}$ fits same-future single-vessel differences, and $\mathcal L_{\mathrm{factual}\Delta}$ fits differences from the factual option. The ranking term uses outcome-discordant pairs while retaining neutral pairs in its normalization. The last two terms anchor measured factual outcomes and additional states from complete factual trajectories. Sampling corrections retain the chosen comparison population.
+
+Three width-64 models receive 8,000 updates each, for 24,000 total updates and 145,731 trainable parameters. The matched ordinary-return comparator is one three-hidden-layer ReLU MLP with width 234 and 145,783 parameters. It receives the same 66,451 unique terminal observations, derived labels, factual-state observations, candidate catalog, and 24,000 updates. Its objective is pooled absolute-outcome cross entropy and its decision is the maximum predicted return. The graph representation, paired objectives, factual calibration, and local support model are constituents of the proposed mechanism; matching network parameter count does not equate their extra calibration storage or inference cost.
+
+\subsection{Factual calibration, timing, and execution}
+A measured factual bank estimates the success probability of retaining $\pi_0$ in a nearby context. Calibration transports that factual value to the complete neural potential while preserving its learned differences except where the success range $[0,1]$ requires clipping. Locally measured paired residuals then correct the value differences. Rescue and harm observations, ensemble disagreement, and distance from observed support contribute to the decision penalty.
+
+An intervention that starts after factual termination cannot change that outcome. For delay $d$, factual trajectory data provide estimates of survival until $d$, separately for factual success and failure. These estimates bound possible rescue and harm and prevent a delayed option from claiming an opportunity that has already ended. The deployed rule is
+\begin{equation}
+ z^*=\argmax_{z\ne z_0}\{\widehat\Delta(x;z_0,z)-\beta U(x,z)\},
+\end{equation}
+and executes $z^*$ only if this score exceeds a positive margin. Otherwise it retains the factual controller and revisits the decision on the next eligible observation. The reference implementation queries every five physical ticks and accepts at most one intervention per episode. The ordinary MLP shares this observation clock and intervention budget.
+
+The uncertainty penalty is a decision quantity, not a guaranteed coverage interval for an unseen state. Development importance weights specify objective mass rather than independent replications. New refits use effective future counts for the rescue/harm penalty. Replacing $\pi_0$ requires freshly generated states and terminal labels; outcomes measured under one predecessor are not relabeled as outcomes of another.
+
+\begin{figure*}[t]
+\centering\includegraphics[width=\textwidth]{fig4-intervention-value.pdf}
+\caption{Mechanism~2. Paired continuations share the initial state, other current decisions, frozen continuation policy, and sampled future. Their eventual outcomes supervise a shared task potential. Factual success, intervention delay, and measured support determine whether the selected change is executed. The ranking panel compares six randomly sampled candidates at each of 64 new states using eight shared futures; error bars are 95\% intervals from a stratified bootstrap over states.}
+\label{fig:intervention}
+\end{figure*}
+
+\section{Experimental Design}
+The evidence follows three comparisons: the complete method against adequately trained relevant baselines; joint versus independent fusion with matched candidates and predictions; and conditional intervention value versus matched ordinary return learning. Four configurations separate the two mechanisms: F00 uses neither mechanism, F10 uses joint fusion, F01 uses conditional value on the source predecessor, and F11 uses conditional value on the joint predecessor. Each value model is trained with continuations from its own frozen predecessor.
+
+All primary contrasts pair the same initial layout, agility, fleet size, and future seed. Repeated futures from one layout remain in the same bootstrap cluster. Success differences, rescue/harm counts, collision, and capped duration are reported together. Capture-only duration is secondary because successful episodes can differ across methods. Independent learning repetitions are distinguished from additional evaluation seeds and additional future samples.
+
+The current 856-episode development collection contains 256 episodes from the original source suite and 200 episodes in each of three later suites. The source suite repeats 64 layouts under four futures; the other suites contain new layouts. The 4310 suite did not enter the reference value-training data, but its repeated use in model selection makes it development evidence. The reserved 4322 layout family remains outside development and is evaluated only after the method and comparators are frozen.
+
+Five value-learning repetitions use seeds 42--46 with the same frozen source and fusion predecessor. They test value-learning repeatability. Independent source-policy retraining and complete pipeline refitting are separate experiments. Baseline SAC, residual policy, and ARBoids runs retain the source million-step training budget, with the fleet size and actual random seed recorded explicitly.
+
+\section{Results}
+\subsection{Complete method and the four configurations}
 \begin{table}[t]
-\caption{Earlier online-selection evidence motivating composition and long-term task evaluation; original 80-s protocol}
-\label{tab:legacy}\centering\scriptsize
-\begin{tabular}{@{}lrrrr@{}}\toprule
-Original method & Success & Capture & Collision & $T_{80}$ (s)\\\midrule
-Unfiltered ARBoids & 146 & 146 & 878 & 70.248\\
-ARBoids+CBF & 1000 & 998 & 0 & 21.095\\
-Matched short selector & 993 & 992 & 0 & 20.681\\
-Strong fixed 2-s selector & 1008 & 1007 & 0 & 19.423\\
-Adaptive long selector & 1024 & 1022 & 0 & 17.087\\
-Guard-oriented selector & 1020 & 954 & 0 & 27.573\\
-Fixed 1-s long selector & 1024 & 1022 & 0 & 16.907\\\bottomrule
+\caption{Completed development results. Counts use the same paired episodes within each column. The source controller is transferred from three-vessel training; this is not the final six-vessel retrained baseline comparison.}
+\label{tab:development}\centering\scriptsize
+\begin{tabular}{@{}lrrrrr@{}}\toprule
+Method & Source & 4310 & Earlier & Later & Total\\
+ & /256 & /200 & /200 & /200 & /856\\\midrule
+F00: source & 37 & 21 & 14 & 25 & 97\\
+F10: joint fusion & 225 & 171 & 169 & 173 & 738\\
+F01: conditional value & 111 & 57 & 64 & 64 & 296\\
+F11: complete & 254 & 175 & 196 & 190 & 815\\
+Matched ordinary MLP & 221 & 163 & 157 & 151 & 692\\\midrule
+Independent fusion & 205 & 153 & 153 & 160 & 671\\
+Refined joint fusion & 236 & 176 & 172 & 179 & 763\\\bottomrule
 \end{tabular}
 \end{table}
+The complete reference method succeeds in 815 of 856 episodes (95.2\%), compared with 738 (86.2\%) for its frozen joint-fusion predecessor. It rescues 87 predecessor failures and harms 10 predecessor successes, adding 9.0 percentage points with a layout-cluster bootstrap interval of [6.9,11.2] points. These development intervals describe resampling uncertainty and do not correct for adaptive model selection. F01 also improves on F00, showing that the value mechanism can recover useful interventions without joint fusion, while the much stronger F11 performance demonstrates the benefit of applying it to coordinated candidate choices.
 
-The later 22-candidate fixed-guard and 43-candidate adaptive joint predictors remain independent strong references. In two frozen six-defender banks, the adaptive predictor captured 512/512 intruders without breaches or collisions. The fixed-guard predictor also captured every intruder and had lower mean capped times in both banks: 19.814 versus 21.103~s, and 20.205 versus 20.523~s. These are predictive-controller outcomes. They do not establish a learned-policy gain, and neither predictor replaces Boids in the proposed residual policy.
+The refined standalone joint selector obtains 763 successes (89.1\%). It is a stronger mechanism-one configuration than the predecessor used to collect the reference F11 data. Its corresponding value model is refitted from fresh complete continuations before making a matched claim about their combination. The two joint configurations are identified separately in the table.
 
-\subsection{Learning performance and mechanism controls}
-The primary task reference is original ARBoids without CBF. ARBoids with the added CBF and matched continued training is reported separately as a supplementary control; superiority over it on every metric is not a prerequisite for the proposed contributions. Table~\ref{tab:learning-design} states the comparison roles. The complete-method contrast with original ARBoids includes execution-filter and training-budget differences, so it alone cannot identify either learning mechanism's contribution. Matched ablations retain the same execution filter and learning budget. The candidate-interaction comparison keeps teammate motion information and the vessel's own candidates available in both arms. Ordinary-TD candidate-on/off probes isolate the policy mechanism before interpreting its combination with auxiliary supervision.
-\begin{table}[t]
-\caption{Matched controls for the original residual learning mechanism.}
-\label{tab:learning-design}\centering\scriptsize
-\begin{tabular}{@{}p{.29\columnwidth}p{.64\columnwidth}@{}}\toprule
-Method & Question addressed\\\midrule
-Original ARBoids, no CBF & Complete-method task comparison with the original adaptive residual policy\\
-ARBoids + CBF, continued training & Supplementary control with the added execution filter and matched additional training budget\\
-Same-info, ordinary TD & Increment from paired conditional supervision\\
-No peer candidates & Increment from explicit teammate candidate relationships\\
-TD + absolute returns & Difference supervision versus the same model-return budget\\
-Short conditional returns & Contribution of longer closed-loop consequences\\
-Full & Combined candidate-interaction and conditional-value learning\\\bottomrule
-\end{tabular}
-\end{table}
-Task learning curves are compared at fixed environment-step checkpoints, with model and optimization costs reported separately. Candidate information, conditional-value accuracy, and task improvements are distinct claims. A lower auxiliary loss or a changed gate distribution alone does not establish a task gain. Checkpoint selection uses development data; independent learning repetitions and final held-out scenarios establish repeatability after a promising configuration is fixed.
+\begin{figure*}[t]
+\centering\includegraphics[width=\textwidth]{fig5-overall-performance.pdf}
+\caption{Overall evidence. Baseline learning curves are shown at their actually completed training steps. Four-configuration success and five independent value fits use paired development episodes. Independent value fits share a frozen source backbone and must not be interpreted as five complete pipeline retrainings.}
+\label{fig:overall}
+\end{figure*}
 
-%% BEGIN GENERATED RESULTS
-\subsection{Completed fusion and value-learning diagnostics}
-The following critic experiments used the pre-audit state representation. A subsequent consistency audit identified missing CBF velocity information and an invalid permutation assumption for the order-dependent APF opponent. Their corrections pass analytic, finite-difference, and execution regression checks; task-level gains from the corrected representation have not yet been evaluated. Thus the historical results diagnose those checkpoints and do not establish that the two original mechanisms are intrinsically ineffective.
-The original learned--Boids opportunity test used 48 independent source-policy states: 16 each with three and six defenders at agility 2.25, and eight each with six defenders at agility 4 and 6. All 48 admit a legal single-vessel blending change that alters actual post-CBF thrust. Each candidate changes only the current focal coefficient; subsequent controls resume the same frozen source policy on each branch's own state. Four shared search futures selected a candidate, followed by eight new paired futures. Task-selected capped-time differences were $-0.497$, $-1.427$, $-0.919$, and $-2.084$~s in the four conditions, respectively; every condition's exploratory state-bootstrap interval includes zero. The descriptive equal-state average is $-1.142$~s, with a post-hoc stratified 95\% interval of $[-2.418,0.072]$~s. The within-state standard deviation of a single paired time difference is 12.521~s. Reward-selected interventions give a similar uncertain mean change, $-1.228$~s. These outcomes establish executable action variation, but neither stable improvement nor impossibility of improvement.
+\subsection{Direct evidence for joint selection}
+The refined joint selector obtains 92 more successes than the independent selector across the same 856 episodes, an absolute gain of 10.7 points (development layout-cluster interval [7.5,14.1]). It rescues 144 independent failures while harming 52 independent successes. Its per-suite increments are 12.1, 11.5, 9.5, and 9.5 points. Because both methods receive the same nine candidates per vessel and the same prediction tensor, this contrast directly measures the value of resolving their combination jointly.
 
-A separate frozen-critic direction probe evaluates the v8 Full 10k checkpoint without an actor update. At each state, it chooses the vessel with largest absolute derivative of $\min(Q_1,Q_2)$ with respect to its coefficient and tests a clipped 0.1 change in that direction. An initial source-state probe includes six-vessel conditions, outside this critic's three-vessel training distribution; those cases are only extrapolation diagnostics. The subsequent check uses one uniformly sampled pre-action state from each of 64 new complete episodes of the checkpoint's own stochastic policy, under its three-vessel, agility-$2.25\pm0.5$ training conditions. Sixteen paired complete futures per action use the same frozen continuation policy and training return convention. Predicted mean improvement is 0.163, versus measured improvement 0.039 (95\% interval $[-0.327,0.424]$). The corresponding capped-time difference is $-0.004$~s ($[-0.284,0.274]$). Conditional-value MAE is 0.670, versus 0.608 for a zero-difference predictor.
+The original source backbone and four independently trained source backbones give five separate joint-versus-independent comparisons on the common 228-episode screen. Joint selection obtains 948/1,140 successes, compared with 843/1,140 for independent selection. The mean gain is 9.2 points; individual gains are 12.3, 4.4, 7.9, 10.1, and 11.4 points. All four additional backbones complete the original one-million-step source training. This experiment repeats the analytic joint selector across independently learned source commands; it does not yet constitute five retrainings of the complete value-learning pipeline.
 
-In 35 of these 64 states, the proposed increase changes joint executed thrust by less than 1~N; no nominal change greater than 1~N is reduced below that threshold by the CBF. Coefficients near zero or one account for 32.8\% and 91.7\% of the 192 vessel-level outputs of the 5k and 10k checkpoints on these same states. Thus the observed failure includes severe gate drift and many almost ineffective outward changes. This coordinate probe is not a shared-parameter actor update and does not isolate the cause of that drift.
+The strengthened state-attention and candidate-attention alternatives obtain 446/856 (52.1\%) and 551/856 (64.4\%) successes. Both use two attention layers of width 128, 192,769 trainable parameters, 24,000 optimizer updates, and the same 24,576 measured teacher queries collected on teacher and student trajectories. Training balances changed and unchanged teacher choices and retains every physically equivalent candidate label; candidate trajectories are expressed in a common task frame. The joint selector supplies supervision only during training. At deployment, each replacement selects candidates through its own neural outputs. These fitted alternatives improve substantially over their initial versions but remain below independent selection (78.4\%) and joint selection (89.1\%). The matched joint-versus-independent contrast provides the direct evidence for joint decision making; the replacement comparison additionally tests whether these neural representations recover its benefit.
 
-The subsequent matched critic experiment freezes the original deterministic policy. Three defenders face agility $2.25\pm0.5$; 256 training episodes provide 24195 real transitions, and 128 other episodes supply independent test roots. One uniformly sampled pre-action state per episode is evaluated with its current action and three single-vessel alternatives, $\theta_i\in\{0,0.5,1\}$, over eight complete paired futures. All arms share the same 512/128 twin-critic architecture, real minibatches, TD-only lagged targets, and model-return samples. A common 1500-update state-value warmup precedes 3000 fixed-policy critic updates. Auxiliary weight is 0.1. Initializations 42 and 101 share the dataset and are not independent data replications. No actor is updated or test-based checkpoint selected.
-\begin{table}[t]
-\caption{Fixed-policy critic diagnostic on 128 independent states. Time changes follow one selected intervention and then the frozen source policy.}
-\label{tab:fixed-critic}\centering\small
-\begin{tabular}{@{}llrr@{}}\toprule
-Seed & Supervision & $\Delta Q$ MAE & $\Delta T_{60}$ (s)\\\midrule
-42 & TD & 2.505 & +0.111\\
-42 & TD + absolute & 2.469 & +0.217\\
-42 & TD + difference & 2.483 & +0.134\\
-101 & TD & 2.499 & +0.134\\
-101 & TD + absolute & 2.429 & +0.206\\
-101 & TD + difference & 2.459 & +0.080\\
---- & Zero difference & 2.088 & ---\\\bottomrule
-\end{tabular}
-\end{table}
-All learned difference errors exceed the zero predictor (Table~\ref{tab:fixed-critic}), and all exploratory paired time intervals include zero. Difference supervision does not outperform matched absolute supervision. The estimated noise variance of an eight-future difference mean is 11.403, compared with an observed second moment of 12.847. These results identify difficult conditional-value generalization even without actor drift; they do not establish its unique cause. The experiment uses 681244 simulated steps. Critic-selected actions use centralized state and are diagnostic probes, not a deployed learned actor.
+\subsection{Conditional value versus ordinary return learning}
+The complete reference controller exceeds the matched ordinary MLP by 123 successes, or 14.4 points (development layout-cluster interval [11.6,17.4]). The paired outcomes contain 139 rescues and 16 harms. The per-suite gains are 12.9, 6.0, 19.5, and 19.5 points. The smaller 4310 increment is retained because it is informative about generalization beyond the fitting layouts.
 
-%% END GENERATED RESULTS
+Across five independent value fits, the conditional model succeeds in 1,075 of 1,140 paired evaluation episodes and the ordinary MLP in 959, a mean increment of 10.2 points. Each run contains the same 128-source/100-4310 screen, so these are repeated learning outcomes on a shared development collection. The per-run increments are 11.0, 7.9, 9.2, 13.6, and 9.2 points. Seed 44 reverses the advantage on the 4310 subset (85 versus 89 successes); its combined advantage does not erase that adverse result.
 
-\subsection{Attacker agility}
-The original evaluation varies intruder agility at fixed team size and reports defense success, capture, collision, and capped time. The intended question is whether candidate-conditioned blending maintains effective coordination as individual pursuit becomes harder. Existing predictor curves retain their method and protocol labels; learned-policy curves require corresponding completed learning runs.
+Adding paired short-response observations and 6,000 updates to both estimators gives 813/856 successes for conditional value and 684/856 for its matched MLP, a 15.1-point difference with 143 paired rescues and 14 harms. Both refits receive the same 82,857 terminal observations and 30,000 cumulative updates. This refit strengthens the matched-MLP contrast but remains two successes below the reference complete method; its separate VRX gains are reported below.
 
-\subsection{Generalization to unseen team sizes}
-The shared policy and masked aggregation permit evaluation across two through seven defenders after three-defender training. Generalization is assessed by the same task metrics and matched baselines, rather than inferred from variable-size network inputs. Conditions outside the training team size are reported separately from in-distribution mechanism checks.
+New-state value validation samples one eligible pre-action state uniformly from each of 64 complete factual trajectories on new layouts. At every root, the conditional model and ordinary MLP propose their own action; both choices and the factual action are evaluated to termination under eight new shared futures. The conditional model intervenes at 12 roots and yields 408 successful continuations, versus 400 for the MLP and 411 for the factual controller out of 512 continuations. Relative to the factual controller, conditional decisions rescue five futures and harm eight; the MLP rescues 14 and harms 25. Conditional value therefore reduces harmful changes, but neither learned selector improves on factual continuation in this random-state experiment. Positive predicted gains frequently correspond to zero measured gain, identifying a remaining calibration and state-coverage weakness. Component controls separately remove delayed choices, temporal survival bounds, and factual calibration while retaining learned parameters and the common deployment budget.
 
-\subsection{Learning-based attacker and high-fidelity execution}
-The planned opponent extension follows the original alternating attacker--defender training organization, using the same opponent budget for the compared defender methods. VRX evaluation uses the learned adapter, its declared messages, and the common physical-thrust mapping. Policy-generated trajectories and blending coefficients connect the learned variables to cooperative behavior. Existing VRX runs remain evidence for their original controllers; final claims about the proposed policy await its own completed runs.
+A separate collection measures six outcome-independent random candidates at each of 64 new states under eight shared futures. Of these states, 54 have at least one pair with different empirical success probabilities, yielding 574 nontied comparisons. Conditional value agrees with the measured ordering in 58.9\% of comparisons, versus 57.2\% for the ordinary MLP; the paired difference is 1.7 points with a stratified state-bootstrap interval of [$-5.2$,9.0] points. Its gain-prediction root mean squared error is 0.247, compared with 0.402 for the MLP. Thus the conditional estimator improves gain calibration in this collection, while a ranking advantage over ordinary return learning remains unresolved. All candidates and neutral outcomes remain in the calibration calculation; only outcome ties are excluded from the ordering score.
+
+On the 228-episode component screen, the complete model achieves 218 successes, immediate-only choices 214, removal of temporal bounds 218, and removal of factual calibration 215. Relative to immediate-only choices, the complete model rescues eight episodes and harms four. Factual calibration rescues three and harms none. Removing temporal bounds changes neither success nor terminal duration in this screen; these completed outcomes therefore provide no separate performance gain for that bound. All three controls achieve the same 91/100 successes on the 4310 subset, locating the observed component gains in the source-development subset.
+
+\begin{figure*}[t]
+\centering\includegraphics[width=\textwidth]{fig6-mechanism-controls.pdf}
+\caption{Direct mechanism comparisons. Left: joint and independent selection share candidate motions and pairwise costs; the two neural alternatives share their measured supervision and learning budget. Right: conditional value and the ordinary MLP share observations, network-parameter budget, update count, factual predecessor, candidate catalog, and intervention budget. Internal controls isolate temporal opportunity and factual calibration.}
+\label{fig:controls}
+\end{figure*}
+
+\subsection{Agility, fleet size, and opponent adaptation}
+Agility comparisons retain the same methods and paired scene design. Cross-fleet inference uses all current vessels in the shared neural potential, projects valid intervention roles to the current fleet, and generates every single-vessel alternative for that fleet size. Six-vessel empirical calibration is not transferred as if it were a measurement at another fleet size.
+
+In the completed 16-scene screens with three, four, five, seven, and eight defenders, the complete method succeeds in 16, 15, 15, 12, and 10 episodes, respectively. The joint predecessor obtains 14, 15, 15, 14, and 10 successes. Conditional value therefore adds two successes at three defenders, preserves the counts at four, five, and eight, and loses two at seven. Refined joint selection obtains 14, 15, 15, 13, and 12 successes, compared with 14, 16, 16, 11, and 9 for independent selection. These paired screens identify where each mechanism transfers and where its current mapping loses performance.
+
+Opponent adaptation uses one common learned attacker trained against a fixed source defender. All defender methods face the same frozen attacker before adaptation. New paired continuations are then collected under that opponent and mixed with identified APF training observations. The same adapted defenders are reevaluated against both the learned attacker and the original APF opponent, so recovery and retention remain separate outcomes.
+
+On the 64 adaptation-development layouts, the complete method improves from 49 to 59 successes. This improvement does not transfer to 64 new paired layouts: the complete method obtains 54 successes before adaptation and 53 afterward, while the matched ordinary MLP obtains 52 in both conditions. Conditional value alone changes from 22 to 20 successes. On the original 856 APF episodes, the adapted complete method retains 805 successes, compared with 815 before adaptation; the ordinary MLP changes from 692 to 673, and conditional value alone from 296 to 281. Thus this adaptation recipe improves its fitting-layout performance but does not establish recovery on new layouts or full retention against the original opponent.
+
+\begin{figure*}[t]
+\centering\includegraphics[width=\textwidth]{fig7-scope-adaptation.pdf}
+\caption{Scope of the two mechanisms: paired agility comparisons, explicit cross-fleet mappings on 16 scenes per fleet size, and common-opponent adaptation on 64 new paired layouts. The adaptation panel also reports the change in success rate on the original APF episodes.}
+\label{fig:scope}
+\end{figure*}
+
+\subsection{High-fidelity closed-loop comparison}
+The VRX comparison~\cite{vrx} executes the current learned--Boids commands in two settings with agility 2.5 and 3.5 and two scene seeds per condition. Each method runs all eight scenes. VRX uses a 0.2-s control period, 15-m target radius, 5-m collision radius, 5.5-m capture radius, and 100-s time limit. These settings are reported separately from the numerical 80-s task.
+
+All 80 completed trials passed the execution-validity checks. The complete reference method captures in 7/8 scenes and breaches in one; its matched single-intervention MLP captures in 7/8 and collides in one. Refined joint fusion captures in 7/8 and collides in one, the independent selector in 4/8, conditional value alone in 6/8, and the transferred source policy in 2/8. The factual joint predecessor captures in all eight scenes. An earlier ordinary-return comparator with a different predecessor and execution budget also captures in all eight; that result remains separate from the matched comparisons.
+
+After additional paired short-response training, the refitted complete method captures in 8/8 scenes and its matched refitted MLP in 6/8. The two additional captures rescue one collision and one target breach without harming a matched MLP success. The refit also captures the scene where the reference complete method breached, as shown in Fig.~\ref{fig:vrx}. These eight development scenes establish a matched-comparator advantage for the refit, while its success count remains equal to the factual joint predecessor. Its mean capture time is 12.9 s versus 9.8 s for the predecessor, so this batch does not establish an additional efficiency gain from mechanism two. The valid reference failure remains in the comparison.
+
+\begin{figure*}[t]
+\centering\includegraphics[width=\textwidth]{fig8-vrx-comparison.pdf}
+\caption{Eight-scene paired VRX development comparison. Reference and short-response refitted complete methods each have a matched ordinary-return comparator. The trajectories retain the reference method's valid breach and show the refitted method's capture on the same scene.}
+\label{fig:vrx}
+\end{figure*}
 
 \section{Discussion}
-The research question is whether candidate-control relationships and intervention-conditioned value information can improve cooperative residual policy learning. The current frozen-policy results show that legal blending changes affect executed thrust, but have not established stable task gains or an advantage of difference supervision over matched absolute returns. These findings determine which learning claims remain open; they do not demonstrate that the complete residual policy lacks useful control capacity.
+The two mechanisms solve related but distinct problems. Joint fusion coordinates physically compatible candidate controls; conditional value assesses whether a finite change improves the eventual task. A large gain over a transferred source policy alone cannot establish both contributions. The matched joint-selection and ordinary-return controls provide the more specific evidence.
 
-The intervention protocol evaluates one current blending decision followed by feedback. Finite return differences and local actor gradients are related learning objects, but accurate finite differences alone do not guarantee useful parameter updates. Independent control and task measurements are therefore needed to connect critic learning to policy improvement. The predictive references demonstrate strong cooperative control under their own decision rules and provide comparison data without becoming a learned high-level policy or changing the present method's decision variables.
+The shared potential makes local differences consistent with complete-plan values, but consistency does not guarantee accurate generalization. Factual calibration can prevent avoidable damage near observed states, while timing distinguishes an executable rescue from a change that starts too late. New-state paired continuations and the internal component controls test these roles directly. Inference cost includes the neural potential, factual bank, and paired residual calibration; it is reported in addition to trainable parameter count.
+
+Current development gains are substantial, and their limitations are concrete: gains vary by layout family, one value-fit seed loses to the MLP on the untrained 4310 subset, and the improved VRX value model matches its factual predecessor's success count while taking longer to capture. These findings guide the stronger-predecessor refit and new paired training rather than changing the task definition or omitting adverse outcomes. Final generalization claims use the frozen-method held-out comparison and complete independent training runs.
 
 \section{Conclusion}
-This manuscript develops an interaction-aware cooperative residual learning method for multi-USV target defense. Candidate-control relationships condition the learned--Boids adapter, and single-vessel blending interventions provide paired closed-loop consequences for a joint critic. The framework retains a direct actor-based execution path and a common safety filter. Final empirical conclusions about the two learning mechanisms depend on the corresponding matched learning, independent replication, and task evaluations; completed predictive results remain separately attributed reference evidence.
+Joint fusion and conditional intervention value learning provide two complementary ways to improve cooperative target defense. The first selects compatible fleet mixtures from common learned and Boids candidates. The second learns whether and when a local change improves complete closed-loop outcomes, using paired differences tied to one task potential. Completed development comparisons show a 10.7-point joint-selection gain, a 14.4-point advantage over matched ordinary return learning, and a 9.0-point increment over the complete method's factual predecessor. The remaining empirical scope is determined by independent full-pipeline training, frozen held-out evaluation, opponent adaptation, and the retained high-fidelity successes and failures.
 
-% Existing reference metadata% Existing reference metadata checked against publisher-deposited Crossref records
-% or the official JMLR archive. Wu et al.: Cardiff ORCA record 188161, 2026-10-07.
 \begin{thebibliography}{99}
 \bibitem{qiao} Y. Qiao et al., ``Survey of deep learning for autonomous surface vehicles in marine environments,'' \emph{IEEE Trans. Intell. Transp. Syst.}, vol. 24, no. 4, pp. 3678--3701, 2023, doi: \href{https://doi.org/10.1109/TITS.2023.3235911}{10.1109/TITS.2023.3235911}.
 \bibitem{fu} H. Fu and H. H.-T. Liu, ``Guarding a territory against an intelligent intruder: Strategy design and experimental verification,'' \emph{IEEE/ASME Trans. Mechatron.}, vol. 25, no. 4, pp. 1765--1772, 2020, doi: 10.1109/TMECH.2020.2996901.

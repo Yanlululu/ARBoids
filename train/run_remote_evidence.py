@@ -145,7 +145,8 @@ def command(arguments):
 
 
 @torch.no_grad()
-def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=False,sample_policy=False,initial_jobs=None):
+def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=False,sample_policy=False,initial_jobs=None,
+                        response_tick=None):
     """Batch deterministic policy inference, retaining each episode's RNG."""
     from envs.TADgame import TADEnv
     initialize();torch.backends.cuda.matmul.allow_tf32=False
@@ -168,10 +169,28 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
         active=list(range(len(current)));options=[None]*len(current)
         remaining=np.zeros(len(current),int);ticks=np.zeros(len(current),int)
         midpoint_checked=np.zeros(len(current),bool)
+        if initial_jobs is not None:
+            for i,job in enumerate(initial_jobs[begin:begin+len(current)]):
+                state=job.get('controller_state')
+                if state is None:continue
+                # A suffix intervention changes the remaining program, not
+                # the predecessor's observation clock. Restore its temporal
+                # state so the paired factual branch is the actual policy.
+                action=job['action'].copy();elapsed=int(state['ticks'])
+                if action.shape[-1]==6:
+                    action=np.concatenate((action,np.zeros_like(action[:,:2]),
+                        np.full_like(action[:,:1],d.joint_phase_boundary(action))),-1)
+                action[:,8]+=elapsed;remaining[i]=int(action[0,4])
+                action[:,4]+=elapsed;options[i]=action;ticks[i]=elapsed
+                midpoint_checked[i]=state['midpoint_checked']
         returns=np.zeros(len(current));task_returns=np.zeros(len(current));rows=[None]*len(current)
         intervention_events=[[] for _ in current]
         decision_records=[[] for _ in current] if keep_steps else None
         trajectories=[[] for _ in current] if keep_steps else None
+        responses=[None]*len(current) if response_tick is not None else None
+        response_ticks = (None if response_tick is None else
+            [int(response_tick)]*len(current) if np.isscalar(response_tick) else
+            response_tick[begin:begin+len(current)])
         def packets(indices):
             records=[d.joint_packet(environments[i],observations[i]) for i in indices]
             for record in records:record.setdefault('_conditional_count',np.zeros(1,np.float32))
@@ -188,20 +207,23 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                     controls[i]=action[:,:3]
                     intervene=(action.shape[-1]>3 and ((action[:,3]>=0.).any()
                         or (action.shape[-1]>5 and (action[:,5]>=0.).any())))
+                    intervene=intervene or (action.shape[-1]==13 and (action[:,9:11]>=0.).any())
                     waiting=(actor.cooperative_role_credit is not None and actor.cooperative_role_credit.wait_span)
                     waiting=waiting or (action.shape[-1]>5 and (action[:,3]<0.).all() and (action[:,5]==-2.).all())
+                    waiting=waiting or action.shape[-1]==9
                     if action.shape[-1]>3 and (intervene or waiting):
                         options[i]=action;remaining[i]=int(action[0,4]);ticks[i]=0
                         midpoint_checked[i]=False
                         if intervene:
                             environments[i]._conditional_option_count=getattr(environments[i],'_conditional_option_count',0)+1
+                            selected=((action[:,9:11]>=0.).any(-1) if action.shape[-1]==13 else action[:,3]>=0.)
                             intervention_events[i].append(dict(time=float(environments[i].Current_T),
-                                duration_steps=int(action[0,4]),subjects=np.flatnonzero(action[:,3]>=0.).tolist(),
-                                coefficients=action[action[:,3]>=0.,3].tolist()))
+                                duration_steps=int(action[0,4]),subjects=np.flatnonzero(selected).tolist(),
+                                coefficients=(action[selected,9:11] if action.shape[-1]==13 else action[selected,3]).tolist()))
             committed=[i for i in active if remaining[i]>0]
             if committed:
                 batch=packets(committed)
-                fixed=torch.as_tensor(np.stack([options[i][:,5 if ticks[i]>=d.joint_phase_boundary(options[i]) else 3]
+                fixed=torch.as_tensor(np.stack([d.joint_program_gates(options[i],ticks[i])
                     for i in committed]),device=device)
                 if actor.preference_strength:batch['_option_preference']=fixed
                 elif actor.conditional_commitment:
@@ -217,6 +239,8 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                 decisions=actor(batch,deterministic=True,gate_only=True)[0].cpu().numpy()
                 if actor.midpoint_intervention_values is not None and not actor.preference_strength:
                     local=[j for j,i in enumerate(committed) if not midpoint_checked[i]
+                        and not (step==0 and initial_jobs is not None
+                            and initial_jobs[begin+i].get('controller_state') is not None)
                         and options[i].shape[-1] in (6,9)
                         and d.joint_refinement_due(options[i][0,4],ticks[i],actor.option_refinement_fraction,
                             actor.option_refinement_steps,actor.option_refinement_checkpoints)
@@ -248,13 +272,55 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                     decisions[:,:,2]=np.where(commanded>=0.,commanded,decisions[:,:,2])
                 for i,action in zip(committed,decisions):controls[i]=action[:,:3]
             following=[]
+            actuator_preferences=any(remaining[i]>0 and options[i].shape[-1]==13 for i in active)
+            source_controls=(np.stack([controls[i] for i in active])
+                if getattr(actor,'actuator_fusion_refinement',None) or actuator_preferences else None)
+            if actor.response_feedback_value is not None:
+                physical=actor.response_feedback_value(packets(active),torch.as_tensor(
+                    np.stack([controls[i] for i in active]),device=device)).cpu().numpy()
+                for i,control in zip(active,physical):controls[i]=control
+            if actuator_preferences:
+                from conditional_fusion_value import apply_actuator_preferences
+                preferences=np.stack([np.where((ticks[i]>=options[i][:,8])[:,None],
+                    options[i][:,11:13],options[i][:,9:11]) if remaining[i]>0 and options[i].shape[-1]==13
+                    else np.full((len(controls[i]),2),-1.,dtype=np.float32) for i in active])
+                physical=apply_actuator_preferences(packets(active),torch.as_tensor(source_controls,device=device),
+                    torch.as_tensor(np.stack([controls[i] for i in active]),device=device),
+                    torch.as_tensor(preferences,device=device)).cpu().numpy()
+                for i,control in zip(active,physical):controls[i]=control
+            if getattr(actor,'actuator_fusion_refinement',None):
+                from conditional_fusion_value import refine_actuator_interactions
+                refinement_packet=packets(active)
+                held_preferences=np.stack([
+                    (np.where((ticks[i]>=options[i][:,8])[:,None],options[i][:,11:13],options[i][:,9:11])
+                     if options[i].shape[-1]==13 else
+                     np.repeat(d.joint_program_gates(options[i],ticks[i])[:,None],2,axis=-1))
+                    if remaining[i]>0 else np.full((len(controls[i]),2),-1.,dtype=np.float32)
+                    for i in active])
+                refinement_packet['_committed_actuator_preferences']=torch.as_tensor(held_preferences,device=device)
+                if actor.response_feedback_value is None:
+                    native=np.broadcast_to(source_controls[:,:,2:3],held_preferences.shape)
+                    coefficients=(np.where(preferences>=0.,preferences,native)
+                        if actuator_preferences else native)
+                    refinement_packet['_preferred_actuator_coefficients']=torch.as_tensor(
+                        np.array(coefficients,copy=True),device=device)
+                physical=refine_actuator_interactions(actor,refinement_packet,
+                    torch.as_tensor(source_controls,device=device),
+                    torch.as_tensor(np.stack([controls[i] for i in active]),device=device),
+                    **actor.actuator_fusion_refinement).cpu().numpy()
+                for i,control in zip(active,physical):controls[i]=control
             for i in active:
                 env=environments[i];np.random.set_state(random_states[i])
                 before=d.joint_packet(env,observations[i]) if keep_steps else None
                 obs,reward,done,sr=d.joint_task_step(env,controls[i],actor.training_gamma,actor.training_step_cost)
+                if responses is not None and responses[i] is None and (done or step+1==response_ticks[i]):
+                    responses[i]=dict(packet=d.joint_packet(env,obs),terminal=int(done),steps=step+1)
                 if keep_steps:
                     trajectories[i].append(dict(packet=before,action=controls[i].copy(),done=done,physical_steps=1,
-                        reward=reward,source_reward=sr,discount=actor.training_gamma))
+                        reward=reward,source_reward=sr,discount=actor.training_gamma,
+                        controller_state=None if remaining[i]<=0 else dict(program=options[i].copy(),
+                            ticks=int(ticks[i]),remaining=int(remaining[i]),
+                            midpoint_checked=bool(midpoint_checked[i]))))
                 random_states[i]=np.random.get_state();observations[i]=obs;returns[i]+=(.99**step)*sr
                 task_returns[i]+=(actor.training_gamma**step)*reward
                 if remaining[i]>0:remaining[i]-=1;ticks[i]+=1
@@ -267,6 +333,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                         conditional_interventions=int(getattr(env,'_conditional_option_count',0)),
                         interventions=intervention_events[i])
                     if future is not None:row['future_seed']=int(future)
+                    if responses is not None:row['response']=responses[i]
                     rows[i]=row
                 else:following.append(i)
             active=following
@@ -284,7 +351,214 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
     return results
 
 
-def collect_joint_credit_batched(policy,output,tasks,batch_size=32,repetitions=2,device='cuda:0'):
+def source_successor_branch(task):
+    """Measure an intervention through the deployed source episode decoder."""
+    policy,job,scene,future,response_tick=task
+    actor=d.joint_load(str(policy),Path(policy).stat().st_mtime_ns).cpu()
+    env=copy.deepcopy(job['environment']);obs=job['observation'].copy()
+    np.random.set_state(job['random_state'])
+    if future is not None:np.random.seed(future)
+    done=0;count=0;task_return=0.;source_return=0.;response=None
+    def observe_response(current,observation,elapsed,terminal):
+        nonlocal response
+        physical_tick=count+elapsed
+        if response is None and (terminal or physical_tick==response_tick):
+            response=dict(packet=d.joint_packet(current,observation),terminal=int(terminal),steps=physical_tick)
+    while not done:
+        with torch.no_grad():
+            action=(job['action'].copy() if count==0 else
+                actor(d.mechanism_tensor(d.joint_packet(env,obs)),deterministic=True)[0][0].numpy())
+        obs,reward,done,source_reward,steps=d.joint_advance(env,obs,actor,action,observe_step=observe_response)
+        task_return+=actor.training_gamma**count*reward;source_return+=.99**count*source_reward;count+=steps
+    seed,n,agility=scene
+    row=dict(seed=int(seed),defenders=n,agility=agility,**d.outcome(env,done),
+        terminal=int(done),physical_steps=count,task_return=task_return,task_discount=actor.training_gamma**count,
+        discounted_return=source_return,environment_protocol=actor.environment_protocol,response=response)
+    if future is not None:row['future_seed']=int(future)
+    return row
+
+
+def initialize_source_branches(source, opponent_checkpoint=None):
+    torch.set_num_threads(1);d.initialize(str(source));d.numerical_source()
+    configure_source_attacker(opponent_checkpoint)
+
+
+def source_value_tuning_episode(task):
+    scene,policy,revision,future,bandwidth=task
+    actor=d.joint_load(str(policy),revision,(False,False)).cpu()
+    value=actor.successor_task_value
+    if value is None:raise ValueError('Value tuning requires an installed conditional value learner.')
+    modules=[value]
+    if hasattr(value.program_model,'bandwidth'):modules.append(value.program_model)
+    original=[module.bandwidth for module in modules]
+    try:
+        for module in modules:module.bandwidth=bandwidth
+        row=d.joint_episode((scene,str(policy),revision,False,0,0,0,0,future))
+        row['value_bandwidth']=bandwidth
+        return row
+    finally:
+        for module,previous in zip(modules,original):module.bandwidth=previous
+
+
+def collect_successor_task_data(policy,scenes,output,*,repetitions=8,span=10,batch_size=64,
+                                device='cuda:0',include_all_vessels=False,actuator_programs=False,
+                                root_steps=0,root_future=None,joint_programs=None,future_start=0,
+                                shared_futures=False,future_seeds=None,focus_codes=None,policy_iteration=False,
+                                root_lookback=None,source_workers=1,future_block_edges=1,
+                                factual_future_support=False):
+    """Single-vessel paired task branches under the actual joint decoder.
+
+    Edge groups use independent future blocks, sharing physical factual
+    rollouts within a group. A branch records its
+    physical successor after the intervention AND its true terminal task
+    outcome under the frozen continuation. No safety surrogate supplies a
+    value label. The same records also feed the unchanged ordinary learner.
+    Source execution is the default so labels use the deployed decoder and
+    arithmetic. Batched sampling remains an explicit source_workers=0 choice.
+    """
+    initialize();output=Path(output);output.mkdir(parents=True,exist_ok=True)
+    if int(future_block_edges)!=future_block_edges or future_block_edges<1:
+        raise ValueError('A future block must contain a positive integer number of intervention edges.')
+    model=torch.load(policy,map_location='cpu',weights_only=False)
+    actor=d.joint_load(str(policy),Path(policy).stat().st_mtime_ns)
+    clean=copy.deepcopy(model)
+    if policy_iteration:clean.pop('successor_task_value',None)
+    if d.joint_value_objectives(clean):
+        raise ValueError('Successor policy iteration cannot inherit another kind of value learner.')
+    model.update(fixed_intervention_clock=True,physical_interventions=True,physical_intervention_span=span,
+        physical_intervention_reversal=False,physical_span=span,physical_reversal=False,gate_period=1,
+        branch_value_data=True,success_objective=True,initial_root=root_steps==0,observed_future=False,
+        edge_futures=not shared_futures)
+    program_options=([[-1.,-1.]]+[[left,right] for left in (0.,.5,1.) for right in (0.,.5,1.)]
+        if actuator_programs else None)
+    rollouts=[];total_steps=0
+    for root_id,scene in enumerate(scenes):
+        seed,n,agility=scene;np.random.seed(seed)
+        env=d.numerical_source().TADEnv(n);obs,_=env.reset(agility=agility,noisy_agility=False)
+        root_seed=root_future.get(int(seed)) if isinstance(root_future,dict) else root_future
+        if root_seed is not None:np.random.seed(root_seed)
+        root_target=root_steps.get(int(seed),0) if isinstance(root_steps,dict) else root_steps
+        reached_steps=0
+        if root_lookback is not None:
+            history=[];done=0
+            lookback=root_lookback.get(int(seed),20) if isinstance(root_lookback,dict) else root_lookback
+            while not done:
+                history.append((reached_steps,copy.deepcopy(env),obs.copy(),np.random.get_state()))
+                with torch.no_grad():
+                    decision=actor(d.mechanism_tensor(d.joint_packet(env,obs)),deterministic=True)[0][0].numpy()
+                obs,_,done,_,elapsed=d.joint_advance(env,obs,actor,decision)
+                reached_steps+=elapsed;total_steps+=elapsed
+            cutoff=max(0,reached_steps-int(lookback))
+            reached_steps,env,obs,random_state=max((item for item in history if item[0]<=cutoff),key=lambda item:item[0])
+            np.random.set_state(random_state);root_target=reached_steps
+        while reached_steps<root_target:
+            with torch.no_grad():
+                decision=actor(d.mechanism_tensor(d.joint_packet(env,obs)),deterministic=True)[0][0].numpy()
+            # Observe only actual option boundaries. Truncating an option at
+            # each physical tick silently discards its remaining decisions.
+            obs,_,done,_,elapsed=d.joint_advance(env,obs,actor,decision)
+            total_steps+=elapsed;reached_steps+=elapsed
+            if done:raise ValueError('The predecessor terminated before the requested intervention state.')
+        packet=d.joint_packet(env,obs)
+        reference=actor(d.mechanism_tensor(packet),deterministic=True,gate_only=True)[0][0].detach().numpy()[:,:3]
+        from conditional_fusion_value import successor_intervention_library
+        requested_programs=list(joint_programs or [])
+        if focus_codes is not None:
+            radix=10 if actuator_programs else 4
+            for code in focus_codes:
+                if not 0<=int(code)<radix**n:
+                    raise ValueError('A requested intervention code exceeds the fleet decision space.')
+                requested_programs.append([(int(code)//radix**vessel)%radix for vessel in range(n)])
+        programs,edges,subjects=successor_intervention_library(
+            packet,reference,span,include_all_vessels,program_options,requested_programs)
+        if focus_codes is not None:
+            # Allocate additional paired futures to unresolved task-value
+            # comparisons. Keep every intervened arm's single-vessel path
+            # back to the factual program; no multi-vessel difference is
+            # relabelled as a local effect.
+            from conditional_fusion_value import public_return_context
+            _,order=public_return_context(d.mechanism_tensor(packet),True,2)
+            order=order[0].numpy();radix=10 if actuator_programs else 4
+            def program_code(program):
+                gates=program[order,9:11] if actuator_programs else program[order,3]
+                digits=(np.where((gates<0.).any(-1),0,1+6*gates[:,0]+2*gates[:,1])
+                    if actuator_programs else np.where(gates<0.,0,1+2*gates))
+                return int((digits.astype(np.int64)*radix**np.arange(n)).sum())
+            lookup={program_code(program):i for i,program in enumerate(programs)}
+            selected={lookup[int(code)] for code in focus_codes}|{0}
+            while True:
+                parents={left for left,right in edges if right in selected}
+                if parents<=selected:break
+                selected|=parents
+            edges=[(left,right) for left,right in edges if right in selected]
+        jobs=[];tasks=[];sampled={};references={}
+        root_futures=future_seeds.get(int(seed)) if isinstance(future_seeds,dict) else future_seeds
+        for edge_id,(left,right) in enumerate(edges):
+            for repeat in range(repetitions):
+                stream=0 if shared_futures else edge_id//int(future_block_edges)
+                future=(root_futures[(stream+repeat+future_start)%len(root_futures)]
+                    if root_futures is not None else
+                    int(np.random.SeedSequence([seed,root_id,stream,repeat+future_start,19081987]).generate_state(1)[0]))
+                arms=tuple(dict.fromkeys((left,right,0))) if factual_future_support else (left,right)
+                for arm in arms:
+                    # A complete program and a future identify one physical
+                    # continuation at this fixed root. Reusing that outcome
+                    # keeps every local comparison incident to the same node
+                    # consistent, including edges with overlapping futures.
+                    key=(arm,future)
+                    if key not in sampled:
+                        sampled[key]=len(jobs)
+                        jobs.append(dict(environment=env,observation=obs,random_state=np.random.get_state(),action=programs[arm]))
+                        tasks.append((scene,future))
+                    references[stream,repeat,arm]=sampled[key]
+        if source_workers:
+            branch_tasks=[(policy,job,scene,future,span) for job,(scene,future) in zip(jobs,tasks)]
+            if source_workers==1:rows=[source_successor_branch(task) for task in branch_tasks]
+            else:
+                with ProcessPoolExecutor(max_workers=source_workers,initializer=initialize_source_branches,
+                        initargs=(SOURCE,)) as executor:
+                    rows=list(executor.map(source_successor_branch,branch_tasks,chunksize=1))
+        else:
+            rows=batched_credit_rows(policy,tasks,batch_size=batch_size,device=device,initial_jobs=jobs,response_tick=span)
+        branches=[];outcomes={key:rows[index] for key,index in references.items()}
+        total_steps+=sum(row['physical_steps'] for row in rows)
+        for edge_id,(left,right) in enumerate(edges):
+            for repeat in range(repetitions):
+                stream=0 if shared_futures else edge_id//int(future_block_edges)
+                before=outcomes[stream,repeat,left];after=outcomes[stream,repeat,right]
+                def target(row):
+                    return dict(success=row['success'],terminal=row['terminal'],reward=row['task_return'],
+                        discount=row['task_discount'],next=None,first_step=dict(next=row['response']['packet'],
+                        terminal=row['response']['terminal'],steps=row['response']['steps']))
+                factual_row=(outcomes[stream,repeat,0] if factual_future_support or shared_futures
+                    else before if left==0 else None)
+                factual_target=target(factual_row) if factual_row is not None else None
+                branches.append(dict(packet=packet,left=programs[left],right=programs[right],
+                    before=target(before),after=target(after),reference_action=programs[0],
+                    reference_outcome=factual_target,factual_outcome=factual_target,observed_future=False,
+                    future_repetition=repeat,continuation_seed=before.get('future_seed'),root=(int(seed),reached_steps,left,right)))
+        # Root factual returns use only actual q=0 continuations. Other edges
+        # have independent futures and cannot borrow their factual label.
+        factual=[rows[index] for (arm,_),index in sampled.items() if arm==0]
+        rollouts.append(dict(row={k:v for k,v in factual[0].items() if k!='response'},steps=[],branches=branches,
+            factual_success=float(np.mean([row['success'] for row in factual])),subjects=subjects))
+        torch.save(dict(model=model,rollouts=rollouts,source_sha256=model['source_sha256'],
+            simulation_steps=total_steps,use='development paired successor and terminal task learning',
+            repetitions=repetitions,span=span,scenes=scenes,include_all_vessels=include_all_vessels,
+            program_options=program_options,
+            joint_programs=joint_programs,future_start=future_start,shared_futures=shared_futures,future_seeds=future_seeds,
+            future_block_edges=int(future_block_edges),factual_future_support=bool(factual_future_support),
+            focus_codes=focus_codes,policy_iteration=policy_iteration,
+            root_steps=root_steps,root_future=root_future,root_lookback=root_lookback,source_workers=source_workers,
+            initial_only=(root_lookback is None and
+                (all(step==0 for step in root_steps.values()) if isinstance(root_steps,dict) else root_steps==0)),
+            completed=root_id+1==len(scenes)),output/'training-data.pth')
+        print(dict(phase='successor_task_collection',roots=root_id+1,total_roots=len(scenes),
+            terminal_branches=len(rows),factual_success=rollouts[-1]['factual_success']),flush=True)
+    return output/'training-data.pth'
+
+
+def collect_joint_credit_batched(policy,output,tasks,batch_size=32,repetitions=2,device='cuda:0',factual=None):
     """Evaluate fixed-window program pairs against their frozen predecessor.
 
     Factual decisions retain their option boundaries. Every intervention and
@@ -316,7 +590,7 @@ def collect_joint_credit_batched(policy,output,tasks,batch_size=32,repetitions=2
     from conditional_fusion_value import JointInterventionValue
     program_proposer=[JointInterventionValue(**record).eval()
         for record in model.get('program_proposer',{}).get('values',[])]
-    factual=(previous['factual'] if previous is not None else
+    factual=(previous['factual'] if previous is not None else copy.deepcopy(factual) if factual is not None else
         batched_credit_rows(policy,tasks,batch_size=batch_size,device=device,keep_steps=True))
     balanced_subjects={}
     if model.get('balanced_futures',False):
@@ -356,6 +630,9 @@ def collect_joint_credit_batched(policy,output,tasks,batch_size=32,repetitions=2
                 elapsed=d.joint_refinement_step(duration,fraction,delay);candidate=eligible[0]['step']+elapsed
                 if duration-elapsed==span and candidate<len(rollout['steps']):
                     midpoint=candidate
+                    state=rollout['steps'][midpoint].get('controller_state')
+                    if state is not None:
+                        initial=state['program'];elapsed=state['ticks']
                     reference=d.joint_remaining_program(rollout['steps'][midpoint]['action'],initial,elapsed,
                         model.get('phase_preserving_refinement',False))
                     records.append(dict(step=midpoint,action=reference))
@@ -384,7 +661,8 @@ def collect_joint_credit_batched(policy,output,tasks,batch_size=32,repetitions=2
             for step,record in enumerate(rollout['steps']):
                 if step in chosen:
                     roots[step]=dict(environment=copy.deepcopy(env),observation=obs.copy(),
-                        random_state=np.random.get_state(),packet=d.joint_packet(env,obs))
+                        random_state=np.random.get_state(),packet=d.joint_packet(env,obs),
+                        controller_state=record.get('controller_state') if model.get('prefix_refinement',False) else None)
                 obs,_,done,_=d.joint_task_step(env,record['action'],1.,0.)
             if done!=rollout['row']['terminal']:
                 raise ValueError('The factual replay changed the task outcome.')
@@ -504,8 +782,14 @@ def collect_joint_credit_batched(policy,output,tasks,batch_size=32,repetitions=2
                         if future_rng is not None:future=int(future_rng.integers(1,2**31-1))
                         group['futures'].append(future)
                         for arm,action in enumerate(group_arms):
+                            controller_state=root.get('controller_state')
+                            if (controller_state is not None and model.get('prefix_refinement',False)
+                                    and not np.array_equal(action[:,3:],reference[:,3:])):
+                                controller_state=dict(controller_state,
+                                    midpoint_checked=True)
                             jobs.append(dict(environment=root['environment'],observation=root['observation'],
-                                random_state=root['random_state'],action=action))
+                                random_state=root['random_state'],action=action,
+                                controller_state=controller_state))
                             job_tasks.append((scene,None if observed and ordinal==0 else future))
                             locations.append((group_id,repetition,arm))
         if model.get('prefix_refinement',False):
@@ -3033,6 +3317,1364 @@ def supervise(include_baseline=True):
         raise RuntimeError('One or more remote experiments failed: ' + str(finished))
 
 
+def public_attacker_observation(env):
+    """Published eight-dimensional attacker input, using the nearest three boats."""
+    observation = np.zeros(8, np.float32)
+    def polar(vector):
+        distance = float(np.linalg.norm(vector))
+        angle = float(np.arctan2(vector[1], vector[0])-env.attacker.theta)
+        if angle > np.pi:
+            angle -= 2*np.pi
+        elif angle < -np.pi:
+            angle += 2*np.pi
+        return distance, angle
+    observation[:2] = polar(-env.attacker.pos)
+    relative = np.asarray([boat.pos for boat in env.defender_list])-env.attacker.pos
+    distances = np.linalg.norm(relative, axis=1)
+    for rank, index in enumerate(np.argsort(distances, kind='stable')[:3]):
+        if distances[index] < env.Att_Sensing_R:
+            observation[2+2*rank:4+2*rank] = polar(relative[index])
+    return observation
+
+
+def source_attacker_reward(env, outcome):
+    side = env.LearningSide
+    try:
+        env.LearningSide = 'Att'
+        return float(env._get_rewards(outcome))
+    finally:
+        env.LearningSide = side
+
+
+def attacker_task_episode(defender, attacker, scene):
+    """A common learned opponent with the unchanged defender option executor."""
+    seed, defenders, agility = scene
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    env = d.numerical_source().TADEnv(defenders)
+    obs, _ = env.reset(agility=agility, noisy_agility=False)
+    done = 0
+    while not done:
+        with torch.no_grad():
+            action = defender(d.mechanism_tensor(d.joint_packet(env, obs)), deterministic=True)[0][0].numpy()
+        commands = d.joint_commands(env, obs, defender, action)
+        try:
+            physical = next(commands)
+            while True:
+                attack = attacker(public_attacker_observation(env))
+                record = d.joint_task_step(env, physical, defender.training_gamma,
+                                           defender.training_step_cost, attacker_action=attack)
+                obs, _, done, _ = record
+                physical = commands.send(record)
+        except StopIteration:
+            pass
+        finally:
+            commands.close()
+    return dict(seed=int(seed), defenders=defenders, agility=agility, **d.outcome(env, done),
+                conditional_interventions=int(getattr(env, '_conditional_option_count', 0)),
+                environment_protocol='source', opponent='learned source-SAC attacker')
+
+
+_SOURCE_ATTACKER = None
+_SOURCE_ATTACKER_SHA256 = None
+
+
+class FrozenSourceAttacker:
+    """Execute the original deterministic attacker from a frozen learning result."""
+    def __init__(self, record):
+        source = d.numerical_source()
+        if record['specification']['source_commit'] != d.SOURCE_COMMIT:
+            raise ValueError('The opponent must use the same original source dynamics.')
+        network = sys.modules[source.SAC.__module__].ActorAtt
+        width = record['specification']['config']['rl']['hidden_dim']
+        # Loading a frozen adversary must not advance paired rollout randomness.
+        with torch.random.fork_rng(devices=[]):
+            self.actor = network(2, 6, 2, width).eval()
+        self.actor.load_state_dict(record['actor'], strict=True)
+        self.actor.requires_grad_(False)
+        self.device = torch.device('cpu')
+        self.choose_action = source.SAC.choose_action.__get__(self)
+
+    def __call__(self, observation):
+        return self.choose_action(observation[None], deterministic=True)
+
+
+def _source_opponent_step(env, rl_action, controller='Boids', att_action=None):
+    if att_action is None and _SOURCE_ATTACKER is not None:
+        att_action = _SOURCE_ATTACKER(public_attacker_observation(env))
+    return type(env)._arboids_original_step(env, rl_action, controller, att_action)
+
+
+def configure_source_attacker(checkpoint=None):
+    """Bind the same opponent to prefixes, paired branches, and evaluation.
+
+    Original source files are untouched. Passing None restores the exact APF
+    executor. Each sampling worker receives the checkpoint explicitly.
+    """
+    import io
+    global _SOURCE_ATTACKER, _SOURCE_ATTACKER_SHA256
+    environment = d.numerical_source().TADEnv
+    if not hasattr(environment, '_arboids_original_step'):
+        environment._arboids_original_step = environment.step
+    if checkpoint is None:
+        environment.step = environment._arboids_original_step
+        _SOURCE_ATTACKER = _SOURCE_ATTACKER_SHA256 = None
+        return None
+    payload = Path(checkpoint).read_bytes()
+    identity = hashlib.sha256(payload).hexdigest()
+    if identity != _SOURCE_ATTACKER_SHA256:
+        record = torch.load(io.BytesIO(payload), map_location='cpu', weights_only=False)
+        if not record.get('completed'):
+            raise ValueError('Freeze a completed attacker run before collecting adaptation labels.')
+        _SOURCE_ATTACKER = FrozenSourceAttacker(record)
+        _SOURCE_ATTACKER_SHA256 = identity
+    environment.step = _source_opponent_step
+    return identity
+
+
+def train_source_attacker(defender_checkpoint, output, *, seed=42, defenders=6, steps=500000,
+                         warm_steps=50000, eval_interval=25000, evaluation_per_cell=32,
+                         batch_size=4096, device='cuda:0', runtime_sha256=None):
+    """Train a common adversary against one frozen defender under source dynamics.
+
+    Checkpoints occur at episode boundaries, so a resumed run never loses an
+    active defender commitment. The final episode is finished and its actual
+    number of physical training steps is reported, including any budget excess.
+    """
+    import yaml
+    from utils.config import _dict_to_namespace
+    if min(steps, eval_interval, evaluation_per_cell, batch_size) <= 0 or warm_steps < 0 or defenders < 2:
+        raise ValueError('The adversarial experiment requires positive budgets and at least two defenders.')
+    initialize()
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    checkpoint = output/'attacker-training.pth'
+    defender_checkpoint = Path(defender_checkpoint)
+    identity = hashlib.sha256(defender_checkpoint.read_bytes()).hexdigest()
+    defender = d.joint_load(str(defender_checkpoint), defender_checkpoint.stat().st_mtime_ns)
+    if defender.environment_protocol != 'source':
+        raise ValueError('The current attacker experiment uses the exact source environment.')
+    source = d.numerical_source()
+    config = yaml.safe_load((REPO/'train/configs/adversarial.yaml').read_text(encoding='utf-8'))
+    config['rl']['batch_size'] = batch_size
+    config['agent'].update(learning_side='Att', defender_num=defenders)
+    config['training'].update(warm_steps=warm_steps, total_steps=steps, eval_interval=eval_interval)
+    agent = source.SAC(_dict_to_namespace(config), 2, 6, 2, attacker=True, device=torch.device(device))
+    replay = sys.modules[source.SAC.__module__].ReplayBuffer(8, 2)
+    specification = dict(seed=seed, defenders=defenders, requested_training_steps=steps,
+        config=config, defender_sha256=identity, source_sha256=d.BASELINE_SHA256,
+        source_commit=d.SOURCE_COMMIT, runtime_sha256=runtime_sha256,
+        attacker_input='target plus three nearest sensed defenders; same eight source features',
+        defender_execution='unchanged option generator, including complete intervention windows',
+        result_role='development learned-opponent training', training_agility=[2., 2.5])
+    step, episodes, elapsed, history, best = 0, 0, 0., [], None
+    if checkpoint.exists():
+        saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
+        if saved['specification'] != specification:
+            raise ValueError('The resumed attacker must retain its frozen defender and complete training specification.')
+        for key in ('actor', 'critic', 'critic_target', 'actor_optimizer', 'critic_optimizer', 'alpha_optimizer'):
+            getattr(agent, key).load_state_dict(saved['agent'][key])
+        with torch.no_grad():
+            agent.log_alpha.copy_(saved['agent']['log_alpha'])
+        agent.alpha = agent.log_alpha.exp().detach().to(agent.device)
+        for key in ('size', 'count', 'max_size'):
+            setattr(replay, key, saved['replay'][key])
+        for key in ('s', 'a', 'r', 's_', 'dw'):
+            value = saved['replay'][key]
+            getattr(replay, key)[:len(value)] = value
+        step, episodes, elapsed, history, best = (saved[key] for key in ('step', 'episodes', 'elapsed', 'history', 'best'))
+        np.random.set_state(saved['numpy_random_state'])
+        torch.set_rng_state(saved['torch_random_state'])
+        if device.startswith('cuda'):
+            torch.cuda.set_rng_state_all(saved['cuda_random_state'])
+        del saved
+        if step >= steps:
+            return torch.load(output/'attacker.pth', map_location='cpu', weights_only=False)
+    started = time.monotonic()
+    next_evaluation = ((step//eval_interval)+1)*eval_interval
+    evaluation_scenes = [(432610000+int(agility*10)*1000+i, defenders, agility)
+                         for agility in (2., 2.5) for i in range(evaluation_per_cell)]
+
+    def attack(observation):
+        return agent.choose_action(observation[None], deterministic=True)
+
+    def evaluate_and_save():
+        nonlocal best
+        random = (np.random.get_state(), torch.get_rng_state(),
+                  torch.cuda.get_rng_state_all() if device.startswith('cuda') else [])
+        try:
+            rows = [attacker_task_episode(defender, attack, scene) for scene in evaluation_scenes]
+        finally:
+            np.random.set_state(random[0])
+            torch.set_rng_state(random[1])
+            if device.startswith('cuda'):
+                torch.cuda.set_rng_state_all(random[2])
+        score = (sum(not row['success'] for row in rows), sum(row['source_failure'] for row in rows))
+        history.append(dict(step=step, episodes=episodes, defender_success=sum(row['success'] for row in rows),
+                            tasks=evaluation_scenes, rows=rows))
+        policy = dict(actor={k:v.detach().cpu().clone() for k,v in agent.actor.state_dict().items()},
+                      specification=specification, step=step, episodes=episodes, completed=step>=steps,
+                      history=history, evaluation_score=score)
+        atomic_save(policy, output/'attacker.pth')
+        if best is None or score > tuple(best):
+            best = score
+            atomic_save(policy, output/'best-development-attacker.pth')
+        agent_state = {key:getattr(agent, key).state_dict() for key in
+                       ('actor', 'critic', 'critic_target', 'actor_optimizer', 'critic_optimizer', 'alpha_optimizer')}
+        agent_state['log_alpha'] = agent.log_alpha.detach().cpu().clone()
+        atomic_save(dict(specification=specification, step=step, episodes=episodes,
+            elapsed=elapsed+time.monotonic()-started, completed=step>=steps, history=history, best=best,
+            agent=agent_state, numpy_random_state=random[0], torch_random_state=random[1], cuda_random_state=random[2],
+            replay={**{key:getattr(replay, key)[:replay.size] for key in ('s', 'a', 'r', 's_', 'dw')},
+                    **{key:getattr(replay, key) for key in ('size', 'count', 'max_size')}}), checkpoint)
+        print(dict(phase='source_attacker_training', step=step, requested=steps,
+                   defender_success=history[-1]['defender_success'], evaluated=len(rows), best=best), flush=True)
+
+    while step < steps:
+        env = source.TADEnv(defenders)
+        agility = float(np.random.choice((2., 2.5)))
+        obs, _ = env.reset(agility=agility, noisy_agility=False)
+        done = 0
+        while not done:
+            with torch.no_grad():
+                action = defender(d.mechanism_tensor(d.joint_packet(env, obs)), deterministic=True)[0][0].numpy()
+            commands = d.joint_commands(env, obs, defender, action)
+            try:
+                physical = next(commands)
+                while True:
+                    before = public_attacker_observation(env)
+                    attack_action = (np.random.uniform(-1., 1., 2) if step < warm_steps else
+                                     agent.choose_action(before[None]))
+                    record = d.joint_task_step(env, physical, defender.training_gamma,
+                                               defender.training_step_cost, attacker_action=attack_action)
+                    obs, _, done, _ = record
+                    following = public_attacker_observation(env)
+                    replay.store(before, attack_action, source_attacker_reward(env, done), following, bool(done))
+                    step += 1
+                    if step >= warm_steps:
+                        with torch.enable_grad():
+                            agent.learn(replay)
+                    physical = commands.send(record)
+            except StopIteration:
+                pass
+            finally:
+                commands.close()
+        episodes += 1
+        if step >= next_evaluation or step >= steps:
+            evaluate_and_save()
+            next_evaluation = ((step//eval_interval)+1)*eval_interval
+    return torch.load(output/'attacker.pth', map_location='cpu', weights_only=False)
+
+
+def continue_current_mechanisms(job, workers=6, fit_only=False, arms=('F11', 'F01'),
+                                control_modes=('independent', 'single_reference'),
+                                execution_runtime_sha256=None):
+    """Resume the current development experiments without replacing their anchors."""
+    import gc
+    import mechanism_controls as controls
+    import local_intervention_value as local
+    from plain_return import fit_plain_return
+
+    if execution_runtime_sha256 is not None and not fit_only:
+        raise ValueError('In-memory source fitting cannot spawn filesystem evaluation workers.')
+    mp.set_start_method('spawn', force=True)
+    os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+    initialize()
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    directory = d.ROOT / 'local-difference-joint-development'
+    anchors = {
+        'F11': ('F11-local-difference-r20-population-rank',
+                '122b854a1c528b7450403f82ad14ec5b7e4e8f722e0ee17bc418b91f63e2dc6e', 'r18'),
+        'F01': ('F01-local-difference-r24-population-rank',
+                '3ea2a8ee9beea9df88fd31fc246e4e88f9aa4809184ece8813b0abbde6732ca2', 'r22')}
+    protected = {directory / (stem+'.pth'): identity for stem, identity, _ in anchors.values()}
+    protected.update({
+        d.ROOT / 'joint-supported-credit-128/policy.pth':
+            '12a66ac257748331db94975d9a3357cc5531b03cf5c20005feaf7577abb6b8ce',
+        d.ROOT / 'joint-complete-task-development/task-ordered-source-consistent.pth':
+            '2e148ac6f19e516aad29b80dd83a0d6cc4783caba8ec82a83c3c199f3af7d482'})
+    for path, identity in protected.items():
+        if hashlib.sha256(path.read_bytes()).hexdigest() != identity:
+            raise ValueError('The protected checkpoint changed: '+str(path))
+    suites = {}
+    for suffix in ('source-development', 'new4310-200', 'new-development', 'fresh-200'):
+        result = torch.load(directory / (anchors['F11'][0]+'-'+suffix+'.pth'),
+                            map_location='cpu', weights_only=False)
+        if not result['completed'] or result['evaluated'] != len(result['tasks']):
+            raise ValueError('A continuation suite must have complete reference evidence.')
+        suites[suffix] = result['tasks']
+    reserved_layouts = {tuple(scene) for scene, _ in suites['new4310-200']}
+
+    def evaluate(path, remote_reference=False, evaluation_context=None):
+        if fit_only:
+            print(dict(phase='candidate_fit_ready', policy=path.name, evaluated=False), flush=True)
+            return
+        for suffix, tasks in suites.items():
+            controls.evaluate_models([path], tasks, workers=workers,
+                result_suffix=('remote-linux-'+suffix if remote_reference else suffix),
+                evaluation_context=evaluation_context)
+        print(dict(phase='complete_current_candidate', policy=path.name), flush=True)
+
+    def exposed_development():
+        diagnostics = {}
+        for stem, suffix, count in (
+                ('F11-local-difference-r49-factual-transport', '4320-256', 256),
+                ('F11-local-difference-r65-outcome-confidence', '4321-512', 512)):
+            record = torch.load(directory / (stem+'-confirmation-'+suffix+'.pth'),
+                                map_location='cpu', weights_only=False)
+            if not record['completed'] or record['evaluated'] != count:
+                raise ValueError('The exposed diagnostic population must be complete.')
+            diagnostics['diagnostic-'+suffix] = record['tasks']
+        scenes = [(start+i, 6, aggression) for start, aggression in
+                  ((432219000, 2.), (432220000, 2.5)) for i in range(128)]
+        tasks = [(scene, future) for scene in scenes for future in
+                 (None, int(np.random.SeedSequence(
+                     [20261021, scene[0], 6, int(scene[2]*10), 917805]).generate_state(1)[0]))]
+        exposed_layouts = {tuple(scene) for population in (*suites.values(), *diagnostics.values())
+                           for scene, _ in population}
+        if exposed_layouts.intersection(scenes):
+            raise ValueError('The next confirmation plan overlaps an exposed layout.')
+        context = dict(development_phase='post-4321-feedback-risk',
+            result_role='development selection after exposed confirmations',
+            prior_confirmation_exposed=True, exposed_confirmations=['4320-256', '4321-512'],
+            selection_suites=list(suites)+list(diagnostics),
+            selection_rule=('full and M1 must not underperform exact frozen F10 in any of six suites; '
+                'M2 must not underperform fixed r24 in any suite; among eligible versions maximize '
+                'total successes, then minimum per-suite gain rate, then fewer interventions'),
+            next_confirmation_plan=dict(result_suffix='confirmation-4322-512',
+                tasks=tasks, tasks_sha256=hashlib.sha256(json.dumps(tasks, separators=(',', ':')).encode()).hexdigest(),
+                role='unused until candidate and comparator lock after development selection'),
+            runtime_sha256={name: (execution_runtime_sha256[name] if execution_runtime_sha256 is not None
+                else hashlib.sha256((REPO / 'train' / name).read_bytes()).hexdigest())
+                for name in ('conditional_fusion_value.py', 'develop_source_fusion.py',
+                             'local_intervention_value.py', 'mechanism_controls.py',
+                             'plain_return.py', 'run_remote_evidence.py')},
+            fitting_source_mode='in-memory source' if execution_runtime_sha256 is not None else 'filesystem')
+        return diagnostics, context
+
+    def evaluate_exposed(path, diagnostics, context):
+        if fit_only:
+            print(dict(phase='candidate_fit_ready', policy=path.name, evaluated=False), flush=True)
+            return
+        diagnostic_context = dict(context, result_role='post-unblinding diagnostic development')
+        for suffix, tasks in diagnostics.items():
+            controls.evaluate_models([path], tasks, workers=workers, result_suffix=suffix,
+                                     evaluation_context=diagnostic_context)
+        evaluate(path, evaluation_context=context)
+
+    if job == 'continue-fixed-reference':
+        for base in (d.ROOT / 'joint-128-factorial-development/F10-mapped-actuator-joint.pth',
+                     directory / (anchors['F11'][0]+'.pth'),
+                     directory / (anchors['F01'][0]+'.pth'),
+                     d.ROOT / 'joint-complete-task-development/F00-source-clean.pth'):
+            evaluate(base, remote_reference=True)
+    elif job in ('continue-m2-single-intervention', 'continue-m2-strong-confidence',
+                 'continue-m1-single-intervention', 'continue-m1-strong-confidence',
+                 'continue-m2-outcome-confidence', 'continue-m2-factual-risk', 'continue-m1-factual-risk'):
+        single = job.endswith('-single-intervention')
+        current_m1 = job.startswith('continue-m1-')
+        outcome_scaled = job == 'continue-m2-outcome-confidence'
+        factual_risk = job.endswith('-factual-risk')
+        revision = ((68 if current_m1 else 67) if factual_risk else
+                    65 if outcome_scaled else (63 if single else 64) if current_m1 else (61 if single else 62))
+        variant = ('factual-risk' if factual_risk else 'outcome-confidence' if outcome_scaled else
+                   'single-intervention' if single else 'strong-confidence')
+        diagnostics, phase_context = exposed_development() if factual_risk else (None, None)
+        diagnostic = torch.load(directory / 'F11-local-difference-r49-factual-transport-confirmation-4320-256.pth',
+                                map_location='cpu', weights_only=False)
+        if not diagnostic['completed'] or diagnostic['evaluated'] != 256:
+            raise ValueError('Use the complete, already exposed diagnostic population.')
+        for arm in (('F11',) if current_m1 else arms):
+            source = directory / (
+                'F11-local-difference-r59-current-coverage.pth' if current_m1 else
+                'F11-local-difference-r49-factual-transport.pth' if arm == 'F11' else
+                'F01-local-difference-r47-uniform-population.pth')
+            identity = hashlib.sha256(source.read_bytes()).hexdigest()
+            output = directory / f'{arm}-local-difference-r{revision}-{variant}.pth'
+            if not output.exists():
+                model = torch.load(source, map_location='cpu', weights_only=False)
+                value = model['successor_task_value']
+                if value['kind'] != 'local_difference_joint' or value['intervention_budget'] != 0:
+                    raise ValueError('The horizon comparison requires the recorded rolling predecessor.')
+                if single:
+                    value['intervention_budget'] = 1
+                else:
+                    value['confidence'] = 1.
+                    if outcome_scaled:
+                        value['outcome_scaled_confidence'] = True
+                    if factual_risk:
+                        value['factual_risk_confidence'] = True
+                model['successor_task_fit'].update(execution_revision=revision,
+                    decision_predecessor_sha256=identity, additional_parameter_updates=0,
+                    additional_simulation_steps=0, receding_option_improvement=not single,
+                    intervention_budget=value['intervention_budget'],
+                    confidence=value['confidence'],
+                    outcome_scaled_confidence=outcome_scaled,
+                    factual_risk_confidence=factual_risk,
+                    deployment_continuation=('frozen predecessor after the first accepted intervention'
+                        if single else 'rolling decisions with uncertainty increasing with factual success'
+                        if factual_risk else 'rolling decisions with outcome-scaled uncertainty'
+                        if outcome_scaled else 'rolling decisions with a full uncertainty penalty'),
+                    prior_confirmation_exposed=True,
+                    selection_suites=list(suites)+['diagnostic-4320-256'])
+                if factual_risk:
+                    model['successor_task_fit'].update(phase_context)
+                atomic_save(model, output)
+                del model
+                gc.collect()
+            saved = torch.load(output, map_location='cpu', weights_only=False)
+            if (saved['successor_task_fit'].get('execution_revision') != revision
+                    or saved['successor_task_fit'].get('decision_predecessor_sha256') != identity):
+                raise ValueError('The decision comparison must retain its exact predecessor.')
+            del saved
+            if factual_risk:
+                evaluate_exposed(output, diagnostics, phase_context)
+                continue
+            if not fit_only:
+                controls.evaluate_models([output], diagnostic['tasks'], workers=workers,
+                    result_suffix='diagnostic-4320-256')
+                record_path = output.with_name(output.stem+'-diagnostic-4320-256.pth')
+                record = torch.load(record_path, map_location='cpu', weights_only=False)
+                record.update(result_role='post-unblinding diagnostic development',
+                              prior_confirmation_exposed=True)
+                atomic_save(record, record_path)
+            evaluate(output)
+            if single and not fit_only:
+                for suffix in (*suites, 'diagnostic-4320-256'):
+                    record = torch.load(output.with_name(output.stem+'-'+suffix+'.pth'),
+                                        map_location='cpu', weights_only=False)
+                    if any(row['conditional_interventions'] > 1 for row in record['rows']):
+                        raise ValueError('A single-intervention comparison executed another intervention.')
+    elif job == 'continue-m1-controls':
+        bank = torch.load(directory / 'M1-independent-r33-with-M2-local-retrained-factual-data.pth',
+                          map_location='cpu', weights_only=False)
+        if not bank['completed'] or bank['trajectories'] != 756:
+            raise ValueError('Resume from the complete, previously fixed factual sampling design.')
+        tasks = [(tuple(record['scene']), record['future']) for record in bank['records']]
+        if any(tuple(scene) in reserved_layouts for scene, _ in tasks):
+            raise ValueError('The 4310 evaluation layout cannot enter this fixed training design.')
+        del bank
+        for mode in control_modes:
+            base = directory / f'M1-{mode}-r33-base.pth'
+            # Recreate Linux trajectories instead of combining the interrupted
+            # Windows comparison batch with a numerically different prefix.
+            output = directory / f'M1-{mode}-r41-remote-retrained.pth'
+            references = [dict(policy_sha256=hashlib.sha256(base.read_bytes()).hexdigest(),
+                               tasks=tasks, rows=[dict(success=None) for _ in tasks])]
+            controls.retrain_local_fusion_control(base, directory / (anchors['F11'][0]+'.pth'),
+                directory / 'F11-local-joint-r18-onpolicy-training-data.pth',
+                references, output, workers=workers, device='cuda:0',
+                inference_batch=32, sampling_device='cpu')
+            gc.collect()
+            torch.cuda.empty_cache()
+            evaluate(output)
+    elif job in ('continue-m2-bounds', 'continue-m2-local-bounds'):
+        for arm in arms:
+            localized = job == 'continue-m2-local-bounds'
+            revision = 42 if localized else 39
+            variant = 'supported-consequences' if localized else 'bounded-consequences'
+            output = directory / f'{arm}-local-difference-r{revision}-{variant}.pth'
+            if not output.exists():
+                stem, _, data_revision = anchors[arm]
+                model = torch.load(directory / (stem+'.pth'), map_location='cpu', weights_only=False)
+                data = torch.load(directory / f'{arm}-local-joint-{data_revision}-onpolicy-training-data.pth',
+                                  map_location='cpu', weights_only=False)
+                model = local.calibrate_conditional_differences(model, data)
+                model['successor_task_value'].update(stratum_value_bounds=True,
+                    stratum_localized_bounds=localized,
+                    factual_bound_pruning=True, candidate_bound_pruning=True, inference_device='cuda:0')
+                model['successor_task_fit'].update(execution_revision=revision,
+                    conditional_consequence_bounds=True, supported_conditional_bounds=localized,
+                    reference_sha256=anchors[arm][1])
+                atomic_save(model, output)
+                del model, data
+                gc.collect()
+                torch.cuda.empty_cache()
+            evaluate(output)
+    elif job == 'continue-m2-evidence-confidence':
+        for arm in arms:
+            stem, identity, revision = anchors[arm]
+            source = directory / f'{arm}-local-difference-r49-factual-transport.pth'
+            output = directory / f'{arm}-local-difference-r56-effective-confidence.pth'
+            refresh_required = not output.exists()
+            if output.exists():
+                saved = torch.load(output, map_location='cpu', weights_only=False)
+                refresh_required = not saved['successor_task_fit'].get('confidence_only_calibration', False)
+                del saved
+                if refresh_required and any(output.parent.glob(output.stem+'-*.pth')):
+                    raise ValueError('A measured confidence candidate cannot be replaced in place.')
+            if refresh_required:
+                reference = torch.load(source, map_location='cpu', weights_only=False)
+                if reference['successor_task_fit'].get('execution_revision') != 49:
+                    raise ValueError('Effective-future confidence requires the completed transported value.')
+                data = torch.load(directory / f'{arm}-local-joint-{revision}-onpolicy-training-data.pth',
+                                  map_location='cpu', weights_only=False)
+                model = local.refresh_local_calibration(reference, data,
+                    effective_future_confidence=True, confidence_only=True)
+                model['successor_task_fit'].update(execution_revision=56,
+                    reference_sha256=identity,
+                    confidence_source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                    additional_parameter_updates=0, additional_terminal_observations=0,
+                    confidence_estimator='paired outcome bounds with effective weighted future counts')
+                atomic_save(model, output)
+                del model, data, reference
+                gc.collect()
+                torch.cuda.empty_cache()
+            evaluate(output)
+    elif job in ('continue-m2-factual-transport', 'continue-m2-population-transport'):
+        for arm in arms:
+            population = job == 'continue-m2-population-transport'
+            execution_revision = 52 if population else 49
+            variant = 'population-transport' if population else 'factual-transport'
+            output = directory / f'{arm}-local-difference-r{execution_revision}-{variant}.pth'
+            if not output.exists():
+                stem, identity, revision = anchors[arm]
+                source = directory / (f'{arm}-local-difference-r47-uniform-population.pth'
+                                      if population else stem+'.pth')
+                reference = torch.load(source, map_location='cpu', weights_only=False)
+                if population and (reference['successor_task_fit'].get('execution_revision') != 47
+                        or reference['successor_task_fit'].get('reference_sha256') != identity):
+                    raise ValueError('Population transport requires its completed uniform-population fit.')
+                data = torch.load(directory / f'{arm}-local-joint-{revision}-onpolicy-training-data.pth',
+                                  map_location='cpu', weights_only=False)
+                if population:
+                    for root in data['roots']:
+                        root['future_weights'] = np.ones(len(root['futures']), np.float32)
+                model = local.refresh_local_calibration(
+                    reference, data, factual_difference_transport=True)
+                model['successor_task_value'].update(
+                    inference_device='cuda:0', factual_bound_pruning=True, candidate_bound_pruning=True)
+                model['successor_task_fit'].update(execution_revision=execution_revision,
+                    reference_sha256=identity, transport_source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                    factual_calibration_transport='preserve paired neural differences within task-value bounds')
+                atomic_save(model, output)
+                del model, data, reference
+                gc.collect()
+                torch.cuda.empty_cache()
+            evaluate(output)
+    elif job == 'continue-m1-adapt':
+        base = directory / 'M1-joint-r40-refined-beam.pth'
+        behavior = directory / 'F11-local-difference-r43-refined-fusion.pth'
+        output = directory / 'F11-local-difference-r45-adapted-fusion.pth'
+        if not output.exists():
+            references = []; behavior_references = []
+            for suffix in ('source-development', 'new-development', 'fresh-200'):
+                for policy, target in ((base, references), (behavior, behavior_references)):
+                    record = torch.load(policy.with_name(policy.stem+'-'+suffix+'.pth'),
+                                        map_location='cpu', weights_only=False)
+                    if not record['completed'] or record['policy_sha256'] != hashlib.sha256(policy.read_bytes()).hexdigest():
+                        raise ValueError('Adaptation needs complete results from its exact controllers.')
+                    target.append(record)
+            selected = local.development_roots(behavior_references, failures=4, successes=2, late=True)
+            outcomes = {(tuple(scene), future): row for record in behavior_references
+                        for (scene, future), row in zip(record['tasks'], record['rows'])}
+            root_tasks = [(scene, future, 'last_intervention' if lookback is not None
+                          and outcomes[tuple(scene), future]['conditional_interventions'] else lookback)
+                          for scene, future, lookback in selected]
+            if any(tuple(scene) in reserved_layouts for scene, _, _ in root_tasks):
+                raise ValueError('The 4310 evaluation layouts cannot enter adaptation.')
+            bank_path = output.with_name(output.stem+'-factual-data.pth')
+            bank = local.collect_factual_trajectories(base, references, bank_path,
+                workers=workers, inference_batch=32, inference_device='cpu')
+            data_path = output.with_name(output.stem+'-training-data.pth')
+            previous = torch.load(data_path, map_location='cpu', weights_only=False) if data_path.exists() else None
+            sampled = local.collect_local_tasks(base, root_tasks, data_path,
+                workers=workers, repetitions=2, confirmation=6, screen_limit=48,
+                context_policy=behavior, neighborhood_width=2, record_continuations=True,
+                existing_data=previous)
+            factual = local.factual_reference_data(base, references)
+            factual['simulation_steps'] = 0
+            data = local.focus_development_futures(local.merge_paired_data([sampled, factual]),
+                references, weight=128.)
+            data['training_data'] = [str(data_path), str(bank_path)]
+            continuation = local.paired_continuation_bank(sampled)
+            bank['records'] += continuation['records']
+            bank['paired_continuation_state_labels'] = continuation['state_labels']
+            bank['training_data'] = [str(bank_path), str(data_path)]
+            reference = torch.load(directory / (anchors['F11'][0]+'.pth'), map_location='cpu', weights_only=False)
+            fit = reference['successor_task_fit']; value = reference['successor_task_value']
+            model = local.fit_joint_potential(data, output, factual_bank=bank, device='cuda:0',
+                updates=6000, width=fit['width'], seed=fit['seed'], initial_states=value['states'],
+                learning_rate=2e-4, edge_weight=fit['difference_weight'],
+                anchor_weight=fit['factual_contrast_weight'], rank_weight=fit['local_rank_weight'],
+                factual_weight=fit['factual_weight'],
+                **{key:value[key] for key in ('bandwidth','margin','confidence','global_penalty',
+                    'context_time_scale','interpolation_power','context_conditioned','motion_basis',
+                    'local_contrast_head','joint_factual_calibration','residual_potential')})
+            model['successor_task_value'].update(inference_device='cuda:0',
+                factual_bound_pruning=True, candidate_bound_pruning=True)
+            model['successor_task_fit'].update(execution_revision=45,
+                initialization_checkpoint_sha256=anchors['F11'][1],
+                initialization_updates=fit['updates'], total_parameter_updates=fit['updates']+6000,
+                initialization_simulation_steps=fit['simulation_steps'],
+                behavior_checkpoint_sha256=hashlib.sha256(behavior.read_bytes()).hexdigest(),
+                actual_replacement_labels=True, adaptation_contexts=len(root_tasks))
+            atomic_save(model, output)
+            del reference, data, bank, sampled, model
+            gc.collect()
+            torch.cuda.empty_cache()
+        saved = torch.load(output, map_location='cpu', weights_only=False)
+        if saved['successor_task_fit'].get('execution_revision') != 45:
+            raise ValueError('The replacement adaptation has not completed its provenance check.')
+        del saved
+        evaluate(output)
+    elif job in ('continue-m2-conditional-fit', 'continue-m2-population-fit'):
+        for arm in arms:
+            population = job == 'continue-m2-population-fit'
+            execution_revision = 47 if population else 44
+            variant = 'uniform-population' if population else 'conditional-outcomes'
+            output = directory / f'{arm}-local-difference-r{execution_revision}-{variant}.pth'
+            if not output.exists():
+                stem, _, revision = anchors[arm]
+                reference = torch.load(directory / (stem+'.pth'), map_location='cpu', weights_only=False)
+                data = torch.load(directory / f'{arm}-local-joint-{revision}-onpolicy-training-data.pth',
+                                  map_location='cpu', weights_only=False)
+                bank = local.factual_bank_from_model(reference, data)
+                if population:
+                    # The execution noise seed is not an observation. Give
+                    # each measured future equal mass instead of concentrating
+                    # the task-value target on a particular development draw.
+                    for root in data['roots']:
+                        root['future_weights'] = np.ones(len(root['futures']), np.float32)
+                fit = reference['successor_task_fit']
+                value = reference['successor_task_value']
+                model = local.fit_joint_potential(data, output, factual_bank=bank, device='cuda:0',
+                    updates=fit['updates'], width=fit['width'], seed=fit['seed'],
+                    edge_weight=fit['difference_weight'], anchor_weight=fit['factual_contrast_weight'],
+                    rank_weight=fit['local_rank_weight'], factual_weight=fit['factual_weight'],
+                    conditional_strata=not population, stratified_local_calibration=not population,
+                    **{key:value[key] for key in ('bandwidth','margin','confidence','global_penalty',
+                        'context_time_scale','interpolation_power','context_conditioned','motion_basis',
+                        'local_contrast_head','joint_factual_calibration','residual_potential')})
+                if not population and model['successor_task_fit']['training_observation_sha256'] != fit['training_observation_sha256']:
+                    raise ValueError('Conditional outcome heads must use the fixed common observations.')
+                model['successor_task_value'].update(inference_device='cuda:0',
+                    factual_bound_pruning=True, candidate_bound_pruning=True)
+                model['successor_task_fit'].update(execution_revision=execution_revision,
+                    reference_sha256=anchors[arm][1],
+                    source_observation_sha256=fit['training_observation_sha256'],
+                    future_population_weight=1. if population else 'inherited',
+                    conditional_outcome_heads=('single joint potential with paired local differences' if population else
+                        'factual probability, rescue given failure, harm given success'))
+                atomic_save(model, output)
+                del reference, data, bank, model
+                gc.collect()
+                torch.cuda.empty_cache()
+            saved = torch.load(output, map_location='cpu', weights_only=False)
+            saved_fit = saved['successor_task_fit']
+            if (saved_fit.get('execution_revision') != execution_revision
+                    or saved_fit.get('reference_sha256') != anchors[arm][1]):
+                raise ValueError('The conditional outcome fit has not completed its provenance check.')
+            del saved
+            evaluate(output)
+    elif job in ('continue-m2-dual-motion', 'continue-m2-dual-population',
+                 'continue-m2-response', 'continue-m2-dual-response'):
+        uniform = job == 'continue-m2-dual-population'
+        response_supervision = job in ('continue-m2-response', 'continue-m2-dual-response')
+        dual = job != 'continue-m2-response'
+        execution_revision = {'continue-m2-dual-motion':85, 'continue-m2-dual-population':86,
+            'continue-m2-response':90, 'continue-m2-dual-response':91}[job]
+        method = 'response-supervision' if response_supervision else 'dual-motion'
+        diagnostics, phase_context = exposed_development()
+        phase_context['development_phase'] = ('measured-response-conditional-intervention' if response_supervision
+                                               else 'dual-timescale-conditional-intervention')
+        for arm in arms:
+            stem, identity, revision = anchors[arm]
+            output = directory / f'{arm}-local-difference-r{execution_revision}-{method}.pth'
+            if not output.exists():
+                reference = torch.load(directory / (stem+'.pth'), map_location='cpu', weights_only=False)
+                data_path = directory / f'{arm}-local-joint-{revision}-onpolicy-training-data.pth'
+                data = torch.load(data_path, map_location='cpu', weights_only=False)
+                bank = local.factual_bank_from_model(reference, data)
+                if uniform:
+                    for root in data['roots']:
+                        root['future_weights'] = np.ones(len(root['futures']), np.float32)
+                fit, value = reference['successor_task_fit'], reference['successor_task_value']
+                model = local.fit_joint_potential(data, output, factual_bank=bank, device='cuda:0',
+                    updates=24000, ensemble_size=3, width=61 if dual else 64, seed=42,
+                    finite_motion_basis=dual, dual_motion_basis=dual,
+                    response_supervision_weight=4. if response_supervision else 0.,
+                    factual_difference_transport=True, effective_future_confidence=True,
+                    edge_weight=fit['difference_weight'], anchor_weight=fit['factual_contrast_weight'],
+                    rank_weight=fit['local_rank_weight'], factual_weight=fit['factual_weight'],
+                    **{key:value[key] for key in ('bandwidth','margin','confidence','global_penalty',
+                        'context_time_scale','interpolation_power','context_conditioned','motion_basis',
+                        'local_contrast_head','joint_factual_calibration','residual_potential')})
+                if not uniform and model['successor_task_fit']['training_observation_sha256'] != fit['training_observation_sha256']:
+                    raise ValueError('The dual-time representation changed the common observations.')
+                model['successor_task_value'].update(inference_device='cuda:0',
+                    factual_bound_pruning=True, candidate_bound_pruning=True)
+                model['successor_task_fit'].update(phase_context, execution_revision=execution_revision,
+                    reference_sha256=identity, paired_training_data_sha256=hashlib.sha256(data_path.read_bytes()).hexdigest(),
+                    optimization_condition=('fresh joint potential with measured physical-response auxiliary supervision'
+                        if response_supervision else 'fresh joint-potential fit with sustained and finite-window motion features'),
+                    future_population_weight=1. if uniform else 'inherited',
+                    total_parameter_updates=24000, total_optimizer_steps=24000,
+                    additional_simulation_steps=0, inherited_calibration=False, warm_start=False)
+                atomic_save(model, output)
+                del reference, data, bank, model
+                gc.collect()
+                torch.cuda.empty_cache()
+            saved = torch.load(output, map_location='cpu', weights_only=False)
+            if (saved['successor_task_fit'].get('execution_revision') != execution_revision
+                    or bool(saved['successor_task_value'].get('dual_motion_basis')) != dual
+                    or bool(saved['successor_task_fit'].get('response_supervision_weight')) != response_supervision):
+                raise ValueError('The conditional candidate must have its complete recorded fit.')
+            del saved
+            evaluate_exposed(output, diagnostics, phase_context)
+    elif job == 'continue-m2-short-response':
+        diagnostics, phase_context = exposed_development()
+        phase_context['development_phase'] = 'measured-short-intervention-continuation'
+        for arm in arms:
+            _, _, revision = anchors[arm]
+            previous_path = directory / f'{arm}-local-joint-{revision}-onpolicy-training-data.pth'
+            fresh_path = directory / f'{arm}-local-joint-r95-short-response-training-data.pth'
+            source = directory / (f'{arm}-local-difference-r61-single-intervention.pth' if arm == 'F11'
+                                  else f'{arm}-local-difference-r65-outcome-confidence.pth')
+            plain_source = directory / f'{arm}-ordinary-r40-uniform-mlp.pth'
+            output = directory / f'{arm}-local-difference-r97-short-response-update.pth'
+            plain_output = directory / f'{arm}-ordinary-r97-short-response-mlp.pth'
+            previous = torch.load(previous_path, map_location='cpu', weights_only=False)
+            fresh = torch.load(fresh_path, map_location='cpu', weights_only=False)
+            if not fresh['completed'] or not fresh['roots']:
+                raise ValueError('Short-response continuation requires the complete new collection.')
+            initial = torch.load(source, map_location='cpu', weights_only=False)
+            value, fit = initial['successor_task_value'], initial['successor_task_fit']
+            if previous['predecessor_sha256'] != fit['predecessor_sha256']:
+                raise ValueError('Short interventions must retain the exact frozen predecessor.')
+            if arm == 'F01':
+                for root in previous['roots']:
+                    root['future_weights'] = np.ones(len(root['futures']), np.float32)
+            # Keep the inherited objective population for repeated futures.
+            # New futures retain unit weight, including newly exposed layouts.
+            def root_key(root):
+                return (tuple(root['scene']), None if root['root_steps'] == 0 else root['prefix_future'],
+                        root['root_steps'])
+            def future_keys(root):
+                return [root['prefix_future'] if f is None and root['root_steps'] == 0 else f
+                        for f in root['futures']]
+            old_roots = {}
+            for root in previous['roots']:
+                old_roots.setdefault(root_key(root), []).append(root)
+            for root in fresh['roots']:
+                inherited_weights = {}
+                for old in old_roots.get(root_key(root), ()):
+                    if (not np.allclose(old['context'], root['context'], atol=1e-6)
+                            or not np.allclose(old['effect_controls'], root['effect_controls'], atol=1e-6)):
+                        continue
+                    for future, weight in zip(future_keys(old), old.get('future_weights', np.ones(len(old['futures'])))):
+                        if future in inherited_weights and not np.isclose(inherited_weights[future], weight):
+                            raise ValueError('The inherited population contains conflicting future weights.')
+                        inherited_weights[future] = float(weight)
+                root['future_weights'] = np.asarray([inherited_weights.get(future, 1.)
+                    for future in future_keys(root)], np.float32)
+            data = local.merge_paired_data([previous, fresh], allow_distinct_contexts=True)
+            data['training_data'] = [str(previous_path), str(fresh_path)]
+            bank = local.factual_bank_from_model(initial, previous)
+            continuation = local.paired_continuation_bank(fresh)
+            bank['records'] += continuation['records']
+            bank['state_labels'] += continuation['state_labels']
+            bank['paired_continuation_state_labels'] += continuation['state_labels']
+            bank['training_data'] = [bank.get('training_data'), str(fresh_path)]
+            provenance = dict(phase_context, execution_revision=97,
+                retained_training_data_sha256=hashlib.sha256(previous_path.read_bytes()).hexdigest(),
+                paired_training_data_sha256=hashlib.sha256(fresh_path.read_bytes()).hexdigest(),
+                retained_collection_completed=bool(previous['completed']), new_collection_completed=True,
+                retained_paired_simulation_steps=previous['simulation_steps'],
+                fresh_paired_simulation_steps=fresh['simulation_steps'],
+                new_measured_roots=len(fresh['roots']), actual_replacement_labels=True,
+                new_collection_recipe=fresh.get('recipe'), inherited_calibration=False,
+                future_population_rule='inherited weights for repeated physical roots and futures; unit weight for new futures')
+            if not output.exists():
+                model = local.fit_joint_potential(data, output, factual_bank=bank, device='cuda:0',
+                    updates=6000, ensemble_size=len(value['states']), width=fit['width'], seed=fit['seed'],
+                    initial_states=value['states'], additional_candidate_options=list(value['options']),
+                    factual_difference_transport=True, effective_future_confidence=True, learning_rate=2e-4,
+                    edge_weight=fit['difference_weight'], anchor_weight=fit['factual_contrast_weight'],
+                    rank_weight=fit['local_rank_weight'], factual_weight=fit['factual_weight'],
+                    **{key:value[key] for key in ('bandwidth','margin','confidence','global_penalty',
+                        'context_time_scale','interpolation_power','context_conditioned','motion_basis',
+                        'local_contrast_head','joint_factual_calibration','residual_potential')})
+                model['successor_task_value'].update(inference_device='cuda:0',
+                    factual_bound_pruning=True, candidate_bound_pruning=True,
+                    intervention_budget=int(value.get('intervention_budget', 0)),
+                    outcome_scaled_confidence=bool(value.get('outcome_scaled_confidence', False)))
+                initialization_updates = fit.get('total_parameter_updates', fit['updates'])
+                model['successor_task_fit'].update(provenance,
+                    initialization_checkpoint_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                    initialization_updates=initialization_updates, total_parameter_updates=initialization_updates+6000,
+                    additional_simulation_steps=fresh['simulation_steps'])
+                atomic_save(model, output)
+                del model
+                gc.collect()
+                torch.cuda.empty_cache()
+            matched = torch.load(output, map_location='cpu', weights_only=False)
+            if matched['successor_task_fit'].get('execution_revision') != 97:
+                raise ValueError('The conditional short-response fit has incomplete provenance.')
+            if not plain_output.exists():
+                plain_initial = torch.load(plain_source, map_location='cpu', weights_only=False)
+                model = fit_plain_return(data, plain_output, factual_bank=bank, updates=6000,
+                    parameter_budget=145731, seed=42, uniform_sampling=True,
+                    initial_model=plain_initial, learning_rate=2e-4,
+                    additional_candidate_options=matched['successor_task_value']['options'],
+                    expected_observation_sha256=matched['successor_task_fit']['training_observation_sha256'])
+                model['successor_task_value']['intervention_budget'] = int(value.get('intervention_budget', 0))
+                model['successor_task_fit'].update(provenance,
+                    initialization_checkpoint_sha256=hashlib.sha256(plain_source.read_bytes()).hexdigest(),
+                    matched_conditional_checkpoint_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
+                    additional_simulation_steps=0)
+                atomic_save(model, plain_output)
+                del model, plain_initial
+            saved = torch.load(plain_output, map_location='cpu', weights_only=False)
+            if (saved['successor_task_fit'].get('execution_revision') != 97
+                    or saved['successor_task_fit']['training_observation_sha256'] !=
+                    matched['successor_task_fit']['training_observation_sha256']):
+                raise ValueError('The ordinary comparison must use every identical observation.')
+            del saved, matched, initial, previous, fresh, data, bank, continuation
+            gc.collect()
+            torch.cuda.empty_cache()
+            evaluate_exposed(output, diagnostics, phase_context)
+            evaluate_exposed(plain_output, diagnostics, phase_context)
+    elif job == 'continue-plain':
+        for arm in arms:
+            output = directory / f'{arm}-ordinary-r40-uniform-mlp.pth'
+            if not output.exists():
+                stem, _, revision = anchors[arm]
+                model = torch.load(directory / (stem+'.pth'), map_location='cpu', weights_only=False)
+                data = torch.load(directory / f'{arm}-local-joint-{revision}-onpolicy-training-data.pth',
+                                  map_location='cpu', weights_only=False)
+                bank = local.factual_bank_from_model(model, data)
+                fit_plain_return(data, output, factual_bank=bank,
+                    updates=model['successor_task_fit']['updates'], parameter_budget=145731,
+                    seed=42, uniform_sampling=True,
+                    expected_observation_sha256=model['successor_task_fit']['training_observation_sha256'])
+                del model, data, bank
+                gc.collect()
+                torch.cuda.empty_cache()
+            evaluate(output)
+    elif job == 'continue-current-finite-motion':
+        diagnostics, phase_context = exposed_development()
+        phase_context['development_phase'] = 'post-4321-finite-window-motion'
+        base = directory / 'M1-joint-r50-pareto-refinement.pth'
+        old = directory / 'F11-local-difference-r55-current-local-training-data.pth'
+        fresh = directory / 'F11-local-difference-r59-current-coverage-training-data.pth'
+        reference = directory / 'F11-local-difference-r59-current-coverage.pth'
+        original = directory / 'F11-local-difference-r70-current-scratch.pth'
+        plain = directory / 'F11-ordinary-r71-current-scratch-mlp.pth'
+        output = directory / 'F11-local-difference-r73-finite-window-motion.pth'
+        expected = {
+            base: '835932398d2703dae65aa512b417f85589db4048ea8f6c2917939a58ffb74cbb',
+            old: '810a40f9696e01bc093e1da5cec2f53b7fc0d28876b8a78047a669372088f7c9',
+            fresh: '7b4adb761cd13ee11a7e6d8b30aadb9c9733ecb9403b3fa44ef0aa8f73ae0f23',
+            original: '7b3cfa6785e549e11feadc3293cd3079e806a7ac0d5d00b4c8ee72be09393a96',
+            plain: '74c66eb6496a32f2036feea7a8ca91db2d5ebba9b4630e8bf773c4b69aac8d9c'}
+        for path, identity in expected.items():
+            if hashlib.sha256(path.read_bytes()).hexdigest() != identity:
+                raise ValueError('The fixed finite-motion comparison input changed: '+str(path))
+        observation_sha = '389dcec396b8dd5b38d1ede98bf839256421e18ebf92141120017904607b27f9'
+        if not output.exists():
+            before = torch.load(old, map_location='cpu', weights_only=False)
+            after = torch.load(fresh, map_location='cpu', weights_only=False)
+            if not before['completed'] or not after['completed']:
+                raise ValueError('The finite-motion fit requires complete common observations.')
+            paired = local.merge_paired_data([before, after], allow_distinct_contexts=True)
+            references = [torch.load(base.with_name(base.stem+'-'+suffix+'.pth'),
+                map_location='cpu', weights_only=False)
+                for suffix in ('source-development', 'new-development', 'fresh-200')]
+            if any(not record['completed'] or record['policy_sha256'] != expected[base] for record in references):
+                raise ValueError('The finite-motion fit requires the exact current M1 factual outcomes.')
+            factual = local.factual_reference_data(base, references)
+            factual['simulation_steps'] = 0
+            data = local.merge_paired_data([paired, factual], allow_distinct_contexts=True)
+            data['training_data'] = [str(old), str(fresh), str(reference)]
+            initial = torch.load(reference, map_location='cpu', weights_only=False)
+            fit, value = initial['successor_task_fit'], initial['successor_task_value']
+            if fit['training_observation_sha256'] != observation_sha:
+                raise ValueError('The finite-motion experiment must retain its common observation population.')
+            if any(not np.all(np.asarray(root.get('future_weights', np.ones(len(root['futures'])))) == 1)
+                   for root in data['roots']):
+                raise ValueError('The common observations must retain uniform future weights.')
+            reserved = {tuple(scene) for scene, _ in phase_context['next_confirmation_plan']['tasks']}
+            if reserved.intersection(tuple(root['scene']) for root in data['roots']):
+                raise ValueError('The finite-motion fit overlaps the unused confirmation population.')
+            bank = local.factual_bank_from_model(initial, data)
+            print(dict(phase='finite_motion_inputs_checked', roots=len(data['roots']),
+                observation_sha256=observation_sha, optimizer_steps=24000), flush=True)
+            model = local.fit_joint_potential(data, output, factual_bank=bank, device='cuda:0',
+                updates=24000, ensemble_size=len(value['states']), width=fit['width'], seed=fit['seed'],
+                initial_states=None, additional_candidate_options=list(value['options']),
+                factual_difference_transport=True, effective_future_confidence=True, learning_rate=8e-4,
+                finite_motion_basis=True, edge_weight=fit['difference_weight'],
+                anchor_weight=fit['factual_contrast_weight'], rank_weight=fit['local_rank_weight'],
+                factual_weight=fit['factual_weight'],
+                **{key:value[key] for key in ('bandwidth','margin','confidence','global_penalty',
+                    'context_time_scale','interpolation_power','context_conditioned','motion_basis',
+                    'local_contrast_head','joint_factual_calibration','residual_potential')})
+            if model['successor_task_fit']['training_observation_sha256'] != observation_sha:
+                raise ValueError('Finite-motion fitting changed the shared observations.')
+            model['successor_task_value'].update(inference_device='cuda:0',
+                factual_bound_pruning=True, candidate_bound_pruning=True)
+            model['successor_task_fit'].update(phase_context, execution_revision=73,
+                optimization_condition='fresh initialization with public finite-window motion features',
+                initialization_updates=0, total_parameter_updates=24000, total_optimizer_steps=24000,
+                additional_optimizer_steps=24000, additional_simulation_steps=0,
+                actual_replacement_labels=True, inherited_calibration=False, warm_start=False,
+                paired_training_data_sha256=expected[fresh], retained_training_data_sha256=expected[old],
+                source_observation_checkpoint_sha256=hashlib.sha256(reference.read_bytes()).hexdigest(),
+                matched_persistent_feature_checkpoint_sha256=expected[original],
+                matched_plain_checkpoint_sha256=expected[plain])
+            atomic_save(model, output)
+        saved = torch.load(output, map_location='cpu', weights_only=False)
+        if (saved['successor_task_fit'].get('execution_revision') != 73
+                or saved['successor_task_fit']['training_observation_sha256'] != observation_sha
+                or not saved['successor_task_value'].get('finite_motion_basis')):
+            raise ValueError('A finite-motion comparison requires its complete recorded fit.')
+        del saved
+        evaluate_exposed(output, diagnostics, phase_context)
+    elif job in ('continue-m1-coverage', 'continue-m1-coverage-plain'):
+        ordinary = job == 'continue-m1-coverage-plain'
+        revision = 60 if ordinary else 59
+        base = directory / 'M1-joint-r50-pareto-refinement.pth'
+        behavior = directory / 'F11-local-difference-r57-current-learned.pth'
+        old_base = d.ROOT / 'joint-128-factorial-development/F10-mapped-actuator-joint.pth'
+        conditional = directory / 'F11-local-difference-r59-current-coverage.pth'
+        source = (directory / 'F11-ordinary-r58-current-uniform-mlp.pth' if ordinary else behavior)
+        output = directory / 'F11-ordinary-r60-current-coverage-mlp.pth' if ordinary else conditional
+        old_data_path = directory / 'F11-local-difference-r55-current-local-training-data.pth'
+        data_path = conditional.with_name(conditional.stem+'-training-data.pth')
+        bank_path = directory / 'F11-local-difference-r54-current-factual-factual-data.pth'
+        if ordinary and not conditional.exists():
+            raise ValueError('Complete the shared coverage fit before its plain-return comparison.')
+        if not output.exists():
+            references = []; root_tasks = []; selected_counts = []
+            for suffix in ('source-development', 'new-development', 'fresh-200'):
+                records = []
+                for path, remote in ((old_base, True), (base, False), (behavior, False)):
+                    result = path.with_name(path.stem+('-remote-linux-' if remote else '-')+suffix+'.pth')
+                    record = torch.load(result, map_location='cpu', weights_only=False)
+                    if not record['completed'] or record['policy_sha256'] != hashlib.sha256(path.read_bytes()).hexdigest():
+                        raise ValueError('Coverage selection requires complete results from the exact controllers.')
+                    records.append(record)
+                original, factual, learned = records
+                if original['tasks'] != factual['tasks'] or factual['tasks'] != learned['tasks']:
+                    raise ValueError('Coverage selection requires paired layout and future identities.')
+                references.append(factual)
+                counts = dict(harm=0, m1_regression=0, residual_failure=0)
+                for (scene, future), old, before, after in zip(
+                        factual['tasks'], original['rows'], factual['rows'], learned['rows']):
+                    if before['success'] and not after['success']:
+                        kind = 'harm'
+                    elif old['success'] and not before['success']:
+                        kind = 'm1_regression'
+                    elif not after['success']:
+                        kind = 'residual_failure'
+                    else:
+                        continue
+                    if after['conditional_interventions']:
+                        root = 'first_intervention' if kind == 'harm' else 'last_intervention'
+                    else:
+                        root = 40 if after['outcome'] == 2 else 120
+                    root_tasks.append((scene, future, root)); counts[kind] += 1
+                selected_counts.append(dict(suite=suffix, **counts))
+            if not root_tasks or any(tuple(scene) in reserved_layouts for scene, _, _ in root_tasks):
+                raise ValueError('Coverage sampling must use the three development populations only.')
+            if len(root_tasks) != len(set(root_tasks)):
+                raise ValueError('Coverage sampling must preserve distinct layout and future identities.')
+            previous = torch.load(old_data_path, map_location='cpu', weights_only=False)
+            if not previous['completed']:
+                raise ValueError('Retain the complete earlier observations, including successful rescues.')
+            fresh = torch.load(data_path, map_location='cpu', weights_only=False) if data_path.exists() else None
+            if ordinary:
+                if fresh is None or not fresh['completed']:
+                    raise ValueError('The plain comparison cannot trigger additional coverage sampling.')
+            else:
+                if fresh is not None and fresh['recipe']['context_policy_sha256'] != hashlib.sha256(behavior.read_bytes()).hexdigest():
+                    raise ValueError('Resumed coverage sampling requires the exact behavior policy.')
+                fresh = local.collect_local_tasks(base, root_tasks, data_path,
+                    workers=workers, repetitions=2, confirmation=8, screen_limit=24,
+                    context_policy=behavior, neighborhood_width=3, record_continuations=True,
+                    existing_data=fresh, inference_batch=32, inference_device='cpu')
+            if not fresh['completed']:
+                raise ValueError('Coverage fitting cannot use a partial collection.')
+            measured = {(tuple(root['scene']), root['prefix_future'], root['lookback'])
+                        for root in fresh['roots']}
+            if set(root_tasks) != measured:
+                raise ValueError('The completed coverage observations must match the fixed selection.')
+            paired = local.merge_paired_data([previous, fresh], allow_distinct_contexts=True)
+            factual = local.factual_reference_data(base, references)
+            factual['simulation_steps'] = 0
+            data = local.merge_paired_data([paired, factual], allow_distinct_contexts=True)
+            data['training_data'] = [str(old_data_path), str(data_path), str(bank_path)]
+            initial = torch.load(source, map_location='cpu', weights_only=False)
+            if ordinary:
+                matched = torch.load(conditional, map_location='cpu', weights_only=False)
+                if matched['successor_task_fit'].get('execution_revision') != 59:
+                    raise ValueError('The coverage fit has not completed its provenance check.')
+                bank = local.factual_bank_from_model(matched, data)
+                model = fit_plain_return(data, output, factual_bank=bank, updates=6000,
+                    parameter_budget=145731, seed=42, uniform_sampling=True,
+                    initial_model=initial, learning_rate=2e-4,
+                    additional_candidate_options=matched['successor_task_value']['options'],
+                    expected_observation_sha256=matched['successor_task_fit']['training_observation_sha256'])
+                del matched
+            else:
+                bank = torch.load(bank_path, map_location='cpu', weights_only=False)
+                if not bank['completed'] or bank['predecessor_sha256'] != data['predecessor_sha256']:
+                    raise ValueError('Coverage fitting requires the exact current-controller factual bank.')
+                continuation = local.paired_continuation_bank(paired)
+                bank['records'] += continuation['records']
+                bank['paired_continuation_state_labels'] = continuation['state_labels']
+                bank['training_data'] = [str(bank_path), str(old_data_path), str(data_path)]
+                fit = initial['successor_task_fit']; value = initial['successor_task_value']
+                model = local.fit_joint_potential(data, output, factual_bank=bank, device='cuda:0',
+                    updates=6000, ensemble_size=len(value['states']), width=fit['width'], seed=fit['seed'],
+                    initial_states=value['states'], additional_candidate_options=list(value['options']),
+                    factual_difference_transport=True, effective_future_confidence=True, learning_rate=2e-4,
+                    edge_weight=fit['difference_weight'], anchor_weight=fit['factual_contrast_weight'],
+                    rank_weight=fit['local_rank_weight'], factual_weight=fit['factual_weight'],
+                    **{key:value[key] for key in ('bandwidth','margin','confidence','global_penalty',
+                        'context_time_scale','interpolation_power','context_conditioned','motion_basis',
+                        'local_contrast_head','joint_factual_calibration','residual_potential')})
+                model['successor_task_value'].update(inference_device='cuda:0',
+                    factual_bound_pruning=True, candidate_bound_pruning=True)
+            initial_fit = initial['successor_task_fit']
+            initialization_updates = initial_fit.get('total_parameter_updates', initial_fit['updates'])
+            model['successor_task_fit'].update(execution_revision=revision,
+                initialization_checkpoint_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                initialization_updates=initialization_updates, total_parameter_updates=initialization_updates+6000,
+                initialization_simulation_steps=initial_fit['simulation_steps'],
+                behavior_checkpoint_sha256=hashlib.sha256(behavior.read_bytes()).hexdigest(),
+                fresh_paired_simulation_steps=fresh['simulation_steps'],
+                retained_paired_simulation_steps=previous['simulation_steps'],
+                additional_simulation_steps=0 if ordinary else fresh['simulation_steps'],
+                paired_training_data_sha256=hashlib.sha256(data_path.read_bytes()).hexdigest(),
+                retained_training_data_sha256=hashlib.sha256(old_data_path.read_bytes()).hexdigest(),
+                actual_replacement_labels=True, inherited_calibration=False,
+                adaptation_contexts=len(root_tasks), adaptation_selection=selected_counts)
+            atomic_save(model, output)
+            del model, initial, data, bank, previous, fresh, paired
+            gc.collect()
+            torch.cuda.empty_cache()
+        saved = torch.load(output, map_location='cpu', weights_only=False)
+        if saved['successor_task_fit'].get('execution_revision') != revision:
+            raise ValueError('Coverage continuation has not completed its provenance check.')
+        del saved
+        evaluate(output)
+    elif job == 'continue-m1-plain-current':
+        base = directory / 'M1-joint-r50-pareto-refinement.pth'
+        calibration = directory / 'F11-local-difference-r55-current-local.pth'
+        source = directory / 'F11-ordinary-r40-uniform-mlp.pth'
+        output = directory / 'F11-ordinary-r58-current-uniform-mlp.pth'
+        if not output.exists():
+            calibrated = torch.load(calibration, map_location='cpu', weights_only=False)
+            if calibrated['successor_task_fit'].get('execution_revision') != 55:
+                raise ValueError('The plain continuation requires the completed matched calibration.')
+            data_path = calibration.with_name(calibration.stem+'-training-data.pth')
+            sampled = torch.load(data_path, map_location='cpu', weights_only=False)
+            if not sampled['completed']:
+                raise ValueError('The plain continuation cannot use partial paired observations.')
+            references = [torch.load(base.with_name(base.stem+'-'+suffix+'.pth'),
+                          map_location='cpu', weights_only=False)
+                          for suffix in ('source-development', 'new-development', 'fresh-200')]
+            factual = local.factual_reference_data(base, references)
+            factual['simulation_steps'] = 0
+            data = local.merge_paired_data([sampled, factual])
+            bank = local.factual_bank_from_model(calibrated, data)
+            data['training_data'] = calibrated['successor_task_fit']['training_data']
+            initial = torch.load(source, map_location='cpu', weights_only=False)
+            model = fit_plain_return(data, output, factual_bank=bank, updates=6000,
+                parameter_budget=145731, seed=42, uniform_sampling=True,
+                initial_model=initial, learning_rate=2e-4,
+                additional_candidate_options=calibrated['successor_task_value']['options'],
+                expected_observation_sha256=calibrated['successor_task_fit']['training_observation_sha256'])
+            model['successor_task_fit'].update(execution_revision=58,
+                initialization_checkpoint_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                initialization_simulation_steps=initial['successor_task_fit']['simulation_steps'],
+                paired_calibration_checkpoint_sha256=hashlib.sha256(calibration.read_bytes()).hexdigest(),
+                paired_training_data_sha256=hashlib.sha256(data_path.read_bytes()).hexdigest(),
+                additional_simulation_steps=0, actual_replacement_labels=True)
+            atomic_save(model, output)
+            del model, initial, calibrated, data, sampled, bank
+            gc.collect()
+            torch.cuda.empty_cache()
+        saved = torch.load(output, map_location='cpu', weights_only=False)
+        if saved['successor_task_fit'].get('execution_revision') != 58:
+            raise ValueError('Plain return continuation has not completed its provenance check.')
+        del saved
+        evaluate(output)
+    elif job in ('continue-m1-local-rebase', 'continue-m1-local-learned'):
+        learn_parameters = job == 'continue-m1-local-learned'
+        revision = 57 if learn_parameters else 55
+        base = directory / 'M1-joint-r50-pareto-refinement.pth'
+        behavior = directory / 'F11-local-difference-r54-current-factual.pth'
+        source = directory / 'F11-local-difference-r49-factual-transport.pth'
+        calibration = directory / 'F11-local-difference-r55-current-local.pth'
+        output = (directory / 'F11-local-difference-r57-current-learned.pth'
+                  if learn_parameters else calibration)
+        if learn_parameters and not calibration.exists():
+            raise ValueError('Fit the current-controller calibration before learning its paired effects.')
+        if not output.exists():
+            references = []; root_tasks = []; selected_counts = []
+            for suffix in ('source-development', 'new-development', 'fresh-200'):
+                records = []
+                for path in (base, behavior):
+                    record = torch.load(path.with_name(path.stem+'-'+suffix+'.pth'),
+                                        map_location='cpu', weights_only=False)
+                    if not record['completed'] or record['policy_sha256'] != hashlib.sha256(path.read_bytes()).hexdigest():
+                        raise ValueError('Local adaptation requires complete results from its exact controllers.')
+                    records.append(record)
+                factual, behavioral = records
+                if factual['tasks'] != behavioral['tasks']:
+                    raise ValueError('Local adaptation requires paired scene and future identities.')
+                references.append(factual)
+                used_layouts = set(); counts = {}
+                # Measure both harmful decisions and residual failures, with
+                # successful rescues retained to check the useful decisions.
+                for kind, quota in (('harm', 4), ('residual_failure', 6), ('rescue', 2)):
+                    count = 0
+                    for (scene, future), before, after in zip(
+                            factual['tasks'], factual['rows'], behavioral['rows']):
+                        category = ('harm' if before['success'] and not after['success'] else
+                                    'residual_failure' if not after['success'] else
+                                    'rescue' if not before['success'] else 'unchanged_success')
+                        if category != kind or scene[0] in used_layouts:
+                            continue
+                        used_layouts.add(scene[0])
+                        if after['conditional_interventions']:
+                            root = 'first_intervention' if kind == 'harm' else 'last_intervention'
+                        else:
+                            root = 40 if after['outcome'] == 2 else 120
+                        root_tasks.append((scene, future, root)); count += 1
+                        if count == quota:
+                            break
+                    counts[kind] = count
+                selected_counts.append(dict(suite=suffix, **counts))
+            if not root_tasks or any(tuple(scene) in reserved_layouts for scene, _, _ in root_tasks):
+                raise ValueError('Fresh local calibration needs nonempty development-only sampling.')
+            data_path = calibration.with_name(calibration.stem+'-training-data.pth')
+            previous = torch.load(data_path, map_location='cpu', weights_only=False) if data_path.exists() else None
+            if learn_parameters and (previous is None or not previous.get('completed')):
+                raise ValueError('Current-controller learning reuses the complete, fixed paired observations.')
+            if learn_parameters:
+                measured = {(tuple(root['scene']), root['prefix_future'], root['lookback'])
+                            for root in previous['roots']}
+                if set(root_tasks) != measured:
+                    raise ValueError('Parameter adaptation must not change the completed calibration design.')
+            sampled = local.collect_local_tasks(base, root_tasks, data_path,
+                workers=workers, repetitions=2, confirmation=6, screen_limit=12,
+                context_policy=behavior, neighborhood_width=2, record_continuations=True,
+                existing_data=previous, inference_batch=32, inference_device='cpu')
+            if not sampled['completed']:
+                raise ValueError('Fresh local calibration cannot use a partial collection.')
+            factual = local.factual_reference_data(base, references)
+            factual['simulation_steps'] = 0
+            data = local.merge_paired_data([sampled, factual])
+            bank_path = directory / 'F11-local-difference-r54-current-factual-factual-data.pth'
+            bank = torch.load(bank_path, map_location='cpu', weights_only=False)
+            if not bank['completed'] or bank['predecessor_sha256'] != data['predecessor_sha256']:
+                raise ValueError('Use the completed factual trajectories of this exact M1.')
+            continuation = local.paired_continuation_bank(sampled)
+            bank['records'] += continuation['records']
+            bank['paired_continuation_state_labels'] = continuation['state_labels']
+            bank['training_data'] = [str(bank_path), str(data_path)]
+            data['training_data'] = [str(data_path), str(bank_path)]
+            reference = torch.load(source, map_location='cpu', weights_only=False)
+            fit = reference['successor_task_fit']; value = reference['successor_task_value']
+            updates = 6000 if learn_parameters else 0
+            model = local.fit_joint_potential(data, output, factual_bank=bank, device='cuda:0',
+                updates=updates, ensemble_size=len(value['states']), width=fit['width'], seed=fit['seed'],
+                initial_states=value['states'], additional_candidate_options=list(value['options']),
+                factual_difference_transport=True, effective_future_confidence=True,
+                learning_rate=2e-4 if learn_parameters else 8e-4,
+                edge_weight=fit['difference_weight'], anchor_weight=fit['factual_contrast_weight'],
+                rank_weight=fit['local_rank_weight'], factual_weight=fit['factual_weight'],
+                **{key:value[key] for key in ('bandwidth','margin','confidence','global_penalty',
+                    'context_time_scale','interpolation_power','context_conditioned','motion_basis',
+                    'local_contrast_head','joint_factual_calibration','residual_potential')})
+            model['successor_task_value'].update(inference_device='cuda:0',
+                factual_bound_pruning=True, candidate_bound_pruning=True)
+            model['successor_task_fit'].update(execution_revision=revision,
+                initialization_checkpoint_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                initialization_updates=fit['updates'], total_parameter_updates=fit['updates']+updates,
+                initialization_simulation_steps=fit['simulation_steps'],
+                behavior_checkpoint_sha256=hashlib.sha256(behavior.read_bytes()).hexdigest(),
+                fresh_paired_simulation_steps=sampled['simulation_steps'],
+                actual_replacement_labels=True, inherited_calibration=False,
+                adaptation_contexts=len(root_tasks), adaptation_selection=selected_counts)
+            if learn_parameters:
+                model['successor_task_fit'].update(
+                    paired_calibration_checkpoint_sha256=hashlib.sha256(calibration.read_bytes()).hexdigest(),
+                    paired_training_data_sha256=hashlib.sha256(data_path.read_bytes()).hexdigest(),
+                    additional_simulation_steps=0)
+            atomic_save(model, output)
+            del reference, model, data, bank, sampled
+            gc.collect()
+            torch.cuda.empty_cache()
+        saved = torch.load(output, map_location='cpu', weights_only=False)
+        if saved['successor_task_fit'].get('execution_revision') != revision:
+            raise ValueError('Fresh local calibration has not completed its provenance check.')
+        del saved
+        evaluate(output)
+    elif job == 'continue-m1-factual-rebase':
+        base = directory / 'M1-joint-r50-pareto-refinement.pth'
+        source = directory / 'F11-local-difference-r49-factual-transport.pth'
+        output = directory / 'F11-local-difference-r54-current-factual.pth'
+        if not output.exists():
+            references = []
+            for suffix in ('source-development', 'new-development', 'fresh-200'):
+                record = torch.load(base.with_name(base.stem+'-'+suffix+'.pth'),
+                                    map_location='cpu', weights_only=False)
+                if not record['completed'] or record['policy_sha256'] != hashlib.sha256(base.read_bytes()).hexdigest():
+                    raise ValueError('Current factual calibration needs the exact replacement controller.')
+                references.append(record)
+            bank_path = output.with_name(output.stem+'-factual-data.pth')
+            bank = local.collect_factual_trajectories(
+                base, references, bank_path, workers=workers, inference_batch=32, inference_device='cpu')
+            model = torch.load(source, map_location='cpu', weights_only=False)
+            replacement = torch.load(base, map_location='cpu', weights_only=False)
+            model['actuator_fusion_refinement'] = copy.deepcopy(replacement['actuator_fusion_refinement'])
+            value = model['successor_task_value']
+            for field, key in (('continuation_contexts', 'contexts'), ('continuation_controls', 'controls'),
+                               ('continuation_values', 'values'), ('continuation_remaining', 'remaining')):
+                value[field] = torch.as_tensor(np.concatenate(
+                    [record[key] for record in bank['records']]).astype(np.float32))
+            value.update(factual_values=None, continuation_factual_only=True,
+                         factual_difference_transport=True)
+            model['successor_task_fit'].update(execution_revision=54,
+                transferred_difference_source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                factual_calibration_predecessor_sha256=hashlib.sha256(base.read_bytes()).hexdigest(),
+                factual_calibration_data=str(bank_path),
+                factual_calibration_sha256=hashlib.sha256(bank_path.read_bytes()).hexdigest(),
+                additional_factual_simulation_steps=bank['simulation_steps'],
+                additional_factual_trajectory_labels=bank['trajectories'],
+                inherited_difference_prior=True, inherited_factual_calibration=False,
+                additional_parameter_updates=0)
+            atomic_save(model, output)
+        evaluate(output)
+    elif job == 'continue-m1-pareto-transport':
+        source = directory / 'F11-local-difference-r49-factual-transport.pth'
+        fusion = directory / 'M1-joint-r50-pareto-refinement.pth'
+        output = directory / 'F11-local-difference-r53-pareto-transport.pth'
+        if not output.exists():
+            model = torch.load(source, map_location='cpu', weights_only=False)
+            replacement = torch.load(fusion, map_location='cpu', weights_only=False)
+            if (model['successor_task_fit'].get('execution_revision') != 49
+                    or not replacement['actuator_fusion_refinement'].get('pareto_refinement')):
+                raise ValueError('Composition requires both completed mechanism candidates.')
+            model['actuator_fusion_refinement'] = copy.deepcopy(replacement['actuator_fusion_refinement'])
+            model['fusion_optimization_revision'] = dict(
+                reference_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                fusion_sha256=hashlib.sha256(fusion.read_bytes()).hexdigest(),
+                method='Pareto fleet refinement with factual-transported local task differences',
+                retained_value_fit=True, additional_value_training=False)
+            atomic_save(model, output)
+        evaluate(output)
+    elif job in ('continue-m1-resolution', 'continue-m1-interception'):
+        base = d.ROOT / 'joint-128-factorial-development/F10-mapped-actuator-joint.pth'
+        identity = hashlib.sha256(base.read_bytes()).hexdigest()
+        if identity != 'c6a85079455fdb5ac00f8b3ca2360fbefcf72ff8be80a8f6217734886927f32d':
+            raise ValueError('The source joint-fusion initialization changed.')
+        diagnostics, phase_context = exposed_development()
+        interception = job == 'continue-m1-interception'
+        phase_context['development_phase'] = ('fleet-interception-candidate-objective' if interception
+                                               else 'source-preserving-candidate-resolution')
+        configurations = ([(92, 1, True, .5), (93, 1, True, 1.5), (94, 2, True, .5)] if interception else
+                          [(87, 2, False, 0.), (88, 2, True, 0.), (89, 3, False, 0.)])
+        method = 'fleet-interception' if interception else 'resolved-candidates'
+        for revision, subdivisions, refine_all, capture_weight in configurations:
+            output = directory / f'M1-joint-r{revision}-{method}.pth'
+            if not output.exists():
+                model = torch.load(base, map_location='cpu', weights_only=False)
+                model['actuator_fusion_refinement'].update(
+                    candidate_subdivisions=subdivisions, refine_all_plans=refine_all)
+                if capture_weight:
+                    model['actuator_fusion_refinement']['capture_weight'] = capture_weight
+                model['fusion_optimization_revision'] = dict(phase_context,
+                    execution_revision=revision, reference_sha256=identity,
+                    method=('joint fleet minimum interception distance and pair risk' if interception
+                        else 'joint selection over a refined source-preference candidate grid'),
+                    actuator_candidates_per_vessel=(2*subdivisions+1)**2,
+                    capture_weight=capture_weight,
+                    additional_parameter_updates=0, additional_simulation_steps=0,
+                    matched_control='independent choice with the identical candidate grid and prediction')
+                atomic_save(model, output)
+            evaluate_exposed(output, diagnostics, phase_context)
+    elif job in ('continue-m1-feedback-guard', 'continue-m1-componentwise'):
+        base = d.ROOT / 'joint-128-factorial-development/F10-mapped-actuator-joint.pth'
+        identity = hashlib.sha256(base.read_bytes()).hexdigest()
+        if identity != 'c6a85079455fdb5ac00f8b3ca2360fbefcf72ff8be80a8f6217734886927f32d':
+            raise ValueError('The frozen joint-fusion predecessor changed.')
+        diagnostics, phase_context = exposed_development()
+        componentwise = job == 'continue-m1-componentwise'
+        revision = 74 if componentwise else 69
+        output = directory / ('M1-joint-r74-componentwise.pth' if componentwise
+                              else 'M1-joint-r69-feedback-guard.pth')
+        if not output.exists():
+            model = torch.load(base, map_location='cpu', weights_only=False)
+            model['actuator_fusion_refinement'].update(refine_all_plans=True, pair_refinements=1,
+                pareto_refinement=True)
+            if componentwise:
+                model['actuator_fusion_refinement']['pareto_componentwise'] = True
+            else:
+                model['actuator_fusion_refinement']['pareto_feedback_horizons'] = (.8, 1.6, 3.2)
+            model['fusion_optimization_revision'] = dict(phase_context,
+                execution_revision=revision, reference_sha256=identity,
+                method=('Pareto fleet proposal preserving every vessel deviation and pair risk'
+                        if componentwise else 'Pareto fleet proposal guarded by shared source feedback at three horizons'),
+                additional_parameter_updates=0, additional_simulation_steps=0,
+                additional_value_training=False, retained_value_fit=False)
+            atomic_save(model, output)
+        saved = torch.load(output, map_location='cpu', weights_only=False)
+        if (saved['fusion_optimization_revision'].get('execution_revision') != revision
+                or saved['fusion_optimization_revision'].get('reference_sha256') != identity):
+            raise ValueError('The feedback guard must retain its exact frozen predecessor.')
+        del saved
+        evaluate_exposed(output, diagnostics, phase_context)
+    elif job in ('continue-m1-search', 'continue-m1-transfer', 'continue-m1-pair-block',
+                 'continue-m1-feedback-shortlist', 'continue-m1-pareto', 'continue-m1-pareto-transfer'):
+        base = d.ROOT / 'joint-128-factorial-development/F10-mapped-actuator-joint.pth'
+        if hashlib.sha256(base.read_bytes()).hexdigest() != 'c6a85079455fdb5ac00f8b3ca2360fbefcf72ff8be80a8f6217734886927f32d':
+            raise ValueError('The frozen joint-fusion predecessor changed.')
+        pareto = job in ('continue-m1-pareto', 'continue-m1-pareto-transfer')
+        transfer = job in ('continue-m1-transfer', 'continue-m1-pareto-transfer')
+        output = directory / ('F11-local-difference-r51-pareto-fusion.pth' if pareto and transfer
+                              else 'M1-joint-r50-pareto-refinement.pth' if pareto
+                              else 'F11-local-difference-r43-refined-fusion.pth' if transfer
+                              else 'M1-joint-r48-feedback-shortlist.pth' if job == 'continue-m1-feedback-shortlist'
+                              else 'M1-joint-r46-pair-block.pth' if job == 'continue-m1-pair-block'
+                              else 'M1-joint-r40-refined-beam.pth')
+        if not output.exists():
+            source = directory / (anchors['F11'][0]+'.pth') if transfer else base
+            model = torch.load(source, map_location='cpu', weights_only=False)
+            model['actuator_fusion_refinement']['refine_all_plans'] = True
+            if job == 'continue-m1-pair-block' or pareto:
+                model['actuator_fusion_refinement']['pair_refinements'] = 1
+            if pareto:
+                model['actuator_fusion_refinement']['pareto_refinement'] = True
+            if job == 'continue-m1-feedback-shortlist':
+                model['actuator_fusion_refinement'].update(
+                    joint_feedback_topk=8, joint_feedback_horizon=3.2)
+            model['fusion_optimization_revision'] = dict(
+                reference_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                method=('Pareto improvement of fleet interaction risk and source-control deviation'
+                        if pareto else 'joint two-vessel block refinement of the retained fleet plans'
+                        if job == 'continue-m1-pair-block' else
+                        'coupled source-feedback prediction of eight distinct proposed fleet maneuvers'
+                        if job == 'continue-m1-feedback-shortlist' else
+                        'refine all retained joint plans under the unchanged interaction objective'),
+                retained_value_fit=transfer, additional_value_training=False)
+            atomic_save(model, output)
+        evaluate(output)
+    else:
+        raise ValueError('Unknown current-mechanism continuation: '+job)
+    for path, identity in protected.items():
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == identity
+    print(dict(phase='continuation_finished', job=job, fixed_anchors_unchanged=True), flush=True)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('job', choices=('all', 'mechanisms', 'full', 'without-m1', 'reference', 'legacy', 'baseline',
@@ -3070,9 +4712,43 @@ if __name__ == '__main__':
                                       'forecast-credit-full','forecast-credit-without-m1',
                                       'finite-hazard-full','finite-hazard-without-m1','fleet-profile','native-fleet',
                                       'contrast-credit-full','contrast-credit-without-m1',
-                                      'replicated-credit-full','replicated-credit-without-m1','decoupled-forecast'))
+                                      'replicated-credit-full','replicated-credit-without-m1','decoupled-forecast',
+                                      'continue-m1-controls','continue-m2-bounds','continue-m2-local-bounds',
+                                      'continue-m2-conditional-fit','continue-m2-population-fit',
+                                      'continue-m2-dual-motion','continue-m2-dual-population',
+                                      'continue-m2-response','continue-m2-dual-response',
+                                      'continue-m2-short-response',
+                                      'continue-m2-factual-transport',
+                                      'continue-m2-population-transport',
+                                      'continue-m2-evidence-confidence',
+                                      'continue-plain','continue-m1-search','continue-m1-transfer',
+                                      'continue-m1-pair-block',
+                                      'continue-m1-pareto', 'continue-m1-pareto-transfer',
+                                      'continue-m1-pareto-transport',
+                                      'continue-m1-factual-rebase',
+                                      'continue-m1-local-rebase',
+                                      'continue-m1-local-learned',
+                                      'continue-m1-plain-current',
+                                      'continue-m1-coverage', 'continue-m1-coverage-plain',
+                                      'continue-m2-single-intervention', 'continue-m2-strong-confidence',
+                                      'continue-m1-single-intervention', 'continue-m1-strong-confidence',
+                                      'continue-m2-outcome-confidence',
+                                      'continue-m2-factual-risk', 'continue-m1-factual-risk',
+                                      'continue-m1-feedback-guard',
+                                      'continue-m1-componentwise', 'continue-m1-resolution', 'continue-m1-interception',
+                                      'continue-current-finite-motion',
+                                      'continue-m1-feedback-shortlist',
+                                      'continue-fixed-reference','continue-m1-adapt','source-attacker'))
+    parser.add_argument('--workers', type=int, default=6)
+    parser.add_argument('--fit-only', action='store_true')
+    parser.add_argument('--arms', nargs='+', choices=('F11', 'F01'), default=('F11', 'F01'))
+    parser.add_argument('--control-modes', nargs='+', choices=('independent', 'single_reference'),
+                        default=('independent', 'single_reference'))
     parser.add_argument('--training-seeds',type=int,nargs='+')
     parser.add_argument('--training-defenders',type=int,default=6)
+    parser.add_argument('--attacker-steps', type=int, default=500000)
+    parser.add_argument('--attacker-defender', type=Path,
+                        default=d.ROOT/'joint-complete-task-development/F00-source-clean.pth')
     parser.add_argument('--fleet-models',nargs='+',choices=('full','full-invariant','full-clean','m1','m2','neither','arboids-three','mission-m1','mission-full',
                         *(f'native-{n}-{arm}' for n in (3,4) for arm in ('full','m1','m2','neither'))),
                         default=('full-clean','m1','m2','neither','full'))
@@ -3080,7 +4756,18 @@ if __name__ == '__main__':
     parser.add_argument('--fleet-per-cell',type=int,default=64)
     args = parser.parse_args()
     os.chdir(REPO)
-    if args.job in ('all', 'mechanisms'):
+    if args.job == 'source-attacker':
+        runtime = {name:hashlib.sha256((REPO/'train'/name).read_bytes()).hexdigest() for name in
+                   ('develop_source_fusion.py','conditional_fusion_value.py','local_intervention_value.py',
+                    'plain_return.py','mechanism_controls.py','run_remote_evidence.py')}
+        for seed in args.training_seeds or (42,):
+            train_source_attacker(args.attacker_defender,
+                d.ROOT/'adversarial-learning'/f'{args.attacker_defender.stem}-seed{seed}',
+                seed=seed, defenders=args.training_defenders, steps=args.attacker_steps, runtime_sha256=runtime)
+    elif args.job.startswith('continue-'):
+        continue_current_mechanisms(args.job, workers=args.workers, fit_only=args.fit_only,
+                                   arms=args.arms, control_modes=args.control_modes)
+    elif args.job in ('all', 'mechanisms'):
         supervise(include_baseline=args.job == 'all')
     elif args.job == 'full':
         run_arm(False)

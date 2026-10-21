@@ -25,6 +25,8 @@ from source_arboids import SourcePolicy, numerical_source, SOURCE_COMMIT
 
 SOURCE = Path(r'D:\ARBoids\train\experiments\main-seed42-20260921\adares1.pth')
 BASELINE_SHA256 = 'fe0c34101379582eac83ec6e89b4090d754308b604a97babf777f5b01d6c6ca2'
+REFERENCE_BASELINE_SHA256 = BASELINE_SHA256
+REFERENCE_SOURCE = SOURCE
 ROOT = Path(__file__).resolve().parent / 'experiments' / 'author-source-fusion-20261011'
 CELLS = ((3, 2.), (3, 2.5), (6, 2.), (6, 2.5))
 FEATURES = ('bias', 'attacker_distance', 'neighbor_proximity', 'closing',
@@ -45,14 +47,17 @@ def save_json(path, value):
 
 
 def initialize(source, without_peer=False, evaluation_ablation=(False,False,False)):
-    global BASE, PEER_CANDIDATES, EVALUATION_ABLATION
+    global BASE, PEER_CANDIDATES, EVALUATION_ABLATION, SOURCE, BASELINE_SHA256
     PEER_CANDIDATES = not without_peer
     EVALUATION_ABLATION = tuple(evaluation_ablation)
     torch.set_num_threads(1)
     torch.set_grad_enabled(False)
-    if hashlib.sha256(Path(source).read_bytes()).hexdigest() != BASELINE_SHA256:
+    source=Path(source);identity=hashlib.sha256(source.read_bytes()).hexdigest()
+    if source.resolve()==REFERENCE_SOURCE.resolve() and identity!=REFERENCE_BASELINE_SHA256:
         raise ValueError('The author-protocol reproduction baseline is frozen for this study.')
     BASE = SourcePolicy(source)
+    SOURCE=source;BASELINE_SHA256=identity
+    joint_load.cache_clear()
 
 
 def relations(env, obs, base):
@@ -2099,14 +2104,15 @@ class PublicTargetMotion(nn.Module):
     relative to the target and the protected asset, so no scene identity,
     attacker controller, agility parameter, or realized future is an input.
     """
-    def __init__(self,width=48):
+    def __init__(self,width=48,absolute_frame=False):
         super().__init__()
+        self.absolute_frame=absolute_frame
         self.nodes=nn.Sequential(nn.Linear(9,width),nn.SiLU(),nn.Linear(width,width),nn.SiLU())
-        self.readout=nn.Sequential(nn.Linear(2*width+5,64),nn.SiLU(),nn.Linear(64,64),nn.SiLU(),nn.Linear(64,4))
+        self.readout=nn.Sequential(nn.Linear(2*width+5+2*absolute_frame,64),nn.SiLU(),nn.Linear(64,64),nn.SiLU(),nn.Linear(64,4))
         nn.init.zeros_(self.readout[-1].weight);nn.init.zeros_(self.readout[-1].bias)
 
     @staticmethod
-    def encode(packet):
+    def encode(packet,absolute_frame=False):
         motion=packet['motion'];c=motion[:,0,2].cos();s=motion[:,0,2].sin()
         def world(vector):
             return torch.stack((c*vector[:,0]-s*vector[:,1],s*vector[:,0]+c*vector[:,1]),-1)
@@ -2122,6 +2128,10 @@ class PublicTargetMotion(nn.Module):
             packet['node'][...,11:13]),-1)
         global_state=torch.cat((target.norm(dim=-1,keepdim=True)/30.,rotate(velocity)/5.,
             target.new_full((len(target),1),motion.shape[1]/6.)),-1)
+        if absolute_frame:
+            # World bearing is observable. Removing it assumes rotationally
+            # covariant target dynamics, which the source reset does not have.
+            global_state=torch.cat((global_state,-axis),-1)
         return nodes,global_state,target,velocity,axis
 
     def forward(self,nodes,global_state,time):
@@ -2131,7 +2141,7 @@ class PublicTargetMotion(nn.Module):
         return residual[:,:2]*time[:,None],residual[:,2:]*time[:,None].clamp_max(1.)
 
     def predict(self,packet,time):
-        nodes,global_state,target,velocity,axis=self.encode(packet)
+        nodes,global_state,target,velocity,axis=self.encode(packet,self.absolute_frame)
         horizon=target.new_full((len(target),),float(time))
         displacement,delta_velocity=self(nodes,global_state,horizon)
         def world(vector):
@@ -2146,12 +2156,14 @@ def joint_target_motion(args,pool):
     rng=np.random.default_rng(args.seed)
     datasets=[torch.load(p,map_location='cpu',weights_only=False) for p in [args.data,*(args.references or [])]]
     rows=[];factual_steps=0
+    absolute_frame=getattr(args,'absolute_frame',False)
+    balanced_feedback=getattr(args,'balanced_feedback',False)
     for data in datasets:
         for rollout in data['rollouts']:
             steps=rollout['steps']
             if len(steps)<2:continue
             packet={key:torch.tensor(np.stack([s['packet'][key] for s in steps])) for key in ('motion','node')}
-            nodes,state,position,velocity,axis=PublicTargetMotion.encode(packet)
+            nodes,state,position,velocity,axis=PublicTargetMotion.encode(packet,absolute_frame)
             clock=.2*np.cumsum([0,*[s['physical_steps'] for s in steps[:-1]]])
             factual_steps+=sum(s['physical_steps'] for s in steps)
             for horizon in (.2,.4,.8,1.6,3.2):
@@ -2172,20 +2184,26 @@ def joint_target_motion(args,pool):
     device='cuda' if torch.cuda.is_available() else 'cpu'
     nodes,state,elapsed,displacement,velocity,heldout=[a.to(device) for a in arrays]
     train=torch.nonzero(~heldout).squeeze(-1);validation=torch.nonzero(heldout).squeeze(-1)
-    predictor=PublicTargetMotion().to(device)
+    predictor=PublicTargetMotion(absolute_frame=absolute_frame).to(device)
     optimizer=torch.optim.AdamW(predictor.parameters(),lr=8e-4,weight_decay=.001)
     best=float('inf');best_state=None;history=[]
+    slow=train[state[train,1:3].norm(dim=-1)<.1]
     for step in range(args.updates):
         ids=train[torch.as_tensor(rng.integers(len(train),size=256),device=device)]
+        if balanced_feedback and len(slow):
+            ids[:64]=slow[torch.as_tensor(rng.integers(len(slow),size=64),device=device)]
         dp,dv=predictor(nodes[ids],state[ids],elapsed[ids])
-        loss=(dp-displacement[ids]).square().mean()+.15*(dv-velocity[ids]).square().mean()
+        scale=elapsed[ids,None] if balanced_feedback else 1.
+        loss=((dp-displacement[ids])/scale).square().mean()+(.75 if balanced_feedback else .15)*(dv-velocity[ids]).square().mean()
         optimizer.zero_grad(set_to_none=True);loss.backward();nn.utils.clip_grad_norm_(predictor.parameters(),5.);optimizer.step()
         if (step+1)%200==0 or step+1==args.updates:
             with torch.no_grad():
                 errors=[]
                 for ids in validation.split(1024):
-                    dp,_=predictor(nodes[ids],state[ids],elapsed[ids])
-                    errors.append((dp-displacement[ids]).square().sum(-1))
+                    dp,dv=predictor(nodes[ids],state[ids],elapsed[ids])
+                    error=(dp-displacement[ids]).square().sum(-1)
+                    if balanced_feedback:error=error/elapsed[ids].square()+.75*(dv-velocity[ids]).square().sum(-1)
+                    errors.append(error)
                 score=float(torch.cat(errors).mean())
             if score<best:
                 best=score;best_state={k:v.detach().cpu().clone() for k,v in predictor.state_dict().items()}
@@ -2201,6 +2219,7 @@ def joint_target_motion(args,pool):
                 learned_p90_m=float(learned.quantile(.9)))
     model=torch.load(args.start,map_location='cpu',weights_only=False)
     model['target_motion']=dict(state=best_state,width=48,heldout_forecast=metrics,
+        absolute_frame=absolute_frame,balanced_feedback=balanced_feedback,
         factual_training_steps=factual_steps,updates=args.updates,seed=args.seed,
         training_data=[str(args.data),*[str(p) for p in (args.references or [])]],
         validation='layout seed modulo five; all noise repeats of a layout remain in one group')
@@ -2270,6 +2289,10 @@ class JointLearningActor(nn.Module):
         self.feedback_role_credit=None
         self.cooperative_role_credit=None
         self.finite_temporal_credit=None
+        self.continuous_program_value=None
+        self.successor_task_value=None
+        self.response_feedback_value=None
+        self.generic_fusion_adapter=None
         self.conditional_enabled=True
         self.base=numerical_source().ActorAdap(6,8,3,512)
         self.gate_period=gate_period
@@ -2324,7 +2347,8 @@ class JointLearningActor(nn.Module):
     def candidate_risk(self,packet,proposals,return_distance=False,pairwise=False,reversal_at=None,
                        candidate_grid=None,proposal_offsets=None,return_paths=False):
         motion=packet['motion'];b,n=motion.shape[:2]
-        k=self.levels if candidate_grid is None else candidate_grid.shape[-1]
+        actuator_grid=candidate_grid is not None and candidate_grid.ndim==4
+        k=self.levels if candidate_grid is None else candidate_grid.shape[-2 if actuator_grid else -1]
         if not self.interaction_enabled:
             if return_paths:return motion.new_zeros((b,n,k,round(self.risk_horizon/self.prediction_step),2))
             return motion.new_zeros((b,n,n,k,k) if self.peer or pairwise else (b,n,k))
@@ -2346,7 +2370,9 @@ class JointLearningActor(nn.Module):
             center=(2.*torch.tanh(torch.logit(prior)/2.)).sigmoid()
             reference_grid=(torch.linspace(0.,1.,k,device=motion.device) if candidate_grid is None else candidate_grid)
             reference_grid=reference_grid[None,None] if reference_grid.ndim==1 else reference_grid
-            weights=(-((reference_grid-center[...,None])/.4).square()).softmax(-1)
+            departure=((reference_grid-center[...,None,None])/.4).square().mean(-1) if actuator_grid else (
+                (reference_grid-center[...,None])/.4).square()
+            weights=(-departure).softmax(-1)
             positions=(trajectories*weights[...,None,None]).sum(2)
             velocities=((positions[:,:,1:]-positions[:,:,:-1])/self.prediction_step)
             velocities=(torch.cat((velocities,velocities[:,:,-1:]),2) if velocities.shape[2]
@@ -2356,8 +2382,9 @@ class JointLearningActor(nn.Module):
         grid=grid[None,None] if grid.ndim==1 else grid
         candidate=(proposals[:,:,None] if proposal_offsets is None else
             (proposals[:,:,None]+proposal_offsets[None,None]).clamp(-1.,1.))
-        force=750.*(grid[...,None]*candidate+
-            (1.-grid[...,None])*packet['node'][:,:,None,11:13])+250.
+        mixture=grid if actuator_grid else grid[...,None]
+        force=750.*(mixture*candidate+
+            (1.-mixture)*packet['node'][:,:,None,11:13])+250.
         predicted_motion=self.prediction_motion(packet)
         x,y,heading,vx,vy,r=[predicted_motion[...,i,None].expand(-1,-1,k).clone() for i in range(6)]
         paths=[];dt=self.prediction_step
@@ -2372,7 +2399,7 @@ class JointLearningActor(nn.Module):
                     future=(future+packet['_proposal_offset'][:,:,None]).clamp(-1.,1.)
                 if proposal_offsets is not None:future=(future+proposal_offsets[None,None]).clamp(-1.,1.)
                 current_grid=1.-grid if reversal_at is not None and step*dt>=reversal_at else grid
-                mixture=current_grid[...,None]
+                mixture=current_grid if actuator_grid else current_grid[...,None]
                 relaxation=getattr(self,'prediction_relaxation',0.)
                 if relaxation>0.:
                     # A receding fusion decision is not a promise to hold its
@@ -2395,6 +2422,8 @@ class JointLearningActor(nn.Module):
             u=u+dt*du;v=v+dt*dv;vx=c*u-s*v;vy=s*u+c*v;r=r+dt*dr
             paths.append(torch.stack((x,y),-1))
         paths=torch.stack(paths,-2)
+        if packet.get('_retain_candidate_paths', False):
+            packet['_retained_candidate_paths'] = paths
         if return_paths:return paths
         if self.terminal_prediction:
             target,target_velocity=self.public_target_motion(packet)
@@ -2851,10 +2880,15 @@ class JointLearningActor(nn.Module):
     def proposal_distribution(self,obs):
         b,n,d=obs.shape;net=self.base;act=net.activation
         x=torch.cat((act(net.f1(obs[...,:6])),act(net.f2(obs[...,6:14])),
-            act(net.t1(obs[...,14:].reshape(b,n,n-1,2))).mean(-2)),-1)
+            act(net.t1(obs[...,14:].reshape(b,n,-1,2))).mean(-2)),-1)
         h=act(net.l2(act(net.l1(x))))
         pm=net.mean_layer(h);ps=net.log_std_layer(h).clamp(-3.,-.3).exp()
         return pm,ps,h
+
+    def task_decision(self,packet,action):
+        value=self.successor_task_value
+        if hasattr(value,'prepare_packet'):packet=value.prepare_packet(self,packet,action)
+        return value(packet,action)
 
     def fusion_prior_scores(self,packet,proposals,center,plans,width=.4):
         physical=plans[None] if plans.ndim==2 else plans
@@ -3010,17 +3044,27 @@ class JointLearningActor(nn.Module):
                 action=self.cooperative_role_credit(packet,action)
             if not gate_only and getattr(self,'finite_temporal_credit',None) is not None:
                 action=self.finite_temporal_credit(packet,action)
+            if not gate_only and self.continuous_program_value is not None:
+                action=self.continuous_program_value(packet,action)
+            if not gate_only and self.successor_task_value is not None:
+                action=self.task_decision(packet,action)
             return action,torch.cat((pz,gates[...,None]),-1),logp,entropy,None,None
-        if (not self.interaction_enabled and not self.intent_strength
+        actuator_refinement=getattr(self,'actuator_fusion_refinement',None)
+        native_actuator=(self.interaction_enabled and actuator_refinement is not None
+            and actuator_refinement.get('source_preference',False))
+        if ((not self.interaction_enabled or native_actuator or self.generic_fusion_adapter is not None) and not self.intent_strength
                 and not len(self.physical_values) and not len(self.response_values)
                 and all(value is None for value in (self.local_value,self.physical_value,self.response_base,
                     self.initial_role_credit,self.feedback_role_credit,self.cooperative_role_credit,
                     self.finite_temporal_credit))):
-            # The 128 factorial control starts from the native continuous
-            # Adapter. No candidate grid, transformed prior, pair encoder or
-            # joint fusion search is evaluated on this path. Conditional
-            # intervention values are independently learned on this policy.
+            # The actuator selector must receive the same native preference
+            # in both joint and independent comparisons. Running the legacy
+            # joint selector first would hide a coupled decision in the
+            # independent arm and change its candidate set. Conditional
+            # preferences are applied before the single actuator selector.
             gates=raw_prior
+            if native_actuator and actuator_refinement.get('prior_map')=='bounded_logit':
+                gates=(2.*torch.tanh(torch.logit(.02+.96*raw_prior)/2.)).sigmoid()
             preference=packet.get('_option_preference')
             if preference is not None and self.preference_strength:
                 precision=self.preference_strength*.4**2
@@ -3032,6 +3076,10 @@ class JointLearningActor(nn.Module):
                     action=self.joint_intervention_value(packet,action)
                 if len(self.joint_intervention_values):
                     action=self.choose_joint_value_option(packet,action)
+                if self.continuous_program_value is not None:
+                    action=self.continuous_program_value(packet,action)
+                if self.successor_task_value is not None:
+                    action=self.task_decision(packet,action)
             distribution=torch.distributions.Normal(pm,ps)
             zero=torch.zeros_like(gates)
             logp=torch.stack((distribution.log_prob(pz).sum(-1),zero),-1)
@@ -3315,6 +3363,10 @@ class JointLearningActor(nn.Module):
                 action=self.choose_joint_value_option(packet,action)
             if getattr(self,'finite_temporal_credit',None) is not None:
                 action=self.finite_temporal_credit(packet,action)
+            if self.continuous_program_value is not None:
+                action=self.continuous_program_value(packet,action)
+            if self.successor_task_value is not None:
+                action=self.task_decision(packet,action)
             return action,torch.cat((pz,gates[...,None]),-1),logp,entropy,scores,bits
         gs=self.gate_logstd.clamp(-2.5,.1).exp().expand_as(gm)
         gz=(gm if deterministic else gm+gs*torch.randn_like(gm)) if latent is None else latent[...,2]
@@ -3443,11 +3495,14 @@ class JointLearningValue(nn.Module):
         return project(state+self.advantage(pool(cn,ce)).squeeze(-1))
 
 
-def joint_task_step(env,action,gamma=.995,step_cost=.001):
+def joint_task_step(env,action,gamma=.995,step_cost=.001,attacker_action=None):
     # Common training objective for every new-method ablation. Author dynamics,
     # rewards and reported terminal classes remain untouched.
     potential=-float(env.def_att_dists.min())/60.
-    obs,source_reward,done,_=env.step(action,'AdaRes')
+    if attacker_action is None:
+        obs,source_reward,done,_=env.step(action,'AdaRes')
+    else:
+        obs,source_reward,done,_=env.step(action,'AdaRes',att_action=attacker_action)
     following=0. if done else -float(env.def_att_dists.min())/60.
     reward=-step_cost+(1. if done>2 else -1. if done else 0.)+.2*(gamma*following-potential)
     return obs,float(reward),done,float(np.mean(source_reward))
@@ -3509,6 +3564,11 @@ def ablate_joint_mechanisms(actor, without_peer=False, without_conditional=False
         actor.current_marginal_prediction=False
         actor.pair_feedback_prediction=False
         actor.physical_prior_weight=0.
+        actor.actuator_fusion_refinement=None
+        actor.generic_fusion_adapter=None
+        if actor.response_feedback_value is not None:
+            for response in actor.response_feedback_value.modules():
+                if hasattr(response,'joint_response'):response.joint_response=False
     if without_peer:
         actor.peer=False
         actor.adapter.peer=False
@@ -3549,6 +3609,9 @@ def ablate_joint_mechanisms(actor, without_peer=False, without_conditional=False
         actor.feedback_role_credit=None
         actor.cooperative_role_credit=None
         actor.finite_temporal_credit=None
+        actor.continuous_program_value=None
+        actor.successor_task_value=None
+        actor.response_feedback_value=None
         actor.joint_intervention_value=None;actor.joint_intervention_values=nn.ModuleList()
         actor.midpoint_intervention_values=None
         actor.option_refinement_fraction=.5
@@ -3570,8 +3633,17 @@ def joint_interaction_identity(model):
         prediction_iterations=0,pair_feedback_prediction=False,prediction_discount=0.,
         prediction_discount_start=1.6,risk_tail=0.,risk_barrier=0.,
         physical_prior_weight=0.,terminal_prediction=False,capture_credit=0.,
-        interception_weight=0.,interception_horizon=0.)
+        interception_weight=0.,interception_horizon=0.,actuator_fusion_refinement=None)
     result={key:model.get(key,default) for key,default in defaults.items()}
+    if model.get('generic_fusion_adapter') is not None:
+        record=model['generic_fusion_adapter'];digest=hashlib.sha256()
+        for key,value in sorted(record.items()):
+            digest.update(key.encode())
+            if key=='state':
+                for name,tensor in sorted(value.items()):
+                    digest.update(name.encode());digest.update(tensor.detach().cpu().numpy().tobytes())
+            else:digest.update(str(value).encode())
+        result['generic_fusion_adapter']=digest.hexdigest()
     if removal[0]:result['peer']=False
     return result
 
@@ -3597,7 +3669,7 @@ def joint_continuation_identity(model):
                 'local_conditional_value','physical_conditional_value','physical_conditional_values',
                 'shared_response_value','factual_return_support','conditional_effect_support',
                 'response_action_support','response_base','initial_role_credit','feedback_role_credit',
-                'cooperative_role_credit','finite_temporal_credit'):
+                'cooperative_role_credit','finite_temporal_credit','continuous_program_value','response_feedback_value','successor_task_value'):
         value=None if removal[1] else model.get(key)
         add(None if isinstance(value,(dict,list,tuple)) and not len(value) else value)
     for key,default in (('conditional_commitment',False),('immediate_commitment',False),
@@ -3617,6 +3689,8 @@ def joint_value_objectives(model):
             for child in record:visit(child,fallback)
         elif isinstance(record,dict):
             objective=record.get('learning_objective',fallback)
+            if objective is None and record.get('kind') in ('plain_joint_return','plain_mlp_return'):
+                objective='absolute'
             if objective is None and (record.get('conditional_strata') or record.get('paired_advantage')):
                 objective='conditional'
             objectives.add(objective or 'unclassified')
@@ -3629,9 +3703,10 @@ def joint_value_objectives(model):
         if model.get(key) is not None:visit(model[key],fallback)
     if model.get('midpoint_intervention_values'):visit(model['midpoint_intervention_values'])
     if model.get('program_proposer',{}).get('values'):visit(model['program_proposer']['values'])
+    if model.get('successor_task_value') is not None:visit(model['successor_task_value'])
     for key in ('local_conditional_value','physical_conditional_value','physical_conditional_values',
                 'conditional_effect_support','response_base','initial_role_credit','feedback_role_credit',
-                'cooperative_role_credit','finite_temporal_credit'):
+                'cooperative_role_credit','finite_temporal_credit','continuous_program_value','response_feedback_value'):
         if model.get(key) is not None:objectives.add('conditional')
     if model.get('shared_response_value'):
         objectives.add('conditional' if model['shared_response_value'].get('conditional',True) else 'absolute')
@@ -3643,7 +3718,8 @@ def require_clean_mechanism_start(model,args):
     inherited=[key for key in ('local_conditional_value','physical_conditional_value',
         'physical_conditional_values','joint_intervention_value','joint_intervention_values',
         'conditional_effect_support','response_base','initial_role_credit','feedback_role_credit',
-        'cooperative_role_credit','finite_temporal_credit','midpoint_intervention_values') if model.get(key) is not None]
+        'cooperative_role_credit','finite_temporal_credit','continuous_program_value','response_feedback_value','successor_task_value',
+        'midpoint_intervention_values') if model.get(key) is not None]
     shared=model.get('shared_response_value')
     if shared and shared.get('conditional',True):inherited.append('shared_response_value')
     if args.joint_no_cf and inherited:
@@ -3665,6 +3741,14 @@ def require_clean_mechanism_start(model,args):
 @lru_cache(maxsize=6)
 def joint_load(path,revision,ablation=(False,False,False)):
     data=torch.load(path,map_location='cpu',weights_only=False)
+    for label,flags in (('checkpoint',data.get('mechanism_ablation',(False,False,False))),
+                        ('evaluation',EVALUATION_ABLATION),('requested',ablation)):
+        if (not isinstance(flags,(tuple,list)) or len(flags)>3
+                or any(not isinstance(flag,(bool,np.bool_)) for flag in flags)):
+            raise ValueError(f'{label} mechanism_ablation must contain only Boolean removal flags.')
+    if (data.get('successor_task_value') or {}).get('kind')=='plain_mlp_return':
+        from plain_return import require_plain_predecessor
+        require_plain_predecessor(data,allow_plain_return=True)
     actor=JointLearningActor(data['peer'],graph=data.get('graph',False),levels=data.get('levels',2),
         risk_prior=data.get('risk_prior',0.),risk_horizon=data.get('risk_horizon',1.6),
         pair_scale=data.get('pair_scale',1.),gate_period=data.get('gate_period',1),
@@ -3691,17 +3775,57 @@ def joint_load(path,revision,ablation=(False,False,False)):
     actor.current_marginal_prediction=data.get('current_marginal_prediction',False)
     actor.pair_feedback_prediction=data.get('pair_feedback_prediction',False)
     actor.physical_prior_weight=data.get('physical_prior_weight',0.)
+    actor.actuator_fusion_refinement=data.get('actuator_fusion_refinement')
+    if data.get('generic_fusion_adapter') is not None:
+        from mechanism_controls import GenericFusionAdapter
+        if actor.actuator_fusion_refinement is not None:
+            raise ValueError('A generic Adapter cannot be followed by the analytic fusion selector.')
+        actor.generic_fusion_adapter=GenericFusionAdapter(**data['generic_fusion_adapter']).eval()
     actor.interception_horizon=data.get('interception_horizon',0.)
     actor.prediction_discount=data.get('prediction_discount',0.)
     actor.prediction_discount_start=data.get('prediction_discount_start',1.6)
     if data.get('finite_temporal_credit') is not None:
         from conditional_fusion_value import FiniteTemporalCredit
         actor.finite_temporal_credit=FiniteTemporalCredit(**data['finite_temporal_credit'])
+    if data.get('continuous_program_value') is not None:
+        from conditional_fusion_value import ContinuousProgramValue
+        actor.continuous_program_value=ContinuousProgramValue(**data['continuous_program_value'])
+    if data.get('successor_task_value') is not None:
+        from conditional_fusion_value import OrdinaryJointReturnDecision,SuccessorTaskDecision
+        record=dict(data['successor_task_value'])
+        kind=record.pop('kind','conditional_successor')
+        if kind=='local_difference_joint':
+            from local_intervention_value import LocalDifferenceDecision
+            actor.successor_task_value=LocalDifferenceDecision(**record)
+        elif kind=='plain_joint_return':
+            from local_intervention_value import PlainJointReturnDecision
+            actor.successor_task_value=PlainJointReturnDecision(**record)
+        elif kind=='plain_mlp_return':
+            from plain_return import PlainReturnDecision
+            actor.successor_task_value=PlainReturnDecision(**record)
+        elif kind=='shared_paired_effect':
+            from conditional_fusion_value import SharedPairedEffectDecision
+            actor.successor_task_value=SharedPairedEffectDecision(**record)
+        elif kind=='paired_option_task':
+            from conditional_fusion_value import PairedOptionTaskDecision
+            actor.successor_task_value=PairedOptionTaskDecision(**record)
+        elif kind=='ordinary_joint_return':
+            actor.successor_task_value=OrdinaryJointReturnDecision(**record)
+        elif kind=='coma_joint_return':
+            from mechanism_controls import COMAReturnDecision
+            actor.successor_task_value=COMAReturnDecision(**record)
+        elif kind=='conditional_successor':
+            actor.successor_task_value=SuccessorTaskDecision(**record)
+        else:
+            raise ValueError(f'Unknown task-value execution model: {kind}')
+    if data.get('response_feedback_value') is not None:
+        from conditional_fusion_value import ResponseFeedbackValue
+        actor.response_feedback_value=ResponseFeedbackValue(**data['response_feedback_value'])
     actor.preference_strength=data.get('preference_strength',0.)
     actor.terminal_prediction=data.get('terminal_prediction',False)
     actor.capture_credit=data.get('capture_credit',0.)
     if data.get('target_motion') is not None:
-        record=data['target_motion'];actor.target_motion=PublicTargetMotion(record.get('width',48))
+        record=data['target_motion'];actor.target_motion=PublicTargetMotion(record.get('width',48),record.get('absolute_frame',False))
         actor.target_motion.load_state_dict(record['state']);actor.target_motion.eval()
     if data.get('local_conditional_value') is not None:
         from conditional_fusion_value import LocalConditionalValue
@@ -3813,6 +3937,12 @@ def joint_phase_boundary(action):
     return int(action[0,8]) if action.shape[-1]>=9 else duration//2
 
 
+def joint_program_gates(action,step):
+    """Execute each vessel's own learned phase boundary in a joint program."""
+    boundary=action[:,8] if action.shape[-1]>=9 else int(action[0,4])//2
+    return np.where(step>=boundary,action[:,5],action[:,3])
+
+
 def joint_refinement_step(duration,fraction=.5,steps=0):
     """Schedule a new value decision after a measured motion response.
 
@@ -3837,36 +3967,88 @@ def joint_refinement_due(duration,step,fraction=.5,steps=0,checkpoints=False):
 def joint_remaining_program(control,action,elapsed,preserve_phase=False):
     """Expose a suffix without moving any teammate's scheduled phase change."""
     remaining=int(action[0,4])-elapsed
-    boundary=joint_phase_boundary(action)
-    first=action[:,3:4] if preserve_phase and elapsed<boundary else action[:,5:6]
+    boundary=action[:,8:9] if action.shape[-1]>=9 else np.full_like(action[:,:1],joint_phase_boundary(action))
+    first=np.where(elapsed<boundary,action[:,3:4],action[:,5:6]) if preserve_phase else action[:,5:6]
     suffix=np.concatenate((control[:,:3],first,np.full_like(action[:,4:5],remaining),action[:,5:6]),-1)
     if preserve_phase:
         correction=action[:,6:8] if action.shape[-1]>=8 else np.zeros_like(action[:,:2])
-        switch=boundary-elapsed if elapsed<boundary else remaining//2
-        suffix=np.concatenate((suffix,correction,np.full_like(action[:,:1],switch)),-1)
+        switch=np.where(elapsed<boundary,boundary-elapsed,remaining//2)
+        suffix=np.concatenate((suffix,correction,switch),-1)
     return suffix
 
 
-def joint_advance(env,obs,actor,action,maximum=0,refine_midpoint=True):
+def joint_advance(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_step=None):
+    commands=joint_commands(env,obs,actor,action,maximum,refine_midpoint,observe_step)
+    try:
+        physical=next(commands)
+        while True:
+            physical=commands.send(joint_task_step(env,physical,actor.training_gamma,actor.training_step_cost))
+    except StopIteration as completed:
+        return completed.value
+    finally:
+        commands.close()
+
+
+def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_step=None):
     """One coordinated gate decision; both source proposals still update at 5 Hz."""
+    if action.shape[-1]==14:
+        # A delayed intervention is preceded by the actual predecessor policy.
+        # Column 13 names that policy relative to the actor's value chain;
+        # zero is used while sampling a new option on the current predecessor.
+        delay=int(action[0,8]);depth=int(action[0,13])
+        if delay>0 and depth>=0:
+            original=actor.successor_task_value;predecessor=original
+            for _ in range(depth):
+                if predecessor is None:raise ValueError('Missing temporal-option predecessor.')
+                predecessor=predecessor.prior
+            count=0;reward=0.;source_return=0.;done=0
+            limit=min(delay,maximum) if maximum else delay
+            try:
+                actor.successor_task_value=predecessor
+                while count<limit and not done:
+                    with torch.no_grad():
+                        prefix=actor(mechanism_tensor(joint_packet(env,obs)),deterministic=True)[0][0].numpy()
+                    observer=(None if observe_step is None else
+                        lambda current,observation,elapsed,terminal:observe_step(current,observation,count+elapsed,terminal))
+                    obs,r,done,sr,steps=yield from joint_commands(env,obs,actor,prefix,limit-count,refine_midpoint,observer)
+                    reward+=(actor.training_gamma**count)*r;source_return+=(.99**count)*sr;count+=steps
+            finally:
+                actor.successor_task_value=original
+            if done or (maximum and count>=maximum):return obs,reward,done,source_return,count
+            with torch.no_grad():
+                control=actor(mechanism_tensor(joint_packet(env,obs)),deterministic=True,gate_only=True)[0][0].numpy()
+            suffix=action[:,:13].copy();suffix[:,:3]=control[:,:3]
+            suffix[:,4]-=delay;suffix[:,8]=0;suffix[:,9:11]=suffix[:,11:13]
+            observer=(None if observe_step is None else
+                lambda current,observation,elapsed,terminal:observe_step(current,observation,count+elapsed,terminal))
+            obs,r,done,sr,steps=yield from joint_commands(env,obs,actor,suffix,
+                maximum-count if maximum else 0,refine_midpoint,observer)
+            return obs,reward+(actor.training_gamma**count)*r,done,source_return+(.99**count)*sr,count+steps
+        action=action[:,:13]
     duration=int(action[0,4]) if action.shape[-1]>4 else actor.physical_span
     waiting=(actor.cooperative_role_credit is not None and actor.cooperative_role_credit.wait_span)
     waiting=waiting or (action.shape[-1]>5 and (action[:,3]<0.).all() and (action[:,5]==-2.).all())
+    # A phase-preserving suffix owns its remaining decision window even when
+    # its optimal correction releases every held coefficient. Releasing the
+    # controls must not silently restart the outer intervention policy early.
+    waiting=waiting or action.shape[-1]==9
     active=(action.shape[-1]>3 and ((action[:,3]>=0.).any()
         or (action.shape[-1]>5 and (action[:,5]>=0.).any())))
+    active=active or (action.shape[-1]==13 and (action[:,9:13]>=0.).any())
     period=max(actor.gate_period,duration) if action.shape[-1]>3 and (active or waiting) else actor.gate_period
     period=min(period,maximum) if maximum else period
     reward=0.;source_return=0.;done=0;control=action[:,:3].copy()
     intent=action
     soft=bool(actor.preference_strength and active)
-    immediate=bool(actor.immediate_commitment and action.shape[-1]>3 and (action[:,3]>=0.).any())
+    immediate=bool(actor.immediate_commitment
+        and action.shape[-1]>3 and (action[:,3]>=0.).any())
     correction=(action[:,6:8] if action.shape[-1]>6 and actor.conditional_enabled else None)
-    phase_boundary=joint_phase_boundary(action) if action.shape[-1]>4 else duration//2
-    if (actor.cooperative_role_credit is not None or getattr(actor,'finite_temporal_credit',None) is not None) and action.shape[-1]>3 and (action[:,3]>=0.).any():
+    if (actor.cooperative_role_credit is not None or getattr(actor,'finite_temporal_credit',None) is not None
+            or getattr(actor,'successor_task_value',None) is not None) and active:
         env._conditional_option_count=getattr(env,'_conditional_option_count',0)+1
     for step in range(period):
-        phase_column=5 if action.shape[-1]>5 and step>=phase_boundary else 3
-        committed=(action.shape[-1]>3 and (action[:,phase_column]>=0.).all()
+        scheduled=joint_program_gates(action,step) if action.shape[-1]>5 else action[:,3] if action.shape[-1]>3 else None
+        committed=(action.shape[-1]>3 and (scheduled>=0.).all()
             and not actor.intent_strength and actor.response_base is None and not actor.preference_strength)
         if ((step and step%actor.gate_period==0 and not committed) or (soft and step==0)
                 or (immediate and step==0 and not committed)):
@@ -3876,11 +4058,9 @@ def joint_advance(env,obs,actor,action,maximum=0,refine_midpoint=True):
                 gate_only=not actor.intent_strength and actor.response_base is None
                 packet=mechanism_tensor(joint_packet(env,obs))
                 if soft and step<duration:
-                    column=5 if action.shape[-1]>5 and step>=phase_boundary else 3
-                    packet['_option_preference']=torch.tensor(action[None,:,column],dtype=torch.float32)
+                    packet['_option_preference']=torch.tensor(scheduled[None],dtype=torch.float32)
                 elif actor.conditional_commitment and action.shape[-1]>3 and step<duration:
-                    column=5 if action.shape[-1]>5 and step>=phase_boundary else 3
-                    packet['_committed_gates']=torch.tensor(action[None,:,column],dtype=torch.float32)
+                    packet['_committed_gates']=torch.tensor(scheduled[None],dtype=torch.float32)
                 if correction is not None and step<duration:
                     packet['_proposal_offset']=torch.tensor(correction[None],dtype=torch.float32)
                 intent=actor(packet,deterministic=True,gate_only=gate_only)[0][0].numpy()
@@ -3908,16 +4088,104 @@ def joint_advance(env,obs,actor,action,maximum=0,refine_midpoint=True):
                 revised=actor.midpoint_intervention_values(mechanism_tensor(joint_packet(env,obs)),
                     torch.as_tensor(suffix[None],dtype=torch.float32))[0].numpy()
             if not np.array_equal(revised[:,3:],suffix[:,3:]):
-                obs,r,done,sr,count=joint_advance(env,obs,actor,revised,period-step,False)
+                observer=(None if observe_step is None else
+                    lambda current,observation,elapsed,terminal:observe_step(current,observation,step+elapsed,terminal))
+                obs,r,done,sr,count=yield from joint_commands(env,obs,actor,revised,period-step,False,observer)
                 return obs,reward+(actor.training_gamma**step)*r,done,source_return+(.99**step)*sr,step+count
         if action.shape[-1]>3 and step<duration and not soft:
-            column=5 if action.shape[-1]>5 and step>=phase_boundary else 3
-            fixed=action[:,column]>=0.
-            control[fixed,2]=action[fixed,column]
-        obs,r,done,sr=joint_task_step(env,control,actor.training_gamma,actor.training_step_cost)
+            fixed=scheduled>=0.
+            control[fixed,2]=scheduled[fixed]
+        physical=control
+        if actor.generic_fusion_adapter is not None:
+            with torch.no_grad():
+                physical=actor.generic_fusion_adapter.control(actor,mechanism_tensor(joint_packet(env,obs)),
+                    torch.as_tensor(control[None],dtype=torch.float32))[0].numpy()
+        if actor.response_feedback_value is not None:
+            with torch.no_grad():
+                physical=actor.response_feedback_value(mechanism_tensor(joint_packet(env,obs)),
+                    torch.as_tensor(control[None],dtype=torch.float32))[0].numpy()
+        if action.shape[-1]==13 and step<duration:
+            from conditional_fusion_value import apply_actuator_preferences
+            preferences=np.where((step>=action[:,8])[:,None],action[:,11:13],action[:,9:11])
+            physical=apply_actuator_preferences(mechanism_tensor(joint_packet(env,obs)),
+                torch.as_tensor(control[None],dtype=torch.float32),torch.as_tensor(physical[None],dtype=torch.float32),
+                torch.as_tensor(preferences[None],dtype=torch.float32))[0].numpy()
+        if getattr(actor,'actuator_fusion_refinement',None):
+            from conditional_fusion_value import refine_actuator_interactions
+            refinement_packet=mechanism_tensor(joint_packet(env,obs))
+            if action.shape[-1]==13 and step<duration:
+                refinement_packet['_committed_actuator_preferences']=torch.as_tensor(
+                    preferences[None],dtype=torch.float32)
+            elif scheduled is not None and step<duration:
+                refinement_packet['_committed_actuator_preferences']=torch.as_tensor(
+                    np.repeat(scheduled[None,:,None],2,axis=-1),dtype=torch.float32)
+            if actor.response_feedback_value is None:
+                native=np.repeat(control[:,2:3],2,axis=-1)
+                coefficients=(np.where(preferences>=0.,preferences,native)
+                    if action.shape[-1]==13 and step<duration else native)
+                refinement_packet['_preferred_actuator_coefficients']=torch.as_tensor(
+                    coefficients[None],dtype=torch.float32)
+            physical=refine_actuator_interactions(actor,refinement_packet,
+                torch.as_tensor(control[None],dtype=torch.float32),
+                torch.as_tensor(physical[None],dtype=torch.float32),**actor.actuator_fusion_refinement)[0].numpy()
+        obs,r,done,sr=yield physical
+        if observe_step is not None:observe_step(env,obs,step+1,done)
         reward+=(actor.training_gamma**step)*r;source_return+=(.99**step)*sr
         if done:break
     return obs,reward,done,source_return,step+1
+
+
+class JointMeasuredController:
+    """Execute the trained fusion policy on successive public measurements.
+
+    The numerical evaluator and physical deployment share joint_commands;
+    this adapter supplies measurements in place of stepping a simulator.
+    """
+    def __init__(self,checkpoint,source,inference_device='cpu'):
+        from types import SimpleNamespace
+        initialize(source)
+        checkpoint=Path(checkpoint)
+        self.actor=joint_load(str(checkpoint),checkpoint.stat().st_mtime_ns).cpu()
+        # Deployment selects its available inference device; a training host's
+        # CUDA placement is not part of the learned intervention rule.
+        for module in self.actor.modules():
+            if hasattr(module,'inference_device'):
+                module.inference_device=inference_device
+        self.environment=SimpleNamespace()
+        self.commands=None
+        self.steps=0
+
+    def reset(self):
+        if self.commands is not None:self.commands.close()
+        self.commands=None;self.steps=0
+        if hasattr(self.environment,'_conditional_option_count'):
+            del self.environment._conditional_option_count
+
+    def control(self,defenders,attacker,observations,boids,elapsed,total_time=80.):
+        from types import SimpleNamespace
+        from source_arboids import source_mixture
+        def boat(state):
+            # Relative-water velocity is unavailable in ROS feedback. The
+            # nominal predictor uses measured ground velocity and zero current.
+            return SimpleNamespace(x=float(state[0]),y=float(state[1]),theta=float(state[2]),
+                pos=np.asarray(state[:2]),vel=np.asarray(state[3:5]),velocity=np.asarray(state[3:6]),
+                velocity_r=np.asarray(state[3:6]),agility=1.)
+        env=self.environment
+        env.defender_list=[boat(state) for state in defenders];env.attacker=boat(attacker)
+        env.boids_actions=np.asarray(boids);env.Current_T=float(elapsed);env.Total_T=float(total_time)
+        observations=np.asarray(observations,dtype=np.float32)
+        with torch.no_grad():
+            if self.commands is not None:
+                try:physical=self.commands.send((observations,0.,0,0.))
+                except StopIteration:self.commands=None
+            if self.commands is None:
+                action=self.actor(mechanism_tensor(joint_packet(env,observations)),deterministic=True)[0][0].numpy()
+                self.commands=joint_commands(env,observations,self.actor,action)
+                physical=next(self.commands)
+        self.steps+=1
+        return source_mixture(physical,env.boids_actions),dict(
+            conditional_interventions=int(getattr(env,'_conditional_option_count',0)),
+            control_steps=self.steps,physical_action=physical.copy())
 
 
 def joint_episode(task):
@@ -5067,6 +5335,11 @@ def joint_graph_value(args,pool):
         raise ValueError('Compositional completion requires a learned shared program value.')
     if args.joint_paired_likelihood and (not args.joint_shared_potentials or paired):
         raise ValueError('Paired likelihood requires shared absolute success potentials.')
+    if args.joint_block_likelihood and (not args.joint_shared_potentials or paired or absolute_regression
+            or args.joint_no_cf or not args.joint_unique_futures):
+        raise ValueError('Joint outcome likelihood requires unique paired futures and conditional success potentials.')
+    if args.joint_response_precision and not args.joint_block_likelihood:
+        raise ValueError('Response precision requires the paired outcome matrix.')
     if anchored and (not args.joint_paired_advantage or stratified or args.joint_credit_confidence or args.joint_context_regularization):
         raise ValueError('Anchored success learning requires unstratified paired outcomes and its local joint fit.')
     if args.joint_credit_confidence and (not paired or stratified):
@@ -5116,6 +5389,7 @@ def joint_graph_value(args,pool):
         def option_clock(action):
             period=data['model'].get('gate_period',1)
             duration=int(action[0,4]) if action.shape[-1]>4 else span
+            if data['model'].get('prefix_refinement',False) or action.shape[-1]==9:return duration
             wait=action.shape[-1]>5 and (action[:,3]<0.).all() and (action[:,5]==-2.).all()
             active=(action[:,3]>=0.).any() or (action.shape[-1]>5 and (action[:,5]>=0.).any())
             return max(period,duration) if active or wait else period
@@ -5243,6 +5517,9 @@ def joint_graph_value(args,pool):
             absolute=np.asarray([np.mean(observations[code]) for code in programs])
             if args.joint_shared_potentials or args.joint_context_metric:
                 shared_examples.append(dict(key=key,context=context,programs=programs,targets=absolute.copy(),
+                    outcomes=[(index[code],future,float(np.mean(samples)))
+                        for code,futures in paired_observations.items() for future,samples in futures.items()]
+                        if args.joint_block_likelihood else [],
                     edges=[(index[a],index[b],float(samples.mean()),
                         float(len(samples)/(1.+4.*samples.var())) if args.joint_contrast_precision else
                         float(1.+4.*abs(samples.mean())),float((samples>0.).sum()),float((samples<0.).sum()))
@@ -5262,7 +5539,7 @@ def joint_graph_value(args,pool):
             # them before credit assignment can cancel the useful intervention.
             null=0. if paired and not anchored else float(mode) if stratified else factual
             matrix=1.25*np.eye(len(programs));target=absolute+.25*null
-            if not args.joint_no_cf and not absolute_regression:
+            if not args.joint_no_cf and not absolute_regression and not args.joint_block_likelihood:
                 for (a,b),samples in contrasts.items():
                     delta=float(np.mean(samples));weight=args.difference_weight*(1.+4.*abs(delta))
                     if args.joint_contrast_precision:
@@ -5388,17 +5665,27 @@ def joint_graph_value(args,pool):
             context_metrics[configuration]=metric;metric_training[str(configuration)]=training
             print(dict(phase='intervention_context_metric',configuration=configuration,**training),flush=True)
     if args.joint_shared_potentials:
-        from conditional_fusion_value import fit_shared_program_potential
+        from conditional_fusion_value import fit_shared_program_potential,fit_block_program_potential,fit_response_precision_potential
         for configuration,(centers,values,support,keys,_) in fitted.items():
             selected=[example for example in shared_examples if example['key'][:2]==configuration]
-            network,state,training=fit_shared_program_potential(selected,width=args.joint_program_width,
-                updates=args.joint_program_updates,paired=paired,
-                conditional=not args.joint_no_cf and not absolute_regression,
-                difference_weight=args.difference_weight,seed=args.seed,
-                node_width=15 if args.joint_credit_context>=3 else 8,
-                global_width=5 if args.joint_credit_context>=5 else 4 if args.joint_credit_context>=3 else 3,
-                program_options=None if program_options is None else program_options.tolist(),
-                paired_likelihood=args.joint_paired_likelihood)
+            if args.joint_block_likelihood:
+                fit_conditional=(fit_response_precision_potential if args.joint_response_precision else fit_block_program_potential)
+                extra={} if args.joint_response_precision else dict(ordering_weight=args.difference_weight)
+                network,state,training=fit_conditional(selected,width=args.joint_program_width,
+                    updates=args.joint_program_updates,seed=args.seed,**extra,
+                    node_width=15 if args.joint_credit_context>=3 else 8,
+                    global_width=5 if args.joint_credit_context>=5 else 4 if args.joint_credit_context>=3 else 3,
+                    program_options=None if program_options is None else program_options.tolist(),
+                    device='cuda' if torch.cuda.is_available() else 'cpu')
+            else:
+                network,state,training=fit_shared_program_potential(selected,width=args.joint_program_width,
+                    updates=args.joint_program_updates,paired=paired,
+                    conditional=not args.joint_no_cf and not absolute_regression,
+                    difference_weight=args.difference_weight,seed=args.seed,
+                    node_width=15 if args.joint_credit_context>=3 else 8,
+                    global_width=5 if args.joint_credit_context>=5 else 4 if args.joint_credit_context>=3 else 3,
+                    program_options=None if program_options is None else program_options.tolist(),
+                    paired_likelihood=args.joint_paired_likelihood)
             shared_models[configuration]=state
             shared_training[str(configuration)]=training
             by_key={example['key']:example for example in selected}
@@ -5565,9 +5852,9 @@ def joint_graph_value(args,pool):
         if whole_ordinary else 'local learning-objective comparison; predecessor learning retained'
         if ordinary else 'conditional-value learning')
     model['joint_intervention_fit']=dict(conditional=not args.joint_no_cf and not absolute_regression,roots=root_count,
-        value_target='cross_fitted_factual_calibration' if args.joint_conditional_calibration else 'paired_nuisance_program_success' if args.joint_paired_nuisance else 'binomial_success_with_conditional_odds' if args.joint_binomial_value else 'anchored_success_gain' if anchored else 'absolute_terminal_success' if absolute_regression else 'paired_gain' if paired else 'terminal_success_with_local_contrasts',
+        value_target='joint_outcome_pattern_likelihood' if args.joint_block_likelihood else 'cross_fitted_factual_calibration' if args.joint_conditional_calibration else 'paired_nuisance_program_success' if args.joint_paired_nuisance else 'binomial_success_with_conditional_odds' if args.joint_binomial_value else 'anchored_success_gain' if anchored else 'absolute_terminal_success' if absolute_regression else 'paired_gain' if paired else 'terminal_success_with_local_contrasts',
         independent_futures=args.joint_independent_futures,
-        contexts=context_count,edges=edge_count,difference_weight=0. if args.joint_no_cf or absolute_regression else args.difference_weight,
+        contexts=context_count,edges=edge_count,difference_weight=0. if args.joint_no_cf or absolute_regression or args.joint_block_likelihood else args.difference_weight,
         inactive_windows=inactive_windows,applied_update=bool(records),
         supported_programs=sum(int(np.asarray(record['observed']).sum()) for record in records),
         retained_learning_objectives=sorted(objectives),comparison_scope=model['comparison_scope'],
@@ -5591,6 +5878,8 @@ def joint_graph_value(args,pool):
         prefix_refinement=args.joint_prefix_refinement,
         shared_program_fit=shared_training,
         paired_likelihood=args.joint_paired_likelihood,
+        block_likelihood=args.joint_block_likelihood,
+        response_precision=args.joint_response_precision,
         program_completion=args.joint_program_completion,
         context_metric_fit=metric_training,
         factor_value=args.joint_factor_value,unary_value=args.joint_unary_value,factor_ridge=args.joint_factor_ridge,
@@ -6855,6 +7144,8 @@ def main():
     p.add_argument('--joint-program-calibration',action='store_true')
     p.add_argument('--joint-program-completion',action='store_true')
     p.add_argument('--joint-paired-likelihood',action='store_true')
+    p.add_argument('--joint-block-likelihood',action='store_true')
+    p.add_argument('--joint-response-precision',action='store_true')
     p.add_argument('--joint-credit-margin',type=float,default=.15)
     p.add_argument('--joint-decision-tolerance',type=float,default=0.)
     p.add_argument('--joint-blending-penalty',type=float,default=0.)

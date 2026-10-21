@@ -27,6 +27,7 @@ from gate_study_control import GateController, METHODS
 AUTHOR = vrx_source().controller
 MODELS = vrx_source().models
 METHOD = 'original'
+JOINT_CHECKPOINT = None
 ACTIVE_ARGS = None
 CBF_PROVENANCE = None
 
@@ -66,7 +67,10 @@ class SourceTrial(runner.Trial):
         self.actor = MODELS.ActorAdap(6, 8, 3, 512).to(self.device)
         self.actor.load(args.checkpoint)
         self.actor.eval()
-        if METHOD == 'cbf':
+        if METHOD == 'joint':
+            from develop_source_fusion import JointMeasuredController
+            self.rule = JointMeasuredController(JOINT_CHECKPOINT,args.checkpoint,inference_device=args.device)
+        elif METHOD == 'cbf':
             from cbf_source_baseline import CBFController, dependency_provenance
             self.rule = CBFController(args.num_robots-1)
             n = args.num_robots-1
@@ -81,7 +85,14 @@ class SourceTrial(runner.Trial):
         n = args.num_robots-1
         dummy_observation = np.zeros((n,14+2*n))
         dummy_boids = np.zeros((n,2))
-        if METHOD == 'original':
+        if METHOD == 'joint':
+            sample=np.zeros((n,6));sample[:,0]=np.arange(n)*20.
+            target=np.array([120.,30.,np.pi,0.,0.,0.])
+            boids,states=AUTHOR.Boids_navi_control(sample[:,:2],sample[:,3:5],sample[:,2],target[:2])
+            observations=self.get_observations(sample[:,:2],sample[:,2],target[:2],target[3:5],states,boids)
+            self.rule.control(sample,target,observations,boids,0.,self.total_time)
+            self.rule.reset()
+        elif METHOD == 'original':
             AUTHOR.RL_navi_control(self.actor,dummy_observation,dummy_boids,'AdaRes',self.device)
         else:
             with torch.no_grad():
@@ -138,6 +149,12 @@ class SourceTrial(runner.Trial):
             actions[1:] = AUTHOR.RL_navi_control(self.actor, observations, boids, 'AdaRes', self.device)
             theta = np.full(self.num_robots-1, np.nan)
             info = {'warning': False}
+        elif METHOD == 'joint':
+            snapshot=np.column_stack((self.curr_pos,self.curr_phi,self.curr_vel,self.yaw_rates))
+            command,info=self.rule.control(snapshot[1:],snapshot[0],observations,boids,elapsed,self.total_time)
+            theta=info['physical_action'][:,2]
+            actions[1:]=np.clip(command,-500.,1000.)
+            info['warning']=False
         else:
             with torch.no_grad():
                 raw, _ = self.actor(torch.tensor(observations, dtype=torch.float, device=self.device), True, False)
@@ -162,6 +179,7 @@ class SourceTrial(runner.Trial):
             PhysicalThrust=physical.flatten().copy(), GateTheta=theta.copy(),
             SimulationStamp=float(np.min(self.last_stamp)),
             GateWarning=bool(info['warning']),
+            ConditionalInterventions=int(info.get('conditional_interventions',0)),
             CBFViolation=float(info.get('cbf_constraint_violation',0.)),
             CBFSaturation=float(info.get('cbf_control_saturation',0.)),
             ControlWallSeconds=time.monotonic()-started, PolicyWallSeconds=inference_seconds,
@@ -169,17 +187,24 @@ class SourceTrial(runner.Trial):
 
 
 def main():
-    global METHOD
+    global METHOD,JOINT_CHECKPOINT
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument('--method', choices=METHODS, default='original')
+    parser.add_argument('--method', choices=(*METHODS,'joint'), default='original')
+    parser.add_argument('--joint-checkpoint',type=Path)
     extra, remaining = parser.parse_known_args()
     METHOD = extra.method
+    JOINT_CHECKPOINT = extra.joint_checkpoint
+    if METHOD=='joint' and JOINT_CHECKPOINT is None:parser.error('joint requires --joint-checkpoint')
     if '--duration' not in remaining:
         remaining += ['--duration','100']
     source = verify_source()
     code_files = [Path(__file__), Path(__file__).resolve().parents[1]/'train/gate_study_control.py',
                   Path(__file__).resolve().parents[1]/'train/source_arboids.py',
                   Path(__file__).resolve().parents[1]/'train/cbf_source_baseline.py']
+    if METHOD=='joint':
+        code_files.extend(Path(__file__).resolve().parents[1]/'train'/name
+            for name in ('develop_source_fusion.py','conditional_fusion_value.py',
+                         'local_intervention_value.py','plain_return.py'))
     hashes = {p.name:sha256(p) for p in code_files}
     sys.argv = [sys.argv[0], *remaining]
     runner.Trial = SourceTrial
@@ -194,6 +219,11 @@ def main():
                       common_settle_seconds=2.,
                       policy_scope='Untouched author policy/Boids/APF/observation/outcome; shared ROS transport adapter',
                       external_baseline=CBF_PROVENANCE)
+        if METHOD=='joint':
+            result.update(joint_checkpoint=str(JOINT_CHECKPOINT),joint_checkpoint_sha256=sha256(JOINT_CHECKPOINT),
+                policy_scope='Frozen joint fusion and conditional task values; shared numerical/ROS command decoder',
+                inference_device=ACTIVE_ARGS.device,
+                velocity_model='Measured ground velocity, zero-current nominal prediction')
         if not unchanged:
             result.update(passed=False, error='Source changed during trial.')
         output.write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
