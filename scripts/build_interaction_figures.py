@@ -1084,7 +1084,19 @@ def source_result_figures(data, directory):
     six_core_ready=same_fleet_ready and all(six_configuration.get(label,{}).get('evaluations') and
         all(six_configuration[label]['evaluations'].values())
         for label in ('F00','F10','F01','F11','ordinary_F01','ordinary_F11'))
+    graph_comparisons=[]
+    if six_core_ready:
+        for arm,color in [('F01','#866340'),('F11','#447B73')]:
+            for entry in data.get('six_source_graph_returns',{}).get(arm,{}).values():
+                if (entry['conditional']['policy_sha256']!=six_configuration[arm]['policy_sha256'] or
+                    not all(entry[label]['evaluations'] and all(entry[label]['evaluations'].values())
+                        for label in ('conditional','ordinary_graph','ordinary_mlp'))):
+                    continue
+                graph_comparisons.append((f'M2: {arm} minus tuned graph return',
+                    entry['conditional']['evaluations'],entry['ordinary_graph']['evaluations'],color))
+                break
     extra_height=.84 if six_core_ready else .28*(same_fleet_ready+margins_ready+2*refined_ready+f01_ready)
+    extra_height+=.28*len(graph_comparisons)
     fig=plt.figure(figsize=(7.2,4.9+extra_height),layout='constrained')
     top,bottom=fig.subfigures(2,1,height_ratios=(2.6,1.45+extra_height))
     axes=top.subplots(1,2)
@@ -1222,6 +1234,7 @@ def source_result_figures(data, directory):
             ('M2: F11 minus F10',configurations['F11'],configurations['F10'],'#557A46'),
             ('M2: F01 minus tuned ordinary MLP',configurations['F01'],configurations['ordinary_F01'],'#BB8B45'),
             ('M2: F11 minus tuned ordinary MLP',configurations['F11'],configurations['ordinary_F11'],'#00857D')]
+        contributions.extend(graph_comparisons)
     effects=[source_paired(left,right) for _,left,right,_ in contributions]
     for y,((label,left,right,color),effect) in enumerate(zip(contributions,effects)):
         value=effect['difference_pp'];low,high=effect['ci95_pp']

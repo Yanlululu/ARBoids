@@ -96,7 +96,8 @@ def response_pair_geometry(left, right, dual=False):
 class JointTaskPotential(nn.Module):
     def __init__(self, width=64, peer_conditioned=True, output_width=1, context_conditioned=False,
                  local_contrast_head=False, motion_basis=False, residual_potential=False,
-                 finite_motion_basis=False, dual_motion_basis=False, identity_conditioned=False):
+                 finite_motion_basis=False, dual_motion_basis=False, identity_conditioned=False,
+                 paired_response_encoding=False, aligned_response_contrast=False, paired_event_difference=False):
         super().__init__()
         self.width = width
         self.peer_conditioned = peer_conditioned
@@ -105,6 +106,16 @@ class JointTaskPotential(nn.Module):
         self.finite_motion_basis = finite_motion_basis
         self.dual_motion_basis = dual_motion_basis
         self.identity_conditioned = identity_conditioned
+        self.paired_response_encoding = paired_response_encoding
+        self.aligned_response_contrast = aligned_response_contrast
+        self.paired_event_difference = paired_event_difference
+        if paired_event_difference and not paired_response_encoding:
+            raise ValueError('Paired event differences require factual and intervention response encodings.')
+        if aligned_response_contrast and not paired_response_encoding:
+            raise ValueError('Aligned vessel response contrasts require paired factual and intervention encodings.')
+        if paired_response_encoding and (output_width != 3 or residual_potential or local_contrast_head
+                                         or not motion_basis):
+            raise ValueError('Paired response encoding requires factual, rescue and harm outputs with public motion features.')
         if dual_motion_basis and not finite_motion_basis:
             raise ValueError('The dual motion basis requires finite motion features.')
         if finite_motion_basis and (not motion_basis or local_contrast_head):
@@ -115,7 +126,10 @@ class JointTaskPotential(nn.Module):
         self.node = nn.Sequential(nn.Linear(29+5*context_conditioned+42*motion_basis*(1+dual_motion_basis)+identity_conditioned, width), nn.SiLU(), nn.Linear(width, width), nn.SiLU())
         self.message = nn.Sequential(nn.Linear(2*width+10+18*motion_basis*(1+dual_motion_basis), width), nn.SiLU(), nn.Linear(width, width), nn.SiLU())
         self.update = nn.Sequential(nn.Linear(3*width, width), nn.SiLU())
-        self.head = nn.Sequential(nn.Linear(3*width+8, width), nn.SiLU(), nn.Linear(width, output_width))
+        self.head = nn.Sequential(nn.Linear(3*width+8, width), nn.SiLU(),
+                                  nn.Linear(width, 1 if paired_response_encoding else output_width))
+        self.paired_head = (nn.Sequential(nn.Linear(2*(3*width+8), width), nn.SiLU(),
+            nn.Linear(width, 2)) if paired_response_encoding else None)
         self.effect_head = (nn.Sequential(nn.Linear(2*(3*width+8), width), nn.SiLU(),
             nn.Linear(width, 1)) if residual_potential else None)
         self.contrast = (nn.Sequential(nn.Linear(3*width+8, width), nn.SiLU(),
@@ -185,7 +199,17 @@ class JointTaskPotential(nn.Module):
         return encoded, representation
 
     def forward(self, context, controls, programs, timing, responses=None):
-        representation = self.encode(context, controls, programs, timing, responses)[1]
+        encoded, representation = self.encode(context, controls, programs, timing, responses)
+        if self.paired_response_encoding:
+            factual_nodes, reference = self.encode(context, controls, torch.zeros_like(programs),
+                torch.zeros_like(timing), responses)
+            features = (self.aligned_response_features(encoded, factual_nodes, reference, programs > 0,
+                representation[..., -8:]-reference[..., -8:]) if self.aligned_response_contrast else
+                torch.cat((reference, representation-reference), -1))
+            raw = self.paired_head(features)
+            exposure = self.intervention_exposure(controls, programs, timing)
+            effects = self.event_logits(raw, exposure, self.paired_event_difference)
+            return torch.cat((self.head(reference), effects), -1)
         if not self.residual_potential:
             return self.head(representation).squeeze(-1)
         reference = self.encode(context, controls, torch.zeros_like(programs), torch.zeros_like(timing), responses)[1]
@@ -195,6 +219,48 @@ class JointTaskPotential(nn.Module):
         effect = self.effect_head(torch.cat((reference, representation-reference), -1)).squeeze(-1)
         exposure = -torch.expm1(-.2*timing[:, 1].to(context.dtype))*(programs > 0).any(-1)
         return self.head(reference).squeeze(-1)+exposure*effect
+
+    @staticmethod
+    def aligned_response_features(encoded, factual_nodes, reference, active, global_difference):
+        """Contrast each vessel with itself before pooling the fleet effect.
+
+        The affected vessels contribute their own factual context, rather
+        than an absolute candidate activation masquerading as a change.
+        Peer responses retain their signs in the largest-response pool.
+        """
+        delta=encoded-factual_nodes
+        held=active[..., None].to(encoded.dtype)
+        count=held.sum(-2).clamp_min(1)
+        factual_subject=(factual_nodes*held).sum(-2)/count
+        factual=torch.cat((factual_nodes.mean(-2).expand_as(factual_subject),
+            factual_nodes.amax(-2).expand_as(factual_subject),factual_subject,
+            reference[..., -8:].expand(*factual_subject.shape[:-1],8)), -1)
+        largest=delta.gather(-2,delta.abs().argmax(-2,keepdim=True)).squeeze(-2)
+        contrast=torch.cat((delta.mean(-2),largest,(delta*held).sum(-2)/count,
+                            global_difference), -1)
+        return torch.cat((factual,contrast), -1)
+
+    def intervention_exposure(self, controls, programs, timing):
+        """The unchanged program and a zero-length intervention have no exposure."""
+        return (-torch.expm1(-.2*timing[..., 1].to(controls.dtype))*(programs > 0).any(-1))
+
+    @staticmethod
+    def event_logits(raw, exposure, competing=False):
+        if competing:
+            # Rescue and harm are mutually exclusive outcomes of the same
+            # paired future. Learn their joint event mass without conditioning
+            # on an unobserved future factual outcome. Exposure anchors the
+            # unchanged continuation while retaining unrestricted event rates.
+            total = F.softplus(torch.logsumexp(raw, -1))*exposure
+            probability = -torch.expm1(-total)[..., None]*raw.softmax(-1)
+            return torch.logit(probability.clamp(1e-7, 1-1e-7))
+        # Two event intensities predict rescue and harm directly in their
+        # factual strata. A common intervention exposure anchors both events
+        # to the unchanged continuation. Identical commands at the root alone
+        # do not imply identical feedback commands throughout the window.
+        intensity = F.softplus(raw)*exposure[..., None]
+        probability = -torch.expm1(-intensity)
+        return torch.logit(probability.clamp(1e-7, 1-1e-7))
 
     def contrast_from_encodings(self, first, second, changed_boat, global_state, return_distribution=False):
         """Predict the two factual-stratum consequences of one boat change.
@@ -339,12 +405,12 @@ class JointTaskPotential(nn.Module):
         distinct, inverse = torch.unique(design, dim=0, return_inverse=True)
         parts = []; encodings = []
         reference = None
-        if self.residual_potential:
+        if self.residual_potential or self.paired_response_encoding:
             factual_responses = (responses if window_inverse is None else
                 tuple(item.reshape(b, window_count, *item.shape[1:])[:, 0] for item in responses))
-            reference = self.encode(context, controls,
+            factual_nodes, reference = self.encode(context, controls,
                 torch.zeros((b, n), dtype=torch.long, device=context.device),
-                torch.zeros((b, 2), dtype=torch.long, device=context.device), factual_responses)[1]
+                torch.zeros((b, 2), dtype=torch.long, device=context.device), factual_responses)
         for start in range(0, len(distinct), 256):
             q = distinct[start:start+256]
             if window_inverse is None:
@@ -364,17 +430,26 @@ class JointTaskPotential(nn.Module):
             global_state = torch.cat((context[:, None, -5:].expand(-1, size, -1),
                 rows.new_zeros((b, size, 2)), rows.new_full((b, size, 1), n/6.)), -1)
             representation = torch.cat((encoded.mean(2), encoded.amax(2), changed, global_state), -1)
-            if self.residual_potential:
+            if self.residual_potential or self.paired_response_encoding:
                 factual = reference[:, None].expand(-1, size, -1)
-                parts.append(self.effect_head[0](torch.cat((factual, representation-factual), -1)))
+                contrast_head = self.paired_head if self.paired_response_encoding else self.effect_head
+                contrast = (self.aligned_response_features(encoded,factual_nodes[:,None],
+                    reference[:,None],held[None],representation[..., -8:]-factual[..., -8:])
+                    if self.aligned_response_contrast else torch.cat((factual,representation-factual),-1))
+                parts.append(contrast_head[0](contrast))
             else:
                 parts.append(self.head[0](representation))
         # Timing enters the final conditional-value head. Reuse the exact
         # same joint-plan representation across immediate and delayed choices.
         clock = timing.to(rows.dtype).log1p()/6.*(programs > 0).any(-1, keepdim=True)
-        head = self.effect_head if self.residual_potential else self.head
+        head = (self.paired_head if self.paired_response_encoding else
+                self.effect_head if self.residual_potential else self.head)
         hidden = torch.cat(parts, 1)[:, inverse]+F.linear(clock, head[0].weight[:, -3:-1])[None]
         values = head[2](head[1](hidden)).squeeze(-1)
+        if self.paired_response_encoding:
+            exposure = self.intervention_exposure(controls[:, None], programs[None], timing[None])
+            effects = self.event_logits(values, exposure, self.paired_event_difference)
+            values = torch.cat((self.head(reference)[:, None].expand(-1, len(programs), -1), effects), -1)
         if self.residual_potential:
             exposure = -torch.expm1(-.2*timing[:, 1].to(context.dtype))*(programs > 0).any(-1)
             values = self.head(reference).squeeze(-1)[:, None]+exposure[None]*values
@@ -1313,12 +1388,17 @@ class LocalDifferenceDecision(nn.Module):
                  outcome_scaled_confidence=False, factual_risk_confidence=False,
                  neural_factual_calibration=None, neural_factual_calibration_kind='probability',
                  finite_motion_basis=False, dual_motion_basis=False, fleet_transfer=None,
-                 identity_conditioned=False, factual_probability_calibration=True):
+                 identity_conditioned=False, factual_probability_calibration=True,
+                 paired_response_encoding=False, aligned_response_contrast=False, paired_event_difference=False):
         super().__init__()
         self.conditional_strata = conditional_strata
+        self.paired_event_difference = paired_event_difference
+        if paired_event_difference and (ordinary or not conditional_strata or stratum_member_corrections is not None):
+            raise ValueError('Paired event differences use one factual head and unconditional paired corrections.')
         self.models = nn.ModuleList([JointTaskPotential(width, peer_conditioned,
             3 if conditional_strata else 1, context_conditioned, local_contrast_head, motion_basis,
-            residual_potential, finite_motion_basis, dual_motion_basis, identity_conditioned) for _ in states])
+            residual_potential, finite_motion_basis, dual_motion_basis, identity_conditioned,
+            paired_response_encoding, aligned_response_contrast, paired_event_difference) for _ in states])
         for net, state in zip(self.models, states):
             net.load_state_dict(state)
         calibration = (None if neural_factual_calibration is None else
@@ -1631,8 +1711,12 @@ class LocalDifferenceDecision(nn.Module):
                     if factual_reference is not None:
                         baseline = (1-influence[:, None])*baseline+influence[:, None]*factual_reference[:, None]
                 if stratum is not None:
+                    if self.paired_event_difference:
+                        raise ValueError('Paired event probabilities cannot be conditioned on a realized future outcome.')
                     baseline = torch.full_like(baseline, float(stratum))
-                values = (1-baseline)*raw[:, :, 1]+baseline*(1-raw[:, :, 2])
+                values = ((baseline+raw[:, :, 1]-raw[:, :, 2]).clamp(0., 1.)
+                          if self.paired_event_difference else
+                          (1-baseline)*raw[:, :, 1]+baseline*(1-raw[:, :, 2]))
                 values[:, 0] = baseline[:, 0]
                 if self.local_contrast_head and not factual_only:
                     values = self.reconstruct_values(net, encoded, context, values, baseline)
@@ -1765,7 +1849,9 @@ class LocalDifferenceDecision(nn.Module):
             responses=responses).sigmoid() for net in self.models])
         if self.conditional_strata:
             baseline = factual[..., None]
-            estimates = (1-baseline)*estimates[..., 1]+baseline*(1-estimates[..., 2])
+            estimates = ((baseline+estimates[..., 1]-estimates[..., 2]).clamp(0., 1.)
+                         if self.paired_event_difference else
+                         (1-baseline)*estimates[..., 1]+baseline*(1-estimates[..., 2]))
             estimates[:, :, 0] = factual
         gains = estimates-estimates[:, :, :1]
         error = gains.std(0, unbiased=False)+self.global_penalty
@@ -2016,7 +2102,8 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
                         effective_future_confidence=False, finite_motion_basis=False, dual_motion_basis=False,
                         response_supervision_weight=0., identity_conditioned=False,
                         snapshot_updates=(), root_sampling_fraction=0., factual_crossfit=False,
-                        factual_calibration_kind='probability'):
+                        factual_calibration_kind='probability', paired_response_encoding=False,
+                        decision_regret_weight=0., aligned_response_contrast=False, paired_event_difference=False):
     from plain_return import root_sampling_probabilities
     if not np.isfinite(response_supervision_weight) or response_supervision_weight < 0:
         raise ValueError('Response supervision must have a finite nonnegative weight.')
@@ -2035,6 +2122,14 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         raise ValueError('Factual cross-fitting requires fresh conditional-stratum ensemble members.')
     if factual_calibration_kind not in ('probability', 'logit'):
         raise ValueError('Unknown factual probability calibration map.')
+    if paired_response_encoding and (ordinary or not conditional_strata):
+        raise ValueError('Paired response learning needs the two factual outcome strata.')
+    if aligned_response_contrast and not paired_response_encoding:
+        raise ValueError('Aligned response learning requires paired response encoding.')
+    if paired_event_difference and (not paired_response_encoding or stratified_local_calibration):
+        raise ValueError('Paired event learning requires paired encodings and marginal outcome calibration.')
+    if not np.isfinite(decision_regret_weight) or decision_regret_weight < 0 or (decision_regret_weight and ordinary):
+        raise ValueError('Paired decision regret requires a nonnegative conditional-learning weight.')
     snapshot_updates = tuple(sorted(set(map(int, snapshot_updates))))
     if any(step <= 0 or step > updates or step % ensemble_size for step in snapshot_updates):
         raise ValueError('Learning snapshots need positive total budgets shared equally across ensemble members.')
@@ -2116,12 +2211,20 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
     importance_array = np.asarray([roots[int(row[0])].get('future_weights',
         np.ones(len(roots[int(row[0])]['futures'])))[int(row[2])] for row in rows], np.float32)
     importance = torch.as_tensor(importance_array, device=device)
+    decision_groups = []
+    if decision_regret_weight:
+        grouped = {}
+        for index, row in enumerate(rows):
+            grouped.setdefault((int(row[0]), int(row[2])), []).append(index)
+        decision_groups = [np.asarray(indices, np.int64) for indices in grouped.values() if len(indices) > 1]
+        if not decision_groups:
+            raise ValueError('Paired decision regret needs alternatives measured under a common root and future.')
     standardization = np.ones(len(rows), np.float32)
     factual_population = np.asarray([np.average(
         [v['success'] for (q, f), v in root['outcomes'].items() if q == 0],
         weights=[root.get('future_weights', np.ones(len(root['futures'])))[f]
                  for (q, f), v in root['outcomes'].items() if q == 0]) for root in roots], np.float32)
-    if conditional_strata:
+    if conditional_strata and not paired_event_difference:
         for root_id, root in enumerate(roots):
             baseline = factual_population[root_id]
             for q in range(1, len(root['options'])):
@@ -2185,7 +2288,8 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         net = JointTaskPotential(width, peer_conditioned, 3 if conditional_strata else 1,
                                 context_conditioned, local_contrast_head, motion_basis,
                                 residual_potential, finite_motion_basis, dual_motion_basis,
-                                identity_conditioned).to(device)
+                                identity_conditioned, paired_response_encoding, aligned_response_contrast,
+                                paired_event_difference).to(device)
         if initial_states is not None:
             net.load_state_dict(initial_states[member])
         train_parameters = list(net.parameters())
@@ -2225,6 +2329,8 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
                     member_edge_probability = .5*member_edge_target+.5*consequential/consequential.sum()
         member_response_probability = (training_probability(response_probability, response_ids.cpu().numpy())
                                        if response_supervision_weight else None)
+        member_decision_groups = [group for group in decision_groups if not factual_crossfit
+                                  or root_folds[int(rows[group[0], 0])] != member]
         bank_state_folds = bank_state_weights = member_bank_probability = None
         if factual_crossfit and factual_bank is not None:
             lengths = [len(record['values']) for record in factual_bank['records']]
@@ -2271,6 +2377,14 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
                       select_responses(responses, response_index[index]))
             if not conditional_strata:
                 return raw
+            if paired_event_difference:
+                # Both event heads observe every paired future, including the
+                # neutral majority. Their signed difference is the expected
+                # intervention effect conditional on the current fleet state.
+                events = raw[:, 1:].sigmoid()
+                value = factual_population[root_ids[index]]+events[:, 0]-events[:, 1]
+                return torch.where(codes[index] == 0, raw[:, 0],
+                    torch.logit(value.clamp(1e-6, 1-1e-6)))
             if condition:
                 logits = torch.where(factual_target[index] > .5, -raw[:, 2], raw[:, 1])
                 return torch.where(codes[index] == 0, 24.*factual_target[index]-12., logits)
@@ -2309,8 +2423,19 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
                     if conditional_strata:
                         candidates = ids[codes[ids] != 0]
                         if len(candidates):
-                            loss += .5*(F.binary_cross_entropy_with_logits(predict(candidates, condition=True),
-                                target[candidates], reduction='none')*importance[candidates]).sum()/importance[candidates].sum()
+                            if paired_event_difference:
+                                raw = net(context[root_ids[candidates]], controls[root_ids[candidates]],
+                                    digits[candidates], timing[candidates],
+                                    select_responses(responses, response_index[candidates]))
+                                events = raw[:, 1:].sigmoid()
+                                probabilities = torch.cat(((1-events.sum(-1, keepdim=True)).clamp_min(1e-7), events), -1)
+                                difference = target[candidates]-factual_target[candidates]
+                                labels = torch.where(difference > 0, 1, torch.where(difference < 0, 2, 0))
+                                error = F.nll_loss(probabilities.clamp_min(1e-7).log(), labels, reduction='none')
+                                loss += (error*importance[candidates]).sum()/importance[candidates].sum()
+                            else:
+                                loss += .5*(F.binary_cross_entropy_with_logits(predict(candidates, condition=True),
+                                    target[candidates], reduction='none')*importance[candidates]).sum()/importance[candidates].sum()
                     ref = torch.as_tensor(rng.choice(factual, size=32, p=member_factual_probability), device=device)
                     loss += factual_weight*(F.binary_cross_entropy_with_logits(predict(ref), target[ref],
                         reduction='none')*importance[ref]).sum()/importance[ref].sum()
@@ -2373,6 +2498,32 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
                         # in its normalization and in the value/difference fit.
                         loss += rank_weight*(F.binary_cross_entropy_with_logits(pair_logits[:, 1]-pair_logits[:, 0],
                             preferred, reduction='none')*informative*mass).sum()/mass.sum()
+                    if decision_regret_weight:
+                        # A decision competes against all measured alternatives
+                        # under the same future, including doing nothing. Fit
+                        # the expected loss of that choice, so neutral futures
+                        # and harmful interventions retain their true frequency.
+                        selected_groups=[]
+                        for group_id in rng.integers(len(member_decision_groups),size=8):
+                            group=member_decision_groups[group_id]
+                            if len(group)>16:
+                                reference=group[rows[group,1]==0]
+                                alternatives=group[rows[group,1]!=0]
+                                group=np.concatenate((reference,rng.choice(alternatives,
+                                    size=16-len(reference),replace=False)))
+                            selected_groups.append(group)
+                        group_indices=torch.as_tensor(np.concatenate(selected_groups),device=device)
+                        decision_values=predict(group_indices,condition=conditional_strata).sigmoid()
+                        regrets=[];masses=[];offset=0
+                        for group in selected_groups:
+                            size=len(group);index=group_indices[offset:offset+size]
+                            values=decision_values[offset:offset+size];labels=target[index]
+                            probability=(values/.15).softmax(0)
+                            regrets.append(labels.max()-(probability*labels).sum())
+                            masses.append(importance[index[0]]*root_weight[root_ids[index[0]]])
+                            offset+=size
+                        mass=torch.stack(masses)
+                        loss += decision_regret_weight*(torch.stack(regrets)*mass).sum()/mass.sum().clamp_min(1e-8)
                 optimizer.zero_grad(); loss.backward(); nn.utils.clip_grad_norm_(train_parameters, 5.); optimizer.step()
                 schedule.step()
                 budget = (step+1)*ensemble_size
@@ -2393,6 +2544,9 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
             factual_calibrations.append(parameters); factual_calibration_diagnostics.append(diagnostics)
     recipe = dict(width=width, states=states, peer_conditioned=peer_conditioned, ordinary=ordinary,
         context_conditioned=context_conditioned,
+        paired_response_encoding=paired_response_encoding,
+        aligned_response_contrast=aligned_response_contrast,
+        paired_event_difference=paired_event_difference,
         identity_conditioned=identity_conditioned,
         residual_potential=residual_potential,
         motion_basis=motion_basis,
@@ -2477,6 +2631,11 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         reused_terminal_prefix_labels=data.get('reused_terminal_prefix_labels', 0),
         paired_local_observations=len(edges), factual_comparisons=len(anchors), updates=updates,
         response_supervision_weight=response_supervision_weight,
+        paired_response_encoding=paired_response_encoding,
+        aligned_response_contrast=aligned_response_contrast,
+        paired_event_difference=paired_event_difference,
+        paired_event_objective='joint neutral, rescue and harm likelihood on all common futures' if paired_event_difference else None,
+        decision_regret_weight=decision_regret_weight,
         measured_response_labels=0 if response_ids is None else len(response_ids),
         response_label_sha256=response_label_sha256,
         response_auxiliary_heads_at_inference=False,
@@ -2512,7 +2671,7 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         intervention_conditioned_locality=intervention_locality and not ordinary,
         factual_choice_keeps_future_decisions=True,
         delayed_choice_keeps_future_decisions=False,
-        conditional_factual_strata=conditional_strata,
+        conditional_factual_strata=conditional_strata and not paired_event_difference,
         empirical_factual_reference=not ordinary,
         development_future_weight=data.get('development_future_weight', 1.),
         candidate_catalog='all sampled complete programs, including negative outcomes',
@@ -2551,6 +2710,8 @@ def calibrate_conditional_differences(model, data, *, device='cuda:0'):
     result = copy.deepcopy(model); recipe = result['successor_task_value']
     if recipe.get('ordinary') or recipe.get('kind') != 'local_difference_joint':
         raise ValueError('Conditional calibration requires the paired-difference learner.')
+    if recipe.get('paired_event_difference'):
+        raise ValueError('Paired event differences retain their marginal paired-outcome calibration.')
     conditional_heads = recipe.get('conditional_strata', False)
     roots = [observed_programs(root) for root in data['roots']]
     options = list(map(tuple, np.asarray(recipe['options']).tolist()))
@@ -2864,7 +3025,9 @@ def collect_local_tasks(policy, root_tasks, output, *, spans=(10, 40, 200), repe
                             if value.conditional_strata:
                                 factual = net(cc, uu, torch.zeros((1, n), dtype=torch.long, device=device),
                                     torch.zeros((1, 2), dtype=torch.long, device=device)).sigmoid()[0, 0]
-                                raw = (1-factual)*raw[:, 1]+factual*(1-raw[:, 2])
+                                raw = ((factual+raw[:, 1]-raw[:, 2]).clamp(0., 1.)
+                                       if value.paired_event_difference else
+                                       (1-factual)*raw[:, 1]+factual*(1-raw[:, 2]))
                             predictions.append(raw)
                     predictions = torch.stack(predictions)
                     score = (predictions.mean(0)+predictions.std(0, unbiased=False)).cpu().numpy()
@@ -3205,7 +3368,7 @@ def factual_trajectory_states(task):
         scene=scene, future=future, physical_steps=elapsed)
 
 
-def factual_trajectory_batch(tasks, *, device='cpu'):
+def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None):
     """Measure factual trajectories with batched copies of the same controller."""
     import conditional_fusion_value as c
     import develop_source_fusion as d
@@ -3214,19 +3377,22 @@ def factual_trajectory_batch(tasks, *, device='cpu'):
     actor = d.joint_load(str(policy), policy.stat().st_mtime_ns)
     if actor.successor_task_value is not None:
         raise ValueError('Factual sampling requires the frozen predecessor.')
-    jobs = []
-    for _, scene, future, _, _ in tasks:
-        np.random.seed(scene[0]); torch.manual_seed(scene[0])
-        env = d.numerical_source().TADEnv(scene[1])
-        obs, _ = env.reset(agility=scene[2], noisy_agility=False)
-        if future is not None: np.random.seed(future)
-        with torch.no_grad():
-            action = actor(d.mechanism_tensor(d.joint_packet(env, obs)), deterministic=True)[0][0].numpy()
-        jobs.append(dict(environment=env, observation=obs, action=action,
-                         random_state=np.random.get_state()))
+    jobs = None
+    if root_sample_seed is None:
+        jobs = []
+        for _, scene, future, _, _ in tasks:
+            np.random.seed(scene[0]); torch.manual_seed(scene[0])
+            env = d.numerical_source().TADEnv(scene[1])
+            obs, _ = env.reset(agility=scene[2], noisy_agility=False)
+            if future is not None: np.random.seed(future)
+            with torch.no_grad():
+                action = actor(d.mechanism_tensor(d.joint_packet(env, obs)), deterministic=True)[0][0].numpy()
+            jobs.append(dict(environment=env, observation=obs, action=action,
+                             random_state=np.random.get_state()))
     r.SOURCE = d.SOURCE
     measured = r.batched_credit_rows(policy, [(t[1], t[2]) for t in tasks],
-        batch_size=len(tasks), device=device, keep_steps=True, initial_jobs=jobs)
+        batch_size=len(tasks), device=device, keep_steps=True, initial_jobs=jobs,
+        root_sample_seed=root_sample_seed)
     records = []
     actor = d.joint_load(str(policy), policy.stat().st_mtime_ns).to(device)
     try:
@@ -3234,6 +3400,8 @@ def factual_trajectory_batch(tasks, *, device='cpu'):
             _, scene, future, expected, period = task
             row = trajectory['row']; selected = trajectory['steps'][::period]
             if expected is not None and row['success'] != expected:
+                if root_sample_seed is not None:
+                    raise ValueError('A sampled factual root must retain its actual batched trajectory.')
                 # Resolve a discrete decision near a floating-point tie with
                 # the canonical single-episode evaluator used by the reference.
                 actor.cpu()
@@ -3259,9 +3427,67 @@ def factual_trajectory_batch(tasks, *, device='cpu'):
                 values=np.full(len(selected), row['success'], np.float32),
                 remaining=np.asarray([elapsed-tick for tick in range(0, elapsed, period)], np.float32),
                 scene=scene, future=future, physical_steps=elapsed))
+            if root_sample_seed is not None:
+                records[-1]['root_snapshot']=dict(trajectory['root_snapshot'],
+                    predecessor_sha256=hashlib.sha256(policy.read_bytes()).hexdigest(),
+                    inference_batch=len(tasks),inference_device=device,root_sample_seed=int(root_sample_seed))
     finally:
         actor.cpu()
     return records
+
+
+def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
+                                  period=5, inference_batch=32, inference_device='cuda:0'):
+    """Sample one eligible decision state from each fresh factual episode.
+
+    Reservoir sampling follows the deployed batched controller without
+    changing its random stream. Each retained snapshot is a real predecessor
+    state; subsequent paired continuations use fresh common futures. The
+    terminal factual labels also supervise every recorded state in the same
+    episode, with no additional environment observations.
+    """
+    import run_remote_evidence as r
+    if period < 1 or inference_batch < 1 or int(root_sample_seed) < 0:
+        raise ValueError('Factual root sampling needs a positive period and batch, and a nonnegative seed.')
+    policy=Path(policy);output=Path(output)
+    digest=hashlib.sha256(policy.read_bytes()).hexdigest()
+    tasks=[(tuple(scene),future) for scene,future in tasks]
+    if len(set(tasks))!=len(tasks) or not tasks:
+        raise ValueError('Fresh factual root tasks must be nonempty and unique.')
+    specification=dict(predecessor_sha256=digest,tasks=tasks,period=period,
+        root_sample_seed=int(root_sample_seed),inference_batch=inference_batch,
+        inference_device=inference_device,
+        root_sampling='uniform eligible factual decision state; separate reservoir random stream')
+    bank=(torch.load(output,map_location='cpu',weights_only=False) if output.exists() else
+        dict(records=[],simulation_steps=0,trajectories=0,state_labels=0,completed=False,
+            **specification))
+    if any(bank.get(key)!=value for key,value in specification.items()):
+        raise ValueError('Saved factual roots use a different predecessor, tasks, sampler or inference batch.')
+    records=bank['records']
+    if [(tuple(row['scene']),row['future']) for row in records]!=tasks[:len(records)]:
+        raise ValueError('Saved factual roots must preserve the ordered training task prefix.')
+    if len(records)>len(tasks) or (len(records)%inference_batch and len(records)!=len(tasks)):
+        raise ValueError('Saved factual roots must end at an unchanged inference batch boundary.')
+    if bank['completed']:
+        if len(records)!=len(tasks):
+            raise ValueError('A completed factual bank must contain every requested episode.')
+        return bank
+    for begin in range(len(records),len(tasks),inference_batch):
+        group=[(str(policy),scene,future,None,period) for scene,future in tasks[begin:begin+inference_batch]]
+        measured=factual_trajectory_batch(group,device=inference_device,root_sample_seed=root_sample_seed)
+        for row in measured:
+            snapshot=row['root_snapshot']
+            if snapshot['predecessor_sha256']!=digest or snapshot['root_steps']>=row['physical_steps']:
+                raise ValueError('A sampled root must precede the factual terminal state under the same controller.')
+        records.extend(measured)
+        bank.update(simulation_steps=sum(row['physical_steps'] for row in records),
+            trajectories=len(records),state_labels=sum(len(row['values']) for row in records),
+            completed=len(records)==len(tasks))
+        r.atomic_save(bank,output)
+        print(dict(phase='onpolicy_factual_roots',trajectories=len(records),total=len(tasks),
+            state_labels=bank['state_labels'],physical_steps=bank['simulation_steps'],
+            noninitial_roots=sum(row['root_snapshot']['root_steps']>0 for row in records)),flush=True)
+    return bank
 
 
 def collect_factual_trajectories(policy, references, output, *, workers=10, period=5,
@@ -3363,13 +3589,16 @@ def source_successor_batches(tasks, *, batch_size=128, device='cpu'):
     return result
 
 
-def breadth_local_design(blueprint, candidate_options, *, pairs_per_root=6, repetitions=2, seed=0):
+def breadth_local_design(blueprint, candidate_options, *, pairs_per_root=6, repetitions=2, seed=0,
+                         vessel_balanced=False):
     """Allocate fresh paired queries to every root without inspecting labels.
 
     Each queried edge changes one vessel at a common intervention window.
     Stratifying edges by plan size and window spreads the bounded root budget
     over the deployment catalog, including roots previously sampled only
-    factually. The returned outcomes contain scheduling bounds, never labels.
+    factually. The vessel-balanced allocation samples two alternatives for
+    each queried vessel at a shared window, anchored to the factual program.
+    The returned outcomes contain scheduling bounds, never labels.
     """
     if pairs_per_root < 1 or repetitions < 1:
         raise ValueError('Breadth sampling requires positive pair and future counts.')
@@ -3386,21 +3615,37 @@ def breadth_local_design(blueprint, candidate_options, *, pairs_per_root=6, repe
         if n not in by_fleet:
             if any(code >= 10**n for code, _, _ in options):
                 raise ValueError('The candidate catalog must match every root fleet.')
-            groups = {}
-            for a, b in local_edges(options, n):
-                code, delay, span = options[b]
-                held = max(sum(code//10**boat % 10 != 0 for boat in range(n))
-                           for code in (options[a][0], options[b][0]))
-                groups.setdefault((held, delay, span), []).append((a, b))
-            if not groups:
-                raise ValueError('The catalog has no single-vessel comparison edges.')
-            by_fleet[n] = [groups[key] for key in sorted(groups)]
+            if vessel_balanced:
+                groups = {boat:{} for boat in range(n)}
+                for index, (code, delay, span) in enumerate(options[1:], 1):
+                    changed = [boat for boat in range(n) if code//10**boat % 10]
+                    if len(changed) != 1:
+                        raise ValueError('Vessel-balanced evidence requires factual single-vessel alternatives.')
+                    groups[changed[0]].setdefault((delay, span), []).append(index)
+                if any(not windows or any(len(indices)<2 for indices in windows.values())
+                       for windows in groups.values()):
+                    raise ValueError('Every vessel and intervention window needs two measured alternatives.')
+                by_fleet[n] = [[windows[key] for key in sorted(windows)] for windows in groups.values()]
+            else:
+                groups = {}
+                for a, b in local_edges(options, n):
+                    code, delay, span = options[b]
+                    held = max(sum(code//10**boat % 10 != 0 for boat in range(n))
+                               for code in (options[a][0], options[b][0]))
+                    groups.setdefault((held, delay, span), []).append((a, b))
+                if not groups:
+                    raise ValueError('The catalog has no single-vessel comparison edges.')
+                by_fleet[n] = [groups[key] for key in sorted(groups)]
         groups = by_fleet[n]
         group_order = rng.permutation(len(groups))
         selected = {0}
         for index in range(pairs_per_root):
             group = groups[group_order[index % len(groups)]]
-            selected.update(group[int(rng.integers(len(group)))])
+            if vessel_balanced:
+                window = group[int(rng.integers(len(group)))]
+                selected.update(map(int, rng.choice(window, size=2, replace=False)))
+            else:
+                selected.update(group[int(rng.integers(len(group)))])
         chosen = [options[index] for index in sorted(selected)]
         futures = []
         while len(futures) < repetitions:
@@ -3412,6 +3657,8 @@ def breadth_local_design(blueprint, candidate_options, *, pairs_per_root=6, repe
             options=chosen, futures=futures, future_weights=np.ones(repetitions, np.float32),
             outcomes={(q, f): dict(duration=400) for q in range(len(chosen))
                       for f in range(repetitions)}, blueprint_root=root_id)
+        if 'root_snapshot' in original:
+            root['root_snapshot']=original['root_snapshot']
         roots.append(root)
         signatures.append((scene, root['prefix_future'], root['root_steps'], root['lookback'],
                            tuple(chosen), tuple(futures)))
@@ -3421,6 +3668,9 @@ def breadth_local_design(blueprint, candidate_options, *, pairs_per_root=6, repe
         catalog_sha256=hashlib.sha256(repr(options).encode()).hexdigest(),
         design_sha256=hashlib.sha256(repr(signatures).encode()).hexdigest(),
         inherited_labels=False, allocation='uniform plan-size/window strata; fresh paired futures')
+    if vessel_balanced:
+        design.update(vessel_balanced=True,
+            allocation='balanced physical vessels; two single-vessel alternatives at a shared uniformly sampled window; common factual anchor')
     return dict(roots=roots, acquisition_design=design)
 
 
@@ -3535,13 +3785,22 @@ def recollect_local_design(policy, blueprint, output, *, simulation_budget, work
                 break
             original = observed_programs(blueprint['roots'][design_id])
             scene = tuple(original['scene']); future = original['prefix_future']
-            np.random.seed(scene[0]); torch.manual_seed(scene[0])
-            env = d.numerical_source().TADEnv(scene[1])
-            obs, _ = env.reset(agility=scene[2], noisy_agility=False)
-            if future is not None: np.random.seed(future)
-            elapsed = done = 0
+            snapshot=original.get('root_snapshot')
+            if snapshot is not None:
+                if (snapshot['predecessor_sha256']!=digest
+                        or int(snapshot['root_steps'])!=int(original['root_steps'])):
+                    raise ValueError('A sampled state must retain its exact factual controller and clock.')
+                env=copy.deepcopy(snapshot['environment']);obs=snapshot['observation'].copy()
+                np.random.set_state(snapshot['random_state'])
+                elapsed=int(snapshot['root_steps']);done=0
+            else:
+                np.random.seed(scene[0]); torch.manual_seed(scene[0])
+                env = d.numerical_source().TADEnv(scene[1])
+                obs, _ = env.reset(agility=scene[2], noisy_agility=False)
+                if future is not None: np.random.seed(future)
+                elapsed = done = 0
             history = []
-            if original['root_steps']:
+            if original['root_steps'] and snapshot is None:
                 lookback = original.get('lookback')
                 if isinstance(lookback, str) and lookback not in ('first_intervention', 'last_intervention', 'uniform_eligible'):
                     raise ValueError(f'Unknown reference root timing: {lookback}')
@@ -3654,6 +3913,10 @@ def recollect_local_design(policy, blueprint, output, *, simulation_budget, work
                     root_steps=elapsed, lookback=original.get('lookback'), order=order[0].numpy(),
                     future_weights=np.asarray(original.get('future_weights',
                         np.ones(len(original['futures']))), np.float32), design_root=design_id))
+                if snapshot is not None:
+                    result['roots'][-1]['root_sampling']=dict(kind='uniform_eligible_factual_state',
+                        eligible_states=snapshot['eligible_states'],root_sample_seed=snapshot['root_sample_seed'],
+                        inference_batch=snapshot['inference_batch'],inference_device=snapshot['inference_device'])
             result['next_design_root'] = design_id+1
             result.pop('partial_root', None)
             output.parent.mkdir(parents=True, exist_ok=True)

@@ -8,6 +8,234 @@ from conditional_fusion_value import (
 
 
 class ConditionalFusionValueTests(unittest.TestCase):
+    def test_target_scenarios_use_their_own_fleet_feedback_paths(self):
+        from conditional_fusion_value import task_envelope_fusion_factors, task_stopped_fleet_cost
+        paths=torch.full((1,2,2,2,1,2),20.)
+        paths[...,1]=0.
+        paths[0,0,0,0,0,0]=0.
+        paths[0,1,1,1,0,0]=10.
+        targets=torch.tensor([[[[0.,0.]],[[10.,0.]]]])
+        factors=task_envelope_fusion_factors(paths,targets,torch.zeros(1,2,2),torch.zeros_like,
+            weights=[.5,.5],interception_weight=1.,control_stride=1,capture_radius=1.)
+        plans=torch.tensor([[[0,0],[0,1],[1,0],[1,1]]])
+        costs=task_stopped_fleet_cost(factors,plans,risk_weight=0.)
+        torch.testing.assert_close(costs,torch.tensor([[4.5,0.,14.,9.5]]))
+
+    def test_feedback_forecast_refreshes_from_the_supplied_public_target_future(self):
+        from types import SimpleNamespace
+        from conditional_fusion_value import coupled_actuator_risk
+        packet=dict(motion=torch.zeros(1,2,6),water=torch.zeros(1,2,3),node=torch.zeros(1,2,16))
+        observed=[]
+        def feedback(packet,state,time,joint=False,target_override=None):
+            observed.append((time,target_override))
+            return torch.zeros(1,1,2,4),torch.zeros(1,1,2,2)
+        actor=SimpleNamespace(prediction_step=.05,risk_horizon=.6,risk_feedback=True,
+            feedback_observation=feedback,proposal_distribution=lambda obs:(torch.zeros(1,2,2),None))
+        future=torch.stack((torch.arange(1,13)*.05,torch.arange(1,13)*.1),-1)[None]
+        coupled_actuator_risk(actor,packet,torch.zeros(1,2,2),torch.ones(1,1,2,2),'paths',
+            synchronized=True,target_paths=future)
+        self.assertEqual(len(observed),2)
+        for time,(position,velocity) in observed:
+            torch.testing.assert_close(position,torch.tensor([[time,2*time]]))
+            torch.testing.assert_close(velocity,torch.tensor([[1.,2.]]))
+        with self.assertRaisesRegex(ValueError,'align'):
+            coupled_actuator_risk(actor,packet,torch.zeros(1,2,2),torch.ones(1,1,2,2),'paths',
+                synchronized=True,target_paths=future[:,:-1])
+
+    def test_feedback_library_exposes_every_reference_change_without_joint_selection(self):
+        from conditional_fusion_value import feedback_fleet_library, select_feedback_fleet_plan
+        unary=torch.ones(2,2,9);unary[...,0]=0.
+        library,start=feedback_fleet_library(unary)
+        self.assertEqual(start,81)
+        self.assertEqual(len(torch.unique(library[0,:start],dim=0)),81)
+        for vessel in range(2):
+            local=library[:,start+9*vessel:start+9*(vessel+1)]
+            torch.testing.assert_close(local[:,:,vessel],torch.arange(9)[None].expand(2,-1))
+            self.assertTrue((local[:,:,1-vessel]==0).all())
+        costs=torch.full(library.shape[:2],10.)
+        costs[(library==0).all(-1)]=4.
+        costs[((library==0).sum(-1)==1)&((library==1).sum(-1)==1)]=1.
+        costs[(library==1).all(-1)]=5.
+        independent=select_feedback_fleet_plan(costs,library,start,'single_reference')
+        joint=select_feedback_fleet_plan(costs,library,start,'joint')
+        self.assertTrue((independent==1).all())
+        self.assertTrue(((joint==0).sum(-1)==1).all())
+        self.assertTrue(((joint==1).sum(-1)==1).all())
+        with self.assertRaises(ValueError):
+            select_feedback_fleet_plan(costs,library,start,'independent')
+        unary=torch.ones(1,3,9);unary[...,0]=0.
+        library,start=feedback_fleet_library(unary)
+        costs=torch.full(library.shape[:2],10.)
+        for vessel,choice in enumerate((1,2,3)):
+            costs[:,start+9*vessel+choice]=1.
+        independent=select_feedback_fleet_plan(costs,library,start,'single_reference')
+        self.assertFalse(((library-independent[:,None]).abs().sum(-1)==0).any())
+        completed=torch.cat((library,independent[:,None]),1)
+        completed_costs=torch.cat((costs,torch.full((1,1),.5)),1)
+        torch.testing.assert_close(select_feedback_fleet_plan(completed_costs,completed,start,'single_reference'),independent)
+        torch.testing.assert_close(select_feedback_fleet_plan(completed_costs,completed,start,'joint'),independent)
+
+    def test_complete_feedback_paths_preserve_the_existing_collision_forecast(self):
+        from types import SimpleNamespace
+        from conditional_fusion_value import coupled_actuator_risk
+        packet=dict(motion=torch.zeros(1,2,6),water=torch.zeros(1,2,3),
+            node=torch.zeros(1,2,16),task=torch.zeros(1,8))
+        packet['motion'][0,1,1]=2.
+        packet['node'][...,11:13]=-1./3.
+        actor=SimpleNamespace(prediction_step=.05,risk_horizon=.4,risk_feedback=False,
+            distance_risk=lambda distance:(7.-distance).clamp_min(0.).square())
+        source=torch.ones(1,2,2)
+        plans=torch.stack((torch.zeros(1,2,2),torch.ones(1,2,2)),1)
+        paths=coupled_actuator_risk(actor,packet,source,plans,'paths',synchronized=True)
+        cost,clearance=coupled_actuator_risk(actor,packet,source,plans,'both',synchronized=True)
+        separation=(paths[:,:,0]-paths[:,:,1]).norm(dim=-1).amin(-1)
+        torch.testing.assert_close(clearance,separation,rtol=0.,atol=0.)
+        torch.testing.assert_close(cost,actor.distance_risk(separation),rtol=0.,atol=0.)
+        packet['task'].fill_(1000.)
+        torch.testing.assert_close(paths,coupled_actuator_risk(actor,packet,source,plans,'paths',
+            synchronized=True),rtol=0.,atol=0.)
+
+    def test_target_envelope_cost_matches_exact_independent_expectation(self):
+        import itertools
+        from conditional_fusion_value import (task_envelope_fusion_factors, task_stopped_fleet_cost,
+            task_stopped_independent_cost, select_task_stopped_fusion)
+        rng = torch.Generator().manual_seed(161)
+        paths = 8.*torch.rand(2, 3, 2, 4, 2, generator=rng, dtype=torch.float64)+3.
+        targets = torch.zeros(2, 3, 4, 2, dtype=torch.float64)
+        targets[:, :, :, 0] = torch.tensor([8., 10., 12.])[None, :, None]
+        paths[0, 0, 0, 1] = torch.tensor([10., 0.])
+        unary = torch.rand(2, 3, 2, generator=rng, dtype=torch.float64)
+        probability = torch.rand(2, 3, 2, generator=rng, dtype=torch.float64).softmax(-1)
+        factors = task_envelope_fusion_factors(paths, targets, unary,
+            lambda distance: (7.-distance).clamp_min(0.).square(),
+            weights=[.2, .5, .3], interception_weight=1.5, control_stride=2)
+        plans = torch.tensor(list(itertools.product(range(2), repeat=3)))[None].expand(2, -1, -1)
+        measured = task_stopped_fleet_cost(factors, plans, risk_weight=2., escape_weight=3.)
+        expected = task_stopped_independent_cost(factors, probability, risk_weight=2., escape_weight=3.)
+        for subject in range(3):
+            for choice in range(2):
+                mass = torch.ones(2, len(plans[0]), dtype=torch.float64)
+                for peer in range(3):
+                    if peer != subject:
+                        mass *= probability[:, peer].gather(1, plans[:, :, peer])
+                mass *= plans[:, :, subject] == choice
+                torch.testing.assert_close(expected[:, subject, choice], (mass*measured).sum(-1),
+                    rtol=1e-10, atol=1e-10)
+        selected = select_task_stopped_fusion(factors, selection='joint', beam_width=8,
+            risk_weight=2., escape_weight=3.)
+        torch.testing.assert_close(task_stopped_fleet_cost(factors, selected[:, None], 2., 3.).squeeze(1),
+            measured.amin(-1), rtol=1e-10, atol=1e-10)
+
+    def test_shared_target_futures_require_complementary_fleet_choices(self):
+        from conditional_fusion_value import (target_turning_envelope, task_envelope_fusion_factors,
+            task_stopped_fleet_cost, select_task_stopped_fusion)
+        paths = torch.tensor([[[[[0., 0.]], [[10., 0.]]],
+                               [[[0., 0.]], [[10., 0.]]]]])
+        targets = torch.tensor([[[[0., 0.]], [[10., 0.]]]])
+        unary = torch.tensor([[[0., .1], [0., .1]]])
+        factors = task_envelope_fusion_factors(paths, targets, unary, torch.zeros_like,
+            weights=[.5, .5], interception_weight=1., control_stride=1, capture_radius=1.)
+        joint = select_task_stopped_fusion(factors, selection='joint', beam_width=4,
+            risk_weight=0., escape_weight=0.)
+        independent = select_task_stopped_fusion(factors, selection='independent', beam_width=4,
+            risk_weight=0., escape_weight=0.)
+        self.assertEqual(joint.sum().item(), 1)
+        self.assertEqual(independent.sum().item(), 2)
+        self.assertLess(task_stopped_fleet_cost(factors, joint[:, None], 0.).item(),
+                        task_stopped_fleet_cost(factors, independent[:, None], 0.).item())
+        position = torch.tensor([[7., 4.]])
+        center = position[:, None]+torch.tensor([[[1., 0.], [2., 0.], [3., 0.], [4., 0.]]])
+        envelope, weights = target_turning_envelope(position, center, 30.)
+        torch.testing.assert_close(envelope[:, 2], center)
+        torch.testing.assert_close((envelope-position[:, None, None]).norm(dim=-1),
+            (center-position[:, None]).norm(dim=-1)[:, None].expand(-1, 5, -1))
+        torch.testing.assert_close(weights.sum(), torch.tensor(1.))
+        static = position[:, None].expand(-1, 4, -1)
+        unchanged, _ = target_turning_envelope(position, static, 30.)
+        torch.testing.assert_close(unchanged, static[:, None].expand(-1, 5, -1, -1))
+        with self.assertRaisesRegex(ValueError, 'ninety'):
+            target_turning_envelope(position, center, 91.)
+
+    def test_batched_delayed_value_program_preserves_native_prefix_and_activation(self):
+        from types import SimpleNamespace
+        import numpy as np
+        from run_remote_evidence import batched_primitive_program
+        actor = SimpleNamespace(successor_task_value=SimpleNamespace(prior=None))
+        action = np.zeros((3, 14), np.float32)
+        action[:, 3] = -1.; action[:, 4] = 8.; action[:, 5] = -2.
+        action[:, 8] = 5.; action[:, 9:11] = -1.; action[:, 11:13] = .5
+        action[:, 13] = 1.
+        program, activation = batched_primitive_program(actor, action)
+        self.assertEqual(activation, 5)
+        np.testing.assert_array_equal(program, action[:, :13])
+        self.assertEqual(program[0, 4]-activation, 3)
+        actor.successor_task_value = None; action[:, 13] = 0.
+        same, activation = batched_primitive_program(actor, action)
+        np.testing.assert_array_equal(same, program)
+        self.assertEqual(activation, 5)
+
+    def test_batched_delayed_value_program_rejects_unresolved_predecessor_chain(self):
+        from types import SimpleNamespace
+        import numpy as np
+        from run_remote_evidence import batched_primitive_program
+        action = np.zeros((3, 14), np.float32); action[:, 8] = 5.; action[:, 13] = 1.
+        actor = SimpleNamespace(successor_task_value=SimpleNamespace(prior=SimpleNamespace(prior=None)))
+        with self.assertRaisesRegex(ValueError, 'one value stage'):
+            batched_primitive_program(actor, action)
+        actor.successor_task_value.prior = None; action[:, 13] = 2.
+        with self.assertRaisesRegex(ValueError, 'value-stage chain'):
+            batched_primitive_program(actor, action)
+
+    def test_task_stopped_independent_matches_exhaustive_fleet_expectations(self):
+        import itertools
+        from conditional_fusion_value import (task_stopped_fusion_factors, task_stopped_fleet_cost,
+            task_stopped_independent_cost, select_task_stopped_fusion)
+        rng = torch.Generator().manual_seed(715)
+        paths = 8.*torch.rand(2, 3, 2, 4, 2, generator=rng, dtype=torch.float64)+4.
+        target = torch.zeros(2, 4, 2, dtype=torch.float64); target[..., 0] = 10.
+        paths[0, 0, 0, 1] = torch.tensor([10., 0.])
+        unary = torch.rand(2, 3, 2, generator=rng, dtype=torch.float64)
+        probability = torch.rand(2, 3, 2, generator=rng, dtype=torch.float64).softmax(-1)
+        factors = task_stopped_fusion_factors(paths, target, unary,
+            lambda distance: (7.-distance).clamp_min(0.).square(), control_stride=2)
+        plans = torch.tensor(list(itertools.product(range(2), repeat=3)))[None].expand(2, -1, -1)
+        measured = task_stopped_fleet_cost(factors, plans, risk_weight=2., escape_weight=3.)
+        expected = task_stopped_independent_cost(factors, probability, risk_weight=2., escape_weight=3.)
+        for subject in range(3):
+            for choice in range(2):
+                mass = torch.ones(2, len(plans[0]), dtype=torch.float64)
+                for peer in range(3):
+                    if peer != subject:
+                        mass *= probability[:, peer].gather(1, plans[:, :, peer])
+                mass *= plans[:, :, subject] == choice
+                torch.testing.assert_close(expected[:, subject, choice], (mass*measured).sum(-1),
+                    rtol=1e-10, atol=1e-10)
+        selected = select_task_stopped_fusion(factors, selection='joint', beam_width=8,
+            risk_weight=2., escape_weight=3.)
+        torch.testing.assert_close(task_stopped_fleet_cost(factors, selected[:, None], 2., 3.).squeeze(1),
+            measured.amin(-1), rtol=1e-10, atol=1e-10)
+
+    def test_task_stopping_keeps_same_tick_risk_and_removes_post_capture_risk(self):
+        from conditional_fusion_value import task_stopped_fusion_factors, task_stopped_fleet_cost
+        paths = torch.tensor([[[[[3., 0.], [4., 0.], [4., 0.]]],
+                               [[[12., 0.], [8., 0.], [4.1, 0.]]]]])
+        target = torch.zeros(1, 3, 2); unary = torch.zeros(1, 2, 1)
+        risk = lambda distance: (7.-distance).clamp_min(0.).square()
+        plans = torch.zeros(1, 1, 2, dtype=torch.long)
+        stopped = task_stopped_fusion_factors(paths, target, unary, risk, control_stride=1)
+        self.assertEqual(task_stopped_fleet_cost(stopped, plans).item(), 0.)
+        continuing = task_stopped_fusion_factors(paths, target+100., unary, risk, control_stride=1)
+        self.assertGreater(task_stopped_fleet_cost(continuing, plans).item(), 0.)
+        paths[0, 1, 0, 0, 0] = 3.1
+        simultaneous = task_stopped_fusion_factors(paths, target, unary, risk, control_stride=1)
+        self.assertGreater(task_stopped_fleet_cost(simultaneous, plans).item(), 0.)
+        # Both boats outside the attacker still incur source-failure cost at
+        # the capture tick, which precedes capture in source termination.
+        target[..., 0] = 2.
+        self.assertGreater(task_stopped_fleet_cost(
+            task_stopped_fusion_factors(paths, target, unary, risk, control_stride=1),
+            plans, risk_weight=0., escape_weight=1.).item(), 0.)
+
     def test_breadth_design_pairs_every_root_without_using_outcome_labels(self):
         import copy
         import numpy as np
@@ -461,6 +689,47 @@ class ConditionalFusionValueTests(unittest.TestCase):
                             torch.testing.assert_close(torch.stack((predicted[2].cos(), predicted[2].sin())),
                                 torch.tensor([np.cos(boat.theta), np.sin(boat.theta)], dtype=predicted.dtype),
                                 rtol=2e-5, atol=2e-5)
+
+    def test_paired_response_catalog_preserves_factual_reference_and_zero_exposure(self):
+        from local_intervention_value import JointTaskPotential
+        torch.manual_seed(165)
+        context=.05*torch.randn(2,29)
+        controls=.2*torch.randn(2,3,6)
+        programs=torch.tensor([[0,0,0],[9,0,1],[9,0,1],[0,7,0],[1,9,0]])
+        timing=torch.tensor([[0,0],[0,0],[0,20],[5,4],[12,5]])
+        for aligned in (False,True):
+            net=JointTaskPotential(width=8,output_width=3,context_conditioned=True,
+                motion_basis=True,paired_response_encoding=True,aligned_response_contrast=aligned)
+            actual=net.forward_catalog(context,controls,programs,timing)
+            expected=torch.stack([net(context,controls,p[None].expand(2,-1),t[None].expand(2,-1))
+                for p,t in zip(programs,timing)],1)
+            torch.testing.assert_close(actual,expected,rtol=2e-5,atol=2e-6)
+            torch.testing.assert_close(actual[...,0],actual[:,:1,0].expand(-1,len(programs)))
+            self.assertTrue(bool((actual[:,:2,1:].sigmoid()<2e-7).all()))
+            self.assertTrue(bool((actual[:,2:,1:].sigmoid()>1e-4).all()))
+            permutation=torch.tensor([2,0,1])
+            permuted=torch.cat((context[:,:24].reshape(2,3,8)[:,permutation].flatten(1),context[:,-5:]),-1)
+            reordered=net.forward_catalog(permuted,controls[:,permutation],programs[:,permutation],timing)
+            torch.testing.assert_close(actual,reordered,rtol=2e-5,atol=2e-6)
+            with torch.enable_grad():
+                result=net(context,controls,programs[2:3].expand(2,-1),timing[2:3].expand(2,-1))
+                (result[:,1].square()+result[:,2].square()).mean().backward()
+            self.assertTrue(bool(torch.isfinite(net.paired_head[2].weight.grad).all()))
+            self.assertGreater(float(net.paired_head[2].weight.grad.abs().sum()),0.)
+
+    def test_aligned_response_contrast_retains_factual_subject_and_signed_peer_effect(self):
+        from local_intervention_value import JointTaskPotential
+        factual=torch.tensor([[[1.,2.],[3.,4.],[5.,6.]]])
+        active=torch.tensor([[True,False,False]])
+        reference=torch.zeros(1,14)
+        unchanged=JointTaskPotential.aligned_response_features(factual,factual,reference,active,torch.zeros(1,8))
+        torch.testing.assert_close(unchanged[:,4:6],factual[:,0])
+        torch.testing.assert_close(unchanged[:,14:],torch.zeros(1,14))
+        following=factual.clone();following[:,1,0]-=2.
+        changed=JointTaskPotential.aligned_response_features(following,factual,reference,active,torch.zeros(1,8))
+        torch.testing.assert_close(changed[:,:14],unchanged[:,:14])
+        self.assertEqual(float(changed[0,16]),-2.)
+        torch.testing.assert_close(changed[:,18:20],torch.zeros(1,2))
 
     def test_finite_catalog_matches_individual_windows_and_boat_permutations(self):
         from local_intervention_value import JointTaskPotential, response_basis

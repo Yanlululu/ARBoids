@@ -145,12 +145,37 @@ def command(arguments):
 
 
 @torch.no_grad()
+def batched_primitive_program(actor, action):
+    """Resolve a single value stage's delayed prefix to native tick control."""
+    if action.shape[-1] != 14:
+        return action, 0
+    delay = int(action[0, 8]); depth = int(action[0, 13])
+    if delay > 0 and depth >= 0:
+        value = actor.successor_task_value
+        if depth == 1:
+            if value is None or value.prior is not None:
+                raise ValueError('Batched delayed evaluation requires one value stage over a native predecessor.')
+        elif depth != 0 or value is not None:
+            raise ValueError('Batched delayed evaluation cannot collapse a value-stage chain.')
+        if any(getattr(actor, key, None) is not None for key in (
+                'cooperative_role_credit', 'finite_temporal_credit', 'continuous_program_value',
+                'joint_intervention_value')) or len(getattr(actor, 'joint_intervention_values', [])):
+            raise ValueError('The delayed predecessor must use native per-tick decisions.')
+    return action[:, :13].copy(), max(delay, 0) if depth >= 0 else 0
+
+
 def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=False,sample_policy=False,initial_jobs=None,
-                        response_tick=None):
+                        response_tick=None,actor_override=None,collect_fleet=False,root_sample_seed=None):
     """Batch deterministic policy inference, retaining each episode's RNG."""
     from envs.TADgame import TADEnv
     initialize();torch.backends.cuda.matmul.allow_tf32=False
-    actor=d.joint_load(str(policy),Path(policy).stat().st_mtime_ns).to(device)
+    actor=(d.joint_load(str(policy),Path(policy).stat().st_mtime_ns) if actor_override is None else actor_override).to(device)
+    fleet=getattr(actor,'feedback_fleet_policy',None)
+    if collect_fleet and (fleet is None or not fleet.sample or not fleet.collect):
+        raise ValueError('Fleet training requires a sampling whole-fleet policy and decision collection.')
+    if root_sample_seed is not None and (initial_jobs is not None or sample_policy or collect_fleet
+                                        or actor.successor_task_value is not None):
+        raise ValueError('Decision-root sampling needs complete deterministic factual episodes without M2.')
     if actor.gate_period!=1 or actor.intent_strength:
         raise ValueError('Batched credit evaluation requires per-step soft-preference control.')
     results=[]
@@ -169,6 +194,8 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
         active=list(range(len(current)));options=[None]*len(current)
         remaining=np.zeros(len(current),int);ticks=np.zeros(len(current),int)
         midpoint_checked=np.zeros(len(current),bool)
+        intervention_pending=np.zeros(len(current),bool)
+        intervention_activation=np.zeros(len(current),int)
         if initial_jobs is not None:
             for i,job in enumerate(initial_jobs[begin:begin+len(current)]):
                 state=job.get('controller_state')
@@ -187,6 +214,12 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
         intervention_events=[[] for _ in current]
         decision_records=[[] for _ in current] if keep_steps else None
         trajectories=[[] for _ in current] if keep_steps else None
+        fleet_trajectories=[[] for _ in current] if collect_fleet else None
+        sampled_roots=[None]*len(current) if root_sample_seed is not None else None
+        root_counts=np.zeros(len(current),int)
+        root_rngs=([np.random.default_rng(np.random.SeedSequence(
+            [int(root_sample_seed),int(scene[0]),0 if future is None else int(future),39797]))
+            for scene,future in current] if sampled_roots is not None else None)
         responses=[None]*len(current) if response_tick is not None else None
         response_ticks = (None if response_tick is None else
             [int(response_tick)]*len(current) if np.isscalar(response_tick) else
@@ -197,6 +230,14 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
             return {key:torch.as_tensor(np.stack([record[key] for record in records]),device=device) for key in records[0]}
         for step in range(400):
             if not active:break
+            if sampled_roots is not None and step%5==0:
+                for i in active:
+                    if remaining[i]:continue
+                    root_counts[i]+=1
+                    if root_rngs[i].integers(root_counts[i])==0:
+                        sampled_roots[i]=dict(environment=copy.deepcopy(environments[i]),
+                            observation=observations[i].copy(),random_state=copy.deepcopy(random_states[i]),
+                            root_steps=step)
             controls={};fresh=[i for i in active if remaining[i]==0]
             if fresh:
                 decisions=(np.stack([initial_jobs[begin+i]['action'] for i in fresh])
@@ -204,22 +245,32 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                     actor(packets(fresh),deterministic=not sample_policy)[0].cpu().numpy())
                 for i,action in zip(fresh,decisions):
                     if keep_steps:decision_records[i].append(dict(step=step,action=action.copy()))
+                    value_program=action.shape[-1]==14
+                    action,activation=batched_primitive_program(actor,action)
                     controls[i]=action[:,:3]
                     intervene=(action.shape[-1]>3 and ((action[:,3]>=0.).any()
                         or (action.shape[-1]>5 and (action[:,5]>=0.).any())))
                     intervene=intervene or (action.shape[-1]==13 and (action[:,9:11]>=0.).any())
+                    if value_program:intervene=intervene or (action[:,9:13]>=0.).any()
                     waiting=(actor.cooperative_role_credit is not None and actor.cooperative_role_credit.wait_span)
                     waiting=waiting or (action.shape[-1]>5 and (action[:,3]<0.).all() and (action[:,5]==-2.).all())
                     waiting=waiting or action.shape[-1]==9
                     if action.shape[-1]>3 and (intervene or waiting):
                         options[i]=action;remaining[i]=int(action[0,4]);ticks[i]=0
                         midpoint_checked[i]=False
-                        if intervene:
-                            environments[i]._conditional_option_count=getattr(environments[i],'_conditional_option_count',0)+1
-                            selected=((action[:,9:11]>=0.).any(-1) if action.shape[-1]==13 else action[:,3]>=0.)
-                            intervention_events[i].append(dict(time=float(environments[i].Current_T),
-                                duration_steps=int(action[0,4]),subjects=np.flatnonzero(selected).tolist(),
-                                coefficients=(action[selected,9:11] if action.shape[-1]==13 else action[selected,3]).tolist()))
+                        intervention_pending[i]=intervene
+                        intervention_activation[i]=activation
+            for i in active:
+                if intervention_pending[i] and ticks[i]>=intervention_activation[i]:
+                    action=options[i]
+                    preferences=(np.where((ticks[i]>=action[:,8])[:,None],action[:,11:13],action[:,9:11])
+                        if action.shape[-1]==13 else action[:,3])
+                    selected=(preferences>=0.).any(-1) if preferences.ndim==2 else preferences>=0.
+                    environments[i]._conditional_option_count=getattr(environments[i],'_conditional_option_count',0)+1
+                    intervention_events[i].append(dict(time=float(environments[i].Current_T),
+                        duration_steps=int(remaining[i]),subjects=np.flatnonzero(selected).tolist(),
+                        coefficients=preferences[selected].tolist()))
+                    intervention_pending[i]=False
             committed=[i for i in active if remaining[i]>0]
             if committed:
                 batch=packets(committed)
@@ -309,10 +360,17 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                     torch.as_tensor(np.stack([controls[i] for i in active]),device=device),
                     **actor.actuator_fusion_refinement).cpu().numpy()
                 for i,control in zip(active,physical):controls[i]=control
+                if collect_fleet:
+                    decision=fleet.last_decision
+                    for j,i in enumerate(active):
+                        fleet_trajectories[i].append({key:value[j].clone() for key,value in decision.items()})
             for i in active:
                 env=environments[i];np.random.set_state(random_states[i])
                 before=d.joint_packet(env,observations[i]) if keep_steps else None
                 obs,reward,done,sr=d.joint_task_step(env,controls[i],actor.training_gamma,actor.training_step_cost)
+                if collect_fleet:
+                    fleet_trajectories[i][-1].update(reward=float(reward),done=bool(done),
+                        discount=float(actor.training_gamma))
                 if responses is not None and responses[i] is None and (done or step+1==response_ticks[i]):
                     responses[i]=dict(packet=d.joint_packet(env,obs),terminal=int(done),steps=step+1)
                 if keep_steps:
@@ -338,7 +396,9 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                 else:following.append(i)
             active=following
         if active:raise RuntimeError('Evaluation did not reach the unchanged task terminal.')
-        if keep_steps:
+        if collect_fleet:
+            results.extend(dict(row=row,fleet_steps=steps) for row,steps in zip(rows,fleet_trajectories))
+        elif keep_steps:
             for row,steps,decisions in zip(rows,trajectories,decision_records):
                 continuation=0.
                 for record in reversed(steps):
@@ -346,9 +406,526 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                     record['source_return']=continuation
                 results.append(dict(row=row,steps=steps,decisions=decisions,branches=[],value_steps=[],simulation_steps=len(steps)))
         else:results.extend(rows)
+        if sampled_roots is not None:
+            for i,snapshot in enumerate(sampled_roots):
+                snapshot['eligible_states']=int(root_counts[i])
+                position=len(results)-len(current)+i
+                if not keep_steps:results[position]=dict(row=results[position])
+                results[position]['root_snapshot']=snapshot
         print(dict(phase='batched_credit_evaluation',model=str(policy),episodes=len(results),total=len(tasks)),flush=True)
     actor.cpu()
     return results
+
+
+def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episodes_per_iteration=32,
+                              batch_size=32,width=48,epochs=4,minibatch=64,learning_rate=3e-4,
+                              analytic_temperature=2.,entropy_weight=.01,device='cuda:0',
+                              candidate_contrast=False,sampling_temperature=1.):
+    """Optimize candidate selection on actual complete source episodes.
+
+    SAC, Boids, dynamics and the task reward stay frozen. Each action is one
+    complete feedback forecast from the shared fleet candidate library, or
+    independent per-vessel reference choices for the matched learned control.
+    Both use the same graph and receive real on-policy team-return credit.
+    """
+    from conditional_fusion_value import FeedbackFleetPolicy
+    initialize();predecessor=Path(predecessor);output=Path(output)
+    source_hash=hashlib.sha256(predecessor.read_bytes()).hexdigest()
+    source=torch.load(predecessor,map_location='cpu',weights_only=False)
+    config=source.get('actuator_fusion_refinement') or {}
+    selection=config.get('selection')
+    if not config.get('task_feedback_prediction') or selection not in ('joint','single_reference'):
+        raise ValueError('Fleet learning requires a complete-feedback joint or independent predecessor.')
+    if source.get('successor_task_value') is not None:
+        raise ValueError('Mechanism-one learning must precede conditional intervention learning.')
+    specification=dict(seed=seed,episodes_per_iteration=episodes_per_iteration,batch_size=batch_size,
+        width=width,epochs=epochs,minibatch=minibatch,learning_rate=learning_rate,
+        analytic_temperature=analytic_temperature,entropy_weight=entropy_weight,
+        predecessor=str(predecessor),predecessor_sha256=source_hash,
+        objective='on-policy clipped joint-fleet task-return policy gradient with a learned state baseline',
+        candidate_budget='same 81 balanced fleet plans plus every single-vessel reference change',
+        source_policies_frozen=True,training_task_base=4166500000,training_defenders=6)
+    if candidate_contrast:
+        specification['candidate_contrast']=True
+        specification['objective']='within-state candidate-contrast clipped joint-fleet task-return policy gradient'
+    if selection=='single_reference':
+        specification['selection']=selection
+        specification['objective']='factorized single-vessel reference policy gradient on the same complete-feedback queries and team returns'
+    if sampling_temperature!=1.:
+        specification['sampling_temperature']=sampling_temperature
+    if config.get('independent_feedback_proposal'):
+        specification['candidate_budget']+=' and its complete independent recombination'
+    if config.get('nominal_feedback_proposals'):
+        specification['candidate_budget']+=' plus jointly and independently proposed nominal fleet plans'
+    if config.get('feedback_refinement_rounds'):
+        specification['feedback_refinement_rounds']=config['feedback_refinement_rounds']
+        specification['candidate_budget']+=' with common complete-feedback single-vessel neighborhood expansions'
+    model=torch.load(output,map_location='cpu',weights_only=False) if output.exists() else copy.deepcopy(source)
+    history=model.get('fleet_learning',{})
+    if history and history['specification']!=specification:
+        raise ValueError('Cannot resume fleet learning with changed data, budget or source parameters.')
+    torch.manual_seed(seed);np.random.seed(seed)
+    actor=copy.deepcopy(d.joint_load(str(predecessor),predecessor.stat().st_mtime_ns)).to(device)
+    learner=FeedbackFleetPolicy(width,analytic_temperature,
+        (model.get('feedback_fleet_policy') or {}).get('state'),candidate_contrast,
+        sampling_temperature).to(device)
+    actor.feedback_fleet_policy=learner
+    optimizer=torch.optim.Adam(learner.parameters(),lr=learning_rate)
+    if history:
+        optimizer.load_state_dict(history['optimizer'])
+        torch.set_rng_state(history['torch_rng'])
+        if device.startswith('cuda'):torch.cuda.set_rng_state(history['cuda_rng'],device)
+        np.random.set_state(history['numpy_rng'])
+    completed=int(history.get('completed_iterations',0));learning=list(history.get('iterations',[]))
+    for iteration in range(completed,iterations):
+        started=time.monotonic();learner.sample=True;learner.collect=True;learner.eval()
+        tasks=[(scene,None) for scene in d.bank(4166500000+seed*100000+iteration*episodes_per_iteration,
+            max(1,(episodes_per_iteration+1)//2),((6,2.),(6,2.5)))][:episodes_per_iteration]
+        with torch.no_grad():
+            rollouts=batched_credit_rows(predecessor,tasks,batch_size=batch_size,device=device,
+                actor_override=actor,collect_fleet=True)
+        learner.to(device);learner.sample=False;learner.collect=False;learner.train()
+        records=[];advantages=[];targets=[]
+        for rollout in rollouts:
+            following_value=0.;advantage=0.;steps=rollout['fleet_steps']
+            local_advantages=[];local_targets=[]
+            for record in reversed(steps):
+                value=float(record['value']);discount=record['discount']*(not record['done'])
+                delta=record['reward']+discount*following_value-value
+                advantage=delta+discount*.95*advantage
+                local_advantages.append(advantage);local_targets.append(advantage+value)
+                following_value=value
+            records.extend(steps);advantages.extend(reversed(local_advantages));targets.extend(reversed(local_targets))
+        advantages=torch.tensor(advantages,dtype=torch.float32,device=device)
+        advantages=(advantages-advantages.mean())/advantages.std().clamp_min(1e-6)
+        targets=torch.tensor(targets,dtype=torch.float32,device=device)
+        losses=[];divergences=[];stop=False;updates=0
+        with torch.enable_grad():
+            for epoch in range(epochs):
+                for begin in range(0,len(records),minibatch):
+                    if begin==0:permutation=torch.randperm(len(records)).tolist()
+                    indices=permutation[begin:begin+minibatch]
+                    selected=[records[index] for index in indices]
+                    features=torch.stack([record['features'] for record in selected]).to(device,torch.float32)
+                    costs=torch.stack([record['costs'] for record in selected]).to(device)
+                    choices=torch.stack([record['index'] for record in selected]).to(device)
+                    previous=torch.stack([record['logp'] for record in selected]).to(device)
+                    logits,values=learner(features,costs)
+                    distribution=learner.policy_distribution(logits,selection,features.shape[2],
+                        temperature=learner.sampling_temperature)
+                    log_ratio=distribution.log_prob(choices)-previous
+                    ratio=log_ratio.exp();advantage=advantages[indices]
+                    policy_loss=-torch.minimum(ratio*advantage,ratio.clamp(.8,1.2)*advantage).mean()
+                    value_loss=torch.nn.functional.smooth_l1_loss(values,targets[indices])
+                    loss=policy_loss+.5*value_loss-entropy_weight*distribution.entropy().mean()
+                    divergence=((ratio-1)-log_ratio).mean().detach()
+                    if epoch>0 and float(divergence)>.03:
+                        stop=True;break
+                    optimizer.zero_grad();loss.backward()
+                    torch.nn.utils.clip_grad_norm_(learner.parameters(),.5);optimizer.step();updates+=1
+                    losses.append(float(loss.detach()));divergences.append(float(divergence))
+                if stop:break
+        record=dict(iteration=iteration+1,episodes=len(rollouts),physical_steps=len(records),updates=updates,
+            success=sum(rollout['row']['success'] for rollout in rollouts),
+            task_return=float(np.mean([rollout['row']['task_return'] for rollout in rollouts])),
+            loss=float(np.mean(losses)),mean_kl=float(np.mean(divergences)),
+            elapsed_seconds=time.monotonic()-started,tasks=tasks)
+        learning.append(record)
+        model['feedback_fleet_policy']=dict(width=width,analytic_temperature=analytic_temperature,
+            state={key:value.detach().cpu().clone() for key,value in learner.state_dict().items()})
+        if candidate_contrast:model['feedback_fleet_policy']['candidate_contrast']=True
+        if sampling_temperature!=1.:
+            model['feedback_fleet_policy']['sampling_temperature']=sampling_temperature
+        model['fleet_learning']=dict(specification=specification,completed_iterations=iteration+1,
+            iterations=learning,optimizer=optimizer.state_dict(),torch_rng=torch.get_rng_state(),
+            cuda_rng=torch.cuda.get_rng_state(device) if device.startswith('cuda') else None,
+            numpy_rng=np.random.get_state(),total_training_episodes=sum(row['episodes'] for row in learning),
+            total_physical_steps=sum(row['physical_steps'] for row in learning))
+        atomic_save(model,output)
+        print(dict(phase='feedback_fleet_learning',policy=str(output),seed=seed,
+            **{key:value for key,value in record.items() if key!='tasks'}),flush=True)
+        del records,rollouts,features,costs,logits,values,loss
+        actor.to(device)
+    actor.cpu();learner.eval();learner.sample=False;learner.collect=False
+    return model
+
+
+def collect_target_feedback_data(predecessor,factual_bank,output,*,seed=42,steps=12,
+                                 branches=3,batch_size=64,device='cuda:0',record_sequences=False):
+    """Observe short candidate continuations for public target-motion fitting."""
+    initialize();d.numerical_source()
+    predecessor=Path(predecessor);factual_bank=Path(factual_bank);output=Path(output)
+    if steps<1 or branches<1 or batch_size<1:
+        raise ValueError('Target-response collection needs positive continuation and batch sizes.')
+    digest=hashlib.sha256(predecessor.read_bytes()).hexdigest()
+    actor=d.joint_load(str(predecessor),predecessor.stat().st_mtime_ns).to(device)
+    if actor.successor_task_value is not None:
+        raise ValueError('Target-response fitting must use the mechanism-one predecessor.')
+    bank=torch.load(factual_bank,map_location='cpu',weights_only=False)
+    if not bank.get('completed') or bank['predecessor_sha256']!=digest:
+        raise ValueError('Use completed factual states from this exact predecessor.')
+    specification=dict(predecessor=str(predecessor),predecessor_sha256=digest,
+        factual_bank=str(factual_bank),factual_bank_sha256=hashlib.sha256(factual_bank.read_bytes()).hexdigest(),
+        seed=seed,steps=steps,branches=branches,batch_size=batch_size,inference_device=device,
+        control_seconds=.2,absolute_frame=True,
+        inputs='public defender poses, velocities and Boids commands; public target position and velocity',
+        excluded_inputs='attacker agility, hidden water velocity, attacker controller and realized future',
+        continuation='fixed actuator fusion coefficients with refreshed unchanged SAC and Boids commands')
+    if record_sequences:specification['record_sequences']=True
+    result=(torch.load(output,map_location='cpu',weights_only=False) if output.exists() else
+        dict(specification=specification,next_task=0,nodes=[],global_state=[],targets=[],root_ids=[],
+            physical_steps=0,completed=False))
+    if record_sequences and not result['next_task']:
+        result.update({key:[] for key in ('sequence_ids','sequence_ticks','public_motion','public_boids',
+            'public_target','public_velocity','next_public_target','next_public_velocity')})
+    if result['specification']!=specification:
+        raise ValueError('Cannot resume public dynamics acquisition with changed states or sampling.')
+    jobs=[(root,branch) for root in range(len(bank['records'])) for branch in range(branches)]
+    if result['completed']:
+        if result['next_task']!=len(jobs):raise ValueError('Completed dynamics data have an incomplete task prefix.')
+        actor.cpu();return result
+    start=int(result['next_task'])
+    if start%batch_size or not 0<=start<len(jobs):
+        raise ValueError('Target-response acquisition must resume at a complete native batch.')
+    for begin in range(start,len(jobs),batch_size):
+        current=jobs[begin:begin+batch_size];environments=[];observations=[];random_states=[];coefficients=[]
+        for root,branch in current:
+            snapshot=bank['records'][root]['root_snapshot']
+            environments.append(copy.deepcopy(snapshot['environment']))
+            observations.append(snapshot['observation'].copy())
+            future=int(np.random.SeedSequence([seed,root,branch,1776]).generate_state(1)[0])
+            random_states.append(np.random.RandomState(future).get_state())
+            n=len(snapshot['observation'])
+            codes=(np.full(n,4) if branch==0 else
+                np.random.default_rng(np.random.SeedSequence([seed,root,branch,1777])).integers(9,size=n))
+            coefficients.append(np.stack((codes//3,codes%3),-1).astype(np.float32)*.5)
+        active=list(range(len(current)))
+        for tick in range(steps):
+            if not active:break
+            packets=[d.joint_packet(environments[i],observations[i]) for i in active]
+            packet={key:torch.as_tensor(np.stack([item[key] for item in packets]),device=device)
+                for key in packets[0]}
+            with torch.no_grad():
+                nodes,global_state,target,velocity,axis=d.PublicTargetMotion.encode(packet,True)
+                source=actor(packet,deterministic=True,gate_only=True)[0][...,:2]
+                gates=torch.as_tensor(np.stack([coefficients[i] for i in active]),device=device)
+                action=torch.cat((gates*source+(1.-gates)*packet['node'][...,11:13],
+                    torch.ones_like(source[...,:1])),-1).cpu().numpy()
+            following=[];after=[]
+            for local,i in enumerate(active):
+                np.random.set_state(random_states[i])
+                obs,_,done,_=d.joint_task_step(environments[i],action[local],actor.training_gamma,actor.training_step_cost)
+                random_states[i]=np.random.get_state();observations[i]=obs
+                after.append(d.joint_packet(environments[i],obs))
+                if not done:following.append(i)
+            with torch.no_grad():
+                next_packet={key:torch.as_tensor(np.stack([item[key] for item in after]),device=device)
+                    for key in ('node','motion')}
+                next_target,next_velocity=actor.public_target_motion(next_packet)
+                def rotate(vector):
+                    return torch.stack(((vector*axis).sum(-1),axis[:,0]*vector[:,1]-axis[:,1]*vector[:,0]),-1)
+                labels=torch.cat((rotate(next_target-target-.2*velocity),rotate(next_velocity-velocity)),-1)
+            result['nodes'].append(nodes.cpu().numpy());result['global_state'].append(global_state.cpu().numpy())
+            result['targets'].append(labels.cpu().numpy())
+            result['root_ids'].append(np.asarray([current[i][0] for i in active],np.int64))
+            if record_sequences:
+                result['sequence_ids'].append(np.asarray([begin+i for i in active],np.int64))
+                result['sequence_ticks'].append(np.full(len(active),tick,np.int64))
+                for key,value in (('public_motion',packet['motion']),('public_boids',packet['node'][...,11:13]),
+                                  ('public_target',target),('public_velocity',velocity),
+                                  ('next_public_target',next_target),('next_public_velocity',next_velocity)):
+                    result[key].append(value.cpu().numpy())
+            result['physical_steps']+=len(active);active=following
+        result['next_task']=begin+len(current);result['completed']=result['next_task']==len(jobs)
+        atomic_save(result,output)
+        print(dict(phase='public_target_feedback_collection',seed=seed,tasks=result['next_task'],
+            total=len(jobs),physical_steps=result['physical_steps']),flush=True)
+    actor.cpu();return result
+
+
+def fit_target_feedback_model(data,output,*,updates=6000,ensemble_size=3,width=48,seed=42,device='cuda:0'):
+    """Fit measured one-step public responses, validating on separate roots."""
+    if not data.get('completed') or updates<ensemble_size or updates%ensemble_size:
+        raise ValueError('Target-response learning needs complete data and equal positive member budgets.')
+    specification=data['specification'];predecessor=Path(specification['predecessor'])
+    if hashlib.sha256(predecessor.read_bytes()).hexdigest()!=specification['predecessor_sha256']:
+        raise ValueError('The target-response predecessor changed after observation collection.')
+    roots=np.concatenate(data['root_ids']);unique=np.unique(roots)
+    if len(unique)<5:raise ValueError('Public response validation requires at least five distinct factual roots.')
+    shuffled=np.random.default_rng(seed).permutation(unique)
+    held_roots=shuffled[:max(1,len(unique)//5)]
+    held=np.isin(roots,held_roots);train_ids=np.flatnonzero(~held);held_ids=np.flatnonzero(held)
+    nodes=torch.as_tensor(np.concatenate(data['nodes']),device=device)
+    global_state=torch.as_tensor(np.concatenate(data['global_state']),device=device)
+    target=torch.as_tensor(np.concatenate(data['targets']),device=device)
+    if nodes.dtype!=torch.float32 or global_state.dtype!=torch.float32 or target.dtype!=torch.float32:
+        raise ValueError('Public target-response observations must retain their native float32 representation.')
+    def root_weights(indices):
+        _,inverse,counts=np.unique(roots[indices],return_inverse=True,return_counts=True)
+        weights=1./counts[inverse];return torch.as_tensor(weights/weights.sum(),device=device,dtype=torch.float32)
+    probability=root_weights(train_ids);validation_weights=root_weights(held_ids)
+    train_ids=torch.as_tensor(train_ids,device=device);held_ids=torch.as_tensor(held_ids,device=device)
+    scales=target.new_tensor([.1,.1,.5,.5]);times=target.new_full((len(target),),.2)
+    baseline=((target[held_ids]/scales).square().mean(-1)*validation_weights).sum().item()
+    states=[];records=[];per_member=updates//ensemble_size
+    for member in range(ensemble_size):
+        torch.manual_seed(seed+1009*member)
+        network=d.PublicTargetMotion(width,True).to(device)
+        optimizer=torch.optim.Adam(network.parameters(),lr=1e-3)
+        best_loss=baseline;best_step=0
+        best_state={key:value.detach().cpu().clone() for key,value in network.state_dict().items()}
+        with torch.enable_grad():
+            for step in range(per_member):
+                selected=train_ids[torch.multinomial(probability,min(256,len(train_ids)),replacement=True)]
+                prediction=torch.cat(network(nodes[selected],global_state[selected],times[selected]),-1)
+                loss=((prediction-target[selected])/scales).square().mean()
+                rate=1e-4+9e-4*.5*(1.+np.cos(np.pi*step/max(1,per_member-1)))
+                for group in optimizer.param_groups:group['lr']=rate
+                optimizer.zero_grad();loss.backward();torch.nn.utils.clip_grad_norm_(network.parameters(),5.)
+                optimizer.step()
+                if (step+1)%100==0 or step+1==per_member:
+                    with torch.no_grad():
+                        estimate=torch.cat(network(nodes[held_ids],global_state[held_ids],times[held_ids]),-1)
+                        validation=(((estimate-target[held_ids])/scales).square().mean(-1)*validation_weights).sum().item()
+                    if validation<best_loss:
+                        best_loss=validation;best_step=step+1
+                        best_state={key:value.detach().cpu().clone() for key,value in network.state_dict().items()}
+        states.append(best_state);records.append(dict(member=member,updates=per_member,
+            selected_update=best_step,validation_normalized_mse=best_loss))
+        print(dict(phase='public_target_feedback_fit',seed=seed,**records[-1],
+            constant_velocity_normalized_mse=baseline),flush=True)
+        del network,optimizer
+    predictor=d.PublicTargetFeedback(width,states,True).to(device)
+    with torch.no_grad():
+        predictions=[torch.cat(network(nodes[held_ids],global_state[held_ids],times[held_ids]),-1)
+            for network in predictor.models]
+        predicted=torch.stack(predictions).mean(0)
+        normalized=(((predicted-target[held_ids])/scales).square().mean(-1)*validation_weights).sum().item()
+        coordinate_mse=((predicted-target[held_ids]).square()*validation_weights[:,None]).sum(0).cpu().tolist()
+        baseline_mse=(target[held_ids].square()*validation_weights[:,None]).sum(0).cpu().tolist()
+    model=copy.deepcopy(torch.load(predecessor,map_location='cpu',weights_only=False))
+    model['target_feedback']=dict(width=width,states=states,absolute_frame=True,control_step=.2)
+    model['target_feedback_fit']=dict(completed=True,seed=seed,updates=updates,ensemble_size=ensemble_size,
+        width=width,parameters_per_member=sum(value.numel() for value in predictor.models[0].parameters()),
+        observations=len(target),training_roots=int(len(unique)-len(held_roots)),validation_roots=held_roots.tolist(),
+        acquisition=specification,physical_steps=data['physical_steps'],members=records,
+        validation_normalized_mse=normalized,constant_velocity_normalized_mse=baseline,
+        validation_coordinate_mse=coordinate_mse,constant_velocity_coordinate_mse=baseline_mse,
+        validation_scope='development prediction validation split by actual factual root; no final evaluation tasks',
+        candidate_conditioning='repeated public state updates inside each complete candidate fleet path')
+    atomic_save(model,output)
+    del predictor
+    return model
+
+
+def fit_target_feedback_rollout_model(data,output,*,initial_model=None,updates=6000,
+                                     ensemble_size=3,width=48,seed=42,device='cuda:0',mixture=False):
+    """Fit recursive public target dynamics on measured candidate continuations.
+
+    Each rollout uses measured public fleet states as exogenous inputs. The
+    target position and velocity are the model's own preceding predictions;
+    later target observations enter the loss only. Deployment supplies the
+    corresponding complete fleet forecasts instead of measured fleet states.
+    """
+    if (not data.get('completed') or not data['specification'].get('record_sequences')
+            or ensemble_size<1 or updates<ensemble_size or updates%ensemble_size
+            or (mixture and ensemble_size<2)):
+        raise ValueError('Recursive response fitting needs complete sequences and equal positive member budgets.')
+    specification=data['specification'];predecessor=Path(specification['predecessor'])
+    if hashlib.sha256(predecessor.read_bytes()).hexdigest()!=specification['predecessor_sha256']:
+        raise ValueError('The target-response predecessor changed after sequence acquisition.')
+    sequence=np.concatenate(data['sequence_ids']);ticks=np.concatenate(data['sequence_ticks'])
+    root_ids=np.concatenate(data['root_ids']);unique_sequences=np.unique(sequence)
+    horizon=int(specification['steps']);count=len(unique_sequences)
+    if not np.array_equal(unique_sequences,np.arange(data['next_task'])):
+        raise ValueError('Every acquired continuation must retain its public sequence identity.')
+    if len(np.unique(np.stack((sequence,ticks),-1),axis=0))!=len(sequence):
+        raise ValueError('Public continuation sequences contain duplicate physical transitions.')
+    arrays={}
+    for key in ('public_motion','public_boids','public_target','public_velocity',
+                'next_public_target','next_public_velocity'):
+        observations=np.concatenate(data[key])
+        if observations.dtype!=np.float32 or not np.isfinite(observations).all():
+            raise ValueError('Public response sequences must retain finite native float32 measurements.')
+        padded=np.zeros((count,horizon,*observations.shape[1:]),np.float32)
+        padded[sequence,ticks]=observations
+        arrays[key]=torch.as_tensor(padded,device=device)
+    mask=np.zeros((count,horizon),bool);mask[sequence,ticks]=True
+    if not np.array_equal(mask,np.arange(horizon)[None]<mask.sum(1)[:,None]):
+        raise ValueError('Measured continuations must contain an uninterrupted physical prefix.')
+    sequence_roots=np.asarray([np.unique(root_ids[sequence==i]).item() for i in unique_sequences])
+    roots=np.unique(sequence_roots)
+    if len(roots)<5:raise ValueError('Recursive prediction validation needs at least five factual roots.')
+    held_roots=np.random.default_rng(seed).permutation(roots)[:max(1,len(roots)//5)]
+    held=np.isin(sequence_roots,held_roots);training_ids=np.flatnonzero(~held);validation_ids=np.flatnonzero(held)
+    def root_weights(ids):
+        _,inverse,counts=np.unique(sequence_roots[ids],return_inverse=True,return_counts=True)
+        weights=1./counts[inverse]
+        return torch.as_tensor(weights/weights.sum(),device=device,dtype=torch.float32)
+    probability=root_weights(training_ids);validation_weights=root_weights(validation_ids)
+    training_ids=torch.as_tensor(training_ids,device=device);validation_ids=torch.as_tensor(validation_ids,device=device)
+    mask=torch.as_tensor(mask,device=device)
+    initial=None;initial_sha256=None
+    if initial_model is not None:
+        initial_model=Path(initial_model);initial=torch.load(initial_model,map_location='cpu',weights_only=False)
+        initial_sha256=hashlib.sha256(initial_model.read_bytes()).hexdigest()
+        fit=initial['target_feedback_fit'];recipe=initial['target_feedback']
+        if (fit['acquisition']['predecessor_sha256']!=specification['predecessor_sha256']
+                or set(fit['validation_roots'])!=set(held_roots.tolist())
+                or recipe['width']!=width or len(recipe['states'])!=ensemble_size):
+            raise ValueError('Warm target dynamics must preserve the predecessor, capacity and held-out root split.')
+    def errors(predictor,indices):
+        target=arrays['public_target'][indices,0];velocity=arrays['public_velocity'][indices,0]
+        values=[]
+        for tick in range(horizon):
+            motion=arrays['public_motion'][indices,tick];boids=arrays['public_boids'][indices,tick]
+            if predictor is None:
+                following=target+.2*velocity;next_velocity=velocity
+            elif isinstance(predictor,d.PublicTargetFeedback):
+                following,next_velocity=predictor.predict_state(motion,boids,target,velocity)
+            else:
+                nodes,global_state,_,_,axis=d.PublicTargetMotion.encode_state(motion,boids,target,velocity,True)
+                displacement,change=predictor(nodes,global_state,target.new_full((len(indices),),.2))
+                def world(vector):
+                    return torch.stack((axis[:,0]*vector[:,0]-axis[:,1]*vector[:,1],
+                        axis[:,1]*vector[:,0]+axis[:,0]*vector[:,1]),-1)
+                following=target+.2*velocity+world(displacement);next_velocity=velocity+world(change)
+            values.append(torch.cat((following-arrays['next_public_target'][indices,tick],
+                next_velocity-arrays['next_public_velocity'][indices,tick]),-1))
+            active=mask[indices,tick,None]
+            target=torch.where(active,following,target);velocity=torch.where(active,next_velocity,velocity)
+        return torch.stack(values,1)
+    scales=torch.ones((horizon,4),device=device,dtype=torch.float32)*.5
+    scales[:,:2]=(.1+.05*torch.arange(1,horizon+1,device=device))[:,None]
+    def costs(error,indices):
+        return ((error/scales).square().mean(-1)*mask[indices]).sum(-1)/mask[indices].sum(-1)
+    def validate(predictor,details=False):
+        with torch.no_grad():
+            residual=torch.cat([errors(predictor,ids) for ids in validation_ids.split(64)])
+            loss=(costs(residual,validation_ids)*validation_weights).sum().item()
+            mass=validation_weights[:,None]*mask[validation_ids]
+            mse=(residual.square()*mass[:,:,None]).sum(0)/mass.sum(0).clamp_min(1e-8)[:,None]
+        return (loss,mse.cpu().tolist()) if details else loss
+    baseline,baseline_mse=validate(None,True)
+    states=[];records=[];per_member=updates//ensemble_size
+    mixture_record=None
+    if mixture:
+        # A single latent component persists throughout a continuation. Each
+        # component sees the same public fleet inputs and recursively advances
+        # its own target state, rather than averaging incompatible maneuvers.
+        networks=torch.nn.ModuleList()
+        for member in range(ensemble_size):
+            torch.manual_seed(seed+1009*member)
+            network=d.PublicTargetMotion(width,True).to(device)
+            if initial is not None:network.load_state_dict(initial['target_feedback']['states'][member])
+            networks.append(network)
+        initial_losses=[validate(network) for network in networks]
+        def mixture_terms(indices):
+            residual=torch.stack([errors(network,indices) for network in networks])
+            squared=(residual/scales).square().sum(-1)*mask[indices][None]
+            log_density=-.5*squared.sum(-1)
+            nll=-(torch.logsumexp(log_density,0)-np.log(ensemble_size))/(4*mask[indices].sum(-1))
+            responsibility=log_density.softmax(0)
+            return nll,responsibility
+        def validate_mixture():
+            with torch.no_grad():
+                values=[mixture_terms(ids) for ids in validation_ids.split(32)]
+                loss=(torch.cat([value[0] for value in values])*validation_weights).sum().item()
+                mass=(torch.cat([value[1] for value in values],1)*validation_weights[None]).sum(-1)
+            return loss,mass.cpu().tolist()
+        initial_likelihood,_=validate_mixture();best_loss=initial_likelihood;best_step=0
+        best_state=copy.deepcopy(networks.state_dict())
+        optimizer=torch.optim.Adam(networks.parameters(),lr=3e-4)
+        schedule=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,per_member,eta_min=3e-5)
+        with torch.enable_grad():
+            for step in range(per_member):
+                selected=training_ids[torch.multinomial(probability,32,replacement=True)]
+                likelihood,responsibility=mixture_terms(selected)
+                mass=responsibility.mean(-1).clamp_min(1e-8)
+                loss=likelihood.mean()+.01*(mass*(mass*ensemble_size).log()).sum()
+                if not torch.isfinite(loss):raise FloatingPointError('Target trajectory mixture produced a nonfinite loss.')
+                optimizer.zero_grad(set_to_none=True);loss.backward()
+                torch.nn.utils.clip_grad_norm_(networks.parameters(),5.);optimizer.step();schedule.step()
+                if (step+1)%100==0 or step+1==per_member:
+                    validation,_=validate_mixture()
+                    if validation<best_loss:
+                        best_loss=validation;best_step=step+1;best_state=copy.deepcopy(networks.state_dict())
+                if (step+1)%500==0 or step+1==per_member:
+                    print(dict(phase='public_target_mixture_fit',seed=seed,update=step+1,
+                        member_updates=(step+1)*ensemble_size,loss=float(loss.detach()),
+                        best_validation=best_loss,initial_validation=initial_likelihood),flush=True)
+        networks.load_state_dict(best_state)
+        _,component_mass=validate_mixture()
+        mixture_record=dict(validation_normalized_nll=best_loss,initial_normalized_nll=initial_likelihood,
+            selected_update=best_step,validation_component_responsibility=component_mass,
+            likelihood='equal-prior mixture of complete recursive public target trajectories with fixed diagonal scales',
+            position_scale_by_tick=scales[:,0].cpu().tolist(),velocity_scale=.5,
+            component_balance_weight=.01,optimizer_steps=per_member,total_member_updates=updates)
+        for member,network in enumerate(networks):
+            states.append({key:value.detach().cpu().clone() for key,value in network.state_dict().items()})
+            records.append(dict(member=member,updates=per_member,selected_update=best_step,
+                initial_validation_normalized_mse=initial_losses[member],validation_normalized_mse=validate(network)))
+        del networks,network,optimizer,schedule,best_state
+    for member in range(0 if mixture else ensemble_size):
+        torch.manual_seed(seed+1009*member)
+        network=d.PublicTargetMotion(width,True).to(device)
+        zero_state={key:value.detach().cpu().clone() for key,value in network.state_dict().items()}
+        if initial is not None:network.load_state_dict(initial['target_feedback']['states'][member])
+        initial_loss=validate(network);best_loss=min(baseline,initial_loss);best_step=0
+        best_state=({key:value.detach().cpu().clone() for key,value in network.state_dict().items()}
+                    if initial_loss<=baseline else zero_state)
+        optimizer=torch.optim.Adam(network.parameters(),lr=3e-4)
+        schedule=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,per_member,eta_min=3e-5)
+        with torch.enable_grad():
+            for step in range(per_member):
+                selected=training_ids[torch.multinomial(probability,32,replacement=True)]
+                loss=costs(errors(network,selected),selected).mean()
+                if not torch.isfinite(loss):raise FloatingPointError('Recursive target dynamics produced a nonfinite loss.')
+                optimizer.zero_grad(set_to_none=True);loss.backward()
+                torch.nn.utils.clip_grad_norm_(network.parameters(),5.);optimizer.step();schedule.step()
+                if (step+1)%100==0 or step+1==per_member:
+                    validation=validate(network)
+                    if validation<best_loss:
+                        best_loss=validation;best_step=step+1
+                        best_state={key:value.detach().cpu().clone() for key,value in network.state_dict().items()}
+                if (step+1)%500==0 or step+1==per_member:
+                    print(dict(phase='public_target_rollout_fit',seed=seed,member=member,update=step+1,
+                        loss=float(loss.detach()),best_validation=best_loss,constant_velocity=baseline),flush=True)
+        states.append(best_state);records.append(dict(member=member,updates=per_member,
+            selected_update=best_step,initial_validation_normalized_mse=initial_loss,
+            validation_normalized_mse=best_loss))
+        del network,optimizer,schedule
+    predictor=d.PublicTargetFeedback(width,states,True,scenario_mode='members' if mixture else 'mean').to(device)
+    normalized,coordinate_mse=validate(predictor,True)
+    initial_error=None
+    if initial is not None:
+        before=d.PublicTargetFeedback(**initial['target_feedback']).to(device)
+        initial_error=validate(before);del before
+    model=copy.deepcopy(torch.load(predecessor,map_location='cpu',weights_only=False))
+    model['target_feedback']=dict(width=width,states=states,absolute_frame=True,control_step=.2)
+    if mixture:model['target_feedback']['scenario_mode']='members'
+    model['target_feedback_fit']=dict(completed=True,seed=seed,updates=updates,ensemble_size=ensemble_size,
+        width=width,parameters_per_member=sum(value.numel() for value in predictor.models[0].parameters()),
+        observations=len(sequence),sequences=count,sequence_steps=horizon,training_roots=int(len(roots)-len(held_roots)),
+        validation_roots=held_roots.tolist(),acquisition=specification,physical_steps=data['physical_steps'],members=records,
+        initial_model=None if initial_model is None else str(initial_model),initial_model_sha256=initial_sha256,
+        initial_training_updates=0 if initial is None else initial['target_feedback_fit']['updates'],
+        validation_normalized_mse=normalized,constant_velocity_normalized_mse=baseline,
+        initial_validation_normalized_mse=initial_error,validation_horizon_coordinate_mse=coordinate_mse,
+        constant_velocity_horizon_coordinate_mse=baseline_mse,
+        objective='recursive public target position and velocity errors across complete measured continuations',
+        validation_scope='development prediction validation split by actual factual root; no final evaluation tasks',
+        candidate_conditioning='recursive target state and public fleet response inside each complete candidate path')
+    if mixture:
+        model['target_feedback_fit'].update(mixture=mixture_record,
+            objective='complete-trajectory mixture likelihood of recursive candidate-conditioned public target responses',
+            forecast_scenarios=ensemble_size,
+            initial_total_training_updates=(0 if initial is None else initial['target_feedback_fit']['updates']+
+                initial['target_feedback_fit'].get('initial_total_training_updates',
+                    initial['target_feedback_fit'].get('initial_training_updates',0))))
+    atomic_save(model,output)
+    del predictor
+    return model
 
 
 def source_successor_branch(task):

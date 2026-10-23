@@ -386,11 +386,29 @@ def fit_generic_adapter(base,data,mode,output,updates=10000,seed=42,device='cuda
     torch.save(model,output);return model
 
 
+def _batched_model_episodes(task):
+    import develop_source_fusion as d
+    import run_remote_evidence as r
+    path,indices,tasks,device=task
+    r.SOURCE=d.SOURCE
+    return indices,r.batched_credit_rows(path,tasks,batch_size=len(tasks),device=device)
+
+
 def evaluate_models(models,tasks,workers=3,result_suffix='source-development',evaluation_context=None,
-                    opponent_checkpoint=None):
+                    opponent_checkpoint=None,inference_batch=0,inference_device='cpu',isolate_inference=True):
     from concurrent.futures import ProcessPoolExecutor,as_completed
     import develop_source_fusion as d
     import run_remote_evidence as r
+    if inference_batch:
+        if inference_batch < 1 or workers < 1:
+            raise ValueError('Batched evaluation requires a positive batch size and worker count.')
+        if opponent_checkpoint is not None:
+            raise ValueError('Use the native episode evaluator for a learned opponent.')
+        if not isolate_inference and workers!=1:
+            raise ValueError('In-process batched evaluation uses exactly one worker.')
+        evaluation_context=dict(evaluation_context or {},inference_batch=inference_batch,
+            inference_device=inference_device,episode_executor='batched_native_single_value_stage')
+        if not isolate_inference:evaluation_context['inference_process']='calling_process'
     if opponent_checkpoint is not None:
         evaluation_context=dict(evaluation_context or {},
             frozen_opponent_sha256=hashlib.sha256(Path(opponent_checkpoint).read_bytes()).hexdigest())
@@ -408,6 +426,30 @@ def evaluate_models(models,tasks,workers=3,result_suffix='source-development',ev
             if previous and previous.get('completed'):continue
         rows=previous['rows'] if previous else [None]*len(tasks)
         start=time.monotonic();revision=path.stat().st_mtime_ns
+        if inference_batch:
+            pending=[i for i,row in enumerate(rows) if row is None]
+            groups=[pending[begin:begin+inference_batch] for begin in range(0,len(pending),inference_batch)]
+            jobs=[(str(path),indices,[tasks[index] for index in indices],inference_device) for indices in groups]
+            # Keep CUDA inside child processes even with one worker, so the
+            # controller can subsequently fork a fresh training stage safely.
+            # A training process that already initialized CUDA must evaluate
+            # inline instead of forking its CUDA runtime. Other pipelines
+            # retain isolated inference before their later training forks.
+            with (ProcessPoolExecutor(max_workers=workers,initializer=r.initialize_source_branches,
+                    initargs=(str(d.SOURCE),)) if isolate_inference else nullcontext(None)) as pool:
+                measured_jobs=(pool.map(_batched_model_episodes,jobs,chunksize=1)
+                    if pool is not None else map(_batched_model_episodes,jobs))
+                for indices,measured in measured_jobs:
+                    for index,row in zip(indices,measured):rows[index]=row
+                    complete=[row for row in rows if row is not None]
+                    record=dict(policy=str(path),policy_sha256=digest,tasks=tasks,rows=rows,
+                        evaluated=len(complete),success=sum(row['success'] for row in complete),
+                        completed=len(complete)==len(tasks),elapsed_seconds=time.monotonic()-start,
+                        evaluation_context=evaluation_context)
+                    r.atomic_save(record,output)
+                    print(dict(policy=path.name,evaluated=len(complete),success=record['success'],
+                        elapsed=round(record['elapsed_seconds'],1),inference_batch=inference_batch),flush=True)
+            continue
         with (ProcessPoolExecutor(max_workers=workers,initializer=r.initialize_source_branches,
               initargs=(str(d.SOURCE),opponent_checkpoint))
               if workers>1 else nullcontext(None)) as pool:
@@ -485,11 +527,14 @@ def catalog_intervention_action(factual, option, order):
 
 def measure_intervention_choices(base, models, tasks, output, *, repetitions=8, seed=4329,
                                  workers=3, inference_device='cuda:0', runtime_sha256=None,
-                                 ranking_candidates=0):
+                                 ranking_candidates=0, branch_inference_batch=0):
     """Measure proposed interventions at unbiased new factual-trajectory states."""
     from concurrent.futures import ProcessPoolExecutor
     import develop_source_fusion as d
     import run_remote_evidence as r
+
+    if workers < 1 or branch_inference_batch < 0:
+        raise ValueError('Choice validation needs positive workers and a nonnegative branch batch.')
 
     base = Path(base); models = {label: Path(path) for label, path in models.items()}
     output = Path(output)
@@ -501,6 +546,10 @@ def measure_intervention_choices(base, models, tasks, output, *, repetitions=8, 
         tasks=tasks, repetitions=repetitions, seed=seed, inference_device=inference_device,
         root_sampling='one uniformly sampled eligible pre-action state from each complete factual episode',
         runtime_sha256=runtime_sha256)
+    if branch_inference_batch:
+        identity['branch_execution'] = dict(inference_batch=int(branch_inference_batch),
+            inference_device=inference_device,
+            pairing='the same root, physical intervention and future seed for every compared decision')
     if ranking_candidates:
         identity['ranking_design'] = dict(random_candidates=int(ranking_candidates),
             selection='uniform nonfactual catalog entries plus each model predicted best and deployed choice',
@@ -535,7 +584,7 @@ def measure_intervention_choices(base, models, tasks, output, *, repetitions=8, 
                 raise ValueError('Ranking comparisons require exactly the same candidate catalog.')
             common_options = options
     with (ProcessPoolExecutor(max_workers=workers, initializer=r.initialize_source_branches,
-          initargs=(str(d.SOURCE),)) if workers > 1 else nullcontext(None)) as pool:
+          initargs=(str(d.SOURCE),)) if workers > 1 and not branch_inference_batch else nullcontext(None)) as pool:
         # Start fork workers before the parent initializes a CUDA value module.
         if pool is not None:
             list(pool.map(abs, range(-workers, 0)))
@@ -626,8 +675,13 @@ def measure_intervention_choices(base, models, tasks, output, *, repetitions=8, 
             jobs = [(str(base), dict(environment=root_env, observation=root_obs,
                      random_state=random_state, action=action), scene, future, 1)
                     for action in unique for future in futures]
-            rows = list(pool.map(r.source_successor_branch, jobs, chunksize=1) if pool is not None
-                        else map(r.source_successor_branch, jobs))
+            if branch_inference_batch:
+                from local_intervention_value import source_successor_batches
+                rows = source_successor_batches(jobs, batch_size=branch_inference_batch,
+                    device=inference_device)
+            else:
+                rows = list(pool.map(r.source_successor_branch, jobs, chunksize=1) if pool is not None
+                            else map(r.source_successor_branch, jobs))
             result['simulation_steps'] += sum(row['physical_steps'] for row in rows)
             rows = [{key: value for key, value in row.items() if key != 'response'} for row in rows]
             outcomes = {label: rows[position*repetitions:(position+1)*repetitions]

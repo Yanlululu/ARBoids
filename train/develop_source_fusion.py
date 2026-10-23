@@ -2118,6 +2118,13 @@ class PublicTargetMotion(nn.Module):
             return torch.stack((c*vector[:,0]-s*vector[:,1],s*vector[:,0]+c*vector[:,1]),-1)
         target=motion[:,0,:2]+world(packet['node'][:,0,2:4]*30.)
         velocity=world(packet['node'][:,0,4:6]*5.)
+        return PublicTargetMotion.encode_state(motion,packet['node'][...,11:13],target,velocity,absolute_frame)
+
+    @staticmethod
+    def encode_state(motion,boids,target,velocity,absolute_frame=False):
+        if (motion.ndim!=3 or motion.shape[-1]!=6 or boids.shape!=(*motion.shape[:2],2)
+                or target.shape!=(len(motion),2) or velocity.shape!=target.shape):
+            raise ValueError('Target-response inputs must contain public fleet poses, commands and target motion.')
         axis=-target/target.norm(dim=-1,keepdim=True).clamp_min(1e-6)
         def rotate(vector):
             basis=axis[:,None] if vector.ndim==3 else axis
@@ -2125,7 +2132,7 @@ class PublicTargetMotion(nn.Module):
         heading=torch.stack((motion[...,2].cos(),motion[...,2].sin()),-1)
         nodes=torch.cat((rotate(motion[...,:2]-target[:,None])/30.,
             rotate(motion[...,3:5]-velocity[:,None])/5.,rotate(heading),motion[...,5:6],
-            packet['node'][...,11:13]),-1)
+            boids),-1)
         global_state=torch.cat((target.norm(dim=-1,keepdim=True)/30.,rotate(velocity)/5.,
             target.new_full((len(target),1),motion.shape[1]/6.)),-1)
         if absolute_frame:
@@ -2148,6 +2155,42 @@ class PublicTargetMotion(nn.Module):
             return torch.stack((axis[:,0]*vector[:,0]-axis[:,1]*vector[:,1],
                 axis[:,1]*vector[:,0]+axis[:,0]*vector[:,1]),-1)
         return target+horizon[:,None]*velocity+world(displacement),velocity+world(delta_velocity)
+
+
+class PublicTargetFeedback(nn.Module):
+    """Advance the public target response separately inside every fleet forecast."""
+    def __init__(self,width=48,states=(),absolute_frame=True,control_step=.2,scenario_mode='mean'):
+        super().__init__()
+        if not states or not np.isclose(control_step,.2):
+            raise ValueError('Target feedback needs fitted members at the source control interval.')
+        if scenario_mode not in ('mean','members'):
+            raise ValueError('Target feedback must use its mean response or complete member trajectories.')
+        self.scenario_mode=scenario_mode
+        self.control_step=float(control_step);self.absolute_frame=bool(absolute_frame)
+        self.models=nn.ModuleList([PublicTargetMotion(width,self.absolute_frame) for _ in states])
+        for network,state in zip(self.models,states):network.load_state_dict(state)
+
+    def predict_state(self,motion,boids,target,velocity,component=None):
+        nodes,global_state,target,velocity,axis=PublicTargetMotion.encode_state(
+            motion,boids,target,velocity,self.absolute_frame)
+        horizon=target.new_full((len(target),),self.control_step)
+        networks=self.models if component is None else (self.models[component],)
+        predictions=[network(nodes,global_state,horizon) for network in networks]
+        displacement=torch.stack([value[0] for value in predictions]).mean(0)
+        delta_velocity=torch.stack([value[1] for value in predictions]).mean(0)
+        def world(vector):
+            return torch.stack((axis[:,0]*vector[:,0]-axis[:,1]*vector[:,1],
+                axis[:,1]*vector[:,0]+axis[:,0]*vector[:,1]),-1)
+        return target+self.control_step*velocity+world(displacement),velocity+world(delta_velocity)
+
+    def component(self,index):
+        if not isinstance(index,int) or not 0<=index<len(self.models):
+            raise ValueError('A target trajectory component must identify a fitted member.')
+        parent=self
+        class Component:
+            def predict_state(self,motion,boids,target,velocity):
+                return parent.predict_state(motion,boids,target,velocity,component=index)
+        return Component()
 
 
 def joint_target_motion(args,pool):
@@ -2253,6 +2296,8 @@ class JointLearningActor(nn.Module):
         self.prediction_discount=0.
         self.prediction_discount_start=1.6
         self.target_motion=None
+        self.target_feedback=None
+        self.feedback_fleet_policy=None
         self.terminal_prediction=False
         self.capture_credit=0.
         self.interaction_enabled=True
@@ -2673,7 +2718,7 @@ class JointLearningActor(nn.Module):
         if not self.current_marginal_prediction:return motion
         return torch.cat((motion[...,:3],5.*packet['water']),-1)
 
-    def feedback_observation(self,packet,state,time,joint=False):
+    def feedback_observation(self,packet,state,time,joint=False,target_override=None):
         """Original source observations at nominal candidate poses.
 
         Each candidate refreshes the unchanged source neural and Boids commands;
@@ -2707,7 +2752,13 @@ class JointLearningActor(nn.Module):
         target=attacker+time*att_velocity
         if self.target_motion is not None and self.interaction_enabled and time:
             target,att_velocity=self.target_motion.predict(packet,time)
-        attraction=target[:,None,None]-position
+        if target_override is not None:
+            target,att_velocity=target_override
+            if target.shape not in ((b,2),(b,k,2)) or att_velocity.shape!=target.shape:
+                raise ValueError('A public feedback scenario needs one target state per batch or fleet plan.')
+        target_position=target[:,None,None] if target.ndim==2 else target[:,:,None]
+        target_velocity=att_velocity[:,None,None] if att_velocity.ndim==2 else att_velocity[:,:,None]
+        attraction=target_position-position
         field=.5*attraction+10.*separation+.1*alignment+.1*cohesion
         field=field/field.norm(dim=-1,keepdim=True).clamp_min(1e-8)
         c,s=heading.cos(),heading.sin()
@@ -2722,7 +2773,7 @@ class JointLearningActor(nn.Module):
         neighbor_polar=torch.stack((distance,torch.remainder(neighbor_angle+np.pi,2*np.pi)-np.pi),-1)
         neighbors=neighbor_polar[:,:,mask[0,0]].reshape(b,k,n,2*(n-1))
         obs=torch.cat((polar(-position),polar(attraction),
-            polar(att_velocity[:,None,None].expand_as(position)),polar(separation),
+            polar(target_velocity.expand_as(position)),polar(separation),
             polar(alignment),polar(cohesion),boids,neighbors),-1)
         return obs,boids
 
@@ -3821,12 +3872,19 @@ def joint_load(path,revision,ablation=(False,False,False)):
     if data.get('response_feedback_value') is not None:
         from conditional_fusion_value import ResponseFeedbackValue
         actor.response_feedback_value=ResponseFeedbackValue(**data['response_feedback_value'])
+    if data.get('feedback_fleet_policy') is not None:
+        from conditional_fusion_value import FeedbackFleetPolicy
+        if not (actor.actuator_fusion_refinement or {}).get('task_feedback_prediction'):
+            raise ValueError('A learned fleet policy requires complete candidate feedback forecasts.')
+        actor.feedback_fleet_policy=FeedbackFleetPolicy(**data['feedback_fleet_policy']).eval()
     actor.preference_strength=data.get('preference_strength',0.)
     actor.terminal_prediction=data.get('terminal_prediction',False)
     actor.capture_credit=data.get('capture_credit',0.)
     if data.get('target_motion') is not None:
         record=data['target_motion'];actor.target_motion=PublicTargetMotion(record.get('width',48),record.get('absolute_frame',False))
         actor.target_motion.load_state_dict(record['state']);actor.target_motion.eval()
+    if data.get('target_feedback') is not None:
+        actor.target_feedback=PublicTargetFeedback(**data['target_feedback']).eval()
     if data.get('local_conditional_value') is not None:
         from conditional_fusion_value import LocalConditionalValue
         actor.local_value=LocalConditionalValue(**data['local_conditional_value'])
