@@ -4827,10 +4827,12 @@ def feedback_guarded_refinement(actor, packet, source, candidates, order, refere
     return result
 
 
-def actuator_candidate_grid(preferred, subdivisions=1):
+def actuator_candidate_grid(preferred, subdivisions=1, *, include_uniform_midpoint=False):
     """Resolve each side of the source preference without changing its hull."""
     if isinstance(subdivisions, bool) or not isinstance(subdivisions, int) or subdivisions < 1:
         raise ValueError('Candidate subdivisions must be a positive integer.')
+    if not isinstance(include_uniform_midpoint, bool):
+        raise ValueError('The common midpoint option must be boolean.')
     if subdivisions == 1:
         values = torch.stack((torch.zeros_like(preferred), preferred, torch.ones_like(preferred)), -2)
     else:
@@ -4838,7 +4840,9 @@ def actuator_candidate_grid(preferred, subdivisions=1):
         lower = preferred[..., None, :]*fraction[:, None]
         upper = preferred[..., None, :] + (1.-preferred[..., None, :])*fraction[:, None]
         values = torch.cat((lower, upper, torch.ones_like(preferred[..., None, :])), -2)
-    levels = 2*subdivisions+1
+    if include_uniform_midpoint:
+        values = torch.cat((values, torch.full_like(preferred[..., None, :], .5)), -2)
+    levels = values.shape[-2]
     digits = torch.arange(levels*levels, device=preferred.device)
     return torch.stack((values[..., digits//levels, 0], values[..., digits%levels, 1]), -1)
 
@@ -4872,7 +4876,7 @@ def refine_actuator_interactions(actor,packet,source_action,preferred_action,*,b
                                  coupled_horizon=None,coupled_recovery=False,recovery_horizon=.6,
                                  recovery_distance=None,interaction_order=2,expand_interactions=False,
                                  coupled_tail=0.,coupled_refinements=0,interior_fusion=None,
-                                 candidate_subdivisions=1,capture_weight=0.):
+                                 candidate_subdivisions=1,capture_weight=0.,include_uniform_midpoint=False):
     """Jointly reconcile task preferences with two-actuator candidate motion.
 
     The conditional value proposes a fusion preference. Candidate interaction
@@ -4886,7 +4890,7 @@ def refine_actuator_interactions(actor,packet,source_action,preferred_action,*,b
         raise ValueError('Protected refinement requires the Pareto fleet proposal and its exact reference.')
     if (pareto_feedback_tail or pareto_task_guard) and not pareto_feedback_horizons:
         raise ValueError('Tail and task protection require explicit feedback forecast horizons.')
-    if candidate_subdivisions != 1 and (coupled_prediction or coupled_recovery):
+    if (candidate_subdivisions != 1 or include_uniform_midpoint) and (coupled_prediction or coupled_recovery):
         raise ValueError('The balanced coupled design uses the original three-level candidates.')
     if not isfinite(capture_weight) or capture_weight < 0:
         raise ValueError('Fleet interception weight must be finite and nonnegative.')
@@ -4912,7 +4916,8 @@ def refine_actuator_interactions(actor,packet,source_action,preferred_action,*,b
         native=(preferred_action[...,:2]==source).all(-1,keepdim=True)
         preferred=torch.where(native,preferred_action[...,2:3],preferred)
     interior=preferred if interior_fusion is None else torch.full_like(preferred,float(interior_fusion))
-    candidates=actuator_candidate_grid(interior, candidate_subdivisions)
+    candidates=actuator_candidate_grid(interior, candidate_subdivisions,
+        include_uniform_midpoint=include_uniform_midpoint)
     committed=packet.get('_committed_actuator_preferences') if commit_interventions else None
     if committed is not None:
         fixed=(committed>=0.).all((-1,-2))
@@ -4943,7 +4948,8 @@ def refine_actuator_interactions(actor,packet,source_action,preferred_action,*,b
                     recovery_distance=recovery_distance,interaction_order=interaction_order,
                     expand_interactions=expand_interactions,coupled_tail=coupled_tail,
                     coupled_refinements=coupled_refinements,interior_fusion=interior_fusion,
-                    candidate_subdivisions=candidate_subdivisions,capture_weight=capture_weight)
+                    candidate_subdivisions=candidate_subdivisions,capture_weight=capture_weight,
+                    include_uniform_midpoint=include_uniform_midpoint)
             return result
         # A sampled intervention fixes these coefficients for its window.
         # Optimize the remaining coefficients against those actual partner
@@ -5063,7 +5069,8 @@ def refine_actuator_interactions(actor,packet,source_action,preferred_action,*,b
         # single source-preferred trajectory; no neighbor candidate pair or
         # joint optimizer enters this comparison.
         paths=actor.candidate_risk(dict(packet),source,candidate_grid=candidates,return_paths=True)
-        reference=paths[:,:,candidate_subdivisions*(2*candidate_subdivisions+1)+candidate_subdivisions]
+        reference_index=candidate_subdivisions*(2*candidate_subdivisions+1+include_uniform_midpoint)+candidate_subdivisions
+        reference=paths[:,:,reference_index]
         separation=(paths[:,:,None]-reference[:,None,:,None]).norm(dim=-1)
         risk=actor.distance_risk(separation.amin(-1))
         mask=~torch.eye(source.shape[1],dtype=torch.bool,device=source.device)
@@ -5071,7 +5078,7 @@ def refine_actuator_interactions(actor,packet,source_action,preferred_action,*,b
         unary=((candidates-preferred[:,:,None])/preference_width).square().mean(-1)
         if capture_weight:
             reach = interception_cost(paths)
-            index = candidate_subdivisions*(2*candidate_subdivisions+1)+candidate_subdivisions
+            index = reference_index
             others = reach[:, :, index][:, None].expand(-1, source.shape[1], -1)
             others = others.masked_fill(~mask[None], float('inf')).amin(-1)
             unary = unary+capture_weight*torch.minimum(reach, others[..., None])

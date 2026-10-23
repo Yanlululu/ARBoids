@@ -1153,7 +1153,7 @@ def train_shared_paired_effect_control(base,tasks,directory,prefix,*,root_count=
     return policy
 
 
-def independent_source_initialization(template, source_run, seed):
+def independent_source_initialization(template, source_run, seed, *, source_checkpoint='final'):
     """Instantiate an untrained analytic selector with an independent source actor."""
     import csv
     import develop_source_fusion as d
@@ -1161,15 +1161,19 @@ def independent_source_initialization(template, source_run, seed):
 
     source_run = Path(source_run)
     record = torch.load(source_run/'source-repeat-result.pth', map_location='cpu', weights_only=False)
+    if source_checkpoint not in ('final', 'training_development'):
+        raise ValueError('Choose the recorded final or training-development source checkpoint.')
+    selected = source_checkpoint == 'training_development'
     if (record.get('seed') != seed or not record.get('completed')
             or not record.get('fresh_initialization') or record.get('source_commit') != SOURCE_COMMIT
             or record.get('family', 'arboids') != 'arboids'
-            or record.get('training_defenders', 3) != 3):
+            or not selected and record.get('training_defenders', 3) != 3):
         raise ValueError('The selector requires a completed independent original-source ARBoids run.')
-    checkpoint = source_run/'adares1.pth'
+    checkpoint = source_run/('best-development.pth' if selected else 'adares1.pth')
     identity = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
     configuration = hashlib.sha256((source_run/'config.yaml').read_bytes()).hexdigest()
-    if identity != record['checkpoint_sha256'] or configuration != record['configuration_sha256']:
+    checkpoint_key = 'selected_checkpoint_sha256' if selected else 'checkpoint_sha256'
+    if identity != record[checkpoint_key] or configuration != record['configuration_sha256']:
         raise ValueError('The source checkpoint or its training configuration has changed.')
     with (source_run/'metrics1.csv').open(newline='') as stream:
         metrics = list(csv.DictReader(stream))
@@ -1178,7 +1182,11 @@ def independent_source_initialization(template, source_run, seed):
     if (template.get('iteration', 0) != 0 or template.get('simulation_steps', 0) != 0
             or d.joint_value_objectives(template) or template.get('generic_fusion_adapter')):
         raise ValueError('Replace the source only in a fresh selector, then recollect its own learning data.')
-    weights = SourcePolicy(checkpoint).actor.state_dict()
+    if selected:
+        _, config = validate_author_source_repeat(source_run)
+        weights = AuthorSourceRepeatPolicy(checkpoint, config).actor.state_dict()
+    else:
+        weights = SourcePolicy(checkpoint).actor.state_dict()
     old = {key[5:]: value for key, value in template['actor'].items() if key.startswith('base.')}
     if old.keys() != weights.keys() or any(old[key].shape != value.shape for key, value in weights.items()):
         raise ValueError('The independent source architecture differs from the selector proposal.')
@@ -1192,6 +1200,7 @@ def independent_source_initialization(template, source_run, seed):
         independent_source=dict(seed=seed, checkpoint=str(checkpoint), checkpoint_sha256=identity,
             configuration_sha256=configuration, training_steps=record['training_steps'],
             fresh_initialization=True, completed=True, source_commit=SOURCE_COMMIT,
+            training_defenders=record.get('training_defenders', 3), source_checkpoint=source_checkpoint,
             repeat_scope='independent source learning; subsequent M2 requires own-policy recollection'))
     return model
 
@@ -1245,6 +1254,142 @@ def run_author_source_repeat(seed,directory,device='cuda:0',*,defenders=3,family
         fresh_initialization=True,completed=True)
     torch.save(recorded,result)
     return recorded
+
+
+class AuthorSourceRepeatPolicy:
+    """Pinned source actor with the same per-vessel inference as the controls."""
+    def __init__(self, checkpoint, config):
+        import sys
+        from source_arboids import numerical_source
+        source = numerical_source()
+        agent = config['agent']
+        environment = source.TADEnv(agent['defender_num'], agent['boid_state'], agent['form_reward'])
+        adaptive = bool(agent['adaptive'])
+        constructor = source.ActorAdap if adaptive else sys.modules[source.SAC.__module__].ActorSAC
+        self.actor = constructor(environment.feature1_dim, environment.feature2_dim,
+                                 environment.action_dim+int(adaptive), config['rl']['hidden_dim'])
+        self.actor.load_state_dict(torch.load(checkpoint, map_location='cpu', weights_only=True), strict=True)
+        self.actor.eval()
+        self.device = torch.device('cpu')
+        self.choose_action = source.SAC.choose_action.__get__(self)
+        self.controller = 'RL' if not agent['residual'] else ('AdaRes' if adaptive else 'Res')
+        self.environment_options = (agent['boid_state'], agent['form_reward'])
+
+    def __call__(self, observations):
+        return np.stack([self.choose_action(row[None], deterministic=True) for row in observations])
+
+
+def validate_author_source_repeat(directory):
+    """Verify the completed budget and the predeclared training checkpoint choice."""
+    import csv
+    import yaml
+    from source_arboids import SOURCE_ROOT, SOURCE_COMMIT
+    directory = Path(directory)
+    record = torch.load(directory/'source-repeat-result.pth', map_location='cpu', weights_only=False)
+    family = record.get('family', 'arboids')
+    if (family not in ('arboids', 'rp', 'sac') or not record.get('completed')
+            or not record.get('fresh_initialization') or record.get('source_commit') != SOURCE_COMMIT):
+        raise ValueError('Baseline evaluation requires a completed independent pinned-source run.')
+    config_path = directory/'config.yaml'
+    config = yaml.safe_load(config_path.read_text())
+    expected = yaml.safe_load((SOURCE_ROOT/'train/configs/train.yaml').read_text())
+    expected['agent'].update(defender_num=record.get('training_defenders', 3),
+                             adaptive=family == 'arboids', residual=family != 'sac')
+    # Earlier repeats set the recorded seed directly before constructing the
+    # experiment manager; later repeats additionally serialize it in YAML.
+    if 'seed' in config['training']:
+        expected['training']['seed'] = record['seed']
+    if (config != expected or record['training_steps'] != expected['training']['total_steps']
+            or hashlib.sha256(config_path.read_bytes()).hexdigest() != record['configuration_sha256']):
+        raise ValueError('The baseline configuration differs from its full-budget source recipe.')
+    for name, key in [('adares1.pth', 'checkpoint_sha256'),
+                      ('best-development.pth', 'selected_checkpoint_sha256')]:
+        if hashlib.sha256((directory/name).read_bytes()).hexdigest() != record.get(key):
+            raise ValueError('The completed baseline checkpoint has changed.')
+    with (directory/'metrics1.csv').open(newline='') as stream:
+        metrics = list(csv.DictReader(stream))
+    if not metrics or int(metrics[-1]['step']) != record['training_steps']:
+        raise ValueError('The baseline training stream did not reach the recorded budget.')
+    # The manager saves the first lexicographic maximum of success and reward.
+    best = max(metrics, key=lambda row: (float(row['def_sr']), float(row['reward'])))
+    selected = record['development_selection']
+    if (int(best['step']) != selected['step'] or any(not np.isclose(float(best[key]), selected[key],
+            atol=1e-12, rtol=1e-12) for key in ('def_sr', 'reward'))):
+        raise ValueError('The selected baseline is not the recorded training-development maximum.')
+    return record, config
+
+
+_AUTHOR_REPEAT_POLICIES = {}
+
+
+def author_source_repeat_episode(task):
+    """Use the frozen source dynamics and the common layout/future seed pair."""
+    import develop_source_fusion as d
+    scene, future, directory, digest = task
+    key = (directory, digest)
+    if key not in _AUTHOR_REPEAT_POLICIES:
+        record, config = validate_author_source_repeat(directory)
+        if record['selected_checkpoint_sha256'] != digest:
+            raise ValueError('Baseline evaluation is bound to another checkpoint.')
+        _AUTHOR_REPEAT_POLICIES[key] = AuthorSourceRepeatPolicy(Path(directory)/'best-development.pth', config)
+    policy = _AUTHOR_REPEAT_POLICIES[key]
+    seed, defenders, agility = scene
+    np.random.seed(int(seed)); torch.manual_seed(int(seed))
+    env = d.numerical_source().TADEnv(defenders, *policy.environment_options)
+    observations, _ = env.reset(agility=agility, noisy_agility=False)
+    if future is not None:
+        np.random.seed(int(future))
+    done = 0; total = 0.; discount = 1.; steps = 0
+    while not done:
+        observations, reward, done, _ = env.step(policy(observations), policy.controller)
+        total += discount*float(np.mean(reward)); discount *= .99; steps += 1
+    row = dict(seed=int(seed), defenders=defenders, agility=agility, **d.outcome(env, done),
+               discounted_return=total, environment_protocol='source', conditional_interventions=0,
+               physical_steps=steps)
+    if future is not None:
+        row['future_seed'] = int(future)
+    return row
+
+
+def evaluate_author_source_repeat(directory, tasks, *, workers=2, result_suffix='source-development',
+                                  evaluation_context=None):
+    """Pair a fully trained ARBoids, RP or SAC endpoint with the mechanism suites."""
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    import run_remote_evidence as r
+    directory = Path(directory)
+    source, _ = validate_author_source_repeat(directory)
+    digest = source['selected_checkpoint_sha256']
+    path = directory/(result_suffix+'.pth')
+    previous = torch.load(path, map_location='cpu', weights_only=False) if path.exists() else None
+    if previous is not None:
+        if (previous['policy_sha256'] != digest or previous['tasks'] != tasks
+                or previous.get('evaluation_context') != evaluation_context):
+            raise ValueError('A resumed baseline evaluation must retain its checkpoint and paired tasks.')
+        if previous['completed']:
+            return previous
+    rows = previous['rows'] if previous else [None]*len(tasks)
+    start = time.monotonic()
+    with (ProcessPoolExecutor(max_workers=workers, initializer=torch.set_num_threads, initargs=(1,))
+          if workers > 1 else nullcontext(None)) as pool:
+        jobs = [(index, (scene, future, str(directory), digest))
+                for index, (scene, future) in enumerate(tasks) if rows[index] is None]
+        if pool is None:
+            results = ((index, author_source_repeat_episode(task)) for index, task in jobs)
+        else:
+            pending = {pool.submit(author_source_repeat_episode, task): index for index, task in jobs}
+            results = ((pending[job], job.result()) for job in as_completed(pending))
+        for index, row in results:
+            rows[index] = row; completed = [row for row in rows if row is not None]
+            if len(completed) % 32 == 0 or len(completed) == len(tasks):
+                record = dict(policy=str(directory/'best-development.pth'), policy_sha256=digest,
+                    tasks=tasks, rows=rows, evaluated=len(completed), success=sum(row['success'] for row in completed),
+                    completed=len(completed) == len(tasks), source_training=source,
+                    evaluation_context=evaluation_context, elapsed_seconds=time.monotonic()-start,
+                    inference_rule='pinned source deterministic per-vessel calls shared by the mechanism controls')
+                r.atomic_save(record, path)
+                print(dict(phase='fully_trained_source_evaluation', family=source.get('family', 'arboids'),
+                    seed=source['seed'], suite=result_suffix, evaluated=len(completed), success=record['success']), flush=True)
+    return record
 
 
 def train_unified_option_control(base,tasks,directory,prefix,*,rounds=6,roots_per_round=4,

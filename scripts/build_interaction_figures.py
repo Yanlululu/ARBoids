@@ -598,6 +598,43 @@ def source_paired(left, right, repetitions=4000):
         interval_scope='development layout-cluster bootstrap; no correction for adaptive model selection')
 
 
+def source_task_consequences(left, right, repetitions=4000):
+    """Separate capture, failure type and time on jointly captured episodes."""
+    metrics=('capture','collision','source_failure','timeout','physical_breach')
+    groups={}; counts={side:dict.fromkeys(metrics,0) for side in ('left','right')}
+    for suite in left:
+        a,b=left[suite],right[suite]
+        if not a or not b or a['tasks']!=b['tasks']:
+            raise ValueError('Task consequences require complete, identical paired tasks.')
+        for task,x,y in zip(a['tasks'],a['rows'],b['rows']):
+            for side,row in (('left',x),('right',y)):
+                for metric in metrics:counts[side][metric]+=row[metric]
+            common=int(bool(x['capture'] and y['capture']))
+            observation=[x[metric]-y[metric] for metric in metrics]
+            observation.extend((common*(x['duration']-y['duration']),common,1))
+            key=(suite,*task[0])
+            groups[key]=groups.get(key,np.zeros(len(observation)))+observation
+    strata={}
+    for (suite,seed,defenders,agility),values in groups.items():
+        strata.setdefault((suite,defenders,agility),[]).append(values)
+    rng=np.random.default_rng(432202);boot=np.zeros((repetitions,len(metrics)+3))
+    for values in strata.values():
+        values=np.asarray(values)
+        sampled=rng.integers(len(values),size=(repetitions,len(values)))
+        boot+=values[sampled].sum(1)
+    total=np.asarray(list(groups.values())).sum(0)
+    result=dict(episodes=int(total[-1]),counts=counts,rate_differences={})
+    for index,metric in enumerate(metrics):
+        result['rate_differences'][metric]=dict(difference_pp=100*total[index]/total[-1],
+            ci95_pp=np.quantile(100*boot[:,index]/boot[:,-1],[.025,.975]).tolist())
+    durations=np.divide(boot[:,-3],boot[:,-2],out=np.full(repetitions,np.nan),where=boot[:,-2]>0)
+    result['joint_capture_time']=dict(episodes=int(total[-2]),
+        difference_seconds=float(total[-3]/total[-2]) if total[-2] else None,
+        ci95_seconds=np.nanquantile(durations,[.025,.975]).tolist() if total[-2] else None,
+        scope='paired duration conditional on capture by both methods; negative favors left')
+    return result
+
+
 def source_ranking_summary(measurement, repetitions=4000):
     """Compare predicted ordering only on outcome-independent random candidates."""
     rows = measurement['records']; labels = list(rows[0]['ranking']['predictions'])
@@ -705,7 +742,7 @@ def source_method_figures(data, directory):
     _source_boxes(ax,boxes,arrows,fontsize=7.6)
     _source_save(fig,directory,'fig2-architecture')
 
-    example=data.get('mechanism_illustration')
+    example=data.get('six_source_mechanism_illustration') or data.get('mechanism_illustration')
     if example:
         fig,axes=plt.subplots(2,2,figsize=(7.2,4.6),layout='constrained')
         diagnostic=example['common_state_diagnosis']
@@ -745,10 +782,11 @@ def source_method_figures(data, directory):
             ax.set(title=title,xlabel='x (m)',ylabel='y (m)',aspect='equal',xlim=bounds[:,0],ylim=bounds[:,1])
         _source_save(fig,directory,'fig3-joint-fusion')
 
-    ranking = data.get('ranking_summary')
+    refined = data.get('six_source_value') or data.get('refined_value', {})
+    ranking = refined.get('ranking_summary') or data.get('ranking_summary')
     has_ranking = bool(ranking and ranking['comparable_pairs'])
     fig,axes=plt.subplots(1,3 if has_ranking else 2,figsize=(7.2,2.8),layout='constrained')
-    boxes=[(.02,.39,.22,.22,'Same state\n+ frozen policy','#204A68'),
+    boxes=[(.02,.39,.22,.22,'Same state\nFrozen\npolicy','#204A68'),
         (.38,.66,.59,.20,'Factual choice\nFeedback → outcome $Y_0$','#4477AA'),
         (.38,.20,.59,.20,'One-vessel change\nFeedback → outcome $Y_z$','#00857D'),
         (.39,.01,.57,.12,'Paired gain: $Y_z-Y_0$','#3D4650')]
@@ -756,7 +794,7 @@ def source_method_figures(data, directory):
         ((.67,.66),(.67,.40)),((.67,.20),(.67,.13))],fontsize=7)
     axes[0].text(.67,.53,'Shared future disturbance',ha='center',fontsize=7,color='#59636E')
     axes[0].set_title('(a) Conditional closed-loop comparison',fontsize=9)
-    measurement=data.get('choice_validation')
+    measurement=refined.get('choice_validation') or data.get('choice_validation')
     if measurement:
         maximum=.1
         for label,color,marker in [('conditional','#00857D','o'),('ordinary','#D17B27','x')]:
@@ -775,7 +813,8 @@ def source_method_figures(data, directory):
         axes[1].plot([0,maximum],[0,maximum],':',color='#8B9198')
         axes[1].axhline(0,color='#CAD0D5',lw=.7)
         axes[1].set(xlabel='Predicted executed gain',ylabel='Measured paired gain',
-            title='(b) New-state decision validation',ylim=(-1.05,1.05))
+            title='(b) New-state intervention decisions' if refined.get('choice_validation')
+                else '(b) New-state decision validation',ylim=(-1.05,1.05))
         axes[1].legend(fontsize=6,loc='lower right')
     else:
         axes[1].axis('off');axes[1].text(.5,.65,'New-state decision validation',ha='center',fontsize=9)
@@ -803,6 +842,7 @@ def source_result_figures(data, directory):
     numerical=data['numerical']
     configuration_curve=None
     configuration_spread=None
+    configuration_updates=[0,6,12,18,24]
     pipeline_runs=data.get('independent_full_pipeline',{})
     complete_pipeline=len(pipeline_runs)==5 and all(
         all(all(entries.values()) for entries in run['frozen_predecessors'].values()) and
@@ -833,6 +873,24 @@ def source_result_figures(data, directory):
                 histories[label].append(values)
         configuration_curve={label:np.mean(values,axis=0) for label,values in histories.items()}
         configuration_spread={label:np.std(values,axis=0,ddof=1) for label,values in histories.items()}
+    six_learning=data.get('six_source_configuration_learning',{}).get('configurations',{})
+    six_learning_ready=all(six_learning.get(label,{}).get(str(update),{}).get('evaluations') and
+        all(six_learning[label][str(update)]['evaluations'].values())
+        for label in ('F01','F11') for update in (0,6000,12000,18000,24000,30000))
+    if six_learning_ready:
+        configuration_updates=[0,6,12,18,24,30]
+        configuration_curve={};configuration_spread=None
+        reference=six_learning['F01']['0']['evaluations']
+        for label,predecessor in [('F01','F00'),('F11','F10')]:
+            values=[]
+            for update in (0,6000,12000,18000,24000,30000):
+                entries=six_learning[label][str(update)]['evaluations']
+                if set(entries)!=set(reference) or any(
+                        entries[suite]['tasks']!=reference[suite]['tasks'] for suite in reference):
+                    raise ValueError('Six-vessel learning curves require the same paired screen at every update.')
+                values.append(_source_rate(dict(rows=source_rows(entries))))
+            configuration_curve[label]=values
+            configuration_curve[predecessor]=[values[0]]*len(values)
     for recipe in ('coverage','identity'):
         if configuration_curve is not None:break
         group=data.get('configuration_learning',{}).get(recipe,{})
@@ -860,19 +918,21 @@ def source_result_figures(data, directory):
         fig,axes=plt.subplots(1,3,figsize=(7.2,2.75),layout='constrained')
         overall_axis,repeat_axis=axes[1:]
     else:
-        fig,grid=plt.subplots(2,2,figsize=(7.2,5.1),layout='constrained')
+        fig,grid=plt.subplots(2,2,figsize=(7.2,5.35),layout='constrained')
         axes=grid.ravel();overall_axis,repeat_axis=axes[2:]
         for label in ('F00','F10','F01','F11'):
-            axes[1].plot([0,6,12,18,24],configuration_curve[label],marker='o',ms=3,
+            axes[1].plot(configuration_updates,configuration_curve[label],marker='o',ms=3,
                 color=SOURCE_COLORS[label],label=label+(' (frozen)' if label in ('F00','F10') else ''))
             if configuration_spread is not None:
                 mean=np.asarray(configuration_curve[label]);spread=configuration_spread[label]
-                axes[1].fill_between([0,6,12,18,24],np.maximum(0,mean-spread),
+                axes[1].fill_between(configuration_updates,np.maximum(0,mean-spread),
                     np.minimum(100,mean+spread),color=SOURCE_COLORS[label],alpha=.13,lw=0)
         axes[1].set(xlabel='Additional value updates (thousand)',ylabel='Success (%)',
-            ylim=(0,102),xticks=(0,6,12,18,24),title='(b) Matched refit learning')
+            ylim=(0,102),xticks=configuration_updates,
+            title='(b) Six-vessel value learning' if six_learning_ready else '(b) Matched refit learning')
         axes[1].legend(fontsize=6.5,ncol=2,loc='lower right')
-        axes[1].text(.5,-.22,('Five complete pipelines; mean and SD on 228 paired episodes'
+        axes[1].text(.5,-.30,('228 paired episodes; zero denotes the factual predecessor'
+            if six_learning_ready else 'Five complete pipelines; mean and SD on 228 paired episodes'
             if complete_pipeline else 'Separate refit recipe; 228 paired development episodes'),
             ha='center',transform=axes[1].transAxes,fontsize=6.5)
     for family,color in [('arboids','#4477AA'),('rp','#D17B27'),('sac','#8B9198')]:
@@ -897,30 +957,138 @@ def source_result_figures(data, directory):
     complete=sum(curve['completed'] for curves in data['learning_curves'].values() for curve in curves)
     axes[0].text(.96,.03,f'{complete}/15 runs complete',ha='right',transform=axes[0].transAxes,fontsize=7,color='#59636E')
     axes[0].legend(loc='upper left')
-    labels=['F00','F10','F01','F11'];values=[100*np.mean([r['success'] for r in source_rows(numerical[k])]) for k in labels]
-    overall_axis.bar(labels,values,color=[SOURCE_COLORS[k] for k in labels],width=.65)
-    for i,y in enumerate(values):overall_axis.text(i,y+2,f'{y:.1f}',ha='center',fontsize=7)
-    overall_axis.set(ylim=(0,108),ylabel='Success (%)',
-        title='(b) Four configurations' if configuration_curve is None else '(c) Reference four configurations')
-    overall_axis.text(.5,-.22,'856 paired development episodes',ha='center',transform=overall_axis.transAxes,fontsize=6.5)
-    for label,color,marker in [('conditional','#00857D','o'),('ordinary','#D17B27','s')]:
-        seeds=[];scores=[]
-        repeats=({seed:{kind:list(run['configurations']['F11'][kind]['evaluations'].values())
-                    for kind in ('conditional','ordinary')} for seed,run in pipeline_runs.items()}
-                 if complete_pipeline else data['value_repeats'])
-        for seed,entry in repeats.items():
-            if all(entry[label]):
-                rows=[r for e in entry[label] for r in e['rows']]
-                seeds.append(int(seed));scores.append(100*np.mean([r['success'] for r in rows]))
-        repeat_axis.plot(seeds,scores,marker=marker,color=color,lw=1,label=label)
-    repeat_axis.set(ylim=(0,100) if complete_pipeline else (75,100),xticks=range(42,47),
-        xlabel='Independent pipeline seed' if complete_pipeline else 'Independent value-fit seed',ylabel='Success (%)',
-        title=('(d) Five complete pipelines' if complete_pipeline else
-            '(c) Five value-learning runs' if configuration_curve is None else '(d) Five value-learning runs'))
-    repeat_axis.legend(loc='lower left')
+    labels=['F00','F10','F01','F11']
+    if complete_pipeline:
+        distributions={label:[_source_rate(dict(rows=source_rows(
+            run['frozen_predecessors'][label] if label in ('F00','F10') else
+            run['configurations'][label]['conditional']['evaluations'])))
+            for run in pipeline_runs.values()] for label in labels}
+    else:
+        distributions={label:[_source_rate(dict(rows=source_rows(numerical[label])))] for label in labels}
+    baselines=data.get('trained_source_baselines',{})
+    baseline_seeds=set.intersection(*[{seed for seed,entry in baselines.get(family,{}).items()
+        if entry.get('evaluations') and all(entry['evaluations'].values())}
+        for family in ('sac','rp','arboids')])
+    colors=[SOURCE_COLORS[label] for label in labels]
+    if baseline_seeds:
+        for family,label in [('sac','SAC'),('rp','RP'),('arboids','ARBoids')]:
+            distributions[label]=[_source_rate(dict(rows=source_rows(baselines[family][seed]['evaluations'])))
+                for seed in sorted(baseline_seeds)]
+        labels=['SAC','RP','ARBoids',*labels]
+        colors=['#8B9198','#D17B27','#4477AA',*colors]
+    six_value=data.get('six_source_value',{})
+    six_complete=bool(six_value) and all(six_value.get(kind,{}).get('evaluations') and
+        all(six_value[kind]['evaluations'].values()) for kind in ('conditional','ordinary'))
+    if six_complete and '42' in baseline_seeds:
+        labels=['SAC','RP','ARBoids','M1','MLP','Full']
+        groups=[baselines[family]['42']['evaluations'] for family in ('sac','rp','arboids')]
+        groups.extend([six_value['predecessor'],six_value['ordinary']['evaluations'],
+            six_value['conditional']['evaluations']])
+        six_configuration=data.get('six_source_configurations',{}).get('42',{})
+        if all(six_configuration.get(label,{}).get('evaluations') and
+                all(six_configuration[label]['evaluations'].values()) for label in ('F00','F01')):
+            labels=['SAC','RP','ARBoids','F00','F10','F01','MLP','F11']
+            groups=groups[:3]+[six_configuration['F00']['evaluations'],six_value['predecessor'],
+                six_configuration['F01']['evaluations'],six_value['ordinary']['evaluations'],
+                six_value['conditional']['evaluations']]
+        distributions={label:[_source_rate(dict(rows=source_rows(group)))]
+            for label,group in zip(labels,groups)}
+        colors=(['#8B9198','#D17B27','#4477AA','#B6BCC1','#204A68','#AA66AA','#D9A063','#00857D']
+            if len(labels)==8 else ['#8B9198','#D17B27','#4477AA','#204A68','#D9A063','#00857D'])
+    values=[float(np.mean(distributions[label])) for label in labels]
+    spreads=[float(np.std(distributions[label],ddof=1)) if len(distributions[label])>1 else 0.
+             for label in labels]
+    overall_axis.bar(range(len(labels)),values,color=colors,width=.65)
+    if any(spreads):
+        overall_axis.errorbar(range(len(labels)),values,yerr=spreads,fmt='none',color='#3D4650',capsize=2,lw=.7)
+    overall_axis.set_xticks(range(len(labels)),labels,fontsize=6.5)
+    for i,(value,spread) in enumerate(zip(values,spreads)):
+        overall_axis.text(i,value+spread+2,f'{value:.1f}',ha='center',fontsize=6.5)
+    panel='(b)' if configuration_curve is None else '(c)'
+    overall_axis.set(ylim=(0,112),ylabel='Success (%)',title=panel+(' Six-vessel source comparison' if six_complete
+        else ' Baselines and configurations'
+        if baseline_seeds else ' Four configurations' if complete_pipeline else ' Reference four configurations'))
+    annotation='856 paired development episodes'
+    if six_complete:
+        annotation+='\nSame six-vessel source, training seed 42\nMLP uses its development-selected gain margin'
+    elif baseline_seeds:
+        annotation+=f"\nBaselines: six-vessel training, n={len(baseline_seeds)}"
+        annotation+=f"\nF00–F11: three-to-six source transfer, n={5 if complete_pipeline else 1}"
+    overall_axis.text(.5,-.30,annotation,ha='center',transform=overall_axis.transAxes,fontsize=6.5)
+    six_repeats=data.get('same_fleet_m1',{})
+    six_repeat_seeds=[str(seed) for seed in range(42,47)]
+    six_repeats_ready=all(seed in baseline_seeds and seed in six_repeats and
+        all(six_repeats[seed].get(kind,{}).get('evaluations') and
+            all(six_repeats[seed][kind]['evaluations'].values())
+            for kind in ('joint','independent')) for seed in six_repeat_seeds)
+    six_pipeline=data.get('six_source_configurations',{})
+    six_pipeline_ready=all(six_pipeline.get(seed,{}).get(label,{}).get('evaluations') and
+        all(six_pipeline[seed][label]['evaluations'].values())
+        for seed in six_repeat_seeds for label in ('F00','F10','F01','F11','ordinary_F01','ordinary_F11'))
+    if six_pipeline_ready:
+        series=[('F00','F00','#8B9198','^','-'),('F10','F10','#204A68','s','-'),
+            ('F01','F01','#9A6A30','o','-'),('F11','F11','#00857D','o','-'),
+            ('MLP on F00','ordinary_F01','#D9A063','v','--'),
+            ('MLP on F10','ordinary_F11','#D17B27','s','--')]
+        for label,key,color,marker,linestyle in series:
+            scores=[_source_rate(dict(rows=source_rows(six_pipeline[seed][key]['evaluations'])))
+                for seed in six_repeat_seeds]
+            repeat_axis.plot(range(42,47),scores,marker=marker,color=color,lw=1,
+                linestyle=linestyle,label=label)
+        repeat_axis.set(ylim=(0,102),xticks=range(42,47),xlabel='Independent pipeline seed',
+            ylabel='Success (%)',title='(d) Five complete learning pipelines')
+        repeat_axis.text(.5,-.30,'Independent source learning and own-predecessor value data',
+            ha='center',transform=repeat_axis.transAxes,fontsize=6.5)
+    elif six_repeats_ready:
+        for label,kind,color,marker in [('ARBoids','source','#8B9198','^'),
+                ('Independent','independent','#C35B50','s'),('Joint','joint','#204A68','o')]:
+            groups=[baselines['arboids'][seed]['evaluations'] if kind=='source' else
+                six_repeats[seed][kind]['evaluations'] for seed in six_repeat_seeds]
+            scores=[_source_rate(dict(rows=source_rows(group))) for group in groups]
+            repeat_axis.plot(range(42,47),scores,marker=marker,color=color,lw=1,label=label)
+        repeat_axis.set(ylim=(0,102),xticks=range(42,47),xlabel='Independent source-training seed',
+            ylabel='Success (%)',title='(d) Five source and fusion runs')
+        repeat_axis.text(.5,-.30,'Same one-million-step source within each paired comparison',
+            ha='center',transform=repeat_axis.transAxes,fontsize=6.5)
+    else:
+        for label,color,marker in [('conditional','#00857D','o'),('ordinary','#D17B27','s')]:
+            seeds=[];scores=[]
+            repeats=({seed:{kind:list(run['configurations']['F11'][kind]['evaluations'].values())
+                        for kind in ('conditional','ordinary')} for seed,run in pipeline_runs.items()}
+                     if complete_pipeline else data['value_repeats'])
+            for seed,entry in repeats.items():
+                if all(entry[label]):
+                    rows=[r for e in entry[label] for r in e['rows']]
+                    seeds.append(int(seed));scores.append(100*np.mean([r['success'] for r in rows]))
+            repeat_axis.plot(seeds,scores,marker=marker,color=color,lw=1,label=label)
+        repeat_axis.set(ylim=(0,100) if complete_pipeline else (75,100),xticks=range(42,47),
+            xlabel='Independent pipeline seed' if complete_pipeline else 'Independent value-fit seed',ylabel='Success (%)',
+            title=('(d) Five complete pipelines' if complete_pipeline else
+                '(c) Five value-learning runs' if configuration_curve is None else '(d) Five value-learning runs'))
+    repeat_axis.legend(loc='lower left',fontsize=6.5,ncol=2 if six_pipeline_ready else 1)
     _source_save(fig,directory,'fig5-overall-performance')
 
-    fig,axes=plt.subplots(1,2,figsize=(7.2,2.9),layout='constrained')
+    same_fleet=data.get('same_fleet_m1',{}).get('42',{})
+    same_fleet_ready=all(same_fleet.get(kind,{}).get('evaluations') and
+        all(same_fleet[kind]['evaluations'].values()) for kind in ('joint','independent'))
+    margin_controls=data.get('ordinary_margin_controls',{})
+    margins_ready=all(margin_controls.get(label,{}).get('evaluations') and
+        all(margin_controls[label]['evaluations'].values())
+        for label in ('same-margin','margin008','unsupported-margin'))
+    refined=data.get('six_source_value') or data.get('refined_value',{})
+    refined_ready=all(refined.get(label,{}).get('evaluations') and
+        all(refined[label]['evaluations'].values()) for label in ('conditional','ordinary'))
+    six_configuration=data.get('six_source_configurations',{}).get('42',{})
+    f01_ready=all(six_configuration.get(label,{}).get('evaluations') and
+        all(six_configuration[label]['evaluations'].values()) for label in ('F01','ordinary_F01'))
+    six_core_ready=same_fleet_ready and all(six_configuration.get(label,{}).get('evaluations') and
+        all(six_configuration[label]['evaluations'].values())
+        for label in ('F00','F10','F01','F11','ordinary_F01','ordinary_F11'))
+    extra_height=.84 if six_core_ready else .28*(same_fleet_ready+margins_ready+2*refined_ready+f01_ready)
+    fig=plt.figure(figsize=(7.2,4.9+extra_height),layout='constrained')
+    top,bottom=fig.subfigures(2,1,height_ratios=(2.6,1.45+extra_height))
+    axes=top.subplots(1,2)
+    contribution_axis=bottom.subplots()
     labels=['state-interaction','candidate-interaction','M1-independent','F10','M1-strong']
     generic=data.get('generic_replacements',{}).get('balanced',{})
     stronger_generic=bool(generic) and all(generic.get(mode,{}).get('evaluations') and
@@ -933,7 +1101,7 @@ def source_result_figures(data, directory):
     axes[0].bar(range(len(labels)),values,color=[SOURCE_COLORS[k] for k in labels])
     axes[0].set_xticks(range(len(labels)),['State\nattention','Candidate\nattention','Independent\nselection','Joint','Refined\njoint'],fontsize=6.5)
     for i,y in enumerate(values):axes[0].text(i,y+1.5,f'{y:.1f}',ha='center',fontsize=7)
-    axes[0].set(ylim=(0,105),ylabel='Success (%)',title='(a) Candidate-interaction and joint selection')
+    axes[0].set(ylim=(0,105),ylabel='Success (%)',title='(a) Transferred-source M1 replacements')
     repeat_gains=[]
     for entry in data.get('source_backbone_repeats',{}).values():
         if all(entry['joint']) and all(entry['independent']):
@@ -948,10 +1116,38 @@ def source_result_figures(data, directory):
             f'mean joint-selection gain {np.mean(repeat_gains):.1f} pp '
             f'(range {min(repeat_gains):.1f}–{max(repeat_gains):.1f})',
             ha='center',transform=axes[0].transAxes,fontsize=6.5)
+    six_replacements=data.get('six_source_replacements',{})
+    replacement_models=six_replacements.get('models',{})
+    replacement_ready=same_fleet_ready and (
+        six_replacements.get('teacher_sha256')==same_fleet['joint']['policy_sha256']) and all(
+        replacement_models.get(label,{}).get('evaluations') and
+        all(replacement_models[label]['evaluations'].values()) for label in ('state','candidate','single-reference'))
+    if replacement_ready:
+        axes[0].clear()
+        replacements=[('State\nattention',replacement_models['state']['evaluations'],'#9AAFC0'),
+            ('Candidate\nattention',replacement_models['candidate']['evaluations'],'#7F98AF'),
+            ('Single\nreference',replacement_models['single-reference']['evaluations'],'#B6B0A2'),
+            ('Independent\nselection',same_fleet['independent']['evaluations'],'#C35B50'),
+            ('Joint\nselection',same_fleet['joint']['evaluations'],'#204A68')]
+        for i,(label,group,color) in enumerate(replacements):
+            source_paired(group,same_fleet['joint']['evaluations'],repetitions=100)
+            value=100*np.mean([row['success'] for row in source_rows(group)])
+            axes[0].bar(i,value,color=color);axes[0].text(i,value+1.5,f'{value:.1f}',ha='center',fontsize=7)
+        axes[0].set_xticks(range(len(replacements)),[x[0] for x in replacements],fontsize=6.5)
+        axes[0].set(ylim=(0,105),ylabel='Success (%)',title='(a) Six-vessel M1 replacements')
+        axes[0].text(.5,-.27,'856 paired episodes; same learned source',
+            ha='center',transform=axes[0].transAxes,fontsize=6.5)
     suites=list(numerical['F11'])[:2]
     subset=lambda label:{suite:dict(numerical[label][suite],tasks=numerical[label][suite]['tasks'][::2],
         rows=numerical[label][suite]['rows'][::2]) for suite in suites}
     controls=[('Ordinary\nMLP',subset('ordinary'),'#D17B27')]
+    matched_margin=data.get('ordinary_margin_controls',{}).get('same-margin',{})
+    if matched_margin.get('evaluations') and all(matched_margin['evaluations'].values()):
+        group={suite:dict(matched_margin['evaluations'][suite],
+            tasks=matched_margin['evaluations'][suite]['tasks'][::2],
+            rows=matched_margin['evaluations'][suite]['rows'][::2]) for suite in suites}
+        source_paired(group,subset('F11'),repetitions=100)
+        controls.append((f"MLP\nmargin {matched_margin['gain_margin']:.2f}",group,'#D9A063'))
     names={'F11-r107-immediate-only':'Immediate\nonly','F11-r107-no-temporal-bounds':'No time\nbounds',
            'F11-r107-no-factual-anchor':'No factual\nanchor'}
     pending=0
@@ -965,10 +1161,84 @@ def source_result_figures(data, directory):
     for i,(label,group,color) in enumerate(controls):
         y=100*np.mean([r['success'] for r in source_rows(group)])
         axes[1].bar(i,y,color=color);axes[1].text(i,y+1.5,f'{y:.1f}',ha='center',fontsize=7)
-    axes[1].set_xticks(range(len(controls)),[x[0] for x in controls],fontsize=7)
-    axes[1].set(ylim=(0,105),ylabel='Success (%)',title='(b) Conditional value and component controls')
+    axes[1].set_xticks(range(len(controls)),[x[0] for x in controls],fontsize=6.5)
+    axes[1].set(ylim=(0,105),ylabel='Success (%)',title='(b) Transferred-source M2 components')
     axes[1].text(.5,-.27,'228 paired screen episodes'+(f'; {pending} controls running' if pending else ''),
         ha='center',transform=axes[1].transAxes,fontsize=6.5)
+    six_components=data.get('six_source_components',{})
+    component_models=six_components.get('controls',{})
+    component_ready=refined_ready and (
+        six_components.get('reference',{}).get('policy_sha256')==refined['conditional']['policy_sha256']) and (
+        six_components.get('ordinary',{}).get('evaluations') and
+        all(six_components['ordinary']['evaluations'].values())) and all(
+        component_models.get(label,{}).get('evaluations') and
+        all(component_models[label]['evaluations'].values())
+        for label in ('immediate-only','no-factual-calibration','neural-value-only'))
+    if component_ready:
+        axes[1].clear()
+        controls=[('Tuned\nordinary MLP',six_components['ordinary']['evaluations'],'#D17B27')]
+        for label,title in [('immediate-only','Immediate\nonly'),
+                ('no-factual-calibration','No factual\ncalibration'),('neural-value-only','Neural\nvalue only')]:
+            controls.append((title,component_models[label]['evaluations'],'#99B8B3'))
+        controls.append(('Full\nM2',six_components['reference']['evaluations'],'#00857D'))
+        for i,(label,group,color) in enumerate(controls):
+            source_paired(group,six_components['reference']['evaluations'],repetitions=100)
+            value=100*np.mean([row['success'] for row in source_rows(group)])
+            axes[1].bar(i,value,color=color);axes[1].text(i,value+1.5,f'{value:.1f}',ha='center',fontsize=7)
+        axes[1].set_xticks(range(len(controls)),[x[0] for x in controls],fontsize=6.5)
+        axes[1].set(ylim=(0,105),ylabel='Success (%)',title='(b) Six-vessel M2 components')
+        axes[1].text(.5,-.27,'856 paired episodes; frozen value parameters',
+            ha='center',transform=axes[1].transAxes,fontsize=6.5)
+    contributions=[('Joint minus independent (3-to-6 source)',numerical['M1-strong'],numerical['M1-independent'],'#204A68'),
+        ('Full minus M1 only',numerical['F11'],numerical['F10'],'#4477AA'),
+        ('Full minus ordinary MLP',numerical['F11'],numerical['ordinary'],'#00857D')]
+    if same_fleet_ready:
+        contributions.insert(1,('Joint minus independent (6-vessel source)',
+            same_fleet['joint']['evaluations'],same_fleet['independent']['evaluations'],'#5C72A6'))
+    if margins_ready:
+        best_margin=max(margin_controls.values(),key=lambda entry:sum(
+            row['success'] for row in source_rows(entry['evaluations'])))
+        contributions.append((f"Full minus MLP (margin {best_margin['gain_margin']:.2f})",
+            numerical['F11'],best_margin['evaluations'],'#D17B27'))
+    if refined_ready:
+        prefix='Six-vessel full' if data.get('six_source_value') else 'Refit'
+        contributions.extend([
+            (prefix+' minus its M1 predecessor',refined['conditional']['evaluations'],
+                refined['predecessor'],'#557A46'),
+            (prefix+' minus tuned ordinary MLP' if data.get('six_source_value') else
+                'Refit minus its matched ordinary MLP',refined['conditional']['evaluations'],
+                refined['ordinary']['evaluations'],'#00857D')])
+    if f01_ready:
+        contributions.append(('Six-vessel F01 minus tuned ordinary MLP',
+            six_configuration['F01']['evaluations'],
+            six_configuration['ordinary_F01']['evaluations'],'#9A6A30'))
+    if six_core_ready:
+        configurations={label:entry['evaluations'] for label,entry in six_configuration.items()
+            if isinstance(entry,dict) and entry.get('evaluations')}
+        contributions=[('M1: joint minus independent',same_fleet['joint']['evaluations'],
+                same_fleet['independent']['evaluations'],'#204A68'),
+            ('M1: F11 minus F01',configurations['F11'],configurations['F01'],'#5C72A6'),
+            ('M2: F01 minus F00',configurations['F01'],configurations['F00'],'#9A6A30'),
+            ('M2: F11 minus F10',configurations['F11'],configurations['F10'],'#557A46'),
+            ('M2: F01 minus tuned ordinary MLP',configurations['F01'],configurations['ordinary_F01'],'#BB8B45'),
+            ('M2: F11 minus tuned ordinary MLP',configurations['F11'],configurations['ordinary_F11'],'#00857D')]
+    effects=[source_paired(left,right) for _,left,right,_ in contributions]
+    for y,((label,left,right,color),effect) in enumerate(zip(contributions,effects)):
+        value=effect['difference_pp'];low,high=effect['ci95_pp']
+        contribution_axis.errorbar(value,y,xerr=[[value-low],[high-value]],fmt='D',
+            color=color,markersize=4,capsize=2,elinewidth=1)
+        contribution_axis.text(high+.35,y,f'{value:+.1f} [{low:.1f}, {high:.1f}]',
+            va='center',fontsize=7,color=color)
+    contribution_axis.axvline(0,color='#A8AFB4',ls='--',lw=.7)
+    contribution_axis.set(yticks=range(len(contributions)),
+        yticklabels=[label for label,*_ in contributions],
+        ylim=(len(contributions)-.5,-.5),
+        xlim=(min(-.5,min(effect['ci95_pp'][0] for effect in effects)-1),
+            max(effect['ci95_pp'][1] for effect in effects)+6),
+        xlabel='Paired success-rate gain (percentage points)\n95% layout-cluster intervals; training seed fixed',
+        title='(c) '+('Six-vessel ' if six_core_ready else '')+'paired contributions on 856 development episodes')
+    contribution_axis.tick_params(axis='y',labelsize=7)
+    contribution_axis.xaxis.label.set_fontsize(7)
     _source_save(fig,directory,'fig6-mechanism-controls')
 
     fig,axes=plt.subplots(1,3,figsize=(7.2,2.8),layout='constrained')
@@ -1013,6 +1283,58 @@ def source_result_figures(data, directory):
         axes[2].text(.5,.55,'Common attacker training\n↓\nPaired changed-opponent evaluation\n↓\nAdaptation + original-opponent retention',
             ha='center',va='center',fontsize=7.5)
         axes[2].text(.5,.13,'Evaluation in progress',ha='center',fontsize=7,color='#59636E')
+    expected_scope={label:item['policy_sha256'] for label,item in six_configuration.items()
+                    if label in ('F00','F10','F01','F11','ordinary_F01','ordinary_F11')}
+    if same_fleet_ready:expected_scope['independent']=same_fleet['independent']['policy_sha256']
+    scope=data.get('six_source_scope',{})
+    scope_colors={'F00':'#7B8794','F10':'#4477AA','F01':'#78A854','F11':'#00857D',
+                  'independent':'#C35B50','ordinary_F01':'#865E9E','ordinary_F11':'#D17B27'}
+    scope_labels={'F00':'Source','F10':'Joint','F01':'Value only','F11':'Full',
+                  'independent':'Independent','ordinary_F01':'MLP on source','ordinary_F11':'MLP on joint'}
+    scope_matches=len(expected_scope)==7 and all(scope.get('models',{}).get(label,{}).get('sha256')==identity
+        for label,identity in expected_scope.items())
+    if scope_matches:
+        for axis,kind,labels,levels in [(axes[0],'agility',list(scope_colors),(2.,2.5,3.,3.5)),
+                (axes[1],'fleet',['F00','F10','independent','F01','F11'],(3,4,5,7,8))]:
+            cells=scope.get(kind,{})
+            if not all(cells.get(label,{}).get(str(level)) for label in labels for level in levels):continue
+            for level in levels:
+                tasks=cells[labels[0]][str(level)]['tasks']
+                if any(cells[label][str(level)]['tasks']!=tasks for label in labels):
+                    raise ValueError('Scope comparisons require paired layouts in every cell.')
+            axis.clear()
+            for label in labels:
+                axis.plot(levels,[_source_rate(cells[label][str(level)]) for level in levels],
+                    marker='o',ms=3,lw=1,color=scope_colors[label],label=scope_labels[label])
+            axis.set(ylim=(0,102),ylabel='Success (%)',xticks=levels,
+                xlabel='Intruder agility' if kind=='agility' else 'Number of defenders',
+                title='(a) Six-vessel agility' if kind=='agility' else '(b) Shared-policy fleet transfer')
+            if kind=='agility':axis.legend(fontsize=5.2,ncol=2)
+            axis.text(.5,.02,'64 paired layouts per cell',ha='center',transform=axis.transAxes,fontsize=6)
+    adapted=data.get('six_source_opponent_adaptation',{})
+    adapted_labels=('F01','ordinary_F01','F11','ordinary_F11')
+    adapted_context=adapted.get('context') or {}
+    adapted_ready=len(expected_scope)==7 and all(adapted_context.get('before_sha256',{}).get(label)==identity
+        for label,identity in expected_scope.items()) and all(adapted.get(stage,{}).get(label,{}).get(environment)
+        for stage in ('before','after') for label in adapted_labels for environment in ('APF','opponent'))
+    if adapted_ready:
+        axes[2].clear()
+        for index,label in enumerate(adapted_labels):
+            before=adapted['before'][label];after=adapted['after'][label]
+            for environment in ('APF','opponent'):
+                if before[environment]['tasks']!=after[environment]['tasks']:
+                    raise ValueError('Fresh adaptation and retention outcomes must share their layouts.')
+            if before['opponent']['evaluation_context']['frozen_opponent_sha256']!=after['opponent']['evaluation_context']['frozen_opponent_sha256']:
+                raise ValueError('Adaptation must use one frozen learned opponent.')
+            for shift,record,alpha in [(-.17,before['opponent'],.35),(.17,after['opponent'],1.)]:
+                axes[2].bar(index+shift,_source_rate(record),width=.32,color=scope_colors[label],alpha=alpha)
+            retention=source_paired({'fresh':after['APF']},{'fresh':before['APF']},repetitions=100)
+            axes[2].text(index,3,f'APF {retention["difference_pp"]:+.1f}',ha='center',fontsize=5.5)
+        axes[2].set(xticks=range(4),xticklabels=['Value\nonly','Source\nMLP','Full','Joint\nMLP'],
+            ylim=(0,108),ylabel='Success (%)',title='(c) Learned-opponent recovery')
+        axes[2].tick_params(axis='x',labelsize=6)
+        axes[2].text(.5,-.27,'128 fresh paired layouts; light: before, dark: after\nAPF: paired retention change (pp)',
+            ha='center',transform=axes[2].transAxes,fontsize=6)
     _source_save(fig,directory,'fig7-scope-adaptation')
 
     fig,axes=plt.subplots(1,3,figsize=(7.2,3.2),layout='constrained')
@@ -1021,6 +1343,15 @@ def source_result_figures(data, directory):
     pretty=['Source','Joint base','Independent','Refined joint','Value only','Reference full',
             'Matched MLP','Refit full','Refit MLP']
     groups={label:[r for r in data['vrx'] if r['comparison_label']==label] for label in labels}
+    new_labels=['F00','F10','independent','F01','ordinary_F01','ordinary_F11','F11']
+    new_groups={label:[r for r in data.get('six_source_vrx',[]) if r['comparison_label']==label]
+                for label in new_labels}
+    new_vrx_ready=len(expected_scope)==7 and all(len(new_groups[label])==8 and all(
+        record.get('passed') and record.get('selected_checkpoint_sha256')==expected_scope[label]
+        for record in new_groups[label]) for label in new_labels)
+    if new_vrx_ready:
+        labels=new_labels;groups=new_groups
+        pretty=[scope_labels[label] for label in labels]
     if not all(len(v)==8 for v in groups.values()):
         raise ValueError('VRX figure requires all eight paired scenes for every displayed method.')
     identities=[[(r['setting'],r['agility'],r['seed']) for r in groups[label]] for label in labels]
@@ -1035,15 +1366,31 @@ def source_result_figures(data, directory):
     axes[0].set_yticks(range(len(labels)),pretty,fontsize=6.5);axes[0].invert_yaxis()
     axes[0].set(xlim=(0,8),xticks=(0,2,4,6,8),xlabel='Episodes',title='(a) Eight paired VRX scenes')
     axes[0].legend(fontsize=6,loc='lower left',bbox_to_anchor=(0,-.35),ncol=2)
-    scene_records=[next(r for r in groups[label] if r['seed']==432461)
-                   for label in ('full-r61','full-r97-short-response')]
+    pair_labels=('full-r61','full-r97-short-response');scene_key=(1,2.5,432461)
+    if new_vrx_ready:
+        pair_labels=('F10','F11')
+        scene_key=min((r['setting'],r['agility'],r['seed']) for r in groups['F11'])
+        found=False
+        for left,right in [('F10','F11'),('ordinary_F11','F11'),('independent','F10')]:
+            first={(r['setting'],r['agility'],r['seed']):r for r in groups[left]}
+            second={(r['setting'],r['agility'],r['seed']):r for r in groups[right]}
+            rescues=[key for key in sorted(first) if not first[key]['success'] and second[key]['success']]
+            if rescues:
+                pair_labels=(left,right);scene_key=rescues[0];found=True;break
+        if not found:
+            first={(r['setting'],r['agility'],r['seed']):r for r in groups['F10']}
+            failures=sorted((r['setting'],r['agility'],r['seed']) for r in groups['F11'] if not r['success'])
+            if failures:scene_key=failures[0]
+    scene_records=[next(r for r in groups[label] if (r['setting'],r['agility'],r['seed'])==scene_key)
+                   for label in pair_labels]
     scene_xy=np.concatenate([np.concatenate((np.asarray(r['trace']['AttPos']).reshape(-1,2),
         np.asarray(r['trace']['DefPos']).reshape(-1,2))) for r in scene_records])
     bounds=np.vstack((scene_xy.min(0)-4,scene_xy.max(0)+4))
     bounds[0]=np.minimum(bounds[0],[-17,-17]);bounds[1]=np.maximum(bounds[1],[17,17])
-    for ax,label,title in ((axes[1],'full-r61','(b) Reference: breach'),
-                           (axes[2],'full-r97-short-response','(c) Refit: capture')):
-        record=next(r for r in groups[label] if r['seed']==432461)
+    for letter,ax,label,record in zip(('b','c'),axes[1:],pair_labels,scene_records):
+        outcome='capture' if record['success'] else 'collision' if record['defender_collision'] else 'breach'
+        name=scope_labels[label] if new_vrx_ready else ('Reference' if label=='full-r61' else 'Refit')
+        title=f'({letter}) {name}: {outcome}'
         trace=record['trace'];attacker=np.asarray(trace['AttPos']);defenders=np.asarray(trace['DefPos']).reshape(-1,6,2)
         ax.add_patch(Circle((0,0),15,ec='#84929C',fc='#EDF2F5',lw=.8))
         ax.plot(*attacker.T,color='#D17B27',lw=1.6)
@@ -1067,9 +1414,53 @@ def build_source_evidence(path, directory):
                             ('complete_vs_predecessor','F11','F10'),
                             ('conditional_vs_ordinary','F11','ordinary')]:
         comparisons[name]=source_paired(numerical[left],numerical[right])
+        comparisons[name]['task_outcomes']=source_task_consequences(numerical[left],numerical[right])
     if data.get('catalog_ranking'):
         data['ranking_summary'] = source_ranking_summary(data['catalog_ranking'])
         comparisons['random_candidate_ranking'] = data['ranking_summary']
+    refined=data.get('refined_value',{})
+    if refined and all(refined.get(label,{}).get('evaluations') and
+            all(refined[label]['evaluations'].values()) for label in ('conditional','ordinary')):
+        for label,right in [('refined_predecessor',refined['predecessor']),
+                            ('matched_ordinary',refined['ordinary']['evaluations'])]:
+            comparison=source_paired(refined['conditional']['evaluations'],right)
+            comparison['task_outcomes']=source_task_consequences(refined['conditional']['evaluations'],right)
+            comparisons['refitted_conditional_vs_'+label]=comparison
+        if refined.get('choice_validation'):
+            refined['ranking_summary']=source_ranking_summary(refined['choice_validation'])
+            comparisons['refitted_random_candidate_ranking']=refined['ranking_summary']
+    six_value=data.get('six_source_value',{})
+    if six_value and all(six_value.get(label,{}).get('evaluations') and
+            all(six_value[label]['evaluations'].values()) for label in ('conditional','ordinary')):
+        for label,right in [('predecessor',six_value['predecessor']),
+                            ('tuned_ordinary',six_value['ordinary']['evaluations'])]:
+            comparison=source_paired(six_value['conditional']['evaluations'],right)
+            comparison['task_outcomes']=source_task_consequences(six_value['conditional']['evaluations'],right)
+            comparisons['six_source_conditional_vs_'+label]=comparison
+        six_value['ranking_summary']=source_ranking_summary(six_value['choice_validation'])
+        comparisons['six_source_random_candidate_ranking']=six_value['ranking_summary']
+    for seed,configuration in data.get('six_source_configurations',{}).items():
+        if all(configuration.get(label,{}).get('evaluations') and
+                all(configuration[label]['evaluations'].values()) for label in ('F01','ordinary_F01')):
+            left=configuration['F01']['evaluations'];right=configuration['ordinary_F01']['evaluations']
+            contrast=source_paired(left,right)
+            contrast['task_outcomes']=source_task_consequences(left,right)
+            comparisons[f'six_source_F01_vs_tuned_ordinary_seed{seed}']=contrast
+    for label,entry in data.get('ordinary_margin_controls',{}).items():
+        if entry.get('evaluations') and all(entry['evaluations'].values()):
+            comparisons['conditional_vs_plain_'+label]=source_paired(numerical['F11'],entry['evaluations'])
+    for family,seeds in data.get('trained_source_baselines',{}).items():
+        for seed,entry in seeds.items():
+            if entry.get('evaluations') and all(entry['evaluations'].values()):
+                comparisons[f'reference_complete_vs_fully_trained_{family}_seed{seed}']=source_paired(
+                    numerical['F11'],entry['evaluations'])
+    for seed,entry in data.get('same_fleet_m1',{}).items():
+        if all(entry.get(kind,{}).get('evaluations') and all(entry[kind]['evaluations'].values())
+                for kind in ('joint','independent')):
+            comparison=source_paired(entry['joint']['evaluations'],entry['independent']['evaluations'])
+            comparison['task_outcomes']=source_task_consequences(
+                entry['joint']['evaluations'],entry['independent']['evaluations'])
+            comparisons[f'same_fleet_joint_vs_independent_seed{seed}']=comparison
     source_method_figures(data,directory)
     source_result_figures(data,directory)
     print(json.dumps(dict(role=data['role'],comparisons=comparisons,output=str(directory)),indent=2))

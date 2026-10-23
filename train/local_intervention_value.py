@@ -1104,8 +1104,14 @@ class PlainJointReturnDecision(nn.Module):
     def __init__(self, width, states, options, defenders, peer_conditioned=True,
                  context_conditioned=True, motion_basis=True, decision_period=5,
                  inference_device=None, residual_potential=False, finite_motion_basis=False, dual_motion_basis=False,
-                 identity_conditioned=False):
+                 identity_conditioned=False, gain_margin=0., intervention_budget=0):
         super().__init__()
+        if not np.isfinite(gain_margin) or not 0. <= gain_margin <= 1.:
+            raise ValueError('The ordinary graph-return margin must lie between zero and one.')
+        if not isinstance(intervention_budget, int) or intervention_budget < 0:
+            raise ValueError('The ordinary graph-return intervention budget must be a nonnegative integer.')
+        self.gain_margin = float(gain_margin)
+        self.intervention_budget = intervention_budget
         self.models = nn.ModuleList([JointTaskPotential(width, peer_conditioned,
             context_conditioned=context_conditioned, motion_basis=motion_basis,
             residual_potential=residual_potential, finite_motion_basis=finite_motion_basis,
@@ -1120,7 +1126,10 @@ class PlainJointReturnDecision(nn.Module):
         self.ordinary = True
 
     def eligible(self, packet):
-        return (packet['node'][:, 0, 15]*400.).round().long() % self.decision_period == 0
+        eligible = (packet['node'][:, 0, 15]*400.).round().long() % self.decision_period == 0
+        if self.intervention_budget and '_conditional_count' in packet:
+            eligible &= packet['_conditional_count'].flatten() < self.intervention_budget
+        return eligible
 
     @torch.no_grad()
     def prepare_packet(self, actor, packet, action):
@@ -1158,6 +1167,9 @@ class PlainJointReturnDecision(nn.Module):
             self.options[:, 1:], responses=responses).sigmoid() for net in self.models]).mean(0)
         choice = values.argmax(-1)
         accept = eligible & (choice != 0)
+        if self.gain_margin:
+            gain = values.gather(1, choice[:, None]).squeeze(1)-values[:, 0]
+            accept &= gain > self.gain_margin
         if not bool(accept.any()):
             return action.to(return_device)
         preference = self.models[0].coefficients[self.programs[choice]]
@@ -1206,6 +1218,61 @@ def fit_factual_probability_calibration(probability, target, weight=None, ridge=
         mean_calibrated=float(weight@fitted), ridge=ridge)
 
 
+def fit_factual_logit_calibration(probability, target, weight=None, ridge=1e-3):
+    """Fit a monotone logit map on the same held-out factual population.
+
+    Unlike a line in probability space, this map does not impose learned
+    nonzero and subunit endpoints. Its nonnegative slope preserves ordering.
+    Weighted binomial likelihood and an identity ridge form a convex problem.
+    """
+    probability = np.asarray(probability, np.float64)
+    target = np.asarray(target, np.float64)
+    weight = np.ones_like(target) if weight is None else np.asarray(weight, np.float64)
+    if (probability.ndim != 1 or probability.shape != target.shape or weight.shape != target.shape
+            or not len(target) or not np.isfinite(np.concatenate((probability, target, weight))).all()
+            or np.any((probability < 0) | (probability > 1) | (target < 0) | (target > 1))
+            or np.any(weight < 0) or weight.sum() <= 0 or not np.isfinite(ridge) or ridge <= 0):
+        raise ValueError('Factual calibration requires finite probabilities, outcomes and positive mass.')
+    weight = weight/weight.sum()
+    clipped = np.clip(probability, 1e-6, 1.-1e-6)
+    design = np.column_stack((np.log(clipped)-np.log1p(-clipped), np.ones(len(clipped))))
+    identity = np.array([1., 0.])
+    def objective(parameters):
+        logits = design@parameters
+        return weight@(np.logaddexp(0., logits)-target*logits)+.5*ridge*np.square(parameters-identity).sum()
+    parameters = identity.copy()
+    for _ in range(80):
+        logits = design@parameters
+        fitted = np.exp(-np.logaddexp(0., -logits))
+        gradient = design.T@(weight*(fitted-target))+ridge*(parameters-identity)
+        curvature = design.T@((weight*fitted*(1-fitted))[:, None]*design)+ridge*np.eye(2)
+        direction = (np.array([0., gradient[1]/curvature[1, 1]])
+                     if parameters[0] <= 1e-12 and gradient[0] >= 0 else
+                     np.linalg.solve(curvature, gradient))
+        previous = objective(parameters); accepted = False
+        for step in 2.**-np.arange(32):
+            candidate = parameters-step*direction
+            candidate[0] = max(0., candidate[0])
+            if objective(candidate) <= previous+1e-14:
+                accepted = True
+                break
+        if not accepted:
+            break
+        change = np.max(np.abs(candidate-parameters))
+        parameters = candidate
+        if change < 1e-10:
+            break
+    logits = design@parameters
+    fitted = np.exp(-np.logaddexp(0., -logits))
+    return parameters.astype(np.float32), dict(observations=len(target),
+        raw_brier=float(np.sum(weight*(probability-target)**2)),
+        calibrated_brier=float(np.sum(weight*(fitted-target)**2)),
+        raw_log_loss=float(weight@(np.logaddexp(0., design[:, 0])-target*design[:, 0])),
+        calibrated_log_loss=float(weight@(np.logaddexp(0., logits)-target*logits)),
+        mean_outcome=float(weight@target), mean_prediction=float(weight@probability),
+        mean_calibrated=float(weight@fitted), ridge=ridge, map='monotone logit')
+
+
 def factual_crossfit_groups(roots, factual_bank, members, seed):
     """Keep every future and trajectory state of one layout in one fold."""
     def scene(record):
@@ -1244,9 +1311,9 @@ class LocalDifferenceDecision(nn.Module):
                  stratum_value_bounds=False, stratum_localized_bounds=False,
                  factual_difference_transport=False, continuation_factual_only=False,
                  outcome_scaled_confidence=False, factual_risk_confidence=False,
-                 neural_factual_calibration=None,
+                 neural_factual_calibration=None, neural_factual_calibration_kind='probability',
                  finite_motion_basis=False, dual_motion_basis=False, fleet_transfer=None,
-                 identity_conditioned=False):
+                 identity_conditioned=False, factual_probability_calibration=True):
         super().__init__()
         self.conditional_strata = conditional_strata
         self.models = nn.ModuleList([JointTaskPotential(width, peer_conditioned,
@@ -1256,11 +1323,20 @@ class LocalDifferenceDecision(nn.Module):
             net.load_state_dict(state)
         calibration = (None if neural_factual_calibration is None else
                        torch.as_tensor(np.asarray(neural_factual_calibration), dtype=torch.float32))
-        if calibration is not None and (not conditional_strata or ordinary
-                or calibration.shape != (len(states), 2) or not torch.isfinite(calibration).all()
-                or (calibration < 0).any() or (calibration > 1).any()
-                or (calibration[:, 0] > calibration[:, 1]).any()):
-            raise ValueError('Factual probability maps need bounded monotone endpoints for every stratum model.')
+        if neural_factual_calibration_kind not in ('probability', 'logit'):
+            raise ValueError('Unknown factual probability calibration map.')
+        if calibration is not None:
+            if (not conditional_strata or ordinary or calibration.shape != (len(states), 2)
+                    or not torch.isfinite(calibration).all()):
+                raise ValueError('Factual probability maps require two finite parameters for every stratum model.')
+            if (neural_factual_calibration_kind == 'probability' and
+                    ((calibration < 0).any() or (calibration > 1).any()
+                     or (calibration[:, 0] > calibration[:, 1]).any())):
+                raise ValueError('Factual probability maps need bounded monotone endpoints for every stratum model.')
+            if neural_factual_calibration_kind == 'logit' and (calibration[:, 0] < 0).any():
+                raise ValueError('Factual logit calibration must preserve probability ordering.')
+        self.neural_factual_calibration_kind = neural_factual_calibration_kind
+        self.factual_probability_calibration = factual_probability_calibration
         self.register_buffer('neural_factual_calibration', calibration)
         self.ordinary = ordinary
         if identity_conditioned and align_context_roles:
@@ -1491,6 +1567,19 @@ class LocalDifferenceDecision(nn.Module):
         local = torch.where(count[None, None] > 0, local, global_distance[:, :, None])
         return torch.maximum(global_distance[:, :, None], local)
 
+    def calibrate_factual_probability(self, probability, member=None):
+        if not self.factual_probability_calibration or self.neural_factual_calibration is None:
+            return probability
+        parameters = self.neural_factual_calibration
+        if member is None:
+            shape = (-1,)+(1,)*(probability.ndim-1)
+            left, right = (parameters[:, index].reshape(shape) for index in (0, 1))
+        else:
+            left, right = parameters[member]
+        if self.neural_factual_calibration_kind == 'logit':
+            return (left*torch.logit(probability.clamp(1e-6, 1.-1e-6))+right).sigmoid()
+        return left+(right-left)*probability
+
     def values(self, context, controls, continuation=None, relation=None, responses=None, factual_only=False,
                stratum=None, candidate_indices=None):
         all_values = []
@@ -1503,8 +1592,9 @@ class LocalDifferenceDecision(nn.Module):
         if continuation is None:
             continuation = self.continuation_statistics(context, controls)
         factual_reference = influence = factual_mass = None
+        calibrate_factual = getattr(self, 'factual_probability_calibration', True)
         continuation_only = getattr(self, 'continuation_factual_only', False)
-        if not self.ordinary and self.factual_values is not None and not continuation_only:
+        if calibrate_factual and not self.ordinary and self.factual_values is not None and not continuation_only:
             distance, _ = self.context_relation(context, controls) if relation is None else relation
             kernels = torch.exp(-distance/(2*self.bandwidth**2))
             weights = kernels/(distance+1e-6).pow(self.interpolation_power)
@@ -1525,9 +1615,7 @@ class LocalDifferenceDecision(nn.Module):
                     raw = catalog.sigmoid()
             if self.conditional_strata:
                 baseline = raw[:, :1, 0]
-                if self.neural_factual_calibration is not None:
-                    low, high = self.neural_factual_calibration[member]
-                    baseline = low+(high-low)*baseline
+                baseline = self.calibrate_factual_probability(baseline, member)
                 if self.joint_factual_calibration and continuation is not None and factual_reference is not None:
                     reference, locality, _, _, mass = continuation
                     # Pool both sets of factual evidence once. In particular,
@@ -1536,7 +1624,7 @@ class LocalDifferenceDecision(nn.Module):
                     combined = (mass*reference+factual_mass*factual_reference)/(mass+factual_mass).clamp_min(1e-8)
                     locality = torch.maximum(locality, influence)
                     baseline = (1-locality[:, None])*baseline+locality[:, None]*combined[:, None]
-                else:
+                elif calibrate_factual:
                     if continuation is not None:
                         reference, locality, _, _ = continuation[:4]
                         baseline = (1-locality[:, None])*baseline+locality[:, None]*reference[:, None]
@@ -1550,7 +1638,7 @@ class LocalDifferenceDecision(nn.Module):
                     values = self.reconstruct_values(net, encoded, context, values, baseline)
             else:
                 values = raw
-                if not self.ordinary and (factual_reference is not None
+                if calibrate_factual and not self.ordinary and (factual_reference is not None
                         or continuation_only and continuation is not None):
                     if continuation_only:
                         reference, locality = continuation[:2]
@@ -1668,9 +1756,7 @@ class LocalDifferenceDecision(nn.Module):
             responses).sigmoid() for net in self.models])
         if self.conditional_strata:
             factual = factual[..., 0]
-            if self.neural_factual_calibration is not None:
-                low, high = self.neural_factual_calibration.unbind(-1)
-                factual = low[:, None]+(high-low)[:, None]*factual
+            factual = self.calibrate_factual_probability(factual)
         penalty = self.confidence_at(factual.mean(0))*self.global_penalty
         possible = eligible & (1-factual.mean(0)-penalty > self.margin)
         if not bool(possible.any()):
@@ -1929,7 +2015,8 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
                         additional_candidate_options=(), factual_difference_transport=False,
                         effective_future_confidence=False, finite_motion_basis=False, dual_motion_basis=False,
                         response_supervision_weight=0., identity_conditioned=False,
-                        snapshot_updates=(), root_sampling_fraction=0., factual_crossfit=False):
+                        snapshot_updates=(), root_sampling_fraction=0., factual_crossfit=False,
+                        factual_calibration_kind='probability'):
     from plain_return import root_sampling_probabilities
     if not np.isfinite(response_supervision_weight) or response_supervision_weight < 0:
         raise ValueError('Response supervision must have a finite nonnegative weight.')
@@ -1941,13 +2028,13 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         raise ValueError('Ordinary return learning cannot inherit conditional parameters.')
     if updates < 0 or (updates == 0 and initial_states is None):
         raise ValueError('Calibration without optimizer updates requires a fitted parameter prior.')
-    if ordinary and additional_candidate_options:
-        raise ValueError('An ordinary fit derives its catalog from its own observations.')
     if initial_states is not None and len(initial_states) != ensemble_size:
         raise ValueError('Warm initialization must provide every ensemble member.')
     if factual_crossfit and (ordinary or not conditional_strata or ensemble_size < 2
                             or initial_states is not None):
         raise ValueError('Factual cross-fitting requires fresh conditional-stratum ensemble members.')
+    if factual_calibration_kind not in ('probability', 'logit'):
+        raise ValueError('Unknown factual probability calibration map.')
     snapshot_updates = tuple(sorted(set(map(int, snapshot_updates))))
     if any(step <= 0 or step > updates or step % ensemble_size for step in snapshot_updates):
         raise ValueError('Learning snapshots need positive total budgets shared equally across ensemble members.')
@@ -1969,7 +2056,8 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         return fit_plain_return(data, output, factual_bank=factual_bank, updates=updates,
             parameter_budget=capacity, seed=seed, device=device, factual_bank_weight=factual_bank_weight,
             identity_conditioned=identity_conditioned, snapshot_updates=snapshot_updates,
-            root_sampling_fraction=root_sampling_fraction)
+            root_sampling_fraction=root_sampling_fraction,
+            additional_candidate_options=additional_candidate_options)
     roots = [observed_programs(root) for root in data['roots']]
     n = len(roots[0]['effect_controls'])
     if any(len(root['context']) != (8+identity_conditioned)*n+5 for root in roots):
@@ -2169,7 +2257,9 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
                     predictions.append(estimate.cpu().numpy())
                     labels.append(continuation_target[index].cpu().numpy())
                     masses.append(bank_state_weights[chosen])
-            parameters, diagnostics = fit_factual_probability_calibration(
+            calibrate = (fit_factual_logit_calibration if factual_calibration_kind == 'logit' else
+                         fit_factual_probability_calibration)
+            parameters, diagnostics = calibrate(
                 np.concatenate(predictions), np.concatenate(labels), np.concatenate(masses))
             diagnostics.update(held_out_fold=member, paired_roots=len(ids),
                 held_out_layouts=sum(fold == member for fold in layout_folds.values()),
@@ -2320,6 +2410,7 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         context_time_scale=context_time_scale, interpolation_power=interpolation_power,
         conditional_strata=conditional_strata,
         neural_factual_calibration=np.asarray(factual_calibrations) if factual_crossfit else None,
+        neural_factual_calibration_kind=factual_calibration_kind,
         factual_difference_transport=factual_difference_transport and not ordinary,
         factual_values=factual_population.cpu() if not ordinary else None,
         project_task_value=True, commit_factual=False,
@@ -2375,6 +2466,7 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
     model['successor_task_fit'] = dict(ordinary=ordinary, roots=len(roots),
         root_sampling_fraction=root_sampling_fraction,
         factual_crossfit=factual_crossfit,
+        factual_calibration_kind=factual_calibration_kind,
         factual_calibration_diagnostics=factual_calibration_diagnostics,
         factual_crossfit_root_folds=None if root_folds is None else root_folds.tolist(),
         factual_crossfit_trajectory_folds=None if bank_folds is None else bank_folds.tolist(),
@@ -2846,6 +2938,7 @@ def collect_local_tasks(policy, root_tasks, output, *, spans=(10, 40, 200), repe
                             future_control = c.paired_effect_controls(actor, successor, native)
                         outcomes[entry].update(continuation_context=future_context[0].numpy(),
                             continuation_controls=future_control[0, future_order[0]].numpy(),
+                            continuation_order=future_order[0].numpy(),
                             continuation_remaining=row['physical_steps']-response['steps'])
                     steps += row['physical_steps']
             if adaptive_screen:
@@ -2961,10 +3054,13 @@ def paired_continuation_bank(data):
         for (q, f), value in root['outcomes'].items():
             if 'continuation_context' not in value or value.get('reused_prefix') or value.get('reused_terminal_prefix'):
                 continue
-            records.append(dict(contexts=value['continuation_context'][None],
+            record = dict(contexts=value['continuation_context'][None],
                 controls=value['continuation_controls'][None], values=np.asarray([value['success']], np.float32),
                 remaining=np.asarray([value['continuation_remaining']], np.float32), scene=root['scene'],
-                future=root['futures'][f], option=root['options'][q], physical_steps=0))
+                future=root['futures'][f], option=root['options'][q], physical_steps=0)
+            if 'continuation_order' in value:
+                record['orders'] = np.asarray(value['continuation_order'])[None].copy()
+            records.append(record)
     return dict(records=records, predecessor_sha256=data['predecessor_sha256'], simulation_steps=0,
         trajectories=len(records), state_labels=len(records), completed=data['completed'],
         supervision='terminal result at observed post-option predecessor states; no extra environment interaction')
@@ -3267,6 +3363,133 @@ def source_successor_batches(tasks, *, batch_size=128, device='cpu'):
     return result
 
 
+def breadth_local_design(blueprint, candidate_options, *, pairs_per_root=6, repetitions=2, seed=0):
+    """Allocate fresh paired queries to every root without inspecting labels.
+
+    Each queried edge changes one vessel at a common intervention window.
+    Stratifying edges by plan size and window spreads the bounded root budget
+    over the deployment catalog, including roots previously sampled only
+    factually. The returned outcomes contain scheduling bounds, never labels.
+    """
+    if pairs_per_root < 1 or repetitions < 1:
+        raise ValueError('Breadth sampling requires positive pair and future counts.')
+    options = [(0, 0, 0)]+sorted(set(map(tuple, candidate_options))-{(0, 0, 0)})
+    if any(code < 0 or delay < 0 or span < 0 or (code and span == 0)
+           for code, delay, span in options):
+        raise ValueError('Use valid finite intervention programs.')
+    rng = np.random.default_rng(seed)
+    by_fleet = {}
+    roots = []
+    signatures = []
+    for root_id, original in enumerate(blueprint['roots']):
+        scene = tuple(original['scene']); n = int(scene[1])
+        if n not in by_fleet:
+            if any(code >= 10**n for code, _, _ in options):
+                raise ValueError('The candidate catalog must match every root fleet.')
+            groups = {}
+            for a, b in local_edges(options, n):
+                code, delay, span = options[b]
+                held = max(sum(code//10**boat % 10 != 0 for boat in range(n))
+                           for code in (options[a][0], options[b][0]))
+                groups.setdefault((held, delay, span), []).append((a, b))
+            if not groups:
+                raise ValueError('The catalog has no single-vessel comparison edges.')
+            by_fleet[n] = [groups[key] for key in sorted(groups)]
+        groups = by_fleet[n]
+        group_order = rng.permutation(len(groups))
+        selected = {0}
+        for index in range(pairs_per_root):
+            group = groups[group_order[index % len(groups)]]
+            selected.update(group[int(rng.integers(len(group)))])
+        chosen = [options[index] for index in sorted(selected)]
+        futures = []
+        while len(futures) < repetitions:
+            future = int(rng.integers(1, 2**32-1))
+            if future not in futures:
+                futures.append(future)
+        root = dict(scene=scene, prefix_future=original['prefix_future'],
+            root_steps=int(original['root_steps']), lookback=original.get('lookback'),
+            options=chosen, futures=futures, future_weights=np.ones(repetitions, np.float32),
+            outcomes={(q, f): dict(duration=400) for q in range(len(chosen))
+                      for f in range(repetitions)}, blueprint_root=root_id)
+        roots.append(root)
+        signatures.append((scene, root['prefix_future'], root['root_steps'], root['lookback'],
+                           tuple(chosen), tuple(futures)))
+    design = dict(kind='breadth_local_pairs', seed=int(seed), pairs_per_root=int(pairs_per_root),
+        repetitions=int(repetitions), roots=len(roots), maximum_observations_per_root=
+        (1+2*pairs_per_root)*repetitions, planned_observations=sum(len(x['outcomes']) for x in roots),
+        catalog_sha256=hashlib.sha256(repr(options).encode()).hexdigest(),
+        design_sha256=hashlib.sha256(repr(signatures).encode()).hexdigest(),
+        inherited_labels=False, allocation='uniform plan-size/window strata; fresh paired futures')
+    return dict(roots=roots, acquisition_design=design)
+
+
+def _recollect_breadth_root(task):
+    import tempfile
+    policy, root_id, root, inference_batch, inference_device = task
+    # Keep only the combined acquisition on disk. The single-root collector
+    # uses its existing bounded replay path and removes its temporary state.
+    with tempfile.TemporaryDirectory(prefix='arboids-local-root-') as temporary:
+        value = recollect_local_design(policy, dict(roots=[root]),
+            Path(temporary)/'root.pth', simulation_budget=800+400*len(root['outcomes']),
+            workers=1, inference_batch=inference_batch, inference_device=inference_device)
+    if not value['all_design_roots_measured'] or len(value['roots']) != 1:
+        raise ValueError('A breadth root did not finish all its paired queries.')
+    measured = value['roots'][0]
+    measured['design_root'] = root_id
+    return measured, value['simulation_steps']
+
+
+def recollect_breadth_design(policy, blueprint, output, *, workers=4,
+                            inference_batch=32, inference_device='cpu'):
+    """Parallelize bounded roots while keeping every branch batch unchanged."""
+    import develop_source_fusion as d
+    import run_remote_evidence as r
+    policy = Path(policy); output = Path(output)
+    design = blueprint.get('acquisition_design')
+    if design is None or design.get('kind') != 'breadth_local_pairs':
+        raise ValueError('Root-parallel acquisition requires a bounded breadth design.')
+    if workers < 1 or inference_batch < 0:
+        raise ValueError('Use a positive worker count and nonnegative branch batch size.')
+    digest = hashlib.sha256(policy.read_bytes()).hexdigest()
+    result = (torch.load(output, map_location='cpu', weights_only=False) if output.exists() else
+        dict(model=torch.load(policy, map_location='cpu', weights_only=False), roots=[],
+            predecessor_sha256=digest, acquisition_design=copy.deepcopy(design),
+            simulation_steps=0, next_design_root=0, completed=False, inherited_labels=False,
+            training_data=str(output), inference_batch=inference_batch,
+            inference_device=inference_device, root_dispatch_kind='independent_bounded_roots'))
+    if (result['predecessor_sha256'] != digest or result['acquisition_design'] != design
+            or result['inference_batch'] != inference_batch or result['inference_device'] != inference_device):
+        raise ValueError('The saved breadth data uses a different predecessor, design or branch batch.')
+    if result['model'].get('successor_task_value') is not None:
+        raise ValueError('Breadth sampling requires its frozen controller without M2.')
+    if result['completed']:
+        return result
+    if (not 0 <= result['next_design_root'] <= len(blueprint['roots']) or
+            [root['design_root'] for root in result['roots']] != list(range(result['next_design_root']))):
+        raise ValueError('The saved breadth roots must retain their original design order.')
+    result.update(workers=workers, design_root_count=len(blueprint['roots']),
+        planned_step_ceiling=sum(800+400*len(root['outcomes']) for root in blueprint['roots']))
+    pending = [(str(policy), index, blueprint['roots'][index], inference_batch, inference_device)
+               for index in range(result['next_design_root'], len(blueprint['roots']))]
+    with (ProcessPoolExecutor(max_workers=workers, initializer=r.initialize_source_branches,
+          initargs=(str(d.SOURCE),)) if workers > 1 else nullcontext(None)) as pool:
+        measured = pool.map(_recollect_breadth_root, pending, chunksize=1) if pool else map(_recollect_breadth_root, pending)
+        for root, steps in measured:
+            result['roots'].append(root)
+            result['simulation_steps'] += steps
+            result['next_design_root'] += 1
+            if len(result['roots']) % 4 == 0 or len(result['roots']) == len(blueprint['roots']):
+                output.parent.mkdir(parents=True, exist_ok=True)
+                r.atomic_save(result, output)
+                print(dict(phase='breadth_root_collection', roots=len(result['roots']),
+                    total=len(blueprint['roots']), physical_steps=result['simulation_steps']), flush=True)
+    result.update(completed=True, all_design_roots_measured=True,
+        measured_terminal_observations=sum(len(root['outcomes']) for root in result['roots']))
+    r.atomic_save(result, output)
+    return result
+
+
 def recollect_local_design(policy, blueprint, output, *, simulation_budget, workers=4,
                            inference_batch=0, inference_device='cpu'):
     """Re-measure a local comparison design under a replacement predecessor.
@@ -3295,6 +3518,11 @@ def recollect_local_design(policy, blueprint, output, *, simulation_budget, work
                    simulation_budget=int(simulation_budget), inherited_labels=False))
     if result['predecessor_sha256'] != digest or result['simulation_budget'] != simulation_budget:
         raise ValueError('The saved replacement data belongs to a different predecessor or budget.')
+    design = blueprint.get('acquisition_design')
+    if result.get('acquisition_design') != design and (result['roots'] or result.get('partial_root')):
+        raise ValueError('The saved replacement data uses a different acquisition design.')
+    if design is not None:
+        result['acquisition_design'] = copy.deepcopy(design)
     if result['completed']:
         return result
     result.update(inference_batch=inference_batch, inference_device=inference_device,
@@ -3406,6 +3634,7 @@ def recollect_local_design(policy, blueprint, output, *, simulation_budget, work
                             later_control = c.paired_effect_controls(actor, successor, native)
                         item.update(continuation_context=later_context[0].numpy(),
                             continuation_controls=later_control[0, later_order[0]].numpy(),
+                            continuation_order=later_order[0].numpy(),
                             continuation_remaining=row['physical_steps']-response['steps'])
                     outcomes[key] = item
                     result['simulation_steps'] += row['physical_steps']
@@ -3435,6 +3664,9 @@ def recollect_local_design(policy, blueprint, output, *, simulation_budget, work
             if position < len(keys):
                 break
     result.update(completed=True, measured_terminal_observations=sum(
-        len(root['outcomes']) for root in result['roots']))
+        len(root['outcomes']) for root in result['roots']), design_root_count=len(blueprint['roots']),
+        all_design_roots_measured=result['next_design_root'] == len(blueprint['roots']) and
+            all(len(root['outcomes']) == len(observed_programs(blueprint['roots'][root['design_root']])['outcomes'])
+                for root in result['roots']))
     r.atomic_save(result, output)
     return result

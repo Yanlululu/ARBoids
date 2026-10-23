@@ -13,7 +13,7 @@
 \maketitle
 
 \begin{abstract}
-Cooperative target defense requires the control choices of individual vessels to form a successful team maneuver. We address two distinct decisions in learned--Boids controller fusion: which combination of fusion coefficients the fleet should execute, and when changing a local fusion decision improves the subsequent defense outcome. First, a candidate-interaction model predicts the motion induced by each vessel's admissible actuator mixtures and selects a joint configuration using their pairwise consequences. Second, a conditional intervention value model learns a shared task potential from complete, paired feedback continuations. Single-vessel differences identify useful changes within a joint configuration, while factual outcome calibration and intervention timing guide deployment. In completed development comparisons, the refined joint selector improves success by 10.7 percentage points over independent selection with identical candidates and predictions. The complete method achieves 95.2\% success across 856 development episodes, exceeding its frozen fusion predecessor by 9.0 points and a matched ordinary return MLP by 14.4 points. Five independent value fits retain an average 10.2-point advantage over the MLP. These results distinguish joint-selection gains from conditional-value gains; separate held-out, independently retrained baseline, opponent-adaptation, and high-fidelity evaluations determine their final empirical scope.
+Cooperative target defense requires the control choices of individual vessels to form a successful team maneuver. We address two distinct decisions in learned--Boids controller fusion: which combination of fusion coefficients the fleet should execute, and when changing a local fusion decision improves the subsequent defense outcome. First, a candidate-interaction model predicts the motion induced by each vessel's admissible actuator mixtures and selects a joint configuration using their pairwise consequences. Second, a conditional intervention value model learns a shared task potential from complete, paired feedback continuations. Single-vessel differences identify useful changes within a joint configuration; separate rescue and harm predictions, factual calibration, and intervention timing guide deployment. With a fully trained six-vessel source, the complete method achieves 97.0\% success on 856 development episodes for training seed 42, exceeding ARBoids by 29.4 points and the residual policy by 57.1 points. Matched comparisons separate an 8.1-point joint-selection gain, a further 4.1-point intervention gain, and a 3.0-point advantage over an ordinary-return MLP with a development-selected decision threshold. On new states, conditional value ranks randomly sampled interventions correctly in 73.5\% of informative comparisons, versus 49.2\% for the MLP. These results distinguish joint-selection gains, intervention gains, and value-ranking accuracy; complete independent training and held-out evaluation determine their final empirical scope.
 \end{abstract}
 \begin{IEEEkeywords}
 Multi-USV target defense, cooperative control, controller fusion, joint decision making, conditional intervention value.
@@ -32,8 +32,8 @@ The contributions are:
 \begin{itemize}
 \item A joint fusion rule that resolves interactions between actuator-level learned--Boids candidates while preserving the original control hull.
 \item A conditional intervention value model that connects paired single-vessel consequences to a shared complete-plan task potential, with a measured factual reference and explicit intervention timing.
-\item A mechanism-centered evaluation that separates whole-method performance, joint-selection benefit, and the increment over ordinary return learning, with paired failures and successful rescues retained in every comparison.
 \end{itemize}
+We test these contributions through separate comparisons of whole-method performance, matched joint and independent selection, and conditional versus ordinary return learning. Paired successes and failures identify the rescues and harms behind each increment.
 
 \begin{figure}[t]
 \centering\includegraphics[width=\columnwidth]{fig1-task.pdf}
@@ -63,7 +63,7 @@ Let $u_i^{\mathrm{L}}$ and $u_i^{\mathrm{B}}$ be the current learned and Boids t
 \end{equation}
 Allowing separate port and starboard coefficients gives the same admissible representation to joint and independent selectors. Both coefficients remain within the original componentwise control hull. The source adapter supplies a scalar preference, which is mapped to a bounded center $\bar g_i$ and shared by the two actuators. Each actuator chooses from $\{0,\bar g_i,1\}$, giving nine candidates per vessel. Duplicate candidates are coalesced.
 
-The three-vessel source SAC policy is the common pretrained control source in the current six-vessel mechanism studies. Its mean teammate embedding permits the observation mapping to other fleet sizes. Training a source policy directly with six vessels is a separate baseline experiment; its results are not replaced by this transfer baseline.
+The primary comparisons train the source policies directly with six vessels for one million steps. Joint selection, independent selection, and both value learners reuse the same selected ARBoids source weights. The source policy's mean teammate embedding permits observations from other fleet sizes. Earlier experiments transferring a three-vessel source to six vessels are reported as a separate supporting comparison.
 
 \begin{figure}[t]
 \centering\includegraphics[width=\columnwidth]{fig2-architecture.pdf}
@@ -107,7 +107,7 @@ Thus both methods account for the same predicted candidate interactions. The com
 
 \begin{figure*}[t]
 \centering\includegraphics[width=\textwidth]{fig3-joint-fusion.pdf}
-\caption{Mechanism~1 on development scene 431019006. The top panels compare identical candidate forecasts at a common state at 1.2 s on the independent trajectory. The bottom panels replay both complete policies from the same initial state and future: independent selection collides at 1.8 s, whereas joint selection captures at 17.8 s. This illustration is the first joint rescue of an independent collision in the fixed 4310 row order.}
+\caption{Mechanism~1 with the fully trained six-vessel source on development scene 431020053. The top panels compare identical candidate forecasts at a common state at 13.4 s on the independent trajectory, where the selected pair has its largest predicted risk reduction. The complete joint objective decreases from 495.5 to 339.0. The bottom panels replay both policies from the same initial state and future: independent selection collides at 13.6 s, whereas joint selection captures at 70.6 s. This illustration is the first joint rescue of an independent collision in the fixed 4310 row order.}
 \label{fig:joint}
 \end{figure*}
 
@@ -129,7 +129,7 @@ The factual option $z_0$ follows $\pi_0$ throughout. Two complete options $z,z'$
 Common futures pair the outcomes; later controls are recomputed on each branch's evolved state. Full terminal outcomes include failed as well as successful branches. Sampling may emphasize development failures, but deployed decisions receive only the current context.
 
 \subsection{One task potential for local differences and complete plans}
-A candidate-conditioned graph network represents a shared scalar potential $V_\theta(x,z)\in[0,1]$. Node features contain vessel state, both source controls, the factual control, the intervention code, and its physical command change. Pair messages encode relative geometry and nominal response features. Fleet pooling and timing features produce the complete-plan value. Local differences use this same potential,
+A candidate-conditioned graph network represents a shared scalar potential $V_\theta(x,z)\in[0,1]$. Node features contain vessel state, both source controls, the factual control, the intervention code, its physical command change, and observable vessel identity. Nominal motion descriptors at 1, 2, and 4~s encode each candidate's position, velocity, heading, and change from factual motion. Pair messages combine relative geometry and predicted separation with both vessels' candidate-conditioned representations. Fleet pooling and timing features produce the complete-plan value. Local differences use this same potential,
 \begin{equation}
  \Delta_\theta(x;z,z')=V_\theta(x,z')-V_\theta(x,z).
 \end{equation}
@@ -137,19 +137,28 @@ Consequently, reversing a comparison reverses its sign, and differences sum to z
 
 The learning objective combines complete outcomes with their conditional differences:
 \begin{equation}
- \mathcal L=
+ \begin{aligned}
+ \mathcal L={}&
  \mathcal L_Y+4\mathcal L_{\mathrm{local}}
- +2\mathcal L_{\mathrm{factual}\Delta}
- +\mathcal L_{\mathrm{rank}}+4\mathcal L_{\mathrm{factual}}
- +\mathcal L_{\mathrm{bank}} .
+ +2\mathcal L_{\mathrm{factual}\Delta}+\mathcal L_{\mathrm{rank}}\\
+ &+4\mathcal L_{\mathrm{factual}}
+ +\mathcal L_{\mathrm{bank}}+\tfrac12\mathcal L_{\mathrm{stratum}} .
+ \end{aligned}
  \label{eq:loss}
 \end{equation}
-Here $\mathcal L_Y$ is binary outcome cross entropy, $\mathcal L_{\mathrm{local}}$ fits same-future single-vessel differences, and $\mathcal L_{\mathrm{factual}\Delta}$ fits differences from the factual option. The ranking term uses outcome-discordant pairs while retaining neutral pairs in its normalization. The last two terms anchor measured factual outcomes and additional states from complete factual trajectories. Sampling corrections retain the chosen comparison population.
+Here $\mathcal L_Y$ is binary outcome cross entropy, $\mathcal L_{\mathrm{local}}$ fits same-future single-vessel differences, and $\mathcal L_{\mathrm{factual}\Delta}$ fits differences from the factual option. The ranking term uses outcome-discordant pairs while retaining neutral pairs in its normalization. Factual and bank losses anchor observed factual outcomes and additional states from complete factual trajectories. The stratum loss fits intervention outcomes conditional on factual success or failure. Sampling corrections retain the chosen comparison population.
 
-Three width-64 models receive 8,000 updates each, for 24,000 total updates and 145,731 trainable parameters. The matched ordinary-return comparator is one three-hidden-layer ReLU MLP with width 234 and 145,783 parameters. It receives the same 66,451 unique terminal observations, derived labels, factual-state observations, candidate catalog, and 24,000 updates. Its objective is pooled absolute-outcome cross entropy and its decision is the maximum predicted return. The graph representation, paired objectives, factual calibration, and local support model are constituents of the proposed mechanism; matching network parameter count does not equate their extra calibration storage or inference cost.
+Three width-64 models receive 10,000 updates each, for 30,000 total updates and 146,319 fitted parameters including six factual-calibration parameters. The matched ordinary-return comparator is one three-hidden-layer ReLU MLP with width 233 and 146,092 parameters. It receives the same measured outcomes, factual-state observations, candidate catalog, and 30,000 updates. Its objective is pooled absolute-outcome cross entropy. Its deployment threshold is selected on the common development screen. The graph representation, paired objectives, factual calibration, and local support model are constituents of the proposed mechanism; matching network parameter count does not equate their extra calibration storage or inference cost.
+
+The conditional potential separates rescue from harm. With factual success probability $p_0(x)$, it estimates $r_\theta(x,z)=P(Y_z=1\mid Y_0=0,x)$ and $h_\theta(x,z)=P(Y_z=0\mid Y_0=1,x)$ from shared-future outcomes. The complete potential and its factual difference become
+\begin{align}
+ V_\theta(x,z)&=(1-p_0)r_\theta+p_0(1-h_\theta),\\
+ \Delta_\theta(x;z_0,z)&=(1-p_0)r_\theta-p_0h_\theta.
+\end{align}
+This decomposition distinguishes a possible rescue from damage to an already successful continuation. Three layout folds keep all paired futures and factual trajectory states of a layout together. Each ensemble member excludes one fold from gradient fitting and uses its factual observations to calibrate the factual probability through a bounded monotone map. The refit and its fresh ordinary MLP share the new predecessor's measured training data, candidate catalog, and 30,000 updates; their parameter counts are 146,319 and 146,092, respectively. For the six-vessel source, 743 paired roots and 856 factual trajectories supply 36,900 unique terminal observations and 58,797 supervised labels. Their collection uses 4,353,021 physical simulation steps. The ordinary controller is also evaluated with positive gain margins of 0.02, 0.08, and 0.12; its reported tuned result uses the best decision rule on the common 228-episode development screen without additional network updates.
 
 \subsection{Factual calibration, timing, and execution}
-A measured factual bank estimates the success probability of retaining $\pi_0$ in a nearby context. Calibration transports that factual value to the complete neural potential while preserving its learned differences except where the success range $[0,1]$ requires clipping. Locally measured paired residuals then correct the value differences. Rescue and harm observations, ensemble disagreement, and distance from observed support contribute to the decision penalty.
+A measured factual bank estimates the success probability of retaining $\pi_0$ in a nearby context. Together with layout-disjoint neural calibration, this estimate sets the mixture weights of rescue and harm in the complete task potential. Locally measured paired residuals then correct its value differences. Rescue and harm observations, ensemble disagreement, and distance from observed support contribute to the decision penalty.
 
 An intervention that starts after factual termination cannot change that outcome. For delay $d$, factual trajectory data provide estimates of survival until $d$, separately for factual success and failure. These estimates bound possible rescue and harm and prevent a delayed option from claiming an opportunity that has already ended. The deployed rule is
 \begin{equation}
@@ -161,7 +170,7 @@ The uncertainty penalty is a decision quantity, not a guaranteed coverage interv
 
 \begin{figure*}[t]
 \centering\includegraphics[width=\textwidth]{fig4-intervention-value.pdf}
-\caption{Mechanism~2. Paired continuations share the initial state, other current decisions, frozen continuation policy, and sampled future. Their eventual outcomes supervise a shared task potential. Factual success, intervention delay, and measured support determine whether the selected change is executed. The ranking panel compares six randomly sampled candidates at each of 64 new states using eight shared futures; error bars are 95\% intervals from a stratified bootstrap over states.}
+\caption{Mechanism~2. Paired continuations share the initial state, other current decisions, frozen continuation policy, and sampled future. Their eventual outcomes supervise a shared task potential. Factual success, intervention delay, and measured support determine whether the selected change is executed. The decision and ranking panels use the six-vessel-source refit on 64 new states, with three outcome-independent random candidates and eight shared futures per state; error bars are 95\% intervals from a stratified bootstrap over states.}
 \label{fig:intervention}
 \end{figure*}
 
@@ -172,63 +181,81 @@ All primary contrasts pair the same initial layout, agility, fleet size, and fut
 
 The current 856-episode development collection contains 256 episodes from the original source suite and 200 episodes in each of three later suites. The source suite repeats 64 layouts under four futures; the other suites contain new layouts. The 4310 suite did not enter the reference value-training data, but its repeated use in model selection makes it development evidence. The reserved 4322 layout family remains outside development and is evaluated only after the method and comparators are frozen.
 
-Five value-learning repetitions use seeds 42--46 with the same frozen source and fusion predecessor. They test value-learning repeatability. Independent source-policy retraining and complete pipeline refitting are separate experiments. Baseline SAC, residual policy, and ARBoids runs retain the source million-step training budget, with the fleet size and actual random seed recorded explicitly.
+Five independently initialized source-policy runs use seeds 42--46. Joint and independent fusion share the resulting checkpoint within each run. Each complete value-learning pipeline requires new factual and intervention continuations from its own frozen predecessor. Earlier value-only repetitions that share a source backbone are reported separately in Appendix~\ref{app:transferred-source}. Baseline SAC, residual policy, and ARBoids runs retain the source million-step training budget, with the fleet size and actual random seed recorded explicitly. Each completed baseline run supplies the checkpoint with the highest training-evaluation success rate, breaking ties by mean reward and retaining the first exact tie.
 
 \section{Results}
 \subsection{Complete method and the four configurations}
 \begin{table}[t]
-\caption{Completed development results. Counts use the same paired episodes within each column. The source controller is transferred from three-vessel training; this is not the final six-vessel retrained baseline comparison.}
+\caption{Fully trained six-vessel-source development comparison on the same 856 paired episodes, training seed 42. F00--F11 use the common mechanism executor. Each ordinary MLP shares its conditional counterpart's predecessor, training observations, capacity, and update budget, and uses a development-selected gain threshold.}
 \label{tab:development}\centering\scriptsize
 \begin{tabular}{@{}lrrrrr@{}}\toprule
 Method & Source & 4310 & Earlier & Later & Total\\
  & /256 & /200 & /200 & /200 & /856\\\midrule
-F00: source & 37 & 21 & 14 & 25 & 97\\
-F10: joint fusion & 225 & 171 & 169 & 173 & 738\\
-F01: conditional value & 111 & 57 & 64 & 64 & 296\\
-F11: complete & 254 & 175 & 196 & 190 & 815\\
-Matched ordinary MLP & 221 & 163 & 157 & 151 & 692\\\midrule
-Independent fusion & 205 & 153 & 153 & 160 & 671\\
-Refined joint fusion & 236 & 176 & 172 & 179 & 763\\\bottomrule
+SAC & 42 & 27 & 20 & 29 & 118\\
+RP & 99 & 82 & 80 & 80 & 341\\
+ARBoids & 171 & 135 & 137 & 135 & 578\\\midrule
+F00: source & 171 & 135 & 137 & 136 & 579\\
+F10: joint fusion & 238 & 188 & 180 & 189 & 795\\
+F01: conditional value & 179 & 157 & 144 & 161 & 641\\
+F11: complete & 249 & 195 & 193 & 193 & 830\\\midrule
+Independent fusion & 220 & 167 & 166 & 173 & 726\\
+Tuned MLP on F00 & 166 & 139 & 133 & 134 & 572\\
+Tuned MLP on F10 & 246 & 190 & 183 & 185 & 804\\\bottomrule
 \end{tabular}
 \end{table}
-The complete reference method succeeds in 815 of 856 episodes (95.2\%), compared with 738 (86.2\%) for its frozen joint-fusion predecessor. It rescues 87 predecessor failures and harms 10 predecessor successes, adding 9.0 percentage points with a layout-cluster bootstrap interval of [6.9,11.2] points. These development intervals describe resampling uncertainty and do not correct for adaptive model selection. F01 also improves on F00, showing that the value mechanism can recover useful interventions without joint fusion, while the much stronger F11 performance demonstrates the benefit of applying it to coordinated candidate choices.
+The reference six-vessel-source method succeeds in 830 of 856 episodes (97.0\%), compared with 795 (92.9\%) for its own joint predecessor. It rescues 49 predecessor failures and harms 14 predecessor successes, adding 4.1 percentage points with a layout-cluster bootstrap interval of [2.5,5.8] points. The number of failed defenses falls from 61 to 26, a 57.4\% relative reduction. Captures increase from 793 to 828, collisions decrease from nine to seven, and source-defined intrusion failures decrease from 52 to 19. On 779 episodes captured by both controllers, the mean capture-time difference is $-0.51$ s [$-0.86$,$-0.16$]. These development intervals describe resampling uncertainty and do not correct for adaptive model selection.
 
-The refined standalone joint selector obtains 763 successes (89.1\%). It is a stronger mechanism-one configuration than the predecessor used to collect the reference F11 data. Its corresponding value model is refitted from fresh complete continuations before making a matched claim about their combination. The two joint configurations are identified separately in the table.
+Without joint selection, conditional value raises F00 from 579 to 641 successes (67.6\% to 74.9\%). Its 103 rescues and 41 harms yield a separate 7.2-point increment [4.6,9.8]. The complete method also exceeds F01 by 189 successes, while F10 exceeds F00 by 216. Thus both mechanisms improve their corresponding predecessor in the same six-vessel-source four-configuration comparison. F00 uses the ARBoids checkpoint through the shared mechanism executor; its 579 successes are retained separately from the native baseline executor's 578. Appendix~\ref{app:transferred-source} preserves the earlier transferred-source comparisons and their adverse outcomes.
+
+
+ARBoids trained from scratch with six vessels obtains 578/856 successes (67.5\%) after the full million-step run. Its checkpoint is selected at 780,000 steps by training-evaluation success and reward. The complete six-vessel-source method adds 29.4 points [25.8,33.1], rescuing 261 baseline failures and harming nine baseline successes on paired development episodes. It also exceeds the fully trained residual policy by 57.1 points [53.3,60.8], with 496 rescues and seven harms. Relative to ARBoids, captures increase from 578 to 828 and collisions decrease from 270 to seven; source-defined intrusion failures increase from eight to 19. On the 568 episodes captured by both methods, the complete method takes 4.46 s longer [3.45,5.46]. This comparison establishes a substantial reliability gain with a capture-time tradeoff for this training seed.
+
+All 15 baseline training runs complete one million steps and the full 856-episode endpoint comparison. Table~\ref{tab:source-repeats} reports every training seed. ARBoids achieves $65.6\pm14.2\%$ success across seeds, RP $33.4\pm5.7\%$, and SAC $22.8\pm9.1\%$ (mean and sample standard deviation). The complete method's 97.0\% result conditions on seed 42; it is not substituted for a five-run complete-method average.
+
+\begin{table}[t]
+\caption{Five independent six-vessel source-training runs and their paired fusion selectors. Each cell counts successful defenses in the same 856 development episodes. Joint and independent fusion reuse the ARBoids checkpoint in their row.}
+\label{tab:source-repeats}\centering\small
+\begin{tabular}{@{}lrrrrr@{}}\toprule
+Seed & SAC & RP & ARBoids & Independent & Joint\\\midrule
+42 & 118 & 341 & 578 & 726 & 795\\
+43 & 212 & 337 & 355 & 385 & 404\\
+44 & 182 & 253 & 584 & 773 & 780\\
+45 & 320 & 247 & 615 & 736 & 758\\
+46 & 145 & 252 & 675 & 707 & 755\\\bottomrule
+\end{tabular}
+\end{table}
 
 \begin{figure*}[t]
 \centering\includegraphics[width=\textwidth]{fig5-overall-performance.pdf}
-\caption{Overall evidence. Baseline learning curves are shown at their actually completed training steps. Four-configuration success and five independent value fits use paired development episodes. Independent value fits share a frozen source backbone and must not be interpreted as five complete pipeline retrainings.}
+\caption{Overall evidence. All 15 baseline learning curves complete one million steps. The refit-learning panel retains the separately identified transferred-source four-configuration experiment. The endpoint panel reports all four six-vessel-source configurations and the tuned ordinary MLP at training seed 42. The repetition panel compares ARBoids, independent fusion, and joint fusion across five independently trained source policies; the source checkpoint is shared within each seed.}
 \label{fig:overall}
 \end{figure*}
 
 \subsection{Direct evidence for joint selection}
-The refined joint selector obtains 92 more successes than the independent selector across the same 856 episodes, an absolute gain of 10.7 points (development layout-cluster interval [7.5,14.1]). It rescues 144 independent failures while harming 52 independent successes. Its per-suite increments are 12.1, 11.5, 9.5, and 9.5 points. Because both methods receive the same nine candidates per vessel and the same prediction tensor, this contrast directly measures the value of resolving their combination jointly.
+With the fully trained six-vessel ARBoids source, joint selection raises standalone success to 795/856 (92.9\%). Independent selection using the identical source weights, candidates, prediction resources, and refinement settings obtains 726/856 (84.8\%). The joint gain is 8.1 points [5.3,11.1], comprising 112 rescues and 43 harms. Captures increase from 723 to 793, collisions decrease from 20 to nine, and source-defined failures from 110 to 52. At this predecessor's success rate, the largest possible additional success-rate gain is 7.1 points; the conditional-value refit realizes 4.1 of those points using its own freshly measured continuations. Across all five completed source-training runs, joint and independent success rates are $81.6\pm19.3\%$ and $77.7\pm18.5\%$, respectively (mean and sample standard deviation). Their per-seed joint-selection gains are 8.1, 2.2, 0.8, 2.6, and 5.6 points, averaging $3.9\pm2.9$ points. Joint selection improves every run, but its gain varies substantially with the learned source; Table~\ref{tab:source-repeats} and Fig.~\ref{fig:overall}(d) retain this variation.
 
-The original source backbone and four independently trained source backbones give five separate joint-versus-independent comparisons on the common 228-episode screen. Joint selection obtains 948/1,140 successes, compared with 843/1,140 for independent selection. The mean gain is 9.2 points; individual gains are 12.3, 4.4, 7.9, 10.1, and 11.4 points. All four additional backbones complete the original one-million-step source training. This experiment repeats the analytic joint selector across independently learned source commands; it does not yet constitute five retrainings of the complete value-learning pipeline.
-
-The strengthened state-attention and candidate-attention alternatives obtain 446/856 (52.1\%) and 551/856 (64.4\%) successes. Both use two attention layers of width 128, 192,769 trainable parameters, 24,000 optimizer updates, and the same 24,576 measured teacher queries collected on teacher and student trajectories. Training balances changed and unchanged teacher choices and retains every physically equivalent candidate label; candidate trajectories are expressed in a common task frame. The joint selector supplies supervision only during training. At deployment, each replacement selects candidates through its own neural outputs. These fitted alternatives improve substantially over their initial versions but remain below independent selection (78.4\%) and joint selection (89.1\%). The matched joint-versus-independent contrast provides the direct evidence for joint decision making; the replacement comparison additionally tests whether these neural representations recover its benefit.
+The transferred-source experiment supplies an additional representation comparison: equally trained state-attention and candidate-attention replacements achieve 52.1\% and 64.4\%, below independent selection at 78.4\% and joint selection at 89.1\%. The shared supervision, parameter and update budgets, and complete paired outcomes are detailed in Appendix~\ref{app:transferred-source}. Figure~\ref{fig:controls}(a) displays this transferred-source representation comparison.
 
 \subsection{Conditional value versus ordinary return learning}
-The complete reference controller exceeds the matched ordinary MLP by 123 successes, or 14.4 points (development layout-cluster interval [11.6,17.4]). The paired outcomes contain 139 rescues and 16 harms. The per-suite gains are 12.9, 6.0, 19.5, and 19.5 points. The smaller 4310 increment is retained because it is informative about generalization beyond the fitting layouts.
+Without joint selection, the conditional value model obtains 641/856 successes against 572/856 for its matched ordinary MLP, a gain of 8.1 points [4.9,11.2], with 118 rescues and 49 harms. The ordinary model uses a development-selected margin of 0.02; its unthresholded rule obtains 556 successes. Both estimators use the same 743 factual roots and paired continuations, approximately 146,000 parameters, and 30,000 updates. Collisions decrease from 277 to 209. This comparison establishes a direct conditional-value gain on the source predecessor, separately from its incremental contribution after joint selection.
 
-Across five independent value fits, the conditional model succeeds in 1,075 of 1,140 paired evaluation episodes and the ordinary MLP in 959, a mean increment of 10.2 points. Each run contains the same 128-source/100-4310 screen, so these are repeated learning outcomes on a shared development collection. The per-run increments are 11.0, 7.9, 9.2, 13.6, and 9.2 points. Seed 44 reverses the advantage on the 4310 subset (85 versus 89 successes); its combined advantage does not erase that adverse result.
+After joint selection, the conditional model reaches 830/856 versus 804/856 for the development-selected ordinary controller, an increment of 3.0 points [1.3,4.8]. The paired outcomes comprise 39 rescues and 13 harms. Captures increase from 801 to 828, collisions decrease from 15 to seven, and source-defined failures decrease from 37 to 19. On 788 jointly captured episodes, the paired capture-time difference is $-0.48$ s [$-0.91$,$-0.05$]. The ordinary model's unthresholded maximum-return rule yields 753 successes; the stronger 804-success comparator, selected with margin 0.08, is used for the main mechanism claim.
 
-Adding paired short-response observations and 6,000 updates to both estimators gives 813/856 successes for conditional value and 684/856 for its matched MLP, a 15.1-point difference with 143 paired rescues and 14 harms. Both refits receive the same 82,857 terminal observations and 30,000 cumulative updates. This refit strengthens the matched-MLP contrast but remains two successes below the reference complete method; its separate VRX gains are reported below.
+For value validation, one eligible pre-action state is sampled uniformly from each of 64 complete factual trajectories on new layouts. Both learned choices, the factual action, and three outcome-independent random candidates are evaluated to termination under eight shared future seeds at every root. Among 132 nontied comparisons from 59 informative roots, conditional concordance is 73.5\% [65.9,81.1], versus 49.2\% [41.8,56.9] for ordinary return learning. The paired advantage is 24.2 points [14.9,33.6], and gain mean squared error is 0.068 versus 0.181. Executed conditional choices yield 459/512 successes, against 458 for both factual continuation and the tuned MLP. Conditional choices rescue three futures and harm two; ordinary choices rescue one and harm one. Thus the ranking improvement is substantial, while its realized gain at uniformly sampled decision times is one success. This state-level decision experiment and the 35 additional full-episode successes measure distinct deployment opportunities.
 
-New-state value validation samples one eligible pre-action state uniformly from each of 64 complete factual trajectories on new layouts. At every root, the conditional model and ordinary MLP propose their own action; both choices and the factual action are evaluated to termination under eight new shared futures. The conditional model intervenes at 12 roots and yields 408 successful continuations, versus 400 for the MLP and 411 for the factual controller out of 512 continuations. Relative to the factual controller, conditional decisions rescue five futures and harm eight; the MLP rescues 14 and harms 25. Conditional value therefore reduces harmful changes, but neither learned selector improves on factual continuation in this random-state experiment. Positive predicted gains frequently correspond to zero measured gain, identifying a remaining calibration and state-coverage weakness. Component controls separately remove delayed choices, temporal survival bounds, and factual calibration while retaining learned parameters and the common deployment budget.
+Applying the same new-state protocol under F00 gives 391/512 successful continuations for factual control, F01, and its tuned ordinary MLP. Conditional decisions rescue 35 futures and harm 35; the ordinary model leaves all outcomes unchanged. F01's random-candidate concordance is 64.0\%, compared with 54.7\% for ordinary value, with a paired difference of 9.4 points [$-1.7$,19.1]. The full-episode improvement therefore coexists with unresolved timing and harm control at uniformly sampled states.
 
-A separate collection measures six outcome-independent random candidates at each of 64 new states under eight shared futures. Of these states, 54 have at least one pair with different empirical success probabilities, yielding 574 nontied comparisons. Conditional value agrees with the measured ordering in 58.9\% of comparisons, versus 57.2\% for the ordinary MLP; the paired difference is 1.7 points with a stratified state-bootstrap interval of [$-5.2$,9.0] points. Its gain-prediction root mean squared error is 0.247, compared with 0.402 for the MLP. Thus the conditional estimator improves gain calibration in this collection, while a ranking advantage over ordinary return learning remains unresolved. All candidates and neutral outcomes remain in the calibration calculation; only outcome ties are excluded from the ordering score.
+The transferred-source component comparison isolates intervention timing and factual calibration. Delayed opportunities add four successes over immediate-only choices, and factual calibration adds three, on 228 paired episodes. Removing the temporal survival bound changes neither successes nor terminal durations in that screen. The complete counts and the earlier random-state failures remain in Appendix~\ref{app:transferred-source}; these controls establish the scope of the measured component effects rather than attributing a gain to every proposed safeguard.
 
-On the 228-episode component screen, the complete model achieves 218 successes, immediate-only choices 214, removal of temporal bounds 218, and removal of factual calibration 215. Relative to immediate-only choices, the complete model rescues eight episodes and harms four. Factual calibration rescues three and harms none. Removing temporal bounds changes neither success nor terminal duration in this screen; these completed outcomes therefore provide no separate performance gain for that bound. All three controls achieve the same 91/100 successes on the 4310 subset, locating the observed component gains in the source-development subset.
 
 \begin{figure*}[t]
 \centering\includegraphics[width=\textwidth]{fig6-mechanism-controls.pdf}
-\caption{Direct mechanism comparisons. Left: joint and independent selection share candidate motions and pairwise costs; the two neural alternatives share their measured supervision and learning budget. Right: conditional value and the ordinary MLP share observations, network-parameter budget, update count, factual predecessor, candidate catalog, and intervention budget. Internal controls isolate temporal opportunity and factual calibration.}
+\caption{Direct mechanism comparisons. (a) Transferred-source neural replacements and joint/independent selectors on 856 episodes; the two neural alternatives share measured supervision and learning budget. (b) Transferred-source conditional-value component controls on 228 paired screen episodes. (c) Six-vessel-source contributions on 856 paired development episodes: matched joint versus independent selection, both four-configuration contrasts, and each conditional model against its own tuned ordinary MLP. Error bars are 95\% layout-cluster bootstrap intervals.}
 \label{fig:controls}
 \end{figure*}
 
 \subsection{Agility, fleet size, and opponent adaptation}
-Agility comparisons retain the same methods and paired scene design. Cross-fleet inference uses all current vessels in the shared neural potential, projects valid intervention roles to the current fleet, and generates every single-vessel alternative for that fleet size. Six-vessel empirical calibration is not transferred as if it were a measurement at another fleet size.
+The retained transferred-source scope experiments use the same methods and paired scene design across attacker agility and fleet size. Cross-fleet inference uses all current vessels in the shared neural potential, projects valid intervention roles to the current fleet, and generates every single-vessel alternative for that fleet size. Six-vessel empirical calibration is not transferred as if it were a measurement at another fleet size.
 
 In the completed 16-scene screens with three, four, five, seven, and eight defenders, the complete method succeeds in 16, 15, 15, 12, and 10 episodes, respectively. The joint predecessor obtains 14, 15, 15, 14, and 10 successes. Conditional value therefore adds two successes at three defenders, preserves the counts at four, five, and eight, and loses two at seven. Refined joint selection obtains 14, 15, 15, 13, and 12 successes, compared with 14, 16, 16, 11, and 9 for independent selection. These paired screens identify where each mechanism transfers and where its current mapping loses performance.
 
@@ -238,12 +265,12 @@ On the 64 adaptation-development layouts, the complete method improves from 49 t
 
 \begin{figure*}[t]
 \centering\includegraphics[width=\textwidth]{fig7-scope-adaptation.pdf}
-\caption{Scope of the two mechanisms: paired agility comparisons, explicit cross-fleet mappings on 16 scenes per fleet size, and common-opponent adaptation on 64 new paired layouts. The adaptation panel also reports the change in success rate on the original APF episodes.}
+\caption{Transferred-source scope of the two mechanisms: paired agility comparisons, explicit cross-fleet mappings on 16 scenes per fleet size, and common-opponent adaptation on 64 new paired layouts. The adaptation panel also reports the change in success rate on the original APF episodes.}
 \label{fig:scope}
 \end{figure*}
 
 \subsection{High-fidelity closed-loop comparison}
-The VRX comparison~\cite{vrx} executes the current learned--Boids commands in two settings with agility 2.5 and 3.5 and two scene seeds per condition. Each method runs all eight scenes. VRX uses a 0.2-s control period, 15-m target radius, 5-m collision radius, 5.5-m capture radius, and 100-s time limit. These settings are reported separately from the numerical 80-s task.
+The retained transferred-source VRX comparison~\cite{vrx} executes the current learned--Boids commands in two settings with agility 2.5 and 3.5 and two scene seeds per condition. Each method runs all eight scenes. VRX uses a 0.2-s control period, 15-m target radius, 5-m collision radius, 5.5-m capture radius, and 100-s time limit. These settings are reported separately from the numerical 80-s task.
 
 All 80 completed trials passed the execution-validity checks. The complete reference method captures in 7/8 scenes and breaches in one; its matched single-intervention MLP captures in 7/8 and collides in one. Refined joint fusion captures in 7/8 and collides in one, the independent selector in 4/8, conditional value alone in 6/8, and the transferred source policy in 2/8. The factual joint predecessor captures in all eight scenes. An earlier ordinary-return comparator with a different predecessor and execution budget also captures in all eight; that result remains separate from the matched comparisons.
 
@@ -251,7 +278,7 @@ After additional paired short-response training, the refitted complete method ca
 
 \begin{figure*}[t]
 \centering\includegraphics[width=\textwidth]{fig8-vrx-comparison.pdf}
-\caption{Eight-scene paired VRX development comparison. Reference and short-response refitted complete methods each have a matched ordinary-return comparator. The trajectories retain the reference method's valid breach and show the refitted method's capture on the same scene.}
+\caption{Eight-scene paired transferred-source VRX development comparison. Reference and short-response refitted complete methods each have a matched ordinary-return comparator. The trajectories retain the reference method's valid breach and show the refitted method's capture on the same scene.}
 \label{fig:vrx}
 \end{figure*}
 
@@ -260,10 +287,70 @@ The two mechanisms solve related but distinct problems. Joint fusion coordinates
 
 The shared potential makes local differences consistent with complete-plan values, but consistency does not guarantee accurate generalization. Factual calibration can prevent avoidable damage near observed states, while timing distinguishes an executable rescue from a change that starts too late. New-state paired continuations and the internal component controls test these roles directly. Inference cost includes the neural potential, factual bank, and paired residual calibration; it is reported in addition to trainable parameter count.
 
-Current development gains are substantial, and their limitations are concrete: gains vary by layout family, one value-fit seed loses to the MLP on the untrained 4310 subset, and the improved VRX value model matches its factual predecessor's success count while taking longer to capture. These findings guide the stronger-predecessor refit and new paired training rather than changing the task definition or omitting adverse outcomes. Final generalization claims use the frozen-method held-out comparison and complete independent training runs.
+The development evidence separates reliability, mechanism contribution, and ranking accuracy. Joint-selection gains vary across independently learned source policies. Conditional value has a clear random-candidate ranking advantage, while its deployed choices at uniformly sampled states add only one successful continuation. The transferred-source VRX refit matches its factual predecessor's success count while taking longer to capture. These outcomes motivate broader intervention coverage and stronger coordination across source policies. Final generalization claims use the frozen-method held-out comparison and complete independent training runs.
 
 \section{Conclusion}
-Joint fusion and conditional intervention value learning provide two complementary ways to improve cooperative target defense. The first selects compatible fleet mixtures from common learned and Boids candidates. The second learns whether and when a local change improves complete closed-loop outcomes, using paired differences tied to one task potential. Completed development comparisons show a 10.7-point joint-selection gain, a 14.4-point advantage over matched ordinary return learning, and a 9.0-point increment over the complete method's factual predecessor. The remaining empirical scope is determined by independent full-pipeline training, frozen held-out evaluation, opponent adaptation, and the retained high-fidelity successes and failures.
+Joint fusion and conditional intervention value learning provide two complementary ways to improve cooperative target defense. The first selects compatible fleet mixtures from common learned and Boids candidates. The second learns whether and when a local change improves complete closed-loop outcomes, using paired differences tied to one task potential. Completed development comparisons show joint-selection gains of 10.7 points with the transferred source and 8.1 points with a fully trained six-vessel source. The complete six-vessel-source method achieves 97.0\% success for training seed 42. Its conditional value adds 4.1 points over the joint predecessor and 3.0 over a tuned matched ordinary MLP, with a 24.2-point advantage in random-candidate ranking on new states. The remaining empirical scope is determined by independent full-pipeline training, frozen held-out evaluation, opponent adaptation, and the retained high-fidelity successes and failures.
+
+\appendices
+\section{Transferred-Source Mechanism Evidence}
+\label{app:transferred-source}
+These completed comparisons use a source trained with three defenders and transferred to six. They remain distinct from the fully trained six-vessel-source comparison in the main text. Their paired rescue and harm counts, tuned ordinary-return controls, random-state failures, and learning variability are retained in full.
+
+\begin{table}[t]
+\caption{Retained transferred-source development comparisons. All methods use a three-vessel source deployed with six defenders. Ordinary MLP rows below use their original maximum-return decision rule; stronger thresholded comparisons are reported in the text.}
+\label{tab:transferred-development}\centering\scriptsize
+\begin{tabular}{@{}lrrrrr@{}}\toprule
+Method & Source & 4310 & Earlier & Later & Total\\
+ & /256 & /200 & /200 & /200 & /856\\\midrule
+F00: source & 37 & 21 & 14 & 25 & 97\\
+F10: joint fusion & 225 & 171 & 169 & 173 & 738\\
+F01: conditional value & 111 & 57 & 64 & 64 & 296\\
+F11: complete & 254 & 175 & 196 & 190 & 815\\
+Matched ordinary MLP & 221 & 163 & 157 & 151 & 692\\\midrule
+Independent fusion & 205 & 153 & 153 & 160 & 671\\
+Refined joint fusion & 236 & 176 & 172 & 179 & 763\\\midrule
+Refitted complete & 245 & 187 & 193 & 189 & 814\\
+Refitted ordinary MLP & 231 & 167 & 162 & 165 & 725\\\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Complete method and four configurations}
+The transferred-source reference succeeds in 815 of 856 episodes (95.2\%), compared with 738 (86.2\%) for its frozen joint-fusion predecessor. It rescues 87 predecessor failures and harms 10 predecessor successes, adding 9.0 points [6.9,11.2]. Its F01 configuration also improves on F00, demonstrating useful interventions without joint fusion. This completed four-configuration experiment is retained separately from the new six-vessel-source pipeline.
+
+Of the complete method's 815 successful defenses, 813 end in capture and two at the defense deadline. Compared with its factual predecessor, collisions decrease from 74 to 30 and source-defined intrusion failures from 44 to 11. The capture-only increment is 8.8 points [6.7,11.1]. On the 727 episodes captured by both controllers, the paired mean capture-time difference is $-0.02$ s [$-0.39$,0.33]; the demonstrated benefit is increased capture reliability and fewer failures.
+
+The refined standalone joint selector obtains 763 successes (89.1\%). Fresh complete continuations under this stronger predecessor train the conditional refit, which obtains 814 successes (95.1\%). It rescues 65 predecessor failures and harms 14 predecessor successes, adding 6.0 points [4.0,8.2]. Collisions decrease from 63 to 25 and source-defined failures from 30 to 17. The paired capture-time difference on 748 jointly captured episodes is $-0.001$ s [$-0.26$,0.24]. Thus strengthening the predecessor preserves a separate conditional-value increment.
+
+\subsection{Joint selection and neural replacements}
+The refined joint selector obtains 92 more successes than the independent selector across the same 856 episodes, an absolute gain of 10.7 points (development layout-cluster interval [7.5,14.1]). It rescues 144 independent failures while harming 52 independent successes. Its per-suite increments are 12.1, 11.5, 9.5, and 9.5 points. Because both methods receive the same nine candidates per vessel and the same prediction tensor, this contrast directly measures the value of resolving their combination jointly.
+
+Joint selection increases captures from 669 to 762, reduces defender collisions from 114 to 63, and reduces source-defined intrusion failures from 71 to 30. The collision-rate reduction is 6.0 points [3.3,8.8]. On the 616 jointly captured episodes, its paired mean capture time changes by $-0.24$ s [$-1.27$,0.77].
+
+The original source backbone and four independently trained source backbones give five separate joint-versus-independent comparisons on the common 228-episode screen. Joint selection obtains 948/1,140 successes, compared with 843/1,140 for independent selection. The mean gain is 9.2 points; individual gains are 12.3, 4.4, 7.9, 10.1, and 11.4 points. All four additional backbones complete the original one-million-step source training. This experiment repeats the analytic joint selector across independently learned source commands; it does not yet constitute five retrainings of the complete value-learning pipeline.
+
+The strengthened state-attention and candidate-attention alternatives obtain 446/856 (52.1\%) and 551/856 (64.4\%) successes. Both use two attention layers of width 128, 192,769 trainable parameters, 24,000 optimizer updates, and the same 24,576 measured teacher queries collected on teacher and student trajectories. Training balances changed and unchanged teacher choices and retains every physically equivalent candidate label; candidate trajectories are expressed in a common task frame. The joint selector supplies supervision only during training. At deployment, each replacement selects candidates through its own neural outputs. These fitted alternatives improve substantially over their initial versions but remain below independent selection (78.4\%) and joint selection (89.1\%). The matched joint-versus-independent contrast provides the direct evidence for joint decision making; the replacement comparison additionally tests whether these neural representations recover its benefit.
+
+\subsection{Conditional value, replacement learning, and component controls}
+The complete reference controller exceeds the matched ordinary MLP by 123 successes, or 14.4 points (development layout-cluster interval [11.6,17.4]). The paired outcomes contain 139 rescues and 16 harms. The per-suite gains are 12.9, 6.0, 19.5, and 19.5 points. The smaller 4310 increment is retained because it is informative about generalization beyond the fitting layouts.
+
+The conditional model produces 813 captures and 30 collisions, compared with 692 captures and 114 collisions for the MLP. Its capture-only gain is 14.1 points [11.2,17.3], and its collision-rate reduction is 9.8 points [7.4,12.5]. Among the 674 episodes captured by both, the paired capture-time difference is 0.69 s [$-0.14$,1.49].
+
+Giving that ordinary MLP a positive gain threshold improves its results without changing its learned weights. Thresholds of 0.02, 0.08, and 0.12 yield 729, 744, and 752 successes, respectively. Against the strongest of these completed controls, the reference method retains a 7.4-point gain [5.0,9.8], with 77 rescues and 14 harms. The larger 14.4-point contrast above therefore describes the maximum-return decision rule specifically, rather than the best thresholded ordinary controller.
+
+The stronger-predecessor conditional refit obtains 814 successes against 725 for its freshly trained matched MLP, a gain of 10.4 points [7.9,13.0], with 106 rescues and 17 harms. Captures increase from 723 to 813 and collisions decrease from 98 to 25. On 705 jointly captured episodes, its capture-time difference is 0.17 s [$-0.51$,0.82]. Both models use the same newly collected labels and 30,000 updates. The ordinary model selected with a 0.08 gain margin subsequently reaches 771 successes, reducing this refit contrast to 5.0 points. Tuning conditional confidence on the same screen produces 807 successes, below the original 814; that screen-selected variant therefore does not replace the stronger completed conditional result.
+
+Across five independent value fits, the conditional model succeeds in 1,075 of 1,140 paired evaluation episodes and the ordinary MLP in 959, a mean increment of 10.2 points. Each run contains the same 128-source/100-4310 screen, so these are repeated learning outcomes on a shared development collection. The per-run increments are 11.0, 7.9, 9.2, 13.6, and 9.2 points. Seed 44 reverses the advantage on the 4310 subset (85 versus 89 successes); its combined advantage does not erase that adverse result.
+
+Adding paired short-response observations and 6,000 updates to both estimators gives 813/856 successes for conditional value and 684/856 for its matched MLP, a 15.1-point difference with 143 paired rescues and 14 harms. Both refits receive the same 82,857 terminal observations and 30,000 cumulative updates. This refit strengthens the matched-MLP contrast but remains two successes below the reference complete method; its separate VRX gains are reported below.
+
+New-state value validation samples one eligible pre-action state uniformly from each of 64 complete factual trajectories on new layouts. At every root, the conditional model and ordinary MLP propose their own action; both choices and the factual action are evaluated to termination under eight new shared futures. The conditional model intervenes at 12 roots and yields 408 successful continuations, versus 400 for the MLP and 411 for the factual controller out of 512 continuations. Relative to the factual controller, conditional decisions rescue five futures and harm eight; the MLP rescues 14 and harms 25. Conditional value therefore reduces harmful changes, but neither learned selector improves on factual continuation in this random-state experiment. Positive predicted gains frequently correspond to zero measured gain, identifying a remaining calibration and state-coverage weakness. Component controls separately remove delayed choices, temporal survival bounds, and factual calibration while retaining learned parameters and the common deployment budget.
+
+A separate collection measures six outcome-independent random candidates at each of 64 new states under eight shared futures. Of these states, 54 have at least one pair with different empirical success probabilities, yielding 574 nontied comparisons. Conditional value agrees with the measured ordering in 58.9\% of comparisons, versus 57.2\% for the ordinary MLP; the paired difference is 1.7 points with a stratified state-bootstrap interval of [$-5.2$,9.0] points. Its gain-prediction root mean squared error is 0.247, compared with 0.402 for the MLP. Thus the conditional estimator improves gain calibration in this collection, while a ranking advantage over ordinary return learning remains unresolved. All candidates and neutral outcomes remain in the calibration calculation; only outcome ties are excluded from the ordering score.
+
+The stronger-predecessor refit is tested separately on 64 new layouts with eight shared futures and three outcome-independent random candidates per root. Its executed choices yield 422/512 successful continuations, compared with 417 for factual continuation and 413 for the MLP. Conditional choices rescue six factual failures and harm one factual success; ordinary choices rescue 13 and harm 17. Among 121 nontied random-candidate comparisons from 48 informative roots, the refit's ordering concordance is 66.9\% [57.7,75.8], versus 54.1\% [44.8,63.4] for the MLP. Their paired difference is 12.8 points [1.7,23.3]. Gain mean squared error is 0.047 versus 0.155. This new-state experiment links improved ranking and fewer harmful changes to a positive realized intervention gain under the stronger predecessor.
+
+On the 228-episode component screen, the complete model achieves 218 successes, immediate-only choices 214, removal of temporal bounds 218, and removal of factual calibration 215. Relative to immediate-only choices, the complete model rescues eight episodes and harms four. Factual calibration rescues three and harms none. Removing temporal bounds changes neither success nor terminal duration in this screen; these completed outcomes therefore provide no separate performance gain for that bound. All three controls achieve the same 91/100 successes on the 4310 subset, locating the observed component gains in the source-development subset.
 
 \begin{thebibliography}{99}
 \bibitem{qiao} Y. Qiao et al., ``Survey of deep learning for autonomous surface vehicles in marine environments,'' \emph{IEEE Trans. Intell. Transp. Syst.}, vol. 24, no. 4, pp. 3678--3701, 2023, doi: \href{https://doi.org/10.1109/TITS.2023.3235911}{10.1109/TITS.2023.3235911}.

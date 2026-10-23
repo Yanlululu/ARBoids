@@ -8,6 +8,84 @@ from conditional_fusion_value import (
 
 
 class ConditionalFusionValueTests(unittest.TestCase):
+    def test_breadth_design_pairs_every_root_without_using_outcome_labels(self):
+        import copy
+        import numpy as np
+        from local_intervention_value import breadth_local_design, local_edges
+        roots = [dict(scene=(100+i, 3, 2.), prefix_future=None, root_steps=0,
+                      options=[(0, 0, 0)], futures=[None],
+                      outcomes={(0, 0): dict(success=float(i % 2), duration=5+i)})
+                 for i in range(8)]
+        catalog = [(0, 0, 0)]+[(code, delay, span)
+            for code in (1, 3, 10, 30, 11, 13, 31, 33, 111, 113, 131, 133)
+            for delay, span in ((0, 5), (5, 10))]
+        first = breadth_local_design(dict(roots=roots), catalog, pairs_per_root=3,
+                                     repetitions=2, seed=73)
+        changed = copy.deepcopy(roots)
+        for root in changed:
+            root['outcomes'] = {(0, 0): dict(success=999., duration=999.)}
+        second = breadth_local_design(dict(roots=changed), catalog, pairs_per_root=3,
+                                      repetitions=2, seed=73)
+        self.assertEqual(first['acquisition_design'], second['acquisition_design'])
+        self.assertEqual(len(first['roots']), len(roots))
+        for a, b, original in zip(first['roots'], second['roots'], roots):
+            self.assertEqual(a['options'], b['options'])
+            self.assertEqual(a['futures'], b['futures'])
+            self.assertEqual(a['outcomes'], b['outcomes'])
+            self.assertEqual(a['scene'], original['scene'])
+            self.assertGreater(len(a['options']), 1)
+            self.assertLessEqual(len(a['outcomes']), 14)
+            self.assertTrue(set(a['options']) <= set(catalog))
+            self.assertTrue(local_edges(a['options'], 3))
+            self.assertTrue(all('success' not in row for row in a['outcomes'].values()))
+            np.testing.assert_array_equal(a['future_weights'], np.ones(2))
+            for q in range(len(a['options'])):
+                for future in range(2):
+                    self.assertIn((q, future), a['outcomes'])
+        self.assertEqual(roots[0]['outcomes'][(0, 0)]['success'], 0.)
+        third = breadth_local_design(dict(roots=roots), catalog, seed=74)
+        self.assertNotEqual(first['acquisition_design']['design_sha256'],
+                            third['acquisition_design']['design_sha256'])
+
+    def test_breadth_replay_resumes_exact_roots_and_preserves_negative_labels(self):
+        import copy
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import local_intervention_value as local
+        design = local.breadth_local_design(dict(roots=[dict(scene=(i, 3, 2.),
+            prefix_future=None, root_steps=0) for i in range(3)]),
+            [(0, 0, 0), (1, 0, 5), (11, 0, 5)], pairs_per_root=1, repetitions=2, seed=4)
+        def measured(task):
+            _, index, root, _, _ = task
+            row = copy.deepcopy(root)
+            row['design_root'] = index
+            row['outcomes'] = {key: dict(success=float(index == 1), duration=7.)
+                               for key in root['outcomes']}
+            return row, 10+index
+        with tempfile.TemporaryDirectory() as directory:
+            policy = Path(directory)/'policy.pth'; output = Path(directory)/'observations.pth'
+            torch.save(dict(successor_task_value=None), policy)
+            with patch.object(local, '_recollect_breadth_root', side_effect=measured) as worker:
+                complete = local.recollect_breadth_design(policy, design, output, workers=1)
+                self.assertEqual(worker.call_count, 3)
+                self.assertEqual(complete['simulation_steps'], 33)
+                self.assertTrue(complete['all_design_roots_measured'])
+                self.assertEqual(sum(item['success'] for item in complete['roots'][0]['outcomes'].values()), 0.)
+                local.recollect_breadth_design(policy, design, output, workers=1)
+                self.assertEqual(worker.call_count, 3)
+                partial = dict(complete, completed=False, roots=complete['roots'][:1],
+                               next_design_root=1, simulation_steps=10)
+                torch.save(partial, output)
+                resumed = local.recollect_breadth_design(policy, design, output, workers=1)
+                self.assertEqual(worker.call_count, 5)
+                self.assertEqual(resumed['simulation_steps'], 33)
+                self.assertEqual([root['design_root'] for root in resumed['roots']], [0, 1, 2])
+                changed = copy.deepcopy(design)
+                changed['acquisition_design']['design_sha256'] = 'changed'
+                with self.assertRaisesRegex(ValueError, 'different predecessor, design'):
+                    local.recollect_breadth_design(policy, changed, output, workers=1)
+
     def test_generic_candidate_paths_share_task_coordinates(self):
         from mechanism_controls import generic_shared_task_features
         features=torch.zeros(1,2,1,84)
@@ -301,6 +379,13 @@ class ConditionalFusionValueTests(unittest.TestCase):
         for invalid in (0, -1, True, 1.5):
             with self.assertRaises(ValueError):
                 actuator_candidate_grid(preferred, invalid)
+        union = actuator_candidate_grid(preferred, include_uniform_midpoint=True)
+        self.assertEqual(union.shape, (1, 3, 16, 2))
+        self.assertTrue(bool((union[:, :, :, None] == coarse[:, :, None]).all(-1).any(2).all()))
+        fixed = actuator_candidate_grid(torch.full_like(preferred, .5))
+        self.assertTrue(bool((union[:, :, :, None] == fixed[:, :, None]).all(-1).any(2).all()))
+        torch.testing.assert_close(union[:, :, 5], preferred, rtol=0., atol=0.)
+        self.assertTrue(bool(((union >= 0.) & (union <= 1.)).all()))
 
     def test_dual_motion_preserves_both_physical_response_bases(self):
         from local_intervention_value import response_basis, response_pair_geometry
@@ -1272,6 +1357,58 @@ class SharedTemporalProgramTests(unittest.TestCase):
 
 
 class PhysicalVesselIdentityTests(unittest.TestCase):
+    def test_graph_return_margin_retains_a_small_predicted_gain(self):
+        from unittest.mock import patch
+        from local_intervention_value import JointTaskPotential, PlainJointReturnDecision
+        net = JointTaskPotential(4, context_conditioned=True, motion_basis=False)
+        settings = dict(width=4, states=[net.state_dict()], defenders=2,
+                        options=[(0, 0, 0), (1, 0, 1)], motion_basis=False)
+        packet = dict(node=torch.zeros(1, 2, 16), _ordinary_return_controls=torch.zeros(1, 2, 6))
+        action = torch.zeros(1, 2, 3)
+        context = torch.zeros(1, 21); order = torch.tensor([[0, 1]])
+        logits = torch.logit(torch.tensor([[.5, .55]]))
+        for margin, accepted in [(0., True), (.02, True), (.08, False)]:
+            model = PlainJointReturnDecision(**settings, gain_margin=margin)
+            with patch('conditional_fusion_value.intervention_task_context', return_value=(context, order)), \
+                    patch.object(model.models[0], 'forward_catalog', return_value=logits):
+                result = model(packet, action)
+            if accepted:
+                self.assertEqual(result.shape[-1], 14)
+                self.assertTrue((result[..., -1] == 1).all())
+            else:
+                torch.testing.assert_close(result, action, rtol=0., atol=0.)
+        with self.assertRaises(ValueError):
+            PlainJointReturnDecision(**settings, gain_margin=-.1)
+        for budget, count, eligible in [(1, 0, True), (1, 1, False), (2, 1, True), (0, 9, True)]:
+            model = PlainJointReturnDecision(**settings, intervention_budget=budget)
+            counted = dict(packet, _conditional_count=torch.tensor([[count]]))
+            self.assertEqual(bool(model.eligible(counted).item()), eligible)
+            if not eligible:
+                torch.testing.assert_close(model(counted, action), action, rtol=0., atol=0.)
+        with self.assertRaises(ValueError):
+            PlainJointReturnDecision(**settings, intervention_budget=-1)
+
+    def test_graph_return_shares_unobserved_catalog_without_inventing_labels(self):
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import fit_joint_potential
+        context = np.zeros(21, np.float32); context[[4, 12]] = 1.
+        root = dict(context=context, effect_controls=np.zeros((2, 6), np.float32),
+                    futures=[1, 2], options=[(0, 0, 0), (1, 0, 1)],
+                    outcomes={(q, f): dict(success=float(q == f)) for q in range(2) for f in range(2)})
+        data = dict(model={}, roots=[root], predecessor_sha256='graph-return-test', simulation_steps=8)
+        settings = dict(updates=2, ensemble_size=1, width=4, device='cpu', motion_basis=False)
+        with patch('local_intervention_value.torch.save'):
+            reference = fit_joint_potential(data, 'unused-graph-test.pth', **settings)
+            ordinary = fit_joint_potential(data, 'unused-graph-test.pth', ordinary=True,
+                ordinary_architecture='interaction', additional_candidate_options=[(10, 2, 3)], **settings)
+        self.assertIn((10, 2, 3), ordinary['successor_task_value']['options'])
+        self.assertEqual(reference['successor_task_fit']['training_observation_sha256'],
+                         ordinary['successor_task_fit']['training_observation_sha256'])
+        self.assertEqual(ordinary['successor_task_fit']['objective'], 'absolute return')
+        self.assertFalse(ordinary['successor_task_fit']['local_reconciliation'])
+        self.assertEqual(sum(ordinary['successor_task_fit']['member_updates']), 2)
+
     def test_randomized_branch_screen_retains_groups_and_changes_queried_boats(self):
         import numpy as np
         from local_intervention_value import candidate_screen_order
@@ -1339,6 +1476,29 @@ class PhysicalVesselIdentityTests(unittest.TestCase):
         missing = copy.deepcopy(data); missing['roots'][0].pop('order')
         with self.assertRaisesRegex(ValueError, 'measured physical vessel order'):
             retain_vessel_identity(missing)
+
+    def test_post_intervention_bank_uses_its_measured_vessel_order(self):
+        import copy
+        import numpy as np
+        from local_intervention_value import paired_continuation_bank, retain_vessel_identity
+        context = np.zeros(21, np.float32)
+        value = dict(success=1., continuation_context=context.copy(),
+                     continuation_controls=np.zeros((2, 6), np.float32),
+                     continuation_order=np.array([1, 0]), continuation_remaining=10)
+        root = dict(context=context.copy(), order=np.array([0, 1]),
+                    scene=(123, 2, 2.), futures=[456], options=[(0, 0, 0)],
+                    outcomes={(0, 0): value})
+        data = dict(roots=[root], predecessor_sha256='continuation-identity', completed=True)
+        bank = paired_continuation_bank(data)
+        np.testing.assert_array_equal(bank['records'][0]['orders'], [[1, 0]])
+        _, exposed = retain_vessel_identity(data, bank)
+        np.testing.assert_array_equal(exposed['records'][0]['contexts'][0, -7:-5], [1, 0])
+        np.testing.assert_array_equal(exposed['records'][0]['values'], [1.])
+        self.assertEqual(exposed['records'][0]['future'], 456)
+        missing = copy.deepcopy(data)
+        missing['roots'][0]['outcomes'][0, 0].pop('continuation_order')
+        with self.assertRaises(ValueError):
+            retain_vessel_identity(missing, paired_continuation_bank(missing))
 
     def test_catalog_respects_identity_and_equivariant_spatial_reordering(self):
         from conditional_fusion_value import append_vessel_identity
@@ -1449,6 +1609,50 @@ class PhysicalVesselIdentityTests(unittest.TestCase):
 
 
 class FactualCrossfitTests(unittest.TestCase):
+    def test_factual_calibration_ablation_retains_temporal_statistics(self):
+        from local_intervention_value import JointTaskPotential, LocalDifferenceDecision
+        net = JointTaskPotential(width=4, output_width=3)
+        with torch.no_grad():
+            for parameter in net.parameters():
+                parameter.zero_()
+            net.head[-1].bias.copy_(torch.tensor([.2, .7, .3]).logit())
+        context = torch.zeros((1, 21)); controls = torch.zeros((1, 2, 6))
+        learner = LocalDifferenceDecision(width=4, states=[net.state_dict()], conditional_strata=True,
+            contexts=context, controls=controls, options=[(0, 0, 0), (1, 5, 3)],
+            corrections=torch.zeros((1, 2)), uncertainty=torch.zeros((1, 2)),
+            observed=torch.ones((1, 2), dtype=torch.bool), factual_values=torch.tensor([.6]),
+            neural_factual_calibration=[[.3, .9]], joint_factual_calibration=True,
+            continuation_contexts=context.repeat(2, 1), continuation_controls=controls.repeat(2, 1, 1),
+            continuation_values=torch.tensor([0., 1.]), continuation_remaining=torch.tensor([2., 10.]),
+            temporal_value_bounds=True)
+        before = learner.continuation_statistics(context, controls)
+        calibrated = learner.values(context, controls)
+        torch.testing.assert_close(calibrated[:, :, 0], torch.tensor([[1.6/3.]]))
+        self.assertEqual(float(before[2][0, 1]), 0.)
+        self.assertEqual(float(before[3][0, 1]), 1.)
+        learner.factual_probability_calibration = False
+        uncalibrated = learner.values(context, controls)
+        torch.testing.assert_close(uncalibrated, torch.tensor([[[.2, .7]]]))
+        torch.testing.assert_close(learner.calibrate_factual_probability(torch.tensor([.2]), 0),
+                                   torch.tensor([.2]))
+        for first, second in zip(before, learner.continuation_statistics(context, controls)):
+            torch.testing.assert_close(first, second, rtol=0., atol=0.)
+
+    def test_logit_map_recovers_monotone_risk_without_a_probability_floor(self):
+        import numpy as np
+        from local_intervention_value import fit_factual_logit_calibration
+        probability = np.linspace(.02, .995, 100)
+        logits = np.log(probability)-np.log1p(-probability)
+        target = 1./(1.+np.exp(-(.4*logits-.7)))
+        parameters, stats = fit_factual_logit_calibration(probability, target, ridge=1e-6)
+        np.testing.assert_allclose(parameters, [.4, -.7], atol=2e-4)
+        self.assertLess(stats['calibrated_brier'], stats['raw_brier']/1000.)
+        self.assertLess(stats['calibrated_log_loss'], stats['raw_log_loss'])
+        reversed_parameters, _ = fit_factual_logit_calibration(probability, 1.-probability)
+        self.assertEqual(float(reversed_parameters[0]), 0.)
+        with self.assertRaises(ValueError):
+            fit_factual_logit_calibration([.5], [1.], [0.])
+
     def test_probability_map_is_bounded_and_corrects_overconfidence(self):
         import numpy as np
         from local_intervention_value import fit_factual_probability_calibration, factual_crossfit_groups
@@ -1523,6 +1727,29 @@ class FactualCrossfitTests(unittest.TestCase):
             torch.testing.assert_close(tensor, refit['successor_task_value']['states'][0][key], atol=0., rtol=0.)
         self.assertGreater(float(np.abs(model['successor_task_value']['neural_factual_calibration'][0]-
             refit['successor_task_value']['neural_factual_calibration'][0]).max()), .01)
+        with patch('local_intervention_value.torch.save'):
+            logit_model = fit_joint_potential(data, 'unused-crossfit-test.pth', factual_bank=bank,
+                factual_calibration_kind='logit', **settings)
+        for member, state in enumerate(model['successor_task_value']['states']):
+            for key, tensor in state.items():
+                torch.testing.assert_close(tensor, logit_model['successor_task_value']['states'][member][key],
+                                           atol=0., rtol=0.)
+        self.assertEqual(logit_model['successor_task_fit']['training_observation_sha256'],
+                         fit['training_observation_sha256'])
+        logit_checkpoint = value_learning_checkpoint(logit_model, 6, data, device='cpu')
+        self.assertEqual(logit_checkpoint['successor_task_value']['neural_factual_calibration_kind'], 'logit')
+        logit_recipe = dict(logit_model['successor_task_value']); logit_recipe.pop('kind')
+        logit_learner = LocalDifferenceDecision(**logit_recipe)
+        query = torch.tensor([[0., .1, .9, 1.]]).expand(3, -1)
+        calibrated = logit_learner.calibrate_factual_probability(query)
+        self.assertTrue(torch.isfinite(calibrated).all())
+        self.assertTrue((calibrated[:, 1:] >= calibrated[:, :-1]).all())
+        for member in range(3):
+            torch.testing.assert_close(calibrated[member],
+                logit_learner.calibrate_factual_probability(query[member], member))
+        logit_recipe['neural_factual_calibration'] = [[-1., 0.]]*3
+        with self.assertRaises(ValueError):
+            LocalDifferenceDecision(**logit_recipe)
 
 
 if __name__ == '__main__':
