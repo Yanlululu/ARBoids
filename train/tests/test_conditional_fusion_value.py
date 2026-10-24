@@ -2568,6 +2568,35 @@ class PhysicalVesselIdentityTests(unittest.TestCase):
             for key, value in learner.models[0].state_dict().items():
                 torch.testing.assert_close(value, original[key], rtol=0., atol=0.)
         self.assertEqual(selector.specification['proposal_model_sha256'], ['a'*64, 'b'*64])
+        from plain_return import (PlainReturnNetwork, PairedReturnNetwork,
+                                  PlainReturnDecision, PairedReturnDecision)
+        from conditional_fusion_value import append_vessel_identity
+        dense_learners = []
+        for network_type, decision_type in ((PairedReturnNetwork, PairedReturnDecision),
+                                            (PlainReturnNetwork, PlainReturnDecision)):
+            dense_net = network_type(2, 4, identity_conditioned=True, action_encoding='physical_delta')
+            dense_learners.append(decision_type(2, 4, dense_net.state_dict(),
+                [(0, 0, 0), (1, 0, 1)], intervention_budget=1, gain_margin=.02,
+                isolate_factual_start=True, identity_conditioned=True, action_encoding='physical_delta'))
+        dense_selector = FactualProposalRootSelector(dense_learners, ['c'*64, 'd'*64])
+        native_controls = torch.arange(36, dtype=torch.float32).reshape(3, 2, 6)/100.
+        with patch('conditional_fusion_value.intervention_task_context', return_value=(context, order)), \
+                patch('conditional_fusion_value.paired_effect_controls', return_value=native_controls), \
+                patch.object(dense_learners[0], 'catalog_estimates', return_value=(pvalues[0], pvalues[0])) as first, \
+                patch.object(dense_learners[1], 'catalog_estimates', return_value=(ovalues, ovalues)) as second:
+            self.assertEqual(dense_selector(packet, actor).tolist(), [True, True, False])
+            np.testing.assert_array_equal(dense_selector.last_observations['options'],
+                selector.last_observations['options'])
+            self.assertEqual(dense_selector(changed, actor).tolist(), [True, True, False])
+            for recorded in (first, second):
+                torch.testing.assert_close(recorded.call_args.args[0], append_vessel_identity(context, order))
+                torch.testing.assert_close(recorded.call_args.args[1],
+                    native_controls.gather(1, order[..., None].expand(-1, -1, 6)))
+            exhausted = dict(packet, _conditional_count=torch.ones(3, dtype=torch.long))
+            self.assertEqual(dense_selector(exhausted, actor).tolist(), [False, False, False])
+            self.assertFalse(dense_selector.last_observations['options'].any())
+        self.assertNotIn('_plain_return_controls', packet)
+        torch.testing.assert_close(action, torch.zeros_like(action), rtol=0., atol=0.)
         with self.assertRaisesRegex(ValueError, 'unchanged factual'):
             selector(packet, SimpleNamespace(successor_task_value=ordinary))
         with self.assertRaisesRegex(ValueError, 'actual frozen estimator hashes'):
@@ -2854,6 +2883,26 @@ class PhysicalVesselIdentityTests(unittest.TestCase):
             width=4, ensemble_size=2, seed=23)
         self.assertEqual(success_fit['observed_wait_fit']['value_target'], 'success')
         self.assertEqual(success_fit['observed_wait_fit']['training_target_sha256'], success_examples['target_sha256'])
+        from local_intervention_value import intervention_policy_identity
+        success_model['successor_task_fit'].update(success_probability_objective=True,
+            validation_layouts=[(999, 2, 2.)])
+        with self.assertRaisesRegex(ValueError, 'this frozen intervention policy'):
+            fit_observed_wait_value(success_model, data, bank, None, updates=1)
+        policy_data = copy.deepcopy(data); policy_bank = copy.deepcopy(bank)
+        policy_data['continuation_policy_identity'] = intervention_policy_identity(success_model)
+        for index, root in enumerate(policy_data['roots']): root['scene'] = (index, 2, 2.)
+        for record in policy_bank['records']: record['scene'] = (0, 2, 2.)
+        checked = fit_observed_wait_value(success_model, policy_data, policy_bank, None,
+            updates=2, width=4, ensemble_size=1)
+        self.assertTrue(checked['observed_wait_fit']['continuation_policy_matches_intervention'])
+        different_policy = copy.deepcopy(success_model)
+        different_policy['successor_task_value']['margin'] += .01
+        self.assertNotEqual(intervention_policy_identity(success_model), intervention_policy_identity(different_policy))
+        with self.assertRaisesRegex(ValueError, 'this frozen intervention policy'):
+            fit_observed_wait_value(different_policy, policy_data, policy_bank, None, updates=1)
+        policy_data['roots'][0]['scene'] = (999, 2, 2.)
+        with self.assertRaisesRegex(ValueError, 'validation layouts untouched'):
+            fit_observed_wait_value(success_model, policy_data, policy_bank, None, updates=1)
         from local_intervention_value import fit_factual_wait_opportunity
         with self.assertRaisesRegex(ValueError, 'measured continuation pairs'):
             fit_factual_wait_opportunity(success_model, bank, None, updates=2)
@@ -3686,6 +3735,16 @@ class FactualCrossfitTests(unittest.TestCase):
             self.assertEqual(fit['member_factual_trajectories'], [4])
             self.assertTrue(fit['raw_validation_diagnostics']['layouts_disjoint'])
             self.assertTrue(np.isfinite(fit['raw_validation_diagnostics']['mean_absolute_error']))
+        physical = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+            validation_data=dict(validation, isolate_factual_start=True), factual_bank=bank,
+            updates=2, ensemble_size=1, width=4, seed=27, architecture='mlp', device='cpu',
+            network_options=dict(action_encoding='physical_delta', snapshot_updates=(1, 2)))
+        self.assertEqual(physical[0]['successor_task_value']['action_encoding'], 'physical_delta')
+        self.assertEqual(set(physical[0]['learning_snapshots']['states']), {1, 2})
+        conditioned, _ = fit_success_intervention_pair(data, None, None, validation_data=validation,
+            **dict(settings, updates=2, ensemble_size=1), conditional_objective='factual_strata')
+        self.assertFalse(conditioned['successor_task_value']['paired_event_difference'])
+        self.assertTrue(conditioned['successor_task_fit']['raw_validation_diagnostics']['layouts_disjoint'])
 
 
 if __name__ == '__main__':
