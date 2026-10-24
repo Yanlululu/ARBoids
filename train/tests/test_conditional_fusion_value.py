@@ -2715,6 +2715,110 @@ class PhysicalVesselIdentityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             factual_opportunity_transitions(learner, malformed)
 
+    def test_observed_wait_fit_uses_measured_pairs_and_preserves_intervention_models(self):
+        import copy
+        import tempfile
+        import numpy as np
+        from pathlib import Path
+        from local_intervention_value import (JointTaskPotential, PlainJointReturnDecision,
+            LocalDifferenceDecision, discounted_task_values, observed_wait_examples, fit_observed_wait_value)
+        source = 'a'*64; continuation = 'b'*64
+        data = dict(kind='actual_wait_continuation_pairs', completed=True, predecessor_sha256=source,
+            continuation_policy_sha256=continuation, measured_terminal_observations=8,
+            collection_context=dict(strict_single_vessel_per_intervention=True, maximum_interventions=1,
+                defer_ticks=5, value_target='discounted_return', source_m1_sha256=source,
+                continuation_policy_sha256=continuation, root_states=2), roots=[])
+        for index in range(2):
+            context = np.zeros(21, np.float32); context[0] = 2*index-1; context[-1] = index*5/400
+            root = dict(context=context, effect_controls=np.zeros((2, 6), np.float32),
+                order=np.array([1, 0]), root_steps=5*index, futures=[117, 219], future_weights=[1., 3.],
+                maximum_wait_prefix_state_error=0., outcomes={})
+            for q in (0, 1):
+                for future in (0, 1):
+                    success = float(q == future); remaining = 20+10*q
+                    root['outcomes'][q, future] = dict(success=success, remaining_ticks=remaining,
+                        duration=.2*(root['root_steps']+remaining),
+                        normalized_return=float(discounted_task_values(success, remaining)),
+                        intervention_count=q,
+                        interventions=[dict(subjects=[1], time=.2*(root['root_steps']+5))] if q else [])
+            data['roots'].append(root)
+        x = np.stack([root['context'] for root in data['roots']])
+        bank = dict(completed=True, predecessor_sha256=source, records=[dict(contexts=x,
+            controls=np.zeros((2, 2, 6), np.float32), orders=np.array([[1, 0], [1, 0]]),
+            values=[1., 1.], remaining=[20, 15])])
+        examples = observed_wait_examples(data, bank, identity_conditioned=True)
+        self.assertEqual(tuple(examples['features'].shape), (2, 35))
+        self.assertLess(float(examples['returns'][0, 1]-examples['returns'][0, 0]), 0.)
+        self.assertGreater(float(examples['returns'][1, 1]-examples['returns'][1, 0]), 0.)
+        np.testing.assert_allclose(examples['probabilities'], [.125, .375, .125, .375])
+        changed = copy.deepcopy(data)
+        altered = changed['roots'][0]['outcomes'][1, 0]
+        altered['success'] = 1.
+        altered['normalized_return'] = float(discounted_task_values(1., altered['remaining_ticks']))
+        alternative = observed_wait_examples(changed, bank, identity_conditioned=True)
+        self.assertEqual(examples['observation_sha256'], alternative['observation_sha256'])
+        self.assertNotEqual(examples['target_sha256'], alternative['target_sha256'])
+        irrelevant = copy.deepcopy(data)
+        for root in irrelevant['roots']:
+            for outcome in root['outcomes'].values():
+                outcome['following'] = np.full(21, np.nan)
+        unchanged = observed_wait_examples(irrelevant, bank, identity_conditioned=True)
+        self.assertEqual(examples['observation_sha256'], unchanged['observation_sha256'])
+        self.assertEqual(examples['target_sha256'], unchanged['target_sha256'])
+        net = JointTaskPotential(4, context_conditioned=True, motion_basis=False, identity_conditioned=True)
+        common = dict(width=4, states=[net.state_dict()], options=[(0, 0, 0), (1, 0, 1)],
+            motion_basis=False, intervention_budget=1, decision_period=5, context_conditioned=True,
+            identity_conditioned=True)
+        recipes = [dict(common, kind='plain_joint_return', defenders=2, gain_margin=.02),
+            dict(common, kind='local_difference_joint', contexts=np.zeros((1, 23), np.float32),
+                controls=np.zeros((1, 2, 6), np.float32), corrections=np.zeros((1, 2), np.float32),
+                uncertainty=np.zeros((1, 2), np.float32), observed=np.zeros((1, 2), bool),
+                margin=.02, confidence=0., global_penalty=0.)]
+        fitted = []
+        with tempfile.TemporaryDirectory() as directory:
+            for index, recipe in enumerate(recipes):
+                model = dict(successor_task_value=recipe,
+                    successor_task_fit=dict(predecessor_sha256=source, value_target='discounted_return'))
+                output = Path(directory)/f'wait-{index}.pth'
+                with torch.no_grad():
+                    result = fit_observed_wait_value(model, data, bank, output, updates=6,
+                        width=4, ensemble_size=2, seed=23)
+                fitted.append(result)
+                self.assertNotIn('wait_value', model['successor_task_value'])
+                for key, value in net.state_dict().items():
+                    torch.testing.assert_close(value, result['successor_task_value']['states'][0][key], rtol=0., atol=0.)
+                restored = torch.load(output, map_location='cpu', weights_only=False)
+                first = dict(result['successor_task_value']); first.pop('kind')
+                second = dict(restored['successor_task_value']); second.pop('kind')
+                factory = PlainJointReturnDecision if index == 0 else LocalDifferenceDecision
+                one, two = factory(**first), factory(**second)
+                from conditional_fusion_value import append_vessel_identity
+                context = append_vessel_identity(torch.from_numpy(x), torch.tensor([[1, 0], [1, 0]]))
+                controls = torch.zeros(2, 2, 6)
+                torch.testing.assert_close(one.wait_value(context, controls), two.wait_value(context, controls), rtol=0., atol=0.)
+                self.assertFalse(one.wait_value.margin_adjusted)
+                self.assertTrue(result['observed_wait_fit']['future_outcomes_used'])
+                self.assertFalse(result['observed_wait_fit']['future_public_states_used'])
+                self.assertEqual(result['observed_wait_fit']['updates'], 12)
+                self.assertEqual(result['observed_wait_fit']['optimizer_step_calls'], 6)
+                self.assertTrue(any(torch.count_nonzero(head['network.4.weight']) for head in
+                    result['successor_task_value']['wait_value']['states']))
+        for key in ('training_observation_sha256', 'training_target_sha256', 'training_draw_sha256',
+                    'parameters_per_member', 'updates', 'terminal_observations'):
+            self.assertEqual(fitted[0]['observed_wait_fit'][key], fitted[1]['observed_wait_fit'][key])
+        malformed = copy.deepcopy(data); malformed['completed'] = False
+        with self.assertRaisesRegex(ValueError, 'complete measured'):
+            observed_wait_examples(malformed, bank)
+        malformed = copy.deepcopy(data); malformed['roots'][0]['outcomes'][1, 0]['interventions'][0]['time'] = 0.
+        with self.assertRaisesRegex(ValueError, 'after the delay'):
+            observed_wait_examples(malformed, bank)
+        malformed = copy.deepcopy(data); malformed['roots'][0]['outcomes'][1, 0]['normalized_return'] = .3
+        with self.assertRaisesRegex(ValueError, 'measured discounted'):
+            observed_wait_examples(malformed, bank)
+        mismatched = copy.deepcopy(bank); mismatched['predecessor_sha256'] = 'c'*64
+        with self.assertRaisesRegex(ValueError, 'same completed frozen'):
+            observed_wait_examples(data, mismatched)
+
     def test_graph_return_margin_retains_a_small_predicted_gain(self):
         from unittest.mock import patch
         from local_intervention_value import JointTaskPotential, PlainJointReturnDecision

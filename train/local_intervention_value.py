@@ -1794,6 +1794,185 @@ def fit_factual_wait_opportunity(model, factual_bank, output, *, updates=3000, w
     return result
 
 
+def observed_wait_examples(data, factual_bank=None, *, identity_conditioned=False):
+    """Current-state inputs with measured, common-future continuation returns."""
+    from conditional_fusion_value import append_vessel_identity
+    provenance = data.get('collection_context', {})
+    if (data.get('kind') != 'actual_wait_continuation_pairs' or not data.get('completed')
+            or not data.get('roots') or not data.get('predecessor_sha256')
+            or not data.get('continuation_policy_sha256')):
+        raise ValueError('Observed waiting needs complete measured continuation pairs.')
+    if (not provenance.get('strict_single_vessel_per_intervention')
+            or provenance.get('maximum_interventions') != 1 or provenance.get('defer_ticks') != 5
+            or provenance.get('value_target') != 'discounted_return'
+            or provenance.get('source_m1_sha256') != data['predecessor_sha256']
+            or provenance.get('continuation_policy_sha256') != data['continuation_policy_sha256']):
+        raise ValueError('Observed waiting requires one deferred intervention and the same factual source.')
+    features = []; pair_roots = []; returns = []; probabilities = []
+    future_ids = []; factual_features = []; factual_returns = []
+    def public_features(context, control, order):
+        context = torch.as_tensor(np.asarray(context), dtype=torch.float32)
+        control = torch.as_tensor(np.asarray(control), dtype=torch.float32)
+        order = torch.as_tensor(np.asarray(order), dtype=torch.long)
+        if context.ndim == 1:
+            context, control, order = context[None], control[None], order[None]
+        if (context.ndim != 2 or control.ndim != 3 or control.shape[0] != len(context)
+                or control.shape[-1] != 6 or order.shape != control.shape[:2]
+                or not torch.isfinite(context).all() or not torch.isfinite(control).all()):
+            raise ValueError('Observed waiting requires finite current public states and actual commands.')
+        identified = append_vessel_identity(context, order)
+        return state_features(identified if identity_conditioned else context, control)
+    for root_id, root in enumerate(data['roots']):
+        features.append(public_features(root['context'], root['effect_controls'], root['order']))
+        clock = 400*float(root['context'][-1])
+        if (abs(clock-root['root_steps']) > 1e-4
+                or root.get('maximum_wait_prefix_state_error', float('inf')) >= 2e-5):
+            raise ValueError('Observed branches must share the measured factual waiting prefix.')
+        futures = root['futures']
+        if (not futures or len(set(futures)) != len(futures)
+                or set(root['outcomes']) != {(q, f) for q in (0, 1) for f in range(len(futures))}):
+            raise ValueError('Every observed waiting branch requires its common-future factual pair.')
+        weights = np.asarray(root.get('future_weights', np.ones(len(futures))), np.float64)
+        if (weights.shape != (len(futures),) or not np.isfinite(weights).all()
+                or (weights < 0).any() or weights.sum() <= 0):
+            raise ValueError('Observed waiting requires valid common-future weights.')
+        for future, future_id in enumerate(futures):
+            endpoints = []
+            for q in (0, 1):
+                observation = root['outcomes'][q, future]
+                value = float(discounted_task_values(observation['success'], observation['remaining_ticks']))
+                events = observation.get('interventions', [])
+                if (observation.get('intervention_count') != len(events) or len(events) > q
+                        or any(len(event['subjects']) != 1 or not np.isfinite(event['time'])
+                            or event['time'] < .2*(root['root_steps']+5)-1e-4 for event in events)):
+                    raise ValueError('Waiting labels must use at most one single-vessel intervention after the delay.')
+                if (abs(observation['duration']/.2-root['root_steps']-observation['remaining_ticks']) > 1e-3
+                        or not np.isfinite(observation.get('normalized_return', np.nan))
+                        or abs(observation['normalized_return']-value) > 1e-6):
+                    raise ValueError('Observed waiting targets must match the measured discounted terminal return.')
+                endpoints.append(value)
+            pair_roots.append(root_id); returns.append(endpoints)
+            probabilities.append(weights[future]/weights.sum()/len(data['roots']))
+            future_ids.append(future_id)
+    if (data.get('measured_terminal_observations') != 2*len(returns)
+            or provenance.get('root_states') != len(features)):
+        raise ValueError('Observed waiting counts disagree with the complete measured data.')
+    if factual_bank is not None:
+        if (not factual_bank.get('completed') or not factual_bank.get('records')
+                or factual_bank.get('predecessor_sha256') != data['predecessor_sha256']):
+            raise ValueError('Factual waiting support needs the same completed frozen predecessor.')
+        for record in factual_bank['records']:
+            x = public_features(record['contexts'], record['controls'], record['orders'])
+            values = discounted_task_values(record['values'], record['remaining'])
+            if values.shape != (len(x),):
+                raise ValueError('Factual waiting returns must align with current public states.')
+            factual_features.append(x); factual_returns.extend(values)
+    features = torch.cat(features)
+    factual_features = torch.cat(factual_features) if factual_features else features[:0]
+    pair_roots = np.asarray(pair_roots, np.int64)
+    returns = np.asarray(returns, np.float32)
+    probabilities = np.asarray(probabilities, np.float64)
+    factual_returns = np.asarray(factual_returns, np.float32)
+    observation_digest = hashlib.sha256()
+    for value in (features.numpy(), factual_features.numpy(), pair_roots, probabilities,
+                  np.asarray(future_ids, np.int64)):
+        observation_digest.update(np.ascontiguousarray(value).tobytes())
+    target_digest = hashlib.sha256(returns.tobytes()+factual_returns.tobytes()).hexdigest()
+    return dict(features=features, pair_roots=pair_roots, returns=returns,
+        probabilities=probabilities, factual_features=factual_features, factual_returns=factual_returns,
+        observation_sha256=observation_digest.hexdigest(), target_sha256=target_digest)
+
+
+@torch.enable_grad()
+def fit_observed_wait_value(model, data, factual_bank, output, *, updates=3000, width=64,
+        ensemble_size=3, seed=42, device='cpu', difference_weight=4.):
+    """Fit matched absolute endpoints, with paired differences only in the conditional arm."""
+    recipe = model['successor_task_value']; fit = model.get('successor_task_fit', {})
+    ordinary = recipe['kind'] == 'plain_joint_return'
+    if not ordinary and (recipe['kind'] != 'local_difference_joint' or recipe.get('ordinary', False)):
+        raise ValueError('Observed waiting requires a matched intervention estimator.')
+    if (recipe.get('wait_value') is not None or recipe.get('intervention_budget') != 1
+            or recipe.get('decision_period', 5) != 5 or recipe.get('commit_factual', False)
+            or fit.get('predecessor_sha256') != data.get('predecessor_sha256')
+            or fit.get('value_target') != 'discounted_return'):
+        raise ValueError('Observed waiting needs frozen intervention returns from the same factual source.')
+    if (updates < 1 or width < 1 or ensemble_size < 1
+            or not np.isfinite(difference_weight) or difference_weight < 0):
+        raise ValueError('Observed waiting requires positive capacity and valid fitting settings.')
+    examples = observed_wait_examples(data, factual_bank,
+        identity_conditioned=recipe.get('identity_conditioned', False))
+    raw = torch.cat((examples['features'], examples['factual_features'])).to(device)
+    mean = raw.mean(0); scale = raw.std(0, unbiased=False).clamp_min(.05)
+    normalized = (raw-mean)/scale
+    features = normalized[:len(examples['features'])]
+    factual_features = normalized[len(features):]
+    pair_roots = torch.as_tensor(examples['pair_roots'], device=device)
+    targets = torch.as_tensor(examples['returns'], device=device)
+    factual_targets = torch.as_tensor(examples['factual_returns'], device=device)
+    rng = np.random.default_rng(seed+2351); torch.manual_seed(seed+2351)
+    heads = nn.ModuleList([ObservedContinuationHead(features.shape[1], width).to(device)
+        for _ in range(ensemble_size)])
+    optimizer = torch.optim.AdamW(heads.parameters(), lr=3e-4, weight_decay=.01)
+    draws = hashlib.sha256()
+    for update in range(updates):
+        selected = rng.choice(len(targets), size=128, p=examples['probabilities'])
+        draws.update(selected.astype(np.int64).tobytes())
+        indices = torch.as_tensor(selected, device=device)
+        observed = targets[indices]; current = features[pair_roots[indices]]
+        factual_indices = None
+        if len(factual_features):
+            selected_factual = rng.integers(len(factual_features), size=128)
+            draws.update(selected_factual.astype(np.int64).tobytes())
+            factual_indices = torch.as_tensor(selected_factual, device=device)
+        loss = features.new_zeros(())
+        for head in heads:
+            predicted = head(current)
+            loss = loss+F.mse_loss(predicted, observed)
+            if not ordinary:
+                loss = loss+difference_weight*F.mse_loss(predicted[:, 1]-predicted[:, 0],
+                    observed[:, 1]-observed[:, 0])
+            if factual_indices is not None:
+                loss = loss+F.mse_loss(head(factual_features[factual_indices])[:, 0],
+                    factual_targets[factual_indices])
+        optimizer.zero_grad(set_to_none=True); loss.backward()
+        nn.utils.clip_grad_norm_(heads.parameters(), 2.); optimizer.step()
+        if (update+1) % 1000 == 0 or update+1 == updates:
+            print(dict(phase='observed_wait_fit', ordinary=ordinary, updates_per_member=update+1,
+                members=ensemble_size, loss=float(loss.detach())), flush=True)
+    learned = dict(input_width=features.shape[1], width=width, observed_returns=True,
+        states=[{key: value.detach().cpu() for key, value in head.state_dict().items()} for head in heads],
+        mean=mean.cpu(), scale=scale.cpu())
+    with torch.no_grad():
+        prediction = torch.stack([head(features) for head in heads]).mean(0)[pair_roots]
+        weights = torch.as_tensor(examples['probabilities'], dtype=prediction.dtype, device=device)
+        difference = prediction[:, 1]-prediction[:, 0]
+        measured_difference = targets[:, 1]-targets[:, 0]
+        diagnostics = dict(training_endpoint_rmse=float(
+            (weights*(prediction-targets).square().mean(-1)).sum().sqrt()),
+            training_difference_rmse=float((weights*(difference-measured_difference).square()).sum().sqrt()),
+            predicted_wait_mean=float(weights@difference), measured_wait_mean=float(weights@measured_difference))
+    result = copy.deepcopy(model)
+    result['successor_task_value']['wait_value'] = learned
+    result['observed_wait_fit'] = dict(seed=seed, width=width, ensemble_members=ensemble_size,
+        updates_per_member=updates, updates=updates*ensemble_size, optimizer_step_calls=updates,
+        parameters_per_member=sum(parameter.numel() for parameter in heads[0].parameters()),
+        root_states=len(features), paired_futures=len(targets), terminal_observations=2*len(targets),
+        factual_trajectories=0 if factual_bank is None else len(factual_bank['records']),
+        factual_states=len(factual_features), training_observation_sha256=examples['observation_sha256'],
+        training_target_sha256=examples['target_sha256'], training_draw_sha256=draws.hexdigest(),
+        objective='absolute return' if ordinary else 'absolute return and common-future paired difference',
+        difference_weight=0. if ordinary else difference_weight, intervention_values_updated=False,
+        future_outcomes_used=True, future_public_states_used=False, current_public_states_only=True,
+        predecessor_sha256=data['predecessor_sha256'],
+        continuation_policy_sha256=data['continuation_policy_sha256'], defer_ticks=5,
+        collection_context=copy.deepcopy(data['collection_context']),
+        target='measured discounted deferred-policy return minus measured factual return',
+        margin_subtracted_from_measured_wait=False, **diagnostics)
+    if output is not None:
+        torch.save(result, output)
+    return result
+
+
 class PlainJointReturnDecision(nn.Module):
     """Absolute-return argmax over the shared complete intervention catalog.
 
