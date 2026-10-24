@@ -1722,6 +1722,8 @@ def factual_opportunity_transitions(learner, factual_bank, batch_size=16):
 def fit_factual_wait_opportunity(model, factual_bank, output, *, updates=3000, width=64,
         ensemble_size=3, seed=42, device='cpu', score_device='cpu', score_batch_size=16, gamma=.995):
     """Fit matched stopping heads; the underlying intervention values stay frozen."""
+    if model.get('successor_task_fit', {}).get('value_target') == 'success':
+        raise ValueError('Success-valued waiting requires measured continuation pairs, not predicted-opportunity targets.')
     if updates < 1 or ensemble_size < 1 or width < 1:
         raise ValueError('Waiting fitting requires positive capacity and update counts.')
     if not 0. < gamma <= 1.:
@@ -1794,9 +1796,12 @@ def fit_factual_wait_opportunity(model, factual_bank, output, *, updates=3000, w
     return result
 
 
-def observed_wait_examples(data, factual_bank=None, *, identity_conditioned=False):
+def observed_wait_examples(data, factual_bank=None, *, identity_conditioned=False,
+                           value_target='discounted_return'):
     """Current-state inputs with measured, common-future continuation returns."""
     from conditional_fusion_value import append_vessel_identity
+    if value_target not in ('success', 'discounted_return'):
+        raise ValueError('Observed waiting needs a measured success or discounted_return target.')
     provenance = data.get('collection_context', {})
     if (data.get('kind') != 'actual_wait_continuation_pairs' or not data.get('completed')
             or not data.get('roots') or not data.get('predecessor_sha256')
@@ -1804,7 +1809,7 @@ def observed_wait_examples(data, factual_bank=None, *, identity_conditioned=Fals
         raise ValueError('Observed waiting needs complete measured continuation pairs.')
     if (not provenance.get('strict_single_vessel_per_intervention')
             or provenance.get('maximum_interventions') != 1 or provenance.get('defer_ticks') != 5
-            or provenance.get('value_target') != 'discounted_return'
+            or provenance.get('value_target') not in ('success', 'discounted_return')
             or provenance.get('source_m1_sha256') != data['predecessor_sha256']
             or provenance.get('continuation_policy_sha256') != data['continuation_policy_sha256']):
         raise ValueError('Observed waiting requires one deferred intervention and the same factual source.')
@@ -1841,6 +1846,10 @@ def observed_wait_examples(data, factual_bank=None, *, identity_conditioned=Fals
             for q in (0, 1):
                 observation = root['outcomes'][q, future]
                 value = float(discounted_task_values(observation['success'], observation['remaining_ticks']))
+                success = float(observation['success'])
+                if success not in (0., 1.):
+                    raise ValueError('Observed success targets must be binary terminal outcomes.')
+                recorded_value = success if provenance['value_target'] == 'success' else value
                 events = observation.get('interventions', [])
                 if (observation.get('intervention_count') != len(events) or len(events) > q
                         or any(len(event['subjects']) != 1 or not np.isfinite(event['time'])
@@ -1848,9 +1857,9 @@ def observed_wait_examples(data, factual_bank=None, *, identity_conditioned=Fals
                     raise ValueError('Waiting labels must use at most one single-vessel intervention after the delay.')
                 if (abs(observation['duration']/.2-root['root_steps']-observation['remaining_ticks']) > 1e-3
                         or not np.isfinite(observation.get('normalized_return', np.nan))
-                        or abs(observation['normalized_return']-value) > 1e-6):
-                    raise ValueError('Observed waiting targets must match the measured discounted terminal return.')
-                endpoints.append(value)
+                        or abs(observation['normalized_return']-recorded_value) > 1e-6):
+                    raise ValueError('Observed waiting targets must match the recorded terminal objective.')
+                endpoints.append(success if value_target == 'success' else value)
             pair_roots.append(root_id); returns.append(endpoints)
             probabilities.append(weights[future]/weights.sum()/len(data['roots']))
             future_ids.append(future_id)
@@ -1863,7 +1872,10 @@ def observed_wait_examples(data, factual_bank=None, *, identity_conditioned=Fals
             raise ValueError('Factual waiting support needs the same completed frozen predecessor.')
         for record in factual_bank['records']:
             x = public_features(record['contexts'], record['controls'], record['orders'])
-            values = discounted_task_values(record['values'], record['remaining'])
+            values = (np.asarray(record['values'], np.float32) if value_target == 'success' else
+                      discounted_task_values(record['values'], record['remaining']))
+            if value_target == 'success' and not np.isin(values, [0., 1.]).all():
+                raise ValueError('Factual success targets must be binary terminal outcomes.')
             if values.shape != (len(x),):
                 raise ValueError('Factual waiting returns must align with current public states.')
             factual_features.append(x); factual_returns.extend(values)
@@ -1880,7 +1892,7 @@ def observed_wait_examples(data, factual_bank=None, *, identity_conditioned=Fals
     target_digest = hashlib.sha256(returns.tobytes()+factual_returns.tobytes()).hexdigest()
     return dict(features=features, pair_roots=pair_roots, returns=returns,
         probabilities=probabilities, factual_features=factual_features, factual_returns=factual_returns,
-        observation_sha256=observation_digest.hexdigest(), target_sha256=target_digest)
+        value_target=value_target, observation_sha256=observation_digest.hexdigest(), target_sha256=target_digest)
 
 
 @torch.enable_grad()
@@ -1888,19 +1900,20 @@ def fit_observed_wait_value(model, data, factual_bank, output, *, updates=3000, 
         ensemble_size=3, seed=42, device='cpu', difference_weight=4.):
     """Fit matched absolute endpoints, with paired differences only in the conditional arm."""
     recipe = model['successor_task_value']; fit = model.get('successor_task_fit', {})
-    ordinary = recipe['kind'] == 'plain_joint_return'
-    if not ordinary and (recipe['kind'] != 'local_difference_joint' or recipe.get('ordinary', False)):
+    ordinary = recipe['kind'] in ('plain_joint_return', 'plain_mlp_return')
+    if not ordinary and (recipe['kind'] not in ('local_difference_joint', 'paired_mlp_return')
+                         or recipe.get('ordinary', False)):
         raise ValueError('Observed waiting requires a matched intervention estimator.')
     if (recipe.get('wait_value') is not None or recipe.get('intervention_budget') != 1
             or recipe.get('decision_period', 5) != 5 or recipe.get('commit_factual', False)
             or fit.get('predecessor_sha256') != data.get('predecessor_sha256')
-            or fit.get('value_target') != 'discounted_return'):
+            or fit.get('value_target') not in ('success', 'discounted_return')):
         raise ValueError('Observed waiting needs frozen intervention returns from the same factual source.')
     if (updates < 1 or width < 1 or ensemble_size < 1
             or not np.isfinite(difference_weight) or difference_weight < 0):
         raise ValueError('Observed waiting requires positive capacity and valid fitting settings.')
     examples = observed_wait_examples(data, factual_bank,
-        identity_conditioned=recipe.get('identity_conditioned', False))
+        identity_conditioned=recipe.get('identity_conditioned', False), value_target=fit['value_target'])
     raw = torch.cat((examples['features'], examples['factual_features'])).to(device)
     mean = raw.mean(0); scale = raw.std(0, unbiased=False).clamp_min(.05)
     normalized = (raw-mean)/scale
@@ -1960,13 +1973,16 @@ def fit_observed_wait_value(model, data, factual_bank, output, *, updates=3000, 
         factual_trajectories=0 if factual_bank is None else len(factual_bank['records']),
         factual_states=len(factual_features), training_observation_sha256=examples['observation_sha256'],
         training_target_sha256=examples['target_sha256'], training_draw_sha256=draws.hexdigest(),
-        objective='absolute return' if ordinary else 'absolute return and common-future paired difference',
+        value_target=fit['value_target'],
+        objective='absolute value' if ordinary else 'absolute value and common-future paired difference',
         difference_weight=0. if ordinary else difference_weight, intervention_values_updated=False,
         future_outcomes_used=True, future_public_states_used=False, current_public_states_only=True,
         predecessor_sha256=data['predecessor_sha256'],
         continuation_policy_sha256=data['continuation_policy_sha256'], defer_ticks=5,
         collection_context=copy.deepcopy(data['collection_context']),
-        target='measured discounted deferred-policy return minus measured factual return',
+        target=('measured deferred-policy success minus measured factual success'
+            if fit['value_target'] == 'success' else
+            'measured discounted deferred-policy return minus measured factual return'),
         margin_subtracted_from_measured_wait=False, **diagnostics)
     if output is not None:
         torch.save(result, output)
@@ -2229,10 +2245,11 @@ class LocalDifferenceDecision(nn.Module):
                  paired_response_encoding=False, aligned_response_contrast=False, paired_event_difference=False,
                  isolate_factual_start=False, response_conditioned_value=False, physics_residual_response=False,
                  shared_factual_response=False, shared_successor_value=False, feedback_relative_hold=False,
-                 wait_value=None):
+                 wait_value=None, empirical_difference_correction=True):
         super().__init__()
         self.conditional_strata = conditional_strata
         self.paired_event_difference = paired_event_difference
+        self.empirical_difference_correction = bool(empirical_difference_correction)
         if paired_event_difference and (ordinary or not conditional_strata or stratum_member_corrections is not None):
             raise ValueError('Paired event differences use one factual head and unconditional paired corrections.')
         self.models = nn.ModuleList([JointTaskPotential(width, peer_conditioned,
@@ -2565,9 +2582,12 @@ class LocalDifferenceDecision(nn.Module):
                     if self.paired_event_difference:
                         raise ValueError('Paired event probabilities cannot be conditioned on a realized future outcome.')
                     baseline = torch.full_like(baseline, float(stratum))
-                values = ((baseline+raw[:, :, 1]-raw[:, :, 2]).clamp(0., 1.)
-                          if self.paired_event_difference else
-                          (1-baseline)*raw[:, :, 1]+baseline*(1-raw[:, :, 2]))
+                if self.paired_event_difference:
+                    values = baseline+raw[:, :, 1]-raw[:, :, 2]
+                    if self.project_task_value:
+                        values = values.clamp(0., 1.)
+                else:
+                    values = (1-baseline)*raw[:, :, 1]+baseline*(1-raw[:, :, 2])
                 values[:, 0] = baseline[:, 0]
                 if self.local_contrast_head and not factual_only:
                     values = self.reconstruct_values(net, encoded, context, values, baseline)
@@ -2877,6 +2897,10 @@ class LocalDifferenceDecision(nn.Module):
                 else:
                     residual = torch.einsum('br,mrk->mbk', weights, self.member_corrections)/mass[None].clamp_min(1e-8)
                     corrected_members = gains+influence[None]*residual
+            if not self.empirical_difference_correction:
+                # Keep measured uncertainty, but do not replace a neural effect
+                # with an interpolated training outcome before choosing a plan.
+                corrected_members = gains
             if self.project_task_value:
                 # Transporting a local difference to a different context must
                 # retain the range of the success-valued task potential. In
@@ -3070,13 +3094,14 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
                         value_target='success', factual_response_supervision=False, shared_factual_response=False,
                         shared_successor_value=False, conservative_catalog_weight=0.,
                         conservative_catalog_temperature=.1, conservative_catalog_samples=64,
-                        conservative_catalog_roots=4, initial_training_context=None):
+                        conservative_catalog_roots=4, initial_training_context=None,
+                        refit_all_layouts=False, empirical_difference_correction=True,
+                        factual_probability_calibration=True):
     from plain_return import root_sampling_probabilities
     if value_target not in ('success', 'discounted_return'):
         raise ValueError('Choose measured success or discounted_return as the value target.')
-    if value_target == 'discounted_return' and (not ordinary and not (paired_event_difference or shared_successor_value)
-            or ordinary and ordinary_architecture != 'interaction'):
-        raise ValueError('Discounted returns require paired difference learning or the interaction-return comparator.')
+    if value_target == 'discounted_return' and not ordinary and not (paired_event_difference or shared_successor_value):
+        raise ValueError('Conditional discounted returns require paired difference learning or a shared successor value.')
     if value_target == 'discounted_return' and data['model'].get('success_objective', False):
         raise ValueError('Discounted returns require a predecessor using the original discounted task objective.')
     if not np.isfinite(response_supervision_weight) or response_supervision_weight < 0:
@@ -3106,12 +3131,16 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         raise ValueError('Measured-response supervision requires the interaction-return comparator.')
     if dual_motion_basis and not finite_motion_basis:
         raise ValueError('The dual motion basis requires finite motion features.')
+    if refit_all_layouts and (ordinary or factual_crossfit or not paired_event_difference
+            or initial_training_context is None
+            or not initial_training_context.get('factual_crossfit', False)):
+        raise ValueError('Full-layout refitting requires a verified cross-fitted paired-event prior and no new calibration folds.')
     if initial_training_context is not None:
         expected = dict(ordinary=ordinary, width=width, seed=seed, ensemble_size=ensemble_size,
             predecessor_sha256=data.get('predecessor_sha256'), value_target=value_target,
             isolate_factual_start=bool(data.get('isolate_factual_start', False)),
             feedback_relative_hold=bool(data.get('feedback_relative_hold', False)),
-            factual_crossfit=factual_crossfit)
+            factual_crossfit=True if refit_all_layouts else factual_crossfit)
         if initial_states is None or any(initial_training_context.get(key) != value for key, value in expected.items()):
             raise ValueError('Continued learning must preserve its estimator, execution semantics and layout grouping.')
         if (not isinstance(initial_training_context.get('source_total_updates'), int)
@@ -3159,8 +3188,6 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
     if ordinary_architecture not in ('mlp', 'interaction'):
         raise ValueError('Choose the plain MLP or the explicit interaction-return comparator.')
     if ordinary and ordinary_architecture == 'mlp':
-        if data.get('isolate_factual_start', False):
-            raise ValueError('Isolated local execution requires the matching interaction-return implementation.')
         if finite_motion_basis:
             raise ValueError('The plain return MLP does not use motion-response features.')
         from plain_return import fit_plain_return
@@ -3169,7 +3196,7 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
             parameter_budget=capacity, seed=seed, device=device, factual_bank_weight=factual_bank_weight,
             identity_conditioned=identity_conditioned, snapshot_updates=snapshot_updates,
             root_sampling_fraction=root_sampling_fraction,
-            additional_candidate_options=additional_candidate_options)
+            additional_candidate_options=additional_candidate_options, value_target=value_target)
     roots = [observed_programs(root) for root in data['roots']]
     n = len(roots[0]['effect_controls'])
     if any(len(root['context']) != (8+identity_conditioned)*n+5 for root in roots):
@@ -3769,6 +3796,7 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         paired_response_encoding=paired_response_encoding,
         aligned_response_contrast=aligned_response_contrast,
         paired_event_difference=paired_event_difference,
+        empirical_difference_correction=empirical_difference_correction,
         response_conditioned_value=response_conditioned_value,
         physics_residual_response=physics_residual_response,
         shared_factual_response=shared_factual_response,
@@ -3793,6 +3821,7 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         feedback_relative_hold=feedback_relative_hold,
         neural_factual_calibration=np.asarray(factual_calibrations) if factual_crossfit else None,
         neural_factual_calibration_kind=factual_calibration_kind,
+        factual_probability_calibration=factual_probability_calibration,
         factual_difference_transport=factual_difference_transport and not ordinary,
         factual_values=factual_population.cpu() if not ordinary else None,
         project_task_value=True, commit_factual=False,
@@ -3803,7 +3832,7 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         continuation_remaining=None if ordinary or continuation_remaining is None else continuation_remaining.cpu(),
         temporal_value_bounds=not ordinary and factual_bank is not None and value_target == 'success')
     lookup = {option: i for i, option in enumerate(options)}; local_fits = []
-    if not ordinary:
+    if not ordinary and (empirical_difference_correction or confidence != 0. or stratified_local_calibration):
         learner = LocalDifferenceDecision(**recipe).to(device).eval()
         mappings = [[lookup[tuple(option)] for option in root['options']] for root in roots]
         with torch.no_grad():
@@ -3866,6 +3895,22 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
             if feedback_relative_hold else 'hold the requested absolute subject coefficients'),
         root_sampling_fraction=root_sampling_fraction,
         factual_crossfit=factual_crossfit,
+        refit_all_layouts=bool(refit_all_layouts),
+        empirical_difference_correction=bool(empirical_difference_correction and not ordinary),
+        training_layouts=(sorted({tuple(root['scene']) for root in roots} |
+            (set() if factual_bank is None else {tuple(row['scene']) for row in factual_bank['records']}))
+            if all('scene' in root for root in roots) and (factual_bank is None or
+                all('scene' in row for row in factual_bank['records'])) else None),
+        member_training_roots=([len(roots)]*ensemble_size if root_folds is None else
+            [int(np.count_nonzero(root_folds != member)) for member in range(ensemble_size)]),
+        member_factual_trajectories=([0 if factual_bank is None else len(factual_bank['records'])]*ensemble_size
+            if bank_folds is None else [int(np.count_nonzero(bank_folds != member))
+                for member in range(ensemble_size)]),
+        prior_factual_crossfit=(None if initial_training_context is None else
+            bool(initial_training_context.get('factual_crossfit', False))),
+        released_factual_calibration=(
+            'all development training layouts may now update every member; prior fold calibration is discarded'
+            if refit_all_layouts else None),
         factual_calibration_kind=factual_calibration_kind,
         factual_calibration_diagnostics=factual_calibration_diagnostics,
         factual_crossfit_root_folds=None if root_folds is None else root_folds.tolist(),
@@ -3929,7 +3974,7 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         training_parameters_per_member=training_parameter_count,
         member_updates=per_member, width=width, seed=seed, objective='absolute return' if ordinary else
         'whole-plan outcome likelihood plus paired single-vessel value differences and factual contrasts',
-        local_reconciliation=not ordinary, inherited_stages=False, root_diagnostics=diagnostics,
+        local_reconciliation=bool(local_fits), inherited_stages=False, root_diagnostics=diagnostics,
         return_representation='predicted physical successor interaction network' if response_conditioned_value else
         'candidate-interaction network',
         local_fits=local_fits, last_loss=losses, training_data=data.get('training_data'),
@@ -3963,7 +4008,7 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         factual_choice_keeps_future_decisions=True,
         delayed_choice_keeps_future_decisions=False,
         conditional_factual_strata=conditional_strata and not paired_event_difference,
-        empirical_factual_reference=not ordinary,
+        empirical_factual_reference=bool(factual_probability_calibration and not ordinary),
         development_future_weight=data.get('development_future_weight', 1.),
         candidate_catalog='all sampled complete programs, including negative outcomes',
         uncertainty_estimator=(('effective-future paired return standard error with neutral variance prior'
@@ -3988,8 +4033,235 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         if factual_crossfit:
             model['learning_snapshots']['neural_factual_calibration'] = calibration_snapshots
             model['learning_snapshots']['factual_calibration_diagnostics'] = calibration_diagnostic_snapshots
-    output = Path(output); output.parent.mkdir(parents=True, exist_ok=True); torch.save(model, output)
+    if output is not None:
+        output = Path(output); output.parent.mkdir(parents=True, exist_ok=True); torch.save(model, output)
     return model
+
+
+@torch.no_grad()
+def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, device='cpu', batch_size=128):
+    """Measure the neural effect itself, before any factual or local correction.
+
+    Each candidate is compared with its factual branch on the same measured
+    futures. Candidate selection uses predictions only. Layout-disjoint checks
+    include the factual trajectory bank used to train the network.
+    """
+    fit = model['successor_task_fit']; recipe = model['successor_task_value']
+    if (recipe['kind'] not in ('local_difference_joint', 'plain_joint_return', 'paired_mlp_return', 'plain_mlp_return')
+            or fit.get('predecessor_sha256') != data.get('predecessor_sha256') or batch_size < 1):
+        raise ValueError('Raw paired diagnostics require a matched neural estimator and factual predecessor.')
+    dense = recipe['kind'] in ('paired_mlp_return', 'plain_mlp_return')
+    paired = recipe['kind'] == 'paired_mlp_return' or bool(recipe.get('paired_event_difference', False))
+    if recipe['kind'] == 'local_difference_joint' and not paired:
+        raise ValueError('Raw paired diagnostics require the direct paired event head.')
+    roots = [observed_programs(root) for root in data['roots']]
+    if not roots:
+        raise ValueError('Raw paired diagnostics require measured candidate pairs.')
+    known_layouts = fit.get('training_layouts')
+    query_layouts = ({tuple(root['scene']) for root in roots}
+                     if all('scene' in root for root in roots) else None)
+    overlap = (None if known_layouts is None or query_layouts is None else
+               query_layouts & {tuple(scene) for scene in known_layouts})
+    if require_unseen_layouts and (overlap is None or overlap):
+        raise ValueError('Raw validation requires layouts absent from all gradient and factual-trajectory training data.')
+    fields = ('peer_conditioned', 'context_conditioned', 'motion_basis', 'finite_motion_basis',
+              'dual_motion_basis', 'identity_conditioned', 'response_conditioned_value',
+              'physics_residual_response', 'shared_factual_response', 'shared_successor_value')
+    network = {key: recipe[key] for key in fields if key in recipe}
+    network.update(output_width=3 if paired else 1, paired_response_encoding=paired,
+        aligned_response_contrast=recipe.get('aligned_response_contrast', False), paired_event_difference=paired)
+    models = []
+    states = [recipe['state']] if dense else recipe['states']
+    for state in states:
+        if dense:
+            from plain_return import PlainReturnNetwork, PairedReturnNetwork
+            factory = PairedReturnNetwork if paired else PlainReturnNetwork
+            net = factory(recipe['defenders'], recipe['width'], recipe.get('identity_conditioned', False))
+        else:
+            net = JointTaskPotential(recipe['width'], **network)
+        net = net.to(device).eval()
+        net.load_state_dict(state); models.append(net)
+    contexts = torch.as_tensor(np.asarray([root['context'] for root in roots]), dtype=torch.float32, device=device)
+    controls = torch.as_tensor(np.asarray([root['effect_controls'] for root in roots]), dtype=torch.float32, device=device)
+    samples = []; truth = []; group_sizes = []; paired_futures = 0
+    observation_digest = hashlib.sha256(); target_digest = hashlib.sha256()
+    for root_id, root in enumerate(roots):
+        values = measured_root_values(root, fit.get('value_target', 'success'))
+        weights = np.asarray(root.get('future_weights', np.ones(len(root['futures']))), np.float64)
+        if (weights.shape != (len(root['futures']),) or not np.isfinite(weights).all()
+                or (weights < 0).any() or weights.sum() <= 0):
+            raise ValueError('Raw diagnostics require finite common-future population weights.')
+        group_size = 0
+        for option_id, option in enumerate(root['options']):
+            if option_id == 0:
+                continue
+            futures = [future for future in range(len(root['futures']))
+                       if (0, future) in values and (option_id, future) in values]
+            if not futures or weights[futures].sum() <= 0:
+                continue
+            delta = np.asarray([values[option_id, future]-values[0, future] for future in futures])
+            truth.append(float(np.average(delta, weights=weights[futures])))
+            samples.append((root_id, *option)); group_size += 1; paired_futures += len(futures)
+            target_digest.update(np.asarray(delta, np.float32).tobytes())
+            target_digest.update(weights[futures].tobytes())
+        if not group_size:
+            raise ValueError('Every diagnostic root must have a measured intervention and its factual pair.')
+        group_sizes.append(group_size)
+        for field in ('context', 'effect_controls', 'options', 'futures'):
+            observation_digest.update(np.ascontiguousarray(root[field]).tobytes())
+    sample = torch.as_tensor(samples, dtype=torch.long, device=device)
+    predictions = []
+    for part in sample.split(batch_size):
+        root_id = part[:, 0]; programs = (part[:, 1:2]//(10**torch.arange(controls.shape[1], device=device))) % 10
+        estimates = []
+        for net in models:
+            raw = net(contexts[root_id], controls[root_id], programs, part[:, 2:])
+            if paired:
+                gain = (net.signed_gain(raw, (programs > 0).any(-1)) if dense else net.event_gain(raw))
+            else:
+                factual = net(contexts[root_id], controls[root_id], torch.zeros_like(programs), torch.zeros_like(part[:, 2:]))
+                gain = raw.sigmoid()-factual.sigmoid()
+            estimates.append(gain)
+        predictions.append(torch.stack(estimates).mean(0).cpu().numpy())
+    prediction = np.concatenate(predictions); truth = np.asarray(truth, np.float64)
+    error = prediction-truth
+    weights = np.concatenate([np.full(size, 1./size/len(roots)) for size in group_sizes])
+    informative = np.abs(truth) > .02
+    selected_true = []; selected_predicted = []; regret = []; offset = 0
+    for size in group_sizes:
+        predicted = np.r_[0., prediction[offset:offset+size]]
+        observed = np.r_[0., truth[offset:offset+size]]
+        choice = int(predicted.argmax())
+        selected_true.append(float(observed[choice])); selected_predicted.append(float(predicted[choice]))
+        regret.append(float(observed.max()-observed[choice])); offset += size
+    return dict(value_target=fit.get('value_target', 'success'), roots=len(roots), candidate_pairs=len(truth),
+        common_futures=paired_futures, empirical_corrections_used=False, factual_calibration_used=False,
+        evaluated_parameter_sha256=_joint_parameter_digest(states),
+        observation_sha256=observation_digest.hexdigest(), target_sha256=target_digest.hexdigest(),
+        layout_overlap=None if overlap is None else len(overlap),
+        layouts_disjoint=overlap is not None and not overlap,
+        mean_absolute_error=float(weights@np.abs(error)), rmse=float(np.sqrt(weights@error**2)),
+        bias=float(weights@error), informative_pairs=int(informative.sum()),
+        sign_accuracy=(float(np.average((prediction[informative] > 0) == (truth[informative] > 0),
+            weights=weights[informative])) if informative.any() else None),
+        selection='neural argmax over measured alternatives including unchanged continuation',
+        selected_predicted_gain=float(np.mean(selected_predicted)), selected_measured_gain=float(np.mean(selected_true)),
+        selected_harmful_roots=int(np.count_nonzero(np.asarray(selected_true) < -1e-8)),
+        measured_candidate_regret=float(np.mean(regret)))
+
+
+def fit_success_intervention_pair(data, paired_output, ordinary_output, *, validation_data,
+        factual_bank=None, updates=24000, ensemble_size=3, width=64, seed=42, device='cpu',
+        network_options=None, margin=.02, architecture='interaction', parameter_budget=None):
+    """Train both arms on every training layout, then audit untouched layouts.
+
+    The event likelihood and squared paired differences are probability-valued
+    objectives. Ranking and softmax decision losses are excluded because they
+    can improve ordering by changing the magnitude of the reported effect.
+    """
+    if updates < ensemble_size or updates % ensemble_size:
+        raise ValueError('Matched success training requires equal positive optimizer budgets for all members.')
+    if architecture not in ('interaction', 'mlp') or (architecture == 'mlp' and ensemble_size != 1):
+        raise ValueError('Choose an interaction ensemble or one matched dense model per arm.')
+    if (not data.get('roots') or not validation_data.get('roots')
+            or data.get('predecessor_sha256') != validation_data.get('predecessor_sha256')):
+        raise ValueError('Matched success training needs measured training and validation data from the same predecessor.')
+    for key in ('isolate_factual_start', 'feedback_relative_hold'):
+        if bool(data.get(key, False)) != bool(validation_data.get(key, False)):
+            raise ValueError('Training and validation must use identical intervention execution semantics.')
+    training_records = data['roots']+(factual_bank['records'] if factual_bank is not None else [])
+    if not all('scene' in root for root in training_records+validation_data['roots']):
+        raise ValueError('Matched success training requires recorded layouts for both populations.')
+    training_layouts = {tuple(root['scene']) for root in training_records}
+    validation_layouts = {tuple(root['scene']) for root in validation_data['roots']}
+    if training_layouts & validation_layouts:
+        raise ValueError('Validation layouts must be absent from paired and factual training data.')
+    options = dict(network_options or {})
+    allowed = {'peer_conditioned', 'context_conditioned', 'motion_basis', 'finite_motion_basis',
+        'dual_motion_basis', 'identity_conditioned', 'response_conditioned_value', 'physics_residual_response',
+        'shared_factual_response', 'response_supervision_weight', 'response_supervision_architecture',
+        'response_value_weight', 'factual_response_supervision', 'learning_rate', 'factual_bank_weight',
+        'additional_candidate_options', 'root_sampling_fraction', 'edge_weight', 'anchor_weight'}
+    if set(options)-allowed:
+        raise ValueError('Matched success settings cannot override targets, coverage, calibration or optimizer budgets.')
+    common = dict(updates=updates, ensemble_size=ensemble_size, seed=seed, device=device,
+        motion_basis=True, finite_motion_basis=True, context_conditioned=True, peer_conditioned=True,
+        ordinary_architecture='interaction', value_target='success', factual_crossfit=False,
+        empirical_difference_correction=False, joint_factual_calibration=False, factual_probability_calibration=False,
+        rank_weight=0., decision_regret_weight=0., root_sampling_fraction=.5, margin=margin,
+        confidence=0., global_penalty=0.)
+    common.update(options)
+    if not common['motion_basis']:
+        raise ValueError('Paired success learning requires a public motion representation.')
+    network_fields = ('peer_conditioned', 'context_conditioned', 'motion_basis', 'finite_motion_basis',
+                      'dual_motion_basis', 'identity_conditioned', 'response_conditioned_value',
+                      'physics_residual_response', 'shared_factual_response')
+    network_architecture = {key: common[key] for key in network_fields if key in common}
+    def capacity(candidate_width, paired):
+        net = JointTaskPotential(candidate_width, output_width=3 if paired else 1,
+            paired_response_encoding=paired, aligned_response_contrast=paired,
+            paired_event_difference=paired, **network_architecture)
+        return sum(parameter.numel() for parameter in net.parameters())
+    paired_capacity = capacity(width, True)
+    ordinary_width = min(range(max(1, width//2), 2*width+1),
+        key=lambda candidate: abs(capacity(candidate, False)-paired_capacity))
+    conditional = dict(conditional_strata=True, paired_response_encoding=True,
+        aligned_response_contrast=True, paired_event_difference=True,
+        response_contrast_weight=(1. if common.get('response_conditioned_value') and
+                                 not common.get('shared_factual_response') else 0.))
+    if architecture == 'interaction':
+        if parameter_budget is not None:
+            raise ValueError('Interaction capacity is controlled by width and ensemble size.')
+        paired = fit_joint_potential(data, None, width=width, factual_bank=factual_bank, **common, **conditional)
+        ordinary = fit_joint_potential(data, None, width=ordinary_width, factual_bank=factual_bank, ordinary=True, **common)
+        paired['successor_task_value'].update(temporal_value_bounds=False, intervention_budget=1,
+            project_task_value=False, factual_bound_pruning=False, candidate_bound_pruning=False)
+        ordinary['successor_task_value'].update(intervention_budget=1, gain_margin=margin)
+        ordinary_capacity = capacity(ordinary_width, False)
+    else:
+        from plain_return import fit_plain_return, fit_paired_mlp_return
+        dense_options = {'identity_conditioned', 'learning_rate', 'factual_bank_weight',
+                         'additional_candidate_options', 'root_sampling_fraction'}
+        if set(options)-dense_options:
+            raise ValueError('Dense success learning uses public state/action inputs without response auxiliary heads.')
+        settings = dict(factual_bank=factual_bank, updates=updates,
+            parameter_budget=paired_capacity if parameter_budget is None else parameter_budget,
+            seed=seed, device=device, value_target='success', intervention_budget=1,
+            gain_margin=margin, root_sampling_fraction=.5)
+        settings.update(options)
+        paired = fit_paired_mlp_return(data, None, **settings)
+        ordinary = fit_plain_return(data, None, **settings,
+            expected_observation_sha256=paired['successor_task_fit']['training_observation_sha256'],
+            expected_training_target_sha256=paired['successor_task_fit']['training_target_sha256'])
+        paired_capacity = paired['successor_task_fit']['trainable_parameters']
+        ordinary_capacity = ordinary['successor_task_fit']['trainable_parameters']
+        for model in (paired, ordinary):
+            model['successor_task_fit'].update(training_layouts=sorted(training_layouts),
+                member_training_roots=[len(data['roots'])],
+                member_factual_trajectories=[0 if factual_bank is None else len(factual_bank['records'])],
+                factual_crossfit=False, empirical_difference_correction=False,
+                empirical_factual_reference=False)
+    matched_fields = ('training_observation_sha256', 'training_target_sha256', 'member_training_roots',
+        'member_factual_trajectories', 'member_updates', 'updates', 'predecessor_sha256')
+    if any(paired['successor_task_fit'][key] != ordinary['successor_task_fit'][key] for key in matched_fields):
+        raise RuntimeError('Matched success training produced unequal data coverage or optimizer budgets.')
+    for model in (paired, ordinary):
+        fit = model['successor_task_fit']
+        fit['success_probability_objective'] = True
+        fit['rank_weight'] = 0.; fit['decision_regret_weight'] = 0.
+        fit['raw_training_diagnostics'] = raw_paired_value_diagnostics(model, data, device=device)
+        fit['raw_validation_diagnostics'] = raw_paired_value_diagnostics(model, validation_data,
+            require_unseen_layouts=True, device=device)
+        fit['matched_success_training'] = dict(all_members_see_all_training_layouts=True,
+            training_layouts=len(training_layouts), validation_layouts=len(validation_layouts),
+            validation_used_for_gradients=False, validation_used_for_calibration=False,
+            paired_parameters_per_member=paired_capacity,
+            ordinary_parameters_per_member=ordinary_capacity,
+            probability_difference_units='success probability', time_reward_weight=0.)
+    for model, output in ((paired, paired_output), (ordinary, ordinary_output)):
+        if output is not None:
+            output = Path(output); output.parent.mkdir(parents=True, exist_ok=True); torch.save(model, output)
+    return paired, ordinary
 
 
 @torch.no_grad()

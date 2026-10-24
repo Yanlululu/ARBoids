@@ -3797,9 +3797,11 @@ def joint_load(path,revision,ablation=(False,False,False)):
         if (not isinstance(flags,(tuple,list)) or len(flags)>3
                 or any(not isinstance(flag,(bool,np.bool_)) for flag in flags)):
             raise ValueError(f'{label} mechanism_ablation must contain only Boolean removal flags.')
-    if (data.get('successor_task_value') or {}).get('kind')=='plain_mlp_return':
+    dense_kind=(data.get('successor_task_value') or {}).get('kind')
+    if dense_kind in ('plain_mlp_return','paired_mlp_return'):
         from plain_return import require_plain_predecessor
-        require_plain_predecessor(data,allow_plain_return=True)
+        require_plain_predecessor(data,allow_plain_return=dense_kind=='plain_mlp_return',
+                                  allow_paired_return=dense_kind=='paired_mlp_return')
     actor=JointLearningActor(data['peer'],graph=data.get('graph',False),levels=data.get('levels',2),
         risk_prior=data.get('risk_prior',0.),risk_horizon=data.get('risk_horizon',1.6),
         pair_scale=data.get('pair_scale',1.),gate_period=data.get('gate_period',1),
@@ -3854,6 +3856,9 @@ def joint_load(path,revision,ablation=(False,False,False)):
         elif kind=='plain_mlp_return':
             from plain_return import PlainReturnDecision
             actor.successor_task_value=PlainReturnDecision(**record)
+        elif kind=='paired_mlp_return':
+            from plain_return import PairedReturnDecision
+            actor.successor_task_value=PairedReturnDecision(**record)
         elif kind=='shared_paired_effect':
             from conditional_fusion_value import SharedPairedEffectDecision
             actor.successor_task_value=SharedPairedEffectDecision(**record)
