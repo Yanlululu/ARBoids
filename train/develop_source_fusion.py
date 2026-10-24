@@ -4060,6 +4060,9 @@ def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_s
         isolate_factual_start=bool(getattr(getattr(actor,'successor_task_value',None),
                                           'isolate_factual_start',False))
     relative_hold=bool(getattr(getattr(actor,'successor_task_value',None),'feedback_relative_hold',False))
+    relative_scale=getattr(getattr(actor,'successor_task_value',None),'feedback_relative_scale',None)
+    if relative_scale is not None and not relative_hold:
+        raise ValueError('A scaled fusion displacement requires relative feedback execution.')
     if relative_hold and (not isolate_factual_start or
             not (getattr(actor,'actuator_fusion_refinement',None) or {}).get('task_feedback_prediction')):
         raise ValueError('Relative intervention execution requires the isolated task-feedback planner.')
@@ -4206,7 +4209,7 @@ def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_s
                     torch.full((1,len(control),2),-1.))
                 resolved,relative_offsets=refine_feedback_relative_intervention(actor,refinement_packet,
                     torch.as_tensor(control[None],dtype=torch.float32),relative_offsets,
-                    **actor.actuator_fusion_refinement)
+                    relative_scale=relative_scale,**actor.actuator_fusion_refinement)
                 physical=resolved[0].numpy()
             else:
                 physical=refine_actuator_interactions(actor,refinement_packet,

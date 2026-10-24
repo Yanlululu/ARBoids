@@ -934,11 +934,16 @@ def merge_paired_data(datasets, *, allow_distinct_contexts=False, allow_opponent
     if not datasets:
         raise ValueError('Supply paired terminal observations.')
     relative_modes = {bool(data.get('feedback_relative_hold', False)) for data in datasets}
-    if len(relative_modes) != 1:
+    relative_scales = {data.get('feedback_relative_scale') for data in datasets}
+    if len(relative_modes) != 1 or len(relative_scales) != 1:
         raise ValueError('Absolute and feedback-relative interventions are different physical experiments.')
     isolated = all(data.get('isolate_factual_start', False) for data in datasets)
     if True in relative_modes and not isolated:
         raise ValueError('Relative paired branches require isolated activation in every source.')
+    scale = next(iter(relative_scales))
+    if scale is not None and (True not in relative_modes or not np.isfinite(scale) or not 0. < scale <= 1.
+            or any(root.get('feedback_relative_scale') != scale for data in datasets for root in data['roots'])):
+        raise ValueError('Scaled paired branches must retain their measured relative fusion scale.')
     predecessor = datasets[0]['predecessor_sha256']
     opponents = {root.get('opponent_sha256', data.get('opponent_sha256'))
                  for data in datasets for root in data['roots']}
@@ -1016,6 +1021,7 @@ def merge_paired_data(datasets, *, allow_distinct_contexts=False, allow_opponent
             old.update(options=options, futures=futures, future_weights=merged_weights, outcomes=outcomes)
     return dict(model=copy.deepcopy(datasets[0]['model']), roots=list(grouped.values()),
         feedback_relative_hold=next(iter(relative_modes)),
+        feedback_relative_scale=next(iter(relative_scales)),
         isolate_factual_start=isolated,
         predecessor_sha256=predecessor, simulation_steps=sum(d.get('simulation_steps', 0) for d in datasets),
         opponent_sha256=next(iter(opponents)) if len(opponents) == 1 else None,
@@ -3186,8 +3192,6 @@ def _joint_parameter_digest(states):
 def joint_potential_initialization(model, data, factual_bank=None):
     """Verify a prior fit and preserve its layout separation when continuing it."""
     fit = model['successor_task_fit']; recipe = model['successor_task_value']
-    if recipe.get('velocity_reference', 'ground') != data.get('state_velocity_reference', 'ground'):
-        raise ValueError('Raw diagnostics must use the estimator\'s observed velocity reference.')
     ordinary = bool(fit['ordinary'])
     expected_kind = 'plain_joint_return' if ordinary else 'local_difference_joint'
     if recipe['kind'] != expected_kind or fit['predecessor_sha256'] != data['predecessor_sha256']:
@@ -3272,6 +3276,8 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
                         refit_all_layouts=False, empirical_difference_correction=True,
                         factual_probability_calibration=True):
     from plain_return import root_sampling_probabilities
+    if data.get('feedback_relative_scale') is not None:
+        raise ValueError('Scaled feedback needs a value representation for signed relative fusion displacements.')
     if value_target not in ('success', 'discounted_return'):
         raise ValueError('Choose measured success or discounted_return as the value target.')
     if value_target == 'discounted_return' and not ordinary and not (paired_event_difference or shared_successor_value):
@@ -4221,10 +4227,15 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
     include the factual trajectory bank used to train the network.
     """
     fit = model['successor_task_fit']; recipe = model['successor_task_value']
+    if recipe.get('velocity_reference', 'ground') != data.get('state_velocity_reference', 'ground'):
+        raise ValueError('Raw diagnostics must use the estimator\'s observed velocity reference.')
     if (recipe['kind'] not in ('local_difference_joint', 'plain_joint_return', 'paired_mlp_return', 'plain_mlp_return')
             or fit.get('predecessor_sha256') != data.get('predecessor_sha256') or batch_size < 1):
         raise ValueError('Raw paired diagnostics require a matched neural estimator and factual predecessor.')
     dense = recipe['kind'] in ('paired_mlp_return', 'plain_mlp_return')
+    if dense and (bool(recipe.get('feedback_relative_hold', False)) != bool(data.get('feedback_relative_hold', False))
+                  or recipe.get('feedback_relative_scale') != data.get('feedback_relative_scale')):
+        raise ValueError('Raw dense diagnostics must retain the measured relative execution semantics.')
     paired = recipe['kind'] == 'paired_mlp_return' or bool(recipe.get('paired_response_encoding', False))
     paired_events = recipe['kind'] == 'paired_mlp_return' or bool(recipe.get('paired_event_difference', False))
     if recipe['kind'] == 'local_difference_joint' and not paired:
@@ -4253,14 +4264,15 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
             factory = (PairedReturnNetwork if paired and recipe.get('conditional_objective') != 'shared_potential'
                        else PlainReturnNetwork)
             net = factory(recipe['defenders'], recipe['width'], recipe.get('identity_conditioned', False),
-                action_encoding=recipe.get('action_encoding', 'categorical'))
+                action_encoding=recipe.get('action_encoding', 'categorical'),
+                feedback_relative_scale=recipe.get('feedback_relative_scale'))
         else:
             net = JointTaskPotential(recipe['width'], **network)
         net = net.to(device).eval()
         net.load_state_dict(state); models.append(net)
     contexts = torch.as_tensor(np.asarray([root['context'] for root in roots]), dtype=torch.float32, device=device)
     controls = torch.as_tensor(np.asarray([root['effect_controls'] for root in roots]), dtype=torch.float32, device=device)
-    samples = []; truth = []; group_sizes = []; paired_futures = 0
+    samples = []; truth = []; group_sizes = []; paired_futures = 0; mean_variances = []
     observation_digest = hashlib.sha256(); target_digest = hashlib.sha256()
     for root_id, root in enumerate(roots):
         values = measured_root_values(root, fit.get('value_target', 'success'))
@@ -4278,6 +4290,13 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
                 continue
             delta = np.asarray([values[option_id, future]-values[0, future] for future in futures])
             truth.append(float(np.average(delta, weights=weights[futures])))
+            # Report the measurement uncertainty without subtracting it from
+            # neural errors. Unequal future weights need a sampling design;
+            # do not silently treat weighted observations as IID repetitions.
+            distinct_futures = len({root['futures'][future] for future in futures})
+            uniform = np.allclose(weights[futures], weights[futures[0]], rtol=0., atol=0.)
+            mean_variances.append(float(np.var(delta, ddof=1)/len(delta))
+                if len(delta) > 1 and distinct_futures == len(delta) and uniform else np.nan)
             samples.append((root_id, *option)); group_size += 1; paired_futures += len(futures)
             target_digest.update(np.asarray(delta, np.float32).tobytes())
             target_digest.update(weights[futures].tobytes())
@@ -4296,10 +4315,10 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
             if paired and not (dense and recipe.get('conditional_objective') == 'shared_potential'):
                 if dense:
                     factual = None
-                    if recipe.get('conditional_objective', 'marginal_events') == 'factual_strata':
+                    if recipe.get('conditional_objective', 'marginal_events') in ('factual_strata', 'joint_likelihood'):
                         factual = net(contexts[root_id], controls[root_id],
                             torch.zeros_like(programs), torch.zeros_like(part[:, 2:]))[:, 0].sigmoid()
-                    gain = net.signed_gain(raw, (programs > 0).any(-1), factual)
+                    gain = net.signed_gain(raw, net.active_vessels(programs).any(-1), factual)
                 elif paired_events:
                     gain = net.event_gain(raw)
                 else:
@@ -4328,6 +4347,11 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
         layout_overlap=None if overlap is None else len(overlap),
         layouts_disjoint=overlap is not None and not overlap,
         mean_absolute_error=float(weights@np.abs(error)), rmse=float(np.sqrt(weights@error**2)),
+        zero_effect_mean_absolute_error=float(weights@np.abs(truth)),
+        zero_effect_rmse=float(np.sqrt(weights@truth**2)),
+        common_future_variance_estimable_pairs=int(np.isfinite(mean_variances).sum()),
+        estimated_mean_sampling_variance=(float(weights@np.asarray(mean_variances))
+            if np.isfinite(mean_variances).all() else None),
         bias=float(weights@error), informative_pairs=int(informative.sum()),
         sign_accuracy=(float(np.average((prediction[informative] > 0) == (truth[informative] > 0),
             weights=weights[informative])) if informative.any() else None),
@@ -4337,42 +4361,50 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
         measured_candidate_regret=float(np.mean(regret)))
 
 
-def fit_success_intervention_pair(data, paired_output, ordinary_output, *, validation_data,
+def fit_success_intervention_pair(data, paired_output, ordinary_output, *, validation_data=None,
         factual_bank=None, updates=24000, ensemble_size=3, width=64, seed=42, device='cpu',
         network_options=None, margin=.02, architecture='interaction', parameter_budget=None,
         conditional_objective='marginal_events'):
-    """Train both arms on every training layout, then audit untouched layouts.
+    """Train both arms on every training layout and audit supplied unseen data.
 
     The event likelihood and squared paired differences are probability-valued
     objectives. Ranking and softmax decision losses are excluded because they
     can improve ordering by changing the magnitude of the reported effect.
+    A full-data refit may precede external validation; its saved diagnostics
+    explicitly remain unevaluated until actual unseen observations exist.
     """
     if (not isinstance(ensemble_size, int) or ensemble_size < 1
             or updates < ensemble_size or updates % ensemble_size):
         raise ValueError('Matched success training requires equal positive optimizer budgets for all members.')
     if architecture not in ('interaction', 'mlp'):
         raise ValueError('Choose an interaction or dense ensemble per arm.')
-    if conditional_objective not in ('marginal_events', 'factual_strata', 'shared_potential'):
+    if conditional_objective not in ('marginal_events', 'factual_strata', 'shared_potential', 'joint_likelihood'):
         raise ValueError('Unknown paired success conditional objective.')
     if conditional_objective == 'shared_potential' and architecture != 'mlp':
         raise ValueError('The matched shared-potential experiment requires the common dense architecture.')
-    if (not data.get('roots') or not validation_data.get('roots')
-            or data.get('predecessor_sha256') != validation_data.get('predecessor_sha256')):
+    if conditional_objective == 'joint_likelihood' and architecture != 'mlp':
+        raise ValueError('The joint outcome likelihood requires the common dense architecture.')
+    if (not data.get('roots') or validation_data is not None and (not validation_data.get('roots')
+            or data.get('predecessor_sha256') != validation_data.get('predecessor_sha256'))):
         raise ValueError('Matched success training needs measured training and validation data from the same predecessor.')
-    outcomes = [float(item['success']) for population in (data, validation_data)
+    populations = (data,) if validation_data is None else (data, validation_data)
+    outcomes = [float(item['success']) for population in populations
                 for root in population['roots'] for item in root['outcomes'].values()]
     if factual_bank is not None:
         outcomes.extend(float(value) for record in factual_bank['records'] for value in record['values'])
     if not np.isin(outcomes, (0., 1.)).all():
         raise ValueError('Success-probability training requires measured binary terminal outcomes in both populations.')
     for key in ('isolate_factual_start', 'feedback_relative_hold'):
-        if bool(data.get(key, False)) != bool(validation_data.get(key, False)):
+        if validation_data is not None and bool(data.get(key, False)) != bool(validation_data.get(key, False)):
             raise ValueError('Training and validation must use identical intervention execution semantics.')
+    if validation_data is not None and data.get('feedback_relative_scale') != validation_data.get('feedback_relative_scale'):
+        raise ValueError('Training and validation must retain the measured relative fusion scale.')
     training_records = data['roots']+(factual_bank['records'] if factual_bank is not None else [])
-    if not all('scene' in root for root in training_records+validation_data['roots']):
+    validation_roots = [] if validation_data is None else validation_data['roots']
+    if not all('scene' in root for root in training_records+validation_roots):
         raise ValueError('Matched success training requires recorded layouts for both populations.')
     training_layouts = {tuple(root['scene']) for root in training_records}
-    validation_layouts = {tuple(root['scene']) for root in validation_data['roots']}
+    validation_layouts = {tuple(root['scene']) for root in validation_roots}
     if training_layouts & validation_layouts:
         raise ValueError('Validation layouts must be absent from paired and factual training data.')
     options = dict(network_options or {})
@@ -4381,7 +4413,9 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         'shared_factual_response', 'response_supervision_weight', 'response_supervision_architecture',
         'response_value_weight', 'factual_response_supervision', 'learning_rate', 'factual_bank_weight',
         'additional_candidate_options', 'root_sampling_fraction', 'edge_weight', 'anchor_weight', 'action_encoding',
-        'snapshot_updates', 'velocity_reference'}
+        'snapshot_updates', 'velocity_reference', 'conservative_catalog_weight',
+        'conservative_catalog_temperature', 'conservative_catalog_samples', 'conservative_catalog_roots',
+        'unique_factual_supervision'}
     if set(options)-allowed:
         raise ValueError('Matched success settings cannot override targets, coverage, calibration or optimizer budgets.')
     common = dict(updates=updates, ensemble_size=ensemble_size, seed=seed, device=device,
@@ -4412,6 +4446,8 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
     if architecture == 'interaction':
         if 'action_encoding' in options:
             raise ValueError('Action encoding is a dense-network option.')
+        if 'unique_factual_supervision' in options:
+            raise ValueError('Unique factual likelihood is a dense-network option.')
         if parameter_budget is not None:
             raise ValueError('Interaction capacity is controlled by width and ensemble size.')
         paired = fit_joint_potential(data, None, width=width, factual_bank=factual_bank, **common, **conditional)
@@ -4423,7 +4459,9 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
     else:
         from plain_return import fit_plain_return, fit_paired_mlp_return
         dense_options = {'identity_conditioned', 'learning_rate', 'factual_bank_weight', 'action_encoding',
-                         'additional_candidate_options', 'root_sampling_fraction', 'snapshot_updates', 'velocity_reference'}
+                         'additional_candidate_options', 'root_sampling_fraction', 'snapshot_updates', 'velocity_reference',
+                         'conservative_catalog_weight', 'conservative_catalog_temperature',
+                         'conservative_catalog_samples', 'conservative_catalog_roots', 'unique_factual_supervision'}
         if set(options)-dense_options:
             raise ValueError('Dense success learning uses public state/action inputs without response auxiliary heads.')
         if ensemble_size > 1 and options.get('snapshot_updates'):
@@ -4437,7 +4475,8 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         for member in range(ensemble_size):
             member_settings = dict(settings, seed=seed+997*member)
             paired_member = fit_paired_mlp_return(data, None,
-                conditional_objective=conditional_objective, **member_settings)
+                conditional_objective=conditional_objective,
+                difference_weight=1. if conditional_objective == 'joint_likelihood' else 4., **member_settings)
             ordinary_member = fit_plain_return(data, None, **member_settings,
                 expected_observation_sha256=paired_member['successor_task_fit']['training_observation_sha256'],
                 expected_training_target_sha256=paired_member['successor_task_fit']['training_target_sha256'])
@@ -4465,11 +4504,15 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
                     f'{ensemble_size} independently initialized dense members; mean predicted probabilities and effects'),
                 member_initialization_parameter_sha256=[member['initialization_parameter_sha256']
                     for member in member_fits],
+                member_conservative_training_draw_sha256=[member['conservative_training_draw_sha256']
+                    for member in member_fits],
                 last_loss=float(np.mean([member['last_loss'] for member in member_fits])),
                 factual_crossfit=False, empirical_difference_correction=False,
                 empirical_factual_reference=False)
     matched_fields = ('training_observation_sha256', 'training_target_sha256', 'member_training_roots',
         'member_factual_trajectories', 'member_updates', 'updates', 'predecessor_sha256')
+    if architecture == 'mlp':
+        matched_fields += ('member_conservative_training_draw_sha256',)
     if any(paired['successor_task_fit'][key] != ordinary['successor_task_fit'][key] for key in matched_fields):
         raise RuntimeError('Matched success training produced unequal data coverage or optimizer budgets.')
     for model in (paired, ordinary):
@@ -4478,8 +4521,9 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         fit['validation_layouts'] = sorted(validation_layouts)
         fit['rank_weight'] = 0.; fit['decision_regret_weight'] = 0.
         fit['raw_training_diagnostics'] = raw_paired_value_diagnostics(model, data, device=device)
-        fit['raw_validation_diagnostics'] = raw_paired_value_diagnostics(model, validation_data,
-            require_unseen_layouts=True, device=device)
+        fit['raw_validation_diagnostics'] = (None if validation_data is None else
+            raw_paired_value_diagnostics(model, validation_data, require_unseen_layouts=True, device=device))
+        fit['validation_evaluated'] = validation_data is not None
         fit['matched_success_training'] = dict(all_members_see_all_training_layouts=True,
             training_layouts=len(training_layouts), validation_layouts=len(validation_layouts),
             validation_used_for_gradients=False, validation_used_for_calibration=False,
@@ -5732,6 +5776,7 @@ def _recollect_snapshot_root_batch(task):
     isolate_factual_start = task[5] if len(task) > 5 else False
     response_feature_batch = task[6] if len(task) > 6 else 0
     feedback_relative_hold = task[7] if len(task) > 7 else False
+    feedback_relative_scale = task[8] if len(task) > 8 else None
     policy = Path(policy)
     digest = hashlib.sha256(policy.read_bytes()).hexdigest()
     r.initialize_source_branches(str(d.SOURCE))
@@ -5757,7 +5802,9 @@ def _recollect_snapshot_root_batch(task):
         options = list(map(tuple, original['options']))
         actions = []
         for code, delay, span in options:
-            if not code:
+            neutral_relative = (feedback_relative_scale is not None and
+                all(code//10**boat % 10 in (0, 5) for boat in range(n)))
+            if not code or neutral_relative:
                 actions.append(control)
             else:
                 preference = coefficients[(code//(10**np.arange(n))) % 10][inverse].astype(np.float32)
@@ -5769,6 +5816,7 @@ def _recollect_snapshot_root_batch(task):
         roots.append(dict(context=context[0].numpy(), effect_controls=effect[0, order[0]].numpy(),
             options=options, outcomes={}, futures=list(original['futures']), scene=scene,
             feedback_relative_hold=feedback_relative_hold,
+            feedback_relative_scale=feedback_relative_scale,
             prefix_future=original['prefix_future'], root_steps=int(snapshot['root_steps']),
             lookback=original.get('lookback'), order=order[0].numpy(),
             future_weights=np.asarray(original.get('future_weights', np.ones(len(original['futures']))), np.float32),
@@ -5780,7 +5828,8 @@ def _recollect_snapshot_root_batch(task):
             jobs.append((str(policy), dict(environment=env, observation=obs,
                 random_state=snapshot['random_state'], action=actions[q],
                 isolate_factual_start=isolate_factual_start,
-                feedback_relative_hold=feedback_relative_hold), scene, original['futures'][f],
+                feedback_relative_hold=feedback_relative_hold,
+                feedback_relative_scale=feedback_relative_scale), scene, original['futures'][f],
                 max(1, physical_response_horizon, options[q][1]+options[q][2])))
             identities.append((position, q, f))
     measured = source_successor_batches(jobs, batch_size=inference_batch, device=inference_device,
@@ -5850,7 +5899,8 @@ def _recollect_snapshot_root_batch(task):
 def recollect_breadth_design(policy, blueprint, output, *, workers=4,
                             inference_batch=32, inference_device='cpu', physical_response_horizon=0,
                             root_batch_size=1, isolate_factual_start=False, response_feature_batch=0,
-                            resume_inference_batch=False, feedback_relative_hold=False):
+                            resume_inference_batch=False, feedback_relative_hold=False,
+                            feedback_relative_scale=None):
     """Measure bounded roots with an explicit, resumable inference schedule."""
     import develop_source_fusion as d
     import run_remote_evidence as r
@@ -5871,6 +5921,9 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
     if not isinstance(feedback_relative_hold, bool) or (feedback_relative_hold and
             (not isolate_factual_start or root_batch_size <= 1 or not inference_batch)):
         raise ValueError('Relative feedback collection requires isolated snapshot batches.')
+    if feedback_relative_scale is not None and (not feedback_relative_hold or
+            not np.isfinite(feedback_relative_scale) or not 0. < feedback_relative_scale <= 1.):
+        raise ValueError('A scaled fusion displacement requires relative feedback and a scale in (0,1].')
     if not isinstance(resume_inference_batch, bool):
         raise ValueError('Resuming with a different inference batch must be explicitly enabled.')
     if (not isinstance(response_feature_batch, int) or response_feature_batch < 0 or
@@ -5890,6 +5943,7 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
             or result.get('root_batch_size', 1) != root_batch_size
             or (result.get('isolate_factual_start', False) != isolate_factual_start and result['roots'])
             or (result.get('feedback_relative_hold', False) != feedback_relative_hold and result['roots'])
+            or (result.get('feedback_relative_scale') != feedback_relative_scale and result['roots'])
             or (result.get('physical_response_horizon', 0) != physical_response_horizon and result['roots'])):
         raise ValueError('The saved breadth data uses a different predecessor, design or branch batch.')
     if physical_response_horizon:
@@ -5898,6 +5952,8 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
         result['isolate_factual_start'] = True
     if feedback_relative_hold:
         result['feedback_relative_hold'] = True
+    if feedback_relative_scale is not None:
+        result['feedback_relative_scale'] = float(feedback_relative_scale)
     if root_batch_size > 1:
         result.update(root_batch_size=root_batch_size, root_dispatch_kind='snapshot_root_batches')
     if result['model'].get('successor_task_value') is not None:
@@ -5940,7 +5996,9 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
         pending = [(str(policy), [(index, blueprint['roots'][index])
             for index in range(begin, min(begin+root_batch_size, len(blueprint['roots'])))],
             inference_batch, inference_device, physical_response_horizon)
-            + ((isolate_factual_start, response_feature_batch, feedback_relative_hold) if feedback_relative_hold else
+            + ((isolate_factual_start, response_feature_batch, feedback_relative_hold, feedback_relative_scale)
+               if feedback_relative_scale is not None else
+               (isolate_factual_start, response_feature_batch, feedback_relative_hold) if feedback_relative_hold else
                (isolate_factual_start, response_feature_batch) if response_feature_batch else
                (True,) if isolate_factual_start else ())
             for begin in range(result['next_design_root'], len(blueprint['roots']), root_batch_size)]

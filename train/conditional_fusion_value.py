@@ -5292,7 +5292,8 @@ def select_feedback_fleet_plan(costs,library,reference_start,selection):
 
 
 @torch.no_grad()
-def refine_feedback_relative_intervention(actor, packet, source_action, offsets, **configuration):
+def refine_feedback_relative_intervention(actor, packet, source_action, offsets, *,
+                                         relative_scale=None, **configuration):
     """Keep a single-vessel fusion displacement relative to live M1 feedback.
 
     The requested coefficients define the first intervention command. Its
@@ -5300,7 +5301,11 @@ def refine_feedback_relative_intervention(actor, packet, source_action, offsets,
     every following command uses the newly observed state's joint choice.
     Peers always receive that current factual choice, so their reaction is
     through the changed physical state rather than an altered activation plan.
+    With a relative scale, the requested grid instead represents a bounded
+    signed displacement; its midpoint is exactly the factual continuation.
     """
+    if relative_scale is not None and (not isfinite(relative_scale) or not 0. < relative_scale <= 1.):
+        raise ValueError('A relative fusion scale must be finite and lie in (0,1].')
     held = packet.get('_committed_actuator_preferences')
     shape = source_action[..., :2].shape
     if held is None or held.shape != shape or offsets.shape != shape:
@@ -5323,9 +5328,11 @@ def refine_feedback_relative_intervention(actor, packet, source_action, offsets,
         factual_preference = actor.generic_fusion_adapter.control(actor, factual_packet, source_action)
     factual, coefficients = _refine_actuator_interactions(actor, factual_packet,
         source_action, factual_preference, return_coefficients=True, **configuration)
-    offsets = torch.where((active & ~initialized)[..., None], held-coefficients, offsets)
+    displacement = held-coefficients if relative_scale is None else relative_scale*(2.*held-1.)
+    offsets = torch.where((active & ~initialized)[..., None], displacement, offsets)
     resolved = (coefficients+torch.nan_to_num(offsets)).clamp(0., 1.)
-    resolved = torch.where((active & ~initialized)[..., None], held, resolved)
+    if relative_scale is None:
+        resolved = torch.where((active & ~initialized)[..., None], held, resolved)
     rule = packet['node'][..., 11:13]
     command = resolved*source_action[..., :2]+(1.-resolved)*rule
     replacement = torch.cat((command, torch.ones_like(source_action[..., 2:3])), -1)

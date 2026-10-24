@@ -42,6 +42,28 @@ class ConditionalFusionValueTests(unittest.TestCase):
                 actor, packet, source, torch.full_like(held, float('nan')))
             torch.testing.assert_close(unchanged, factual(), rtol=0., atol=0.)
             self.assertEqual(float(zero[0, 1].abs().sum()), 0.)
+            held[0, 1] = torch.tensor([1., 0.])
+            scaled, displacement = conditional.refine_feedback_relative_intervention(
+                actor, packet, source, torch.full_like(held, float('nan')), relative_scale=.25)
+            torch.testing.assert_close(displacement[0, 1], torch.tensor([.25, -.25]), rtol=0., atol=0.)
+            torch.testing.assert_close(scaled[0, 1, :2], torch.tensor([.2, -.3]), rtol=0., atol=1e-7)
+            torch.testing.assert_close(scaled[:, [0, 2]], factual()[:, [0, 2]], rtol=0., atol=0.)
+            coefficients[0, 1] = torch.tensor([.2, .8])
+            following, retained = conditional.refine_feedback_relative_intervention(
+                actor, packet, source, displacement, relative_scale=.25)
+            next_coefficients = torch.tensor([.45, .55])
+            expected = next_coefficients*source[0, 1, :2]+(1-next_coefficients)*node[0, 1, 11:13]
+            torch.testing.assert_close(following[0, 1, :2], expected)
+            torch.testing.assert_close(retained, displacement, rtol=0., atol=0., equal_nan=True)
+            held[0, 1] = .5
+            unchanged, zero = conditional.refine_feedback_relative_intervention(
+                actor, packet, source, torch.full_like(held, float('nan')), relative_scale=.25)
+            torch.testing.assert_close(unchanged, factual(), rtol=0., atol=0.)
+            self.assertEqual(float(zero[0, 1].abs().sum()), 0.)
+            for invalid_scale in (0., -1., 1.1, float('nan')):
+                with self.assertRaisesRegex(ValueError, 'relative fusion scale'):
+                    conditional.refine_feedback_relative_intervention(
+                        actor, packet, source, zero, relative_scale=invalid_scale)
             held[0, 0] = .5
             with self.assertRaisesRegex(ValueError, 'one vessel'):
                 conditional.refine_feedback_relative_intervention(actor, packet, source, zero)
@@ -65,6 +87,35 @@ class ConditionalFusionValueTests(unittest.TestCase):
         merged = merge_paired_data([data, copy.deepcopy(data)])
         self.assertTrue(merged['feedback_relative_hold'])
         self.assertEqual(len(merged['roots'][0]['outcomes']), 4)
+        scaled = copy.deepcopy(data); scaled['feedback_relative_scale'] = .25
+        scaled['roots'][0]['feedback_relative_scale'] = .25
+        with self.assertRaisesRegex(ValueError, 'different physical experiments'):
+            merge_paired_data([data, scaled])
+        scaled_merged = merge_paired_data([scaled, copy.deepcopy(scaled)])
+        self.assertEqual(scaled_merged['feedback_relative_scale'], .25)
+        with self.assertRaisesRegex(ValueError, 'value representation'):
+            fit_joint_potential(scaled, None, updates=2, ensemble_size=1, width=4, device='cpu')
+        from plain_return import fit_plain_return, fit_paired_mlp_return, PlainReturnDecision, PairedReturnDecision
+        from local_intervention_value import raw_paired_value_diagnostics
+        scaled['roots'][0]['options'].append((5, 3, 20))
+        for future in range(2):
+            scaled['roots'][0]['outcomes'][2, future] = dict(scaled['roots'][0]['outcomes'][0, future])
+        for fitter, decision_type in ((fit_plain_return, PlainReturnDecision),
+                                      (fit_paired_mlp_return, PairedReturnDecision)):
+            fitted = fitter(scaled, None, updates=2, parameter_budget=1000, device='cpu',
+                            action_encoding='physical_delta')
+            recipe = dict(fitted['successor_task_value']); recipe.pop('kind')
+            learner = decision_type(**recipe)
+            self.assertTrue(learner.feedback_relative_hold)
+            self.assertEqual(learner.feedback_relative_scale, .25)
+            values = learner.catalog_estimates(torch.zeros(1, 21), torch.from_numpy(controls)[None])[1]
+            neutral = recipe['options'].index((5, 3, 20))
+            torch.testing.assert_close(values[:, neutral], values[:, 0], rtol=0., atol=0.)
+            raw_paired_value_diagnostics(fitted, scaled)
+            with self.assertRaisesRegex(ValueError, 'execution semantics'):
+                raw_paired_value_diagnostics(fitted, dict(scaled, feedback_relative_scale=.5))
+        with self.assertRaisesRegex(ValueError, 'measured relative branches'):
+            fit_plain_return(scaled, None, updates=2, device='cpu')
         for ordinary in (False, True):
             with patch('local_intervention_value.torch.save'):
                 model = fit_joint_potential(data, 'unused-relative-test.pth', ordinary=ordinary,
@@ -608,6 +659,16 @@ class ConditionalFusionValueTests(unittest.TestCase):
                 dict(first_design_root=0, kind='maximum_of_window_end_and_horizon'),
                 dict(first_design_root=2, kind='fixed_horizon_and_separate_window_end')])
             self.assertTrue(resumed['completed'])
+            scaled_settings = dict(settings, feedback_relative_hold=True, feedback_relative_scale=.25,
+                                   isolate_factual_start=True)
+            scaled_output = Path(directory)/'scaled.pth'
+            with patch.object(local, '_recollect_snapshot_root_batch', side_effect=measured) as worker:
+                scaled = local.recollect_breadth_design(policy, design, scaled_output, **scaled_settings)
+                self.assertEqual(worker.call_args.args[0][7:9], (True, .25))
+                self.assertEqual(scaled['feedback_relative_scale'], .25)
+                with self.assertRaisesRegex(ValueError, 'different predecessor, design'):
+                    local.recollect_breadth_design(policy, design, scaled_output,
+                        **dict(scaled_settings, feedback_relative_scale=.5))
 
     def test_batched_physical_response_keeps_window_end_and_all_actual_outcomes(self):
         import sys
@@ -1934,6 +1995,21 @@ class ConditionalFusionValueTests(unittest.TestCase):
         self.assertEqual(resumed['successor_task_fit']['additional_unobserved_candidates'], 1)
         self.assertIn((10, 0, 10), resumed['successor_task_value']['options'])
         self.assertEqual(resumed['successor_task_fit']['paired_local_observations'], 0)
+        self.assertEqual([stage['updates'] for stage in resumed['successor_task_fit']['training_stages']], [3, 1])
+        self.assertFalse(resumed['successor_task_fit']['predecessor_transfer'])
+        transferred_data = dict(data, predecessor_sha256='second-plain-policy', model=dict(source_marker=23))
+        transferred_bank = dict(bank, predecessor_sha256='second-plain-policy')
+        continuation = dict(factual_bank=transferred_bank, updates=1, parameter_budget=1000,
+                            device='cpu', initial_model=resumed, learning_rate=0.)
+        with self.assertRaisesRegex(ValueError, 'explicit cross-policy transfer'):
+            fit_plain_return(transferred_data, None, **continuation)
+        transferred = fit_plain_return(transferred_data, None, transfer_initialization=True, **continuation)
+        self.assertEqual(transferred['source_marker'], 23)
+        self.assertEqual(transferred['successor_task_fit']['total_parameter_updates'], 5)
+        self.assertTrue(transferred['successor_task_fit']['predecessor_transfer'])
+        self.assertEqual(transferred['successor_task_fit']['initialization_predecessor_sha256'], 'plain-test')
+        for key, value in resumed['successor_task_value']['state'].items():
+            torch.testing.assert_close(value, transferred['successor_task_value']['state'][key], atol=0., rtol=0.)
 
     def test_paired_replay_keeps_distinct_behavior_states_at_the_same_clock(self):
         import copy
@@ -3230,6 +3306,88 @@ class PhysicalVesselIdentityTests(unittest.TestCase):
         self.assertAlmostEqual(float(learner.last_decision['candidate_gain'][0]), .5, places=6)
         self.assertEqual(learner.last_decision['option'][0].tolist(), [1, 0, 10])
         self.assertEqual(data['model'], {})
+        resume_settings = dict(settings, updates=1, learning_rate=0., snapshot_updates=())
+        resumed = fit_paired_mlp_return(data, None, initial_model=fitted, **resume_settings)
+        self.assertEqual(resumed['successor_task_fit']['total_parameter_updates'], 5)
+        transferred_data = dict(data, predecessor_sha256='second-paired-policy', model=dict(source_marker=37))
+        transferred_settings = dict(resume_settings,
+            factual_bank=dict(bank, predecessor_sha256='second-paired-policy'))
+        with self.assertRaisesRegex(ValueError, 'explicit cross-policy transfer'):
+            fit_paired_mlp_return(transferred_data, None, initial_model=resumed, **transferred_settings)
+        transferred = fit_paired_mlp_return(transferred_data, None, initial_model=resumed,
+            transfer_initialization=True, **transferred_settings)
+        transfer_fit = transferred['successor_task_fit']
+        self.assertEqual(transferred['source_marker'], 37)
+        self.assertTrue(transfer_fit['inherited_stages'])
+        self.assertTrue(transfer_fit['predecessor_transfer'])
+        self.assertFalse(transfer_fit['initialization_optimizer_state_retained'])
+        self.assertEqual(transfer_fit['initialization_predecessor_sha256'], data['predecessor_sha256'])
+        self.assertEqual(transfer_fit['total_parameter_updates'], 6)
+        self.assertEqual([stage['updates'] for stage in transfer_fit['training_stages']], [4, 1, 1])
+        self.assertEqual([stage['predecessor_sha256'] for stage in transfer_fit['training_stages']],
+                         ['paired-dense-test', 'paired-dense-test', 'second-paired-policy'])
+        for key, value in fitted['successor_task_value']['state'].items():
+            torch.testing.assert_close(value, resumed['successor_task_value']['state'][key], atol=0., rtol=0.)
+            torch.testing.assert_close(value, transferred['successor_task_value']['state'][key], atol=0., rtol=0.)
+        with self.assertRaisesRegex(ValueError, 'retain its paired objective'):
+            fit_paired_mlp_return(data, None, initial_model=fitted,
+                conditional_objective='shared_potential', **resume_settings)
+        with self.assertRaises(ValueError):
+            fit_paired_mlp_return(data, None, initial_model=ordinary, **resume_settings)
+
+    def test_paired_joint_likelihood_matches_the_four_measured_outcomes(self):
+        from plain_return import PairedReturnNetwork
+        factual = torch.logit(torch.full((4,), .7, dtype=torch.float64))
+        raw = torch.stack((torch.zeros_like(factual), torch.logit(torch.full_like(factual, .4)),
+                           torch.logit(torch.full_like(factual, .2))), -1).requires_grad_()
+        factual_target = torch.tensor([0., 0., 1., 1.], dtype=torch.float64)
+        outcome_target = torch.tensor([0., 1., 0., 1.], dtype=torch.float64)
+        loss = PairedReturnNetwork.joint_outcome_loss(factual, raw, factual_target, outcome_target,
+                                                    torch.ones(4, dtype=torch.bool))
+        expected = -torch.tensor([.18, .12, .14, .56], dtype=torch.float64).log().mean()
+        torch.testing.assert_close(loss, expected)
+        loss.backward()
+        self.assertTrue(torch.isfinite(raw.grad).all())
+        no_intervention = PairedReturnNetwork.joint_outcome_loss(factual, raw, factual_target,
+            factual_target, torch.zeros(4, dtype=torch.bool))
+        torch.testing.assert_close(no_intervention,
+            torch.nn.functional.binary_cross_entropy_with_logits(factual, factual_target))
+
+    def test_dense_ensemble_disagreement_changes_decisions_without_changing_raw_values(self):
+        from unittest.mock import patch
+        from plain_return import PlainReturnNetwork, PairedReturnNetwork, PlainReturnDecision, PairedReturnDecision
+        options = [(0, 0, 0), (1, 0, 10), (10, 0, 10)]
+        estimates = [torch.tensor([[.2, .8, .34]]), torch.tensor([[.7, .5, .84]])]
+        for factory, network in ((PlainReturnDecision, PlainReturnNetwork),
+                                 (PairedReturnDecision, PairedReturnNetwork)):
+            state = network(2, 8).state_dict()
+            settings = dict(defenders=2, width=8, state=state, options=options,
+                ensemble_states=[state], ensemble_gain_penalty=1., gain_margin=.1)
+            learner = factory(**settings)
+            ranking, raw = learner.aggregate_estimates(estimates)
+            torch.testing.assert_close(raw, torch.tensor([[.45, .65, .59]]))
+            torch.testing.assert_close(ranking, torch.tensor([[.45, .25, .59]]))
+            self.assertEqual(int(raw.argmax(-1)), 1)
+            self.assertEqual(int(ranking.argmax(-1)), 2)
+            # Common member offsets cannot masquerade as effect uncertainty.
+            shifted = [estimates[0]+.07, estimates[1]-.03]
+            shifted_ranking, shifted_raw = learner.aggregate_estimates(shifted)
+            torch.testing.assert_close(shifted_raw-shifted_ranking, raw-ranking)
+            with self.assertRaisesRegex(ValueError, 'multiple members'):
+                factory(**dict(settings, ensemble_states=()))
+            learner.record_catalog = learner.record_decisions = True
+            ranking, raw = learner.aggregate_estimates([
+                torch.tensor([[.2, .55, .1]]), torch.tensor([[.7, .75, .6]])])
+            packet = dict(node=torch.zeros(1, 2, 16), _plain_return_controls=torch.zeros(1, 2, 6))
+            with patch.object(learner, 'catalog_estimates', return_value=(ranking, raw)), \
+                    patch('conditional_fusion_value.intervention_task_context',
+                        return_value=(torch.zeros(1, 21), torch.tensor([[0, 1]]))):
+                result = learner(packet, torch.zeros(1, 2, 3))
+            self.assertFalse(bool(learner.last_decision['accepted'][0]))
+            self.assertAlmostEqual(float(learner.last_decision['candidate_gain'][0]), .2, places=6)
+            self.assertAlmostEqual(float(learner.last_decision['decision_gain'][0]), .05, places=6)
+            self.assertAlmostEqual(float(learner.last_catalog['predicted_gain'][0, 1]), .2, places=6)
+            self.assertEqual(result.shape[-1], 3)
 
     def test_dense_physical_action_features_match_execution_and_paired_fitting(self):
         import numpy as np
@@ -3257,6 +3415,25 @@ class PhysicalVesselIdentityTests(unittest.TestCase):
             shape = (2, 3, 3) if network_type is PairedReturnNetwork else (2, 3)
             torch.testing.assert_close(net.forward_catalog(context, controls, programs, timing,
                                                           chunk_size=2), direct.reshape(shape))
+            relative = network_type(2, 12, action_encoding='physical_delta', feedback_relative_scale=.25)
+            source, rule = controls[..., :2], controls[..., 2:4]
+            coefficients = torch.tensor([.9, .1]).expand_as(source)
+            measured_controls = torch.cat((source, rule, coefficients*source+(1-coefficients)*rule), -1)
+            relative_programs = torch.tensor([[0, 0], [5, 0], [1, 0], [0, 9]])
+            relative_timing = torch.tensor([[0, 0], [3, 20], [0, 1], [5, 40]])
+            relative_features = relative.action_features(relative_programs[None], relative_timing[None],
+                                                         measured_controls[:, None])
+            torch.testing.assert_close(relative_features[:, :2], torch.zeros(2, 2, 14), rtol=0., atol=0.)
+            for candidate, boat, offset in ((2, 0, -.25), (3, 1, .25)):
+                actual_coefficients = (coefficients[:, boat]+offset).clamp(0., 1.)
+                actual = actual_coefficients*source[:, boat]+(1-actual_coefficients)*rule[:, boat]
+                torch.testing.assert_close(relative_features[:, candidate, 5*boat+3:5*boat+5]*4.,
+                                           actual-measured_controls[:, boat, 4:])
+            relative_direct = relative(context.repeat_interleave(4, 0), measured_controls.repeat_interleave(4, 0),
+                                       relative_programs.repeat(2, 1), relative_timing.repeat(2, 1))
+            relative_shape = (2, 4, 3) if network_type is PairedReturnNetwork else (2, 4)
+            torch.testing.assert_close(relative.forward_catalog(context, measured_controls,
+                relative_programs, relative_timing, chunk_size=2), relative_direct.reshape(relative_shape))
         root = dict(context=context[0].numpy(), effect_controls=controls[0].numpy(), root_steps=0,
             futures=[31, 32], options=[(0, 0, 0), (1, 0, 1), (90, 5, 40)],
             outcomes={(q, f):dict(success=float(q == f), duration=.2*(45+q+f),
@@ -3288,6 +3465,51 @@ class PhysicalVesselIdentityTests(unittest.TestCase):
         gain = learner.network.signed_gain(raw, (learner.programs > 0).any(-1)[None])
         torch.testing.assert_close(gain[:, 0], torch.zeros(2), rtol=0., atol=0.)
         self.assertEqual(data['model'], {})
+
+        import copy
+        import develop_source_fusion as d
+        from conditional_fusion_value import intervention_task_context, append_vessel_identity
+        from local_intervention_value import observed_water_velocity_data, retain_vessel_identity, raw_paired_value_diagnostics
+        node = np.zeros((2, 16), np.float32); node[0, 2:4] = [1., .3]
+        packet = dict(node=node, motion=np.array([[2., 1., .2, 1., .5, .1],
+            [6., -2., -.3, .4, -.2, .05]], np.float32),
+            water=np.array([[.1, .15, .01], [.04, -.06, .02]], np.float32))
+        current_packet = d.mechanism_tensor(packet)
+        current, order = intervention_task_context(current_packet, True, True)
+        before = dict(data, roots=[dict(root, context=current[0].numpy(), order=order[0].numpy(),
+                                      scene=(123, 2, 2.), prefix_future=71)])
+        snapshot_bank = dict(predecessor_sha256='physical-dense', records=[dict(scene=(123, 2, 2.),
+            future=71, root_snapshot=dict(environment=None, observation=None, root_steps=0))])
+        with patch('develop_source_fusion.joint_packet', return_value=packet):
+            water_data = observed_water_velocity_data(before, [snapshot_bank])
+            missing = copy.deepcopy(snapshot_bank); missing['records'][0]['future'] = 72
+            with self.assertRaisesRegex(ValueError, 'matching observed factual snapshot'):
+                observed_water_velocity_data(before, [missing])
+            mismatch = copy.deepcopy(before); mismatch['roots'][0]['context'][0] += .1
+            with self.assertRaisesRegex(ValueError, 'matching observed factual snapshot'):
+                observed_water_velocity_data(mismatch, [snapshot_bank])
+        torch.testing.assert_close(torch.from_numpy(before['roots'][0]['context']), current[0], rtol=0., atol=0.)
+        expected_packet = dict(current_packet, motion=torch.cat((current_packet['motion'][..., :3],
+                                                                5.*current_packet['water']), -1))
+        expected, expected_order = intervention_task_context(expected_packet, True, True)
+        torch.testing.assert_close(torch.from_numpy(water_data['roots'][0]['context']), expected[0], rtol=0., atol=0.)
+        self.assertTrue(torch.equal(order, expected_order))
+        self.assertFalse(torch.equal(current, expected))
+        for key in before['roots'][0]['outcomes']:
+            self.assertEqual(before['roots'][0]['outcomes'][key]['success'], water_data['roots'][0]['outcomes'][key]['success'])
+        water_data, _ = retain_vessel_identity(water_data)
+        water_settings = dict(settings, factual_bank=None, identity_conditioned=True, velocity_reference='water')
+        water_model = fit_paired_mlp_return(water_data, None, **water_settings)
+        water_recipe = dict(water_model['successor_task_value']); water_recipe.pop('kind')
+        water_learner = PairedReturnDecision(**water_recipe)
+        deployment, deployment_order = water_learner.public_context(current_packet)
+        torch.testing.assert_close(deployment, append_vessel_identity(expected, order), rtol=0., atol=0.)
+        self.assertTrue(torch.equal(order, deployment_order))
+        raw_paired_value_diagnostics(water_model, water_data)
+        with self.assertRaisesRegex(ValueError, 'observed velocity reference'):
+            fit_plain_return(water_data, None, **dict(water_settings, factual_bank=bank))
+        with self.assertRaisesRegex(ValueError, 'observed velocity reference'):
+            raw_paired_value_diagnostics(water_model, dict(water_data, state_velocity_reference='ground'))
 
     def test_matched_fitting_and_reload_share_recorded_identity_observations(self):
         import numpy as np
@@ -3677,6 +3899,22 @@ class FactualCrossfitTests(unittest.TestCase):
             self.assertTrue(fit['raw_validation_diagnostics']['layouts_disjoint'])
             self.assertFalse(fit['raw_validation_diagnostics']['empirical_corrections_used'])
             self.assertEqual(fit['raw_validation_diagnostics']['candidate_pairs'], 4)
+            diagnostic = fit['raw_validation_diagnostics']
+            self.assertAlmostEqual(diagnostic['zero_effect_mean_absolute_error'], .375)
+            self.assertAlmostEqual(diagnostic['zero_effect_rmse'], np.sqrt(.1875))
+            self.assertAlmostEqual(diagnostic['estimated_mean_sampling_variance'], .4375)
+            self.assertEqual(diagnostic['common_future_variance_estimable_pairs'], 4)
+        weighted = copy.deepcopy(validation)
+        for root in weighted['roots']: root['future_weights'] = [1., 3.]
+        diagnostic = raw_paired_value_diagnostics(paired, weighted, require_unseen_layouts=True)
+        self.assertIsNone(diagnostic['estimated_mean_sampling_variance'])
+        self.assertEqual(diagnostic['common_future_variance_estimable_pairs'], 0)
+        single = copy.deepcopy(validation)
+        for root in single['roots']:
+            root['futures'] = root['futures'][:1]
+            root['outcomes'] = {key: value for key, value in root['outcomes'].items() if key[1] == 0}
+        diagnostic = raw_paired_value_diagnostics(paired, single, require_unseen_layouts=True)
+        self.assertIsNone(diagnostic['estimated_mean_sampling_variance'])
         changed = copy.deepcopy(paired)
         recipe = changed['successor_task_value']
         recipe['corrections'][:] = 100.
@@ -3795,6 +4033,75 @@ class FactualCrossfitTests(unittest.TestCase):
             selected.append(float((values-values[:, :1]).max().detach()))
         self.assertAlmostEqual(float(np.mean(selected)),
             strata['successor_task_fit']['raw_validation_diagnostics']['selected_predicted_gain'], places=6)
+        conservative_settings = dict(factual_bank=bank, updates=4, ensemble_size=2, width=4, seed=27,
+            architecture='mlp', device='cpu', conditional_objective='factual_strata',
+            network_options=dict(action_encoding='physical_delta', conservative_catalog_weight=.2,
+                conservative_catalog_samples=5, conservative_catalog_roots=2,
+                additional_candidate_options=[(2, 0, 7)]))
+        conservative = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+            validation_data=dict(validation, isolate_factual_start=True), **conservative_settings)
+        changed_validation = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+            validation_data=dict(relabelled, isolate_factual_start=True), **conservative_settings)
+        for before, after, baseline in zip(conservative, changed_validation, (strata, matched)):
+            fit = before['successor_task_fit']
+            self.assertEqual(fit['conservative_catalog_weight'], .2)
+            self.assertEqual(fit['member_training_roots'], [4, 4])
+            self.assertEqual(fit['training_target_sha256'], baseline['successor_task_fit']['training_target_sha256'])
+            self.assertEqual(fit['supervised_node_labels'], baseline['successor_task_fit']['supervised_node_labels'])
+            self.assertIn((2, 0, 7), before['successor_task_value']['options'])
+            self.assertNotEqual(fit['raw_training_diagnostics']['evaluated_parameter_sha256'],
+                baseline['successor_task_fit']['raw_training_diagnostics']['evaluated_parameter_sha256'])
+            self.assertEqual(fit['raw_training_diagnostics'], after['successor_task_fit']['raw_training_diagnostics'])
+            self.assertNotEqual(fit['raw_validation_diagnostics']['target_sha256'],
+                after['successor_task_fit']['raw_validation_diagnostics']['target_sha256'])
+        self.assertEqual(conservative[0]['successor_task_fit']['member_conservative_training_draw_sha256'],
+                         conservative[1]['successor_task_fit']['member_conservative_training_draw_sha256'])
+        with self.assertRaisesRegex(ValueError, 'Conservative catalog learning'):
+            fit_plain_return(dict(data, isolate_factual_start=True), None, updates=1,
+                             device='cpu', conservative_catalog_weight=-1.)
+        joint, joint_control = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+            validation_data=dict(validation, isolate_factual_start=True), factual_bank=bank,
+            updates=4, ensemble_size=2, width=4, seed=27, architecture='mlp', device='cpu',
+            network_options=dict(action_encoding='physical_delta'), conditional_objective='joint_likelihood')
+        recipe = dict(joint['successor_task_value']); recipe.pop('kind')
+        learner = PairedReturnDecision(**recipe)
+        self.assertIn('joint likelihood', joint['successor_task_fit']['objective'])
+        for key in ('training_observation_sha256', 'training_target_sha256', 'member_updates'):
+            self.assertEqual(joint['successor_task_fit'][key], joint_control['successor_task_fit'][key])
+        selected = []
+        for root in validation['roots']:
+            values = learner.catalog_estimates(torch.from_numpy(root['context'][None]),
+                torch.from_numpy(root['effect_controls'][None]))[1]
+            self.assertTrue(bool(((values >= 0.) & (values <= 1.)).all()))
+            selected.append(float((values-values[:, :1]).max().detach()))
+        self.assertAlmostEqual(float(np.mean(selected)),
+            joint['successor_task_fit']['raw_validation_diagnostics']['selected_predicted_gain'], places=6)
+        unique_settings = dict(factual_bank=bank, updates=2, ensemble_size=1, width=4, seed=27,
+            architecture='mlp', device='cpu', conditional_objective='joint_likelihood',
+            network_options=dict(action_encoding='physical_delta', unique_factual_supervision=True))
+        unique = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+            validation_data=dict(validation, isolate_factual_start=True), **unique_settings)
+        uneven = copy.deepcopy(data)
+        del uneven['roots'][0]['outcomes'][2, 1]
+        fewer_candidates = fit_success_intervention_pair(dict(uneven, isolate_factual_start=True), None, None,
+            validation_data=dict(validation, isolate_factual_start=True), **unique_settings)
+        self.assertTrue(unique[0]['successor_task_fit']['unique_factual_supervision'])
+        self.assertFalse(unique[1]['successor_task_fit']['unique_factual_supervision'])
+        self.assertEqual(unique[0]['successor_task_fit']['unique_factual_observations'], 16)
+        self.assertEqual(unique[0]['successor_task_fit']['unique_factual_target_sha256'],
+                         fewer_candidates[0]['successor_task_fit']['unique_factual_target_sha256'])
+        self.assertNotEqual(unique[0]['successor_task_fit']['training_target_sha256'],
+                            fewer_candidates[0]['successor_task_fit']['training_target_sha256'])
+        with self.assertRaisesRegex(ValueError, 'joint outcome likelihood'):
+            fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+                **dict(unique_settings, conditional_objective='factual_strata'))
+        refit = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+            factual_bank=bank, updates=2, ensemble_size=1, width=4, seed=27, architecture='mlp',
+            device='cpu', conditional_objective='joint_likelihood')
+        for model in refit:
+            self.assertIsNone(model['successor_task_fit']['raw_validation_diagnostics'])
+            self.assertFalse(model['successor_task_fit']['validation_evaluated'])
+            self.assertEqual(model['successor_task_fit']['member_training_roots'], [4])
         potential, matched = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
             validation_data=dict(validation, isolate_factual_start=True), factual_bank=bank,
             updates=4, ensemble_size=2, width=4, seed=27, architecture='mlp', device='cpu',

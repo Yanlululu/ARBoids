@@ -206,11 +206,13 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
             'isolate_factual_start',False)))
         relative_holds=np.full(len(current),bool(getattr(actor.successor_task_value,
             'feedback_relative_hold',False)))
+        relative_scales=[getattr(actor.successor_task_value,'feedback_relative_scale',None)]*len(current)
         relative_offsets=[None]*len(current)
         if initial_jobs is not None:
             for i,job in enumerate(initial_jobs[begin:begin+len(current)]):
                 isolated_starts[i]=bool(job.get('isolate_factual_start',isolated_starts[i]))
                 relative_holds[i]=bool(job.get('feedback_relative_hold',relative_holds[i]))
+                relative_scales[i]=job.get('feedback_relative_scale',relative_scales[i])
                 state=job.get('controller_state')
                 if state is None:continue
                 # A suffix intervention changes the remaining program, not
@@ -226,10 +228,16 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                 if relative_holds[i]:
                     if not state.get('feedback_relative_hold') or 'feedback_relative_offsets' not in state:
                         raise ValueError('A resumed relative intervention needs its original feedback displacement.')
+                    if state.get('feedback_relative_scale') != relative_scales[i]:
+                        raise ValueError('A resumed relative intervention must retain its original fusion scale.')
                     relative_offsets[i]=np.asarray(state['feedback_relative_offsets'],np.float32).copy()
         if relative_holds.any() and (not relative_holds.all() or not isolated_starts.all()
                 or not (getattr(actor,'actuator_fusion_refinement',None) or {}).get('task_feedback_prediction')):
             raise ValueError('Relative feedback requires a uniform isolated task-feedback batch.')
+        if (len(set(relative_scales)) != 1 or any(scale is not None and
+                (not relative_holds[i] or not np.isfinite(scale) or not 0. < scale <= 1.)
+                for i,scale in enumerate(relative_scales))):
+            raise ValueError('Scaled feedback requires one finite relative fusion scale for the batch.')
         returns=np.zeros(len(current));task_returns=np.zeros(len(current));rows=[None]*len(current)
         intervention_events=[[] for _ in current]
         decision_records=[[] for _ in current] if keep_steps else None
@@ -415,14 +423,15 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                         np.full((len(controls[i]),2),np.nan,dtype=np.float32) for i in active])
                     physical,offsets=refine_feedback_relative_intervention(actor,refinement_packet,
                         torch.as_tensor(source_controls,device=device),torch.as_tensor(offsets,device=device),
-                        **actor.actuator_fusion_refinement)
+                        relative_scale=relative_scales[0],**actor.actuator_fusion_refinement)
                     for i,offset in zip(active,offsets.cpu().numpy()):
                         relative_offsets[i]=offset.copy()
                         if (intervention_events[i] and
                                 intervention_events[i][-1]['time']==float(environments[i].Current_T)):
                             event=intervention_events[i][-1]
                             event.update(execution_mode='feedback_relative_hold',
-                                fusion_offset=offset[event['subjects']].tolist())
+                                fusion_offset=offset[event['subjects']].tolist(),
+                                feedback_relative_scale=relative_scales[i])
                     physical=physical.cpu().numpy()
                 else:
                     physical=refine_actuator_interactions(actor,refinement_packet,
@@ -451,7 +460,8 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                         midpoint_checked=bool(midpoint_checked[i])))
                     if controller is not None and relative_holds[i]:
                         controller.update(feedback_relative_hold=True,
-                            feedback_relative_offsets=relative_offsets[i].copy())
+                            feedback_relative_offsets=relative_offsets[i].copy(),
+                            feedback_relative_scale=relative_scales[i])
                     trajectories[i].append(dict(packet=before,action=controls[i].copy(),done=done,physical_steps=1,
                         reward=reward,source_reward=sr,discount=actor.training_gamma,
                         controller_state=controller))
