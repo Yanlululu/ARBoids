@@ -118,23 +118,35 @@ class PairedReturnNetwork(PlainReturnNetwork):
         return torch.cat((torch.zeros_like(raw[..., :1]), raw[..., 1:]), -1).softmax(-1)
 
     @classmethod
-    def signed_gain(cls, raw, active):
+    def signed_gain(cls, raw, active, factual_probability=None):
+        if factual_probability is not None:
+            rescue, harm = raw[..., 1:].sigmoid().unbind(-1)
+            return ((1.-factual_probability)*rescue-factual_probability*harm)*active.to(raw.dtype)
         probabilities = cls.event_probabilities(raw)
         return (probabilities[..., 1]-probabilities[..., 2])*active.to(raw.dtype)
 
 
 class PlainReturnDecision(nn.Module):
-    """One MLP and argmax, optionally requiring a fixed predicted return gain."""
+    """Mean dense values and argmax, optionally requiring a fixed predicted gain."""
     network_type = PlainReturnNetwork
 
     def __init__(self, defenders, width, state, options, decision_period=5,
                  inference_device=None, intervention_budget=0, identity_conditioned=False,
                  gain_margin=0., isolate_factual_start=False, wait_value=None,
-                 action_encoding='categorical'):
+                 action_encoding='categorical', ensemble_states=(), velocity_reference='ground'):
         super().__init__()
+        if velocity_reference not in ('ground', 'water'):
+            raise ValueError('Dense values require an observed ground or water velocity reference.')
+        self.velocity_reference = velocity_reference
         self.network = self.network_type(defenders, width, identity_conditioned,
                                          action_encoding=action_encoding)
         self.network.load_state_dict(state)
+        self.ensemble = nn.ModuleList()
+        for member_state in ensemble_states:
+            member = self.network_type(defenders, width, identity_conditioned,
+                                       action_encoding=action_encoding)
+            member.load_state_dict(member_state)
+            self.ensemble.append(member)
         self.register_buffer('options', torch.as_tensor(options, dtype=torch.long))
         self.register_buffer('programs',
             (self.options[:, :1] // (10 ** torch.arange(defenders))) % 10)
@@ -174,11 +186,24 @@ class PlainReturnDecision(nn.Module):
 
     def catalog_estimates(self, context, controls):
         logits = self.network.forward_catalog(context, controls, self.programs, self.options[:, 1:])
-        return logits, logits.sigmoid()
+        if not self.ensemble:
+            return logits, logits.sigmoid()
+        values = torch.stack([logits.sigmoid()]+[
+            member.forward_catalog(context, controls, self.programs, self.options[:, 1:]).sigmoid()
+            for member in self.ensemble]).mean(0)
+        return values, values
+
+    def public_context(self, packet):
+        from conditional_fusion_value import intervention_task_context, append_vessel_identity
+        if self.velocity_reference == 'water':
+            packet = dict(packet, motion=torch.cat((packet['motion'][..., :3], 5.*packet['water']), -1))
+        context, order = intervention_task_context(packet, True, True)
+        if self.network.identity_conditioned:
+            context = append_vessel_identity(context, order)
+        return context, order
 
     @torch.no_grad()
     def forward(self, packet, action):
-        from conditional_fusion_value import intervention_task_context
         if self.record_decisions:
             self.last_decision = None
         if self.record_catalog:
@@ -193,10 +218,7 @@ class PlainReturnDecision(nn.Module):
                 torch.use_deterministic_algorithms(True)
                 torch.backends.cuda.matmul.allow_tf32 = False
             self.to(self.inference_device)
-        context, order = intervention_task_context(packet, True, True)
-        if self.network.identity_conditioned:
-            from conditional_fusion_value import append_vessel_identity
-            context = append_vessel_identity(context, order)
+        context, order = self.public_context(packet)
         if order.shape[1] != self.network.defenders:
             raise ValueError('The plain MLP and deployed fleet must have the same size.')
         controls = packet['_plain_return_controls'].gather(
@@ -250,20 +272,34 @@ class PairedReturnDecision(PlainReturnDecision):
     """Rank learned same-future differences with the shared physical executor."""
     network_type = PairedReturnNetwork
 
-    def __init__(self, *args, learning_objective='conditional', **kwargs):
+    def __init__(self, *args, learning_objective='conditional',
+                 conditional_objective='marginal_events', **kwargs):
         if learning_objective != 'conditional':
             raise ValueError('Paired dense returns require the conditional learning objective.')
+        if conditional_objective not in ('marginal_events', 'factual_strata', 'shared_potential'):
+            raise ValueError('Unknown paired dense conditional objective.')
+        self.conditional_objective = conditional_objective
+        if conditional_objective == 'shared_potential':
+            self.network_type = PlainReturnNetwork
         super().__init__(*args, **kwargs)
         if not torch.equal(self.options[0], torch.zeros_like(self.options[0])):
             raise ValueError('The paired dense catalog must start with its factual reference.')
         self.ordinary = False
 
     def catalog_estimates(self, context, controls):
-        raw = self.network.forward_catalog(context, controls, self.programs, self.options[:, 1:])
-        gain = self.network.signed_gain(raw, (self.programs > 0).any(-1)[None])
+        estimates = []
+        for member in [self.network, *self.ensemble]:
+            raw = member.forward_catalog(context, controls, self.programs, self.options[:, 1:])
+            if self.conditional_objective == 'shared_potential':
+                estimates.append(raw.sigmoid())
+                continue
+            factual = raw[:, :1, 0].sigmoid()
+            gain = member.signed_gain(raw, (self.programs > 0).any(-1)[None],
+                factual if self.conditional_objective == 'factual_strata' else None)
+            estimates.append(factual+gain)
         # The common factual value cancels before ranking and margin checks.
         # Avoid clipping a beneficial contrast at the factual value boundary.
-        values = raw[:, :1, 0].sigmoid()+gain
+        values = torch.stack(estimates).mean(0)
         return values, values
 
 
@@ -274,7 +310,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                      additional_candidate_options=(), identity_conditioned=False, snapshot_updates=(),
                      root_sampling_fraction=0., value_target='success',
                      expected_training_target_sha256=None, intervention_budget=0, gain_margin=0.,
-                     paired_difference_weight=0., action_encoding='categorical'):
+                     paired_difference_weight=0., action_encoding='categorical',
+                     conditional_objective='marginal_events', velocity_reference='ground'):
     """Fit only absolute outcomes, independently of conditional-learning code.
 
     The default pools all observed state/action returns and samples them
@@ -286,11 +323,19 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
     conditional estimator; it never changes the default return comparator.
     """
     require_plain_predecessor(data['model'])
+    if (velocity_reference not in ('ground', 'water') or
+            data.get('state_velocity_reference', 'ground') != velocity_reference or
+            factual_bank is not None and factual_bank.get('state_velocity_reference', 'ground') != velocity_reference):
+        raise ValueError('Dense training must match the observed velocity reference of every input population.')
     if action_encoding not in ('categorical', 'physical_delta'):
         raise ValueError('Unknown dense intervention action representation.')
     if not np.isfinite(paired_difference_weight) or paired_difference_weight < 0.:
         raise ValueError('The paired difference weight must be finite and nonnegative.')
     conditional = paired_difference_weight > 0.
+    if (conditional_objective not in ('marginal_events', 'factual_strata', 'shared_potential')
+            or conditional_objective == 'factual_strata' and (not conditional or value_target != 'success')):
+        raise ValueError('Factual-stratum dense learning requires paired binary success outcomes.')
+    shared_potential = conditional and conditional_objective == 'shared_potential'
     if conditional and (not uniform_sampling or initial_model is not None):
         raise ValueError('Dense conditional fitting currently requires a fresh pooled-observation fit.')
     if value_target not in ('success', 'discounted_return'):
@@ -315,6 +360,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         require_plain_predecessor(initial_model, allow_plain_return=True)
         if initial_model.get('successor_task_value', {}).get('kind') != 'plain_mlp_return':
             raise ValueError('A plain MLP can resume only its own absolute-return parameters.')
+        if initial_model['successor_task_value'].get('ensemble_states'):
+            raise ValueError('An ensemble continuation must explicitly retain and update every member.')
     if uniform_sampling and factual_bank_weight != 1.:
         raise ValueError('Uniform return regression has no separate factual loss weight.')
     roots = []
@@ -392,17 +439,19 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
     importance = torch.as_tensor(np.asarray(weights), device=device)
     action_size = 10*defenders+2 if action_encoding == 'categorical' else 5*defenders+4
     input_size = (14+identity_conditioned)*defenders+5+action_size
-    output_width = 3 if conditional else 1
+    output_width = 3 if conditional and not shared_potential else 1
     count = lambda width: 2*width*width + (input_size+3+output_width)*width + output_width
     width = min(range(8, 2049), key=lambda value: abs(count(value)-parameter_budget))
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
-    network_type = PairedReturnNetwork if conditional else PlainReturnNetwork
+    network_type = PairedReturnNetwork if conditional and not shared_potential else PlainReturnNetwork
     net = network_type(defenders, width, identity_conditioned, action_encoding=action_encoding).to(device)
     initialization_sha256 = None
     initialization_updates = 0
     if initial_model is not None:
         recipe = initial_model['successor_task_value']
+        if recipe.get('velocity_reference', 'ground') != velocity_reference:
+            raise ValueError('Continued dense fitting must retain its observed velocity reference.')
         if (initial_model['successor_task_fit'].get('value_target', 'success') != value_target
                 or bool(recipe.get('isolate_factual_start', False)) != isolate_factual_start
                 or recipe.get('action_encoding', 'categorical') != action_encoding):
@@ -464,16 +513,34 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
             if uniform_sampling:
                 index = torch.as_tensor(draw(len(pooled_target), 192, pooled_probability), device=device)
                 raw = net.layers(pooled_features[index])
-                if conditional:
+                if shared_potential:
+                    # Both values come from exactly the ordinary scalar network.
+                    # Only the common-future difference adds supervision; the
+                    # absolute labels keep precisely their ordinary pooled mass.
+                    factual_logits = net.layers(pooled_reference[index])[:, 0]
+                    gain = raw[:, 0].sigmoid()-factual_logits.sigmoid()
+                    difference = pooled_target[index]-paired_factual_target[index]
+                    loss = F.binary_cross_entropy_with_logits(raw[:, 0], pooled_target[index])
+                    loss += paired_difference_weight*((gain-difference).square()*paired_active[index]).mean()
+                elif conditional:
                     from local_intervention_value import paired_difference_loss
                     factual_logits = net.layers(pooled_reference[index])[:, 0]
                     active = paired_active[index]
-                    gain = net.signed_gain(raw, active)
+                    factual_probability = factual_logits.sigmoid()
+                    gain = net.signed_gain(raw, active,
+                        factual_probability if conditional_objective == 'factual_strata' else None)
                     estimate = (factual_logits.sigmoid()+gain).clamp(1e-6, 1.-1e-6)
                     loss = F.binary_cross_entropy(estimate, pooled_target[index])
                     loss += F.binary_cross_entropy_with_logits(factual_logits, paired_factual_target[index])
                     difference = pooled_target[index]-paired_factual_target[index]
-                    event_error = paired_difference_loss(net.event_probabilities(raw), difference, value_target)
+                    if conditional_objective == 'factual_strata':
+                        # The realized factual outcome selects only its training
+                        # stratum. Deployment uses the state-only factual prediction.
+                        rescue_error = F.binary_cross_entropy_with_logits(raw[:, 1], pooled_target[index], reduction='none')
+                        harm_error = F.binary_cross_entropy_with_logits(raw[:, 2], 1.-pooled_target[index], reduction='none')
+                        event_error = torch.where(paired_factual_target[index] > .5, harm_error, rescue_error)
+                    else:
+                        event_error = paired_difference_loss(net.event_probabilities(raw), difference, value_target)
                     # All neutral and harmful futures keep their observed mass.
                     # Factual bank rows have exactly zero intervention effect.
                     loss += paired_difference_weight*(event_error*active).mean()
@@ -504,20 +571,25 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                            parameters=count(width), loss=float(loss.detach())), flush=True)
     model = copy.deepcopy(data['model'])
     model['successor_task_value'] = dict(kind='paired_mlp_return' if conditional else 'plain_mlp_return', defenders=defenders, width=width,
-        identity_conditioned=identity_conditioned, action_encoding=action_encoding,
+        identity_conditioned=identity_conditioned, action_encoding=action_encoding, velocity_reference=velocity_reference,
         state={key:value.detach().cpu() for key, value in net.state_dict().items()},
         options=options, decision_period=5, inference_device=device,
         isolate_factual_start=isolate_factual_start, intervention_budget=intervention_budget,
         gain_margin=float(gain_margin))
     if conditional:
         model['successor_task_value']['learning_objective'] = 'conditional'
+        model['successor_task_value']['conditional_objective'] = conditional_objective
     removal = tuple(model.get('mechanism_ablation', (False, False, False)))+(False,)*3
     model['mechanism_ablation'] = (removal[0], False, removal[2])
     model.update(gate_period=1, physical_interventions=True, fixed_intervention_clock=True,
                  success_objective=value_target == 'success')
     factual_labels = 0 if continuation is None else len(continuation[2])
     model['successor_task_fit'] = dict(ordinary=not conditional,
-        objective=('absolute returns and same-future signed intervention-return mass' if conditional else
+        objective=('absolute-outcome cross entropy plus squared same-future differences of one shared task potential'
+                   if shared_potential else
+                   'absolute success and same-future rescue/harm likelihood conditional on factual outcomes'
+                   if conditional and conditional_objective == 'factual_strata' else
+                   'absolute returns and same-future signed intervention-return mass' if conditional else
                   'absolute normalized discounted-return binary cross entropy'
                    if value_target == 'discounted_return' else 'absolute-outcome binary cross entropy'),
         value_target=value_target, training_target_sha256=training_target_sha256,
@@ -527,8 +599,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
             if value_target == 'discounted_return' else None,
         isolate_factual_start=isolate_factual_start,
         architecture=('single dense MLP, three ReLU hidden layers, factual and paired-event outputs'
-                      if conditional else 'single dense MLP, three ReLU hidden layers'), width=width,
-        action_encoding=action_encoding, dense_input_width=input_size,
+                      if conditional and not shared_potential else 'single dense MLP, three ReLU hidden layers'), width=width,
+        action_encoding=action_encoding, dense_input_width=input_size, velocity_reference=velocity_reference,
         physical_action_features=('active vessel, coefficients, quarter-scaled current command difference; linear and logarithmic timing'
                                  if action_encoding == 'physical_delta' else None),
         trainable_parameters=count(width), reference_parameter_budget=parameter_budget,
@@ -542,11 +614,13 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         unique_terminal_observations=data.get('measured_terminal_observations', len(rows)),
         supervised_node_labels=len(rows)+factual_labels, additional_factual_state_labels=factual_labels,
         training_observation_sha256=observation_sha, training_data=data.get('training_data'),
+        factual_bank_training_data=None if factual_bank is None else factual_bank.get('training_data'),
         predecessor_sha256=data['predecessor_sha256'], inherited_stages=False,
         paired_local_observations=int((codes > 0).sum()) if conditional else 0,
         factual_comparisons=int((codes > 0).sum()) if conditional else 0,
         paired_difference_weight=float(paired_difference_weight), paired_training_target_sha256=paired_target_sha256,
-        paired_event_difference=conditional, future_public_states_used=False,
+        paired_event_difference=conditional and conditional_objective == 'marginal_events',
+        conditional_objective=conditional_objective if conditional else None, future_public_states_used=False,
         common_motion_response_features=False,
         joint_factual_calibration=False, local_reconciliation=False, local_rank_weight=0.,
         public_vessel_identity=identity_conditioned,
@@ -555,7 +629,7 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         root_sampling_fraction=root_sampling_fraction,
         batch_size=192 if uniform_sampling else 128,
         development_future_weight=1. if uniform_sampling else data.get('development_future_weight', 1.),
-        separate_factual_objective=conditional or (not uniform_sampling and factual_bank is not None),
+        separate_factual_objective=(conditional and not shared_potential) or (not uniform_sampling and factual_bank is not None),
         factual_bank_weight=(factual_bank_weight if factual_bank is not None and not uniform_sampling else 0.),
         candidate_catalog=('shared complete programs, including unobserved prior candidates'
                            if extra_options else 'all sampled complete programs, including negative outcomes'),

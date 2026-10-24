@@ -3714,6 +3714,10 @@ class FactualCrossfitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Validation layouts'):
             fit_success_intervention_pair(data, None, None, validation_data=validation,
                 **dict(settings, factual_bank=contaminated_bank))
+        fractional = copy.deepcopy(data)
+        fractional['roots'][0]['outcomes'][0, 0]['success'] = .5
+        with self.assertRaisesRegex(ValueError, 'binary terminal outcomes'):
+            fit_success_intervention_pair(fractional, None, None, validation_data=validation, **settings)
         relabelled = copy.deepcopy(validation)
         for root in relabelled['roots']:
             for outcome in root['outcomes'].values():
@@ -3741,10 +3745,83 @@ class FactualCrossfitTests(unittest.TestCase):
             network_options=dict(action_encoding='physical_delta', snapshot_updates=(1, 2)))
         self.assertEqual(physical[0]['successor_task_value']['action_encoding'], 'physical_delta')
         self.assertEqual(set(physical[0]['learning_snapshots']['states']), {1, 2})
+        ensemble = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+            validation_data=dict(validation, isolate_factual_start=True), factual_bank=bank,
+            updates=4, ensemble_size=2, width=4, seed=27, architecture='mlp', device='cpu',
+            network_options=dict(action_encoding='physical_delta'))
+        from plain_return import PlainReturnDecision, PairedReturnDecision, fit_plain_return
+        for model in ensemble:
+            fit = model['successor_task_fit']; recipe = dict(model['successor_task_value'])
+            paired_dense = recipe.pop('kind') == 'paired_mlp_return'
+            factory = PairedReturnDecision if paired_dense else PlainReturnDecision
+            learner = factory(**recipe)
+            self.assertEqual(fit['member_training_roots'], [4, 4])
+            self.assertEqual(fit['member_factual_trajectories'], [4, 4])
+            self.assertEqual(fit['member_updates'], [2, 2])
+            self.assertEqual(fit['trainable_parameters'], sum(p.numel() for p in learner.parameters()))
+            self.assertTrue(fit['raw_validation_diagnostics']['layouts_disjoint'])
+            context = torch.from_numpy(roots[4]['context'][None]); commands = torch.from_numpy(controls[None])
+            estimates = []
+            for state in [recipe['state'], *recipe['ensemble_states']]:
+                member = factory(**dict(recipe, state=state, ensemble_states=()))
+                estimates.append(member.catalog_estimates(context, commands)[1])
+            torch.testing.assert_close(learner.catalog_estimates(context, commands)[1], torch.stack(estimates).mean(0))
+            changed = copy.deepcopy(model)
+            changed['successor_task_value']['ensemble_states'][0]['layers.6.bias'].add_(1.)
+            self.assertNotEqual(fit['raw_validation_diagnostics']['evaluated_parameter_sha256'],
+                raw_paired_value_diagnostics(changed, validation)['evaluated_parameter_sha256'])
+        with self.assertRaisesRegex(ValueError, 'retain and update every member'):
+            fit_plain_return(dict(data, isolate_factual_start=True), None, updates=2,
+                device='cpu', initial_model=ensemble[1])
         conditioned, _ = fit_success_intervention_pair(data, None, None, validation_data=validation,
             **dict(settings, updates=2, ensemble_size=1), conditional_objective='factual_strata')
         self.assertFalse(conditioned['successor_task_value']['paired_event_difference'])
         self.assertTrue(conditioned['successor_task_fit']['raw_validation_diagnostics']['layouts_disjoint'])
+        strata, matched = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+            validation_data=dict(validation, isolate_factual_start=True), factual_bank=bank,
+            updates=4, ensemble_size=2, width=4, seed=27, architecture='mlp', device='cpu',
+            network_options=dict(action_encoding='physical_delta'), conditional_objective='factual_strata')
+        recipe = dict(strata['successor_task_value']); recipe.pop('kind')
+        learner = PairedReturnDecision(**recipe)
+        self.assertEqual(learner.conditional_objective, 'factual_strata')
+        self.assertFalse(strata['successor_task_fit']['paired_event_difference'])
+        for key in ('training_observation_sha256', 'training_target_sha256', 'member_updates'):
+            self.assertEqual(strata['successor_task_fit'][key], matched['successor_task_fit'][key])
+        selected = []
+        for root in validation['roots']:
+            context = torch.from_numpy(root['context'][None]); commands = torch.from_numpy(root['effect_controls'][None])
+            values = learner.catalog_estimates(context, commands)[1]
+            self.assertTrue(bool(((values >= 0.) & (values <= 1.)).all()))
+            selected.append(float((values-values[:, :1]).max().detach()))
+        self.assertAlmostEqual(float(np.mean(selected)),
+            strata['successor_task_fit']['raw_validation_diagnostics']['selected_predicted_gain'], places=6)
+        potential, matched = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+            validation_data=dict(validation, isolate_factual_start=True), factual_bank=bank,
+            updates=4, ensemble_size=2, width=4, seed=27, architecture='mlp', device='cpu',
+            network_options=dict(action_encoding='physical_delta'), conditional_objective='shared_potential')
+        for key in ('training_observation_sha256', 'training_target_sha256', 'member_updates', 'trainable_parameters'):
+            self.assertEqual(potential['successor_task_fit'][key], matched['successor_task_fit'][key])
+        self.assertFalse(potential['successor_task_fit']['separate_factual_objective'])
+        self.assertNotEqual(potential['successor_task_fit']['raw_validation_diagnostics']['evaluated_parameter_sha256'],
+                            matched['successor_task_fit']['raw_validation_diagnostics']['evaluated_parameter_sha256'])
+        recipe = dict(potential['successor_task_value']); recipe.pop('kind')
+        learner = PairedReturnDecision(**recipe)
+        selected = []
+        for root in validation['roots']:
+            context = torch.from_numpy(root['context'][None]); commands = torch.from_numpy(root['effect_controls'][None])
+            values = learner.catalog_estimates(context, commands)[1]
+            self.assertTrue(bool(((values >= 0.) & (values <= 1.)).all()))
+            selected.append(float((values-values[:, :1]).max().detach()))
+        self.assertAlmostEqual(float(np.mean(selected)),
+            potential['successor_task_fit']['raw_validation_diagnostics']['selected_predicted_gain'], places=6)
+        from plain_return import PairedReturnNetwork, fit_paired_mlp_return
+        raw = torch.tensor([[0., np.log(4.), np.log(3./7.)]]).float().expand(3, -1)
+        factual = torch.tensor([.2, .8, .2])
+        gain = PairedReturnNetwork.signed_gain(raw, torch.tensor([True, True, False]), factual)
+        torch.testing.assert_close(gain, torch.tensor([.58, -.08, 0.]))
+        with self.assertRaisesRegex(ValueError, 'paired binary success'):
+            fit_paired_mlp_return(dict(data, isolate_factual_start=True), None,
+                updates=1, device='cpu', value_target='discounted_return', conditional_objective='factual_strata')
 
 
 if __name__ == '__main__':

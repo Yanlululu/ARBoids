@@ -1369,6 +1369,47 @@ def state_features(context, controls, time_scale=1.):
     return torch.cat((torch.cat((rows, .25*controls), -1).flatten(-2), clock), -1)
 
 
+def observed_water_velocity_data(data, factual_banks):
+    """Replace transient ground velocities with measured persistent velocities.
+
+    Only the current factual snapshot supplies the replacement. Its complete
+    original context and vessel order must match the recorded paired root;
+    future outcomes, commands and successor observations remain untouched.
+    """
+    import conditional_fusion_value as c
+    import develop_source_fusion as d
+    if data.get('state_velocity_reference', 'ground') != 'ground' or data.get('public_vessel_identity', False):
+        raise ValueError('Water conversion requires original, spatially ordered public contexts.')
+    snapshots = {}
+    for bank in factual_banks:
+        if bank['predecessor_sha256'] != data['predecessor_sha256']:
+            raise ValueError('Water observations must come from the same factual predecessor.')
+        for record in bank['records']:
+            snapshot = record['root_snapshot']
+            packet = d.mechanism_tensor(d.joint_packet(snapshot['environment'], snapshot['observation']))
+            context, order = c.intervention_task_context(packet, True, True)
+            measured = dict(packet, motion=torch.cat((packet['motion'][..., :3], 5.*packet['water']), -1))
+            replacement, replacement_order = c.intervention_task_context(measured, True, True)
+            if not torch.equal(order, replacement_order):
+                raise ValueError('Observed velocity replacement must preserve spatial vessel order.')
+            key = (tuple(record['scene']), record.get('future'), snapshot['root_steps'])
+            snapshots.setdefault(key, []).append(tuple(value[0].cpu().numpy() for value in
+                                                      (context, order, replacement)))
+    result = copy.deepcopy(data)
+    for root in result['roots']:
+        key = (tuple(root['scene']), root.get('prefix_future'), root['root_steps'])
+        candidates = snapshots.get(key, ())
+        matching = [row for row in candidates if np.array_equal(row[1], root['order']) and
+                    np.allclose(row[0], root['context'], rtol=0., atol=3e-5)]
+        if not matching:
+            raise ValueError('Every paired root requires its matching observed factual snapshot.')
+        selected = min(matching, key=lambda row: float(np.max(np.abs(row[0]-root['context']))))
+        root['context'] = selected[2].copy()
+    result.update(state_velocity_reference='water', observed_water_roots=len(result['roots']),
+                  successor_velocity_reference='ground')
+    return result
+
+
 def retain_vessel_identity(data, factual_bank=None):
     """Expose recorded physical indices to both learners without changing labels."""
     from conditional_fusion_value import append_vessel_identity
@@ -3145,6 +3186,8 @@ def _joint_parameter_digest(states):
 def joint_potential_initialization(model, data, factual_bank=None):
     """Verify a prior fit and preserve its layout separation when continuing it."""
     fit = model['successor_task_fit']; recipe = model['successor_task_value']
+    if recipe.get('velocity_reference', 'ground') != data.get('state_velocity_reference', 'ground'):
+        raise ValueError('Raw diagnostics must use the estimator\'s observed velocity reference.')
     ordinary = bool(fit['ordinary'])
     expected_kind = 'plain_joint_return' if ordinary else 'local_difference_joint'
     if recipe['kind'] != expected_kind or fit['predecessor_sha256'] != data['predecessor_sha256']:
@@ -4203,11 +4246,12 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
     network.update(output_width=3 if paired else 1, paired_response_encoding=paired,
         aligned_response_contrast=recipe.get('aligned_response_contrast', False), paired_event_difference=paired_events)
     models = []
-    states = [recipe['state']] if dense else recipe['states']
+    states = [recipe['state'], *recipe.get('ensemble_states', ())] if dense else recipe['states']
     for state in states:
         if dense:
             from plain_return import PlainReturnNetwork, PairedReturnNetwork
-            factory = PairedReturnNetwork if paired else PlainReturnNetwork
+            factory = (PairedReturnNetwork if paired and recipe.get('conditional_objective') != 'shared_potential'
+                       else PlainReturnNetwork)
             net = factory(recipe['defenders'], recipe['width'], recipe.get('identity_conditioned', False),
                 action_encoding=recipe.get('action_encoding', 'categorical'))
         else:
@@ -4249,9 +4293,13 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
         estimates = []
         for net in models:
             raw = net(contexts[root_id], controls[root_id], programs, part[:, 2:])
-            if paired:
+            if paired and not (dense and recipe.get('conditional_objective') == 'shared_potential'):
                 if dense:
-                    gain = net.signed_gain(raw, (programs > 0).any(-1))
+                    factual = None
+                    if recipe.get('conditional_objective', 'marginal_events') == 'factual_strata':
+                        factual = net(contexts[root_id], controls[root_id],
+                            torch.zeros_like(programs), torch.zeros_like(part[:, 2:]))[:, 0].sigmoid()
+                    gain = net.signed_gain(raw, (programs > 0).any(-1), factual)
                 elif paired_events:
                     gain = net.event_gain(raw)
                 else:
@@ -4299,16 +4347,24 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
     objectives. Ranking and softmax decision losses are excluded because they
     can improve ordering by changing the magnitude of the reported effect.
     """
-    if updates < ensemble_size or updates % ensemble_size:
+    if (not isinstance(ensemble_size, int) or ensemble_size < 1
+            or updates < ensemble_size or updates % ensemble_size):
         raise ValueError('Matched success training requires equal positive optimizer budgets for all members.')
-    if architecture not in ('interaction', 'mlp') or (architecture == 'mlp' and ensemble_size != 1):
-        raise ValueError('Choose an interaction ensemble or one matched dense model per arm.')
-    if (conditional_objective not in ('marginal_events', 'factual_strata')
-            or architecture == 'mlp' and conditional_objective != 'marginal_events'):
-        raise ValueError('Factual-stratum success learning requires the paired interaction network.')
+    if architecture not in ('interaction', 'mlp'):
+        raise ValueError('Choose an interaction or dense ensemble per arm.')
+    if conditional_objective not in ('marginal_events', 'factual_strata', 'shared_potential'):
+        raise ValueError('Unknown paired success conditional objective.')
+    if conditional_objective == 'shared_potential' and architecture != 'mlp':
+        raise ValueError('The matched shared-potential experiment requires the common dense architecture.')
     if (not data.get('roots') or not validation_data.get('roots')
             or data.get('predecessor_sha256') != validation_data.get('predecessor_sha256')):
         raise ValueError('Matched success training needs measured training and validation data from the same predecessor.')
+    outcomes = [float(item['success']) for population in (data, validation_data)
+                for root in population['roots'] for item in root['outcomes'].values()]
+    if factual_bank is not None:
+        outcomes.extend(float(value) for record in factual_bank['records'] for value in record['values'])
+    if not np.isin(outcomes, (0., 1.)).all():
+        raise ValueError('Success-probability training requires measured binary terminal outcomes in both populations.')
     for key in ('isolate_factual_start', 'feedback_relative_hold'):
         if bool(data.get(key, False)) != bool(validation_data.get(key, False)):
             raise ValueError('Training and validation must use identical intervention execution semantics.')
@@ -4325,7 +4381,7 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         'shared_factual_response', 'response_supervision_weight', 'response_supervision_architecture',
         'response_value_weight', 'factual_response_supervision', 'learning_rate', 'factual_bank_weight',
         'additional_candidate_options', 'root_sampling_fraction', 'edge_weight', 'anchor_weight', 'action_encoding',
-        'snapshot_updates'}
+        'snapshot_updates', 'velocity_reference'}
     if set(options)-allowed:
         raise ValueError('Matched success settings cannot override targets, coverage, calibration or optimizer budgets.')
     common = dict(updates=updates, ensemble_size=ensemble_size, seed=seed, device=device,
@@ -4367,24 +4423,49 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
     else:
         from plain_return import fit_plain_return, fit_paired_mlp_return
         dense_options = {'identity_conditioned', 'learning_rate', 'factual_bank_weight', 'action_encoding',
-                         'additional_candidate_options', 'root_sampling_fraction', 'snapshot_updates'}
+                         'additional_candidate_options', 'root_sampling_fraction', 'snapshot_updates', 'velocity_reference'}
         if set(options)-dense_options:
             raise ValueError('Dense success learning uses public state/action inputs without response auxiliary heads.')
-        settings = dict(factual_bank=factual_bank, updates=updates,
+        if ensemble_size > 1 and options.get('snapshot_updates'):
+            raise ValueError('Dense ensemble snapshots require a common member snapshot protocol.')
+        settings = dict(factual_bank=factual_bank, updates=updates//ensemble_size,
             parameter_budget=paired_capacity if parameter_budget is None else parameter_budget,
             seed=seed, device=device, value_target='success', intervention_budget=1,
             gain_margin=margin, root_sampling_fraction=.5)
         settings.update(options)
-        paired = fit_paired_mlp_return(data, None, **settings)
-        ordinary = fit_plain_return(data, None, **settings,
-            expected_observation_sha256=paired['successor_task_fit']['training_observation_sha256'],
-            expected_training_target_sha256=paired['successor_task_fit']['training_target_sha256'])
+        paired_members = []; ordinary_members = []
+        for member in range(ensemble_size):
+            member_settings = dict(settings, seed=seed+997*member)
+            paired_member = fit_paired_mlp_return(data, None,
+                conditional_objective=conditional_objective, **member_settings)
+            ordinary_member = fit_plain_return(data, None, **member_settings,
+                expected_observation_sha256=paired_member['successor_task_fit']['training_observation_sha256'],
+                expected_training_target_sha256=paired_member['successor_task_fit']['training_target_sha256'])
+            paired_members.append(paired_member); ordinary_members.append(ordinary_member)
+        paired = paired_members[0]; ordinary = ordinary_members[0]
         paired_capacity = paired['successor_task_fit']['trainable_parameters']
         ordinary_capacity = ordinary['successor_task_fit']['trainable_parameters']
-        for model in (paired, ordinary):
+        for model, members in ((paired, paired_members), (ordinary, ordinary_members)):
+            if ensemble_size > 1:
+                model['successor_task_value']['ensemble_states'] = [
+                    member['successor_task_value']['state'] for member in members[1:]]
+            member_fits = [member['successor_task_fit'] for member in members]
+            if any(member['training_observation_sha256'] != member_fits[0]['training_observation_sha256']
+                   or member['training_target_sha256'] != member_fits[0]['training_target_sha256']
+                   for member in member_fits):
+                raise RuntimeError('Every dense ensemble member must receive the complete common training data.')
             model['successor_task_fit'].update(training_layouts=sorted(training_layouts),
-                member_training_roots=[len(data['roots'])],
-                member_factual_trajectories=[0 if factual_bank is None else len(factual_bank['records'])],
+                member_training_roots=[len(data['roots'])]*ensemble_size,
+                member_factual_trajectories=[0 if factual_bank is None else len(factual_bank['records'])]*ensemble_size,
+                updates=updates, total_parameter_updates=updates,
+                member_updates=[updates//ensemble_size]*ensemble_size,
+                ensemble_members=ensemble_size, member_seeds=[seed+997*member for member in range(ensemble_size)],
+                trainable_parameters=sum(member['trainable_parameters'] for member in member_fits),
+                architecture=(member_fits[0]['architecture'] if ensemble_size == 1 else
+                    f'{ensemble_size} independently initialized dense members; mean predicted probabilities and effects'),
+                member_initialization_parameter_sha256=[member['initialization_parameter_sha256']
+                    for member in member_fits],
+                last_loss=float(np.mean([member['last_loss'] for member in member_fits])),
                 factual_crossfit=False, empirical_difference_correction=False,
                 empirical_factual_reference=False)
     matched_fields = ('training_observation_sha256', 'training_target_sha256', 'member_training_roots',
