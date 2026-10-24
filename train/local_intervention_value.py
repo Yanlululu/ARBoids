@@ -4318,7 +4318,8 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
                     if recipe.get('conditional_objective', 'marginal_events') in ('factual_strata', 'joint_likelihood'):
                         factual = net(contexts[root_id], controls[root_id],
                             torch.zeros_like(programs), torch.zeros_like(part[:, 2:]))[:, 0].sigmoid()
-                    gain = net.signed_gain(raw, net.active_vessels(programs).any(-1), factual)
+                    gain = net.signed_gain(raw, net.active_vessels(programs).any(-1), factual,
+                        event_hierarchy=recipe.get('conditional_objective') == 'event_hierarchy')
                 elif paired_events:
                     gain = net.event_gain(raw)
                 else:
@@ -4378,8 +4379,10 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         raise ValueError('Matched success training requires equal positive optimizer budgets for all members.')
     if architecture not in ('interaction', 'mlp'):
         raise ValueError('Choose an interaction or dense ensemble per arm.')
-    if conditional_objective not in ('marginal_events', 'factual_strata', 'shared_potential', 'joint_likelihood'):
+    if conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood'):
         raise ValueError('Unknown paired success conditional objective.')
+    if conditional_objective == 'event_hierarchy' and architecture != 'mlp':
+        raise ValueError('Change-direction learning requires the common dense architecture.')
     if conditional_objective == 'shared_potential' and architecture != 'mlp':
         raise ValueError('The matched shared-potential experiment requires the common dense architecture.')
     if conditional_objective == 'joint_likelihood' and architecture != 'mlp':
@@ -4415,7 +4418,7 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         'additional_candidate_options', 'root_sampling_fraction', 'edge_weight', 'anchor_weight', 'action_encoding',
         'snapshot_updates', 'velocity_reference', 'conservative_catalog_weight',
         'conservative_catalog_temperature', 'conservative_catalog_samples', 'conservative_catalog_roots',
-        'unique_factual_supervision'}
+        'unique_factual_supervision', 'root_sampling_weights', 'factual_sampling_weights'}
     if set(options)-allowed:
         raise ValueError('Matched success settings cannot override targets, coverage, calibration or optimizer budgets.')
     common = dict(updates=updates, ensemble_size=ensemble_size, seed=seed, device=device,
@@ -4434,13 +4437,13 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
     def capacity(candidate_width, paired):
         net = JointTaskPotential(candidate_width, output_width=3 if paired else 1,
             paired_response_encoding=paired, aligned_response_contrast=paired,
-            paired_event_difference=paired and conditional_objective == 'marginal_events', **network_architecture)
+            paired_event_difference=paired and conditional_objective in ('marginal_events', 'event_hierarchy'), **network_architecture)
         return sum(parameter.numel() for parameter in net.parameters())
     paired_capacity = capacity(width, True)
     ordinary_width = min(range(max(1, width//2), 2*width+1),
         key=lambda candidate: abs(capacity(candidate, False)-paired_capacity))
     conditional = dict(conditional_strata=True, paired_response_encoding=True,
-        aligned_response_contrast=True, paired_event_difference=conditional_objective == 'marginal_events',
+        aligned_response_contrast=True, paired_event_difference=conditional_objective in ('marginal_events', 'event_hierarchy'),
         response_contrast_weight=(1. if common.get('response_conditioned_value') and
                                  not common.get('shared_factual_response') else 0.))
     if architecture == 'interaction':
@@ -4448,6 +4451,10 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
             raise ValueError('Action encoding is a dense-network option.')
         if 'unique_factual_supervision' in options:
             raise ValueError('Unique factual likelihood is a dense-network option.')
+        if 'root_sampling_weights' in options:
+            raise ValueError('Root sampling priors are a dense-network option.')
+        if 'factual_sampling_weights' in options:
+            raise ValueError('Factual state sampling priors are a dense-network option.')
         if parameter_budget is not None:
             raise ValueError('Interaction capacity is controlled by width and ensemble size.')
         paired = fit_joint_potential(data, None, width=width, factual_bank=factual_bank, **common, **conditional)
@@ -4461,7 +4468,8 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         dense_options = {'identity_conditioned', 'learning_rate', 'factual_bank_weight', 'action_encoding',
                          'additional_candidate_options', 'root_sampling_fraction', 'snapshot_updates', 'velocity_reference',
                          'conservative_catalog_weight', 'conservative_catalog_temperature',
-                         'conservative_catalog_samples', 'conservative_catalog_roots', 'unique_factual_supervision'}
+                         'conservative_catalog_samples', 'conservative_catalog_roots', 'unique_factual_supervision',
+                         'root_sampling_weights', 'factual_sampling_weights'}
         if set(options)-dense_options:
             raise ValueError('Dense success learning uses public state/action inputs without response auxiliary heads.')
         if ensemble_size > 1 and options.get('snapshot_updates'):
@@ -4491,6 +4499,8 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
             member_fits = [member['successor_task_fit'] for member in members]
             if any(member['training_observation_sha256'] != member_fits[0]['training_observation_sha256']
                    or member['training_target_sha256'] != member_fits[0]['training_target_sha256']
+                   or member['root_sampling_prior_sha256'] != member_fits[0]['root_sampling_prior_sha256']
+                   or member['factual_sampling_prior_sha256'] != member_fits[0]['factual_sampling_prior_sha256']
                    for member in member_fits):
                 raise RuntimeError('Every dense ensemble member must receive the complete common training data.')
             model['successor_task_fit'].update(training_layouts=sorted(training_layouts),
@@ -4512,7 +4522,8 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
     matched_fields = ('training_observation_sha256', 'training_target_sha256', 'member_training_roots',
         'member_factual_trajectories', 'member_updates', 'updates', 'predecessor_sha256')
     if architecture == 'mlp':
-        matched_fields += ('member_conservative_training_draw_sha256',)
+        matched_fields += ('member_conservative_training_draw_sha256', 'root_sampling_prior_sha256',
+                          'factual_sampling_prior_sha256')
     if any(paired['successor_task_fit'][key] != ordinary['successor_task_fit'][key] for key in matched_fields):
         raise RuntimeError('Matched success training produced unequal data coverage or optimizer budgets.')
     for model in (paired, ordinary):

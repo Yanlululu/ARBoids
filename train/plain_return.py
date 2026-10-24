@@ -10,17 +10,29 @@ from torch import nn
 from torch.nn import functional as F
 
 
-def root_sampling_probabilities(root_ids, fraction=0.):
-    """Mix observation-uniform sampling with equal mass per measured state."""
+def root_sampling_probabilities(root_ids, fraction=0., root_weights=None):
+    """Mix observation-uniform sampling with positive mass per measured state.
+
+    Optional weights follow sorted unique root ids. No state can be removed.
+    """
     if not np.isfinite(fraction) or not 0. <= fraction <= 1.:
         raise ValueError('Root sampling fraction must lie between zero and one.')
     root_ids = np.asarray(root_ids)
     if root_ids.ndim != 1 or not len(root_ids):
         raise ValueError('Root sampling requires a nonempty one-dimensional population.')
-    if fraction == 0.:
+    if fraction == 0. and root_weights is None:
         return None
     _, inverse, counts = np.unique(root_ids, return_inverse=True, return_counts=True)
-    probability = (1-fraction)/len(root_ids)+fraction/(len(counts)*counts[inverse])
+    if root_weights is None:
+        probability = (1-fraction)/len(root_ids)+fraction/(len(counts)*counts[inverse])
+    else:
+        prior = np.asarray(root_weights, np.float64)
+        if (fraction == 0. or prior.shape != counts.shape or
+                not np.isfinite(prior).all() or np.any(prior <= 0.)):
+            raise ValueError('Root weights need positive finite mass for every state and a positive sampling fraction.')
+        prior = prior/prior.max()
+        prior = prior/prior.sum()
+        probability = (1-fraction)/len(root_ids)+fraction*prior[inverse]/counts[inverse]
     return probability/probability.sum()
 
 
@@ -130,7 +142,12 @@ class PairedReturnNetwork(PlainReturnNetwork):
                          action_encoding=action_encoding, feedback_relative_scale=feedback_relative_scale)
 
     @staticmethod
-    def event_probabilities(raw):
+    def event_probabilities(raw, hierarchy=False):
+        if hierarchy:
+            change = raw[..., 1].sigmoid()
+            rescue_given_change = raw[..., 2].sigmoid()
+            return torch.stack((1.-change, change*rescue_given_change,
+                                change*(1.-rescue_given_change)), -1)
         return torch.cat((torch.zeros_like(raw[..., :1]), raw[..., 1:]), -1).softmax(-1)
 
     @staticmethod
@@ -142,11 +159,13 @@ class PairedReturnNetwork(PlainReturnNetwork):
         return (factual_loss+active*conditional_loss).mean()
 
     @classmethod
-    def signed_gain(cls, raw, active, factual_probability=None):
+    def signed_gain(cls, raw, active, factual_probability=None, *, event_hierarchy=False):
+        if event_hierarchy and factual_probability is not None:
+            raise ValueError('Change-direction effects do not condition on factual outcome strata.')
         if factual_probability is not None:
             rescue, harm = raw[..., 1:].sigmoid().unbind(-1)
             return ((1.-factual_probability)*rescue-factual_probability*harm)*active.to(raw.dtype)
-        probabilities = cls.event_probabilities(raw)
+        probabilities = cls.event_probabilities(raw, event_hierarchy)
         return (probabilities[..., 1]-probabilities[..., 2])*active.to(raw.dtype)
 
 
@@ -322,7 +341,7 @@ class PairedReturnDecision(PlainReturnDecision):
                  conditional_objective='marginal_events', **kwargs):
         if learning_objective != 'conditional':
             raise ValueError('Paired dense returns require the conditional learning objective.')
-        if conditional_objective not in ('marginal_events', 'factual_strata', 'shared_potential', 'joint_likelihood'):
+        if conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood'):
             raise ValueError('Unknown paired dense conditional objective.')
         self.conditional_objective = conditional_objective
         if conditional_objective == 'shared_potential':
@@ -341,7 +360,8 @@ class PairedReturnDecision(PlainReturnDecision):
                 continue
             factual = raw[:, :1, 0].sigmoid()
             gain = member.signed_gain(raw, member.active_vessels(self.programs).any(-1)[None],
-                factual if self.conditional_objective in ('factual_strata', 'joint_likelihood') else None)
+                factual if self.conditional_objective in ('factual_strata', 'joint_likelihood') else None,
+                event_hierarchy=self.conditional_objective == 'event_hierarchy')
             estimates.append(factual+gain)
         # The common factual value cancels before ranking and margin checks.
         # Avoid clipping a beneficial contrast at the factual value boundary.
@@ -359,7 +379,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                      conditional_objective='marginal_events', velocity_reference='ground',
                      transfer_initialization=False, conservative_catalog_weight=0.,
                      conservative_catalog_temperature=.1, conservative_catalog_samples=64,
-                     conservative_catalog_roots=4, unique_factual_supervision=False):
+                     conservative_catalog_roots=4, unique_factual_supervision=False,
+                     root_sampling_weights=None, factual_sampling_weights=None):
     """Fit only absolute outcomes, independently of conditional-learning code.
 
     The default pools all observed state/action returns and samples them
@@ -389,9 +410,11 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         raise ValueError('Unique factual supervision must be explicitly enabled or disabled.')
     if unique_factual_supervision and conditional and conditional_objective != 'joint_likelihood':
         raise ValueError('Unique factual supervision requires the joint outcome likelihood.')
-    if (conditional_objective not in ('marginal_events', 'factual_strata', 'shared_potential', 'joint_likelihood')
+    if (conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood')
             or conditional_objective in ('factual_strata', 'joint_likelihood') and (not conditional or value_target != 'success')):
         raise ValueError('Factual-stratum dense learning requires paired binary success outcomes.')
+    if conditional_objective == 'event_hierarchy' and (not conditional or value_target != 'success'):
+        raise ValueError('Change-direction learning requires paired binary success outcomes.')
     if conditional_objective == 'joint_likelihood' and paired_difference_weight != 1.:
         raise ValueError('A joint outcome likelihood requires unit weight for its conditional factor.')
     shared_potential = conditional and conditional_objective == 'shared_potential'
@@ -441,6 +464,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
             raise ValueError('Conditional continuation must retain its paired objective.')
     if uniform_sampling and factual_bank_weight != 1.:
         raise ValueError('Uniform return regression has no separate factual loss weight.')
+    if factual_sampling_weights is not None and (factual_bank is None or not uniform_sampling):
+        raise ValueError('Factual state sampling priors require a factual bank and pooled training.')
     roots = []
     for original in data['roots']:
         used = sorted({q for q, _ in original['outcomes']})
@@ -492,7 +517,11 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
     if expected_observation_sha256 is not None and observation_sha != expected_observation_sha256:
         raise ValueError('The plain MLP must see exactly the matched observations.')
     rows = np.asarray(rows)
-    row_probability = root_sampling_probabilities(rows[:, 0], root_sampling_fraction)
+    row_probability = root_sampling_probabilities(rows[:, 0], root_sampling_fraction, root_sampling_weights)
+    root_prior = (None if root_sampling_weights is None else
+        root_sampling_probabilities(np.arange(len(roots)), 1., root_sampling_weights))
+    factual_prior = (None if factual_sampling_weights is None else
+        root_sampling_probabilities(np.arange(len(continuation[2])), 1., factual_sampling_weights))
     context = torch.as_tensor(np.asarray([r['context'] for r in roots]), dtype=torch.float32, device=device)
     controls = torch.as_tensor(np.asarray([r['effect_controls'] for r in roots]), dtype=torch.float32, device=device)
     root_ids = torch.as_tensor(rows[:, 0], dtype=torch.long, device=device)
@@ -564,11 +593,13 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                                     torch.zeros((count_factual, 2), device=device), continuation[1])), -1)
             pooled_features = torch.cat((pooled_features, factual_features))
             pooled_target = torch.cat((pooled_target, continuation[2]))
-        if row_probability is not None:
-            # Retain the observed mass of the factual-state bank. Only the
-            # distribution within the paired-root population is rebalanced.
-            pooled_probability = np.concatenate((row_probability*len(rows),
-                np.ones(len(pooled_target)-len(rows))))/len(pooled_target)
+        factual_mass = (np.ones(len(pooled_target)-len(rows)) if factual_prior is None else
+                        factual_prior*len(factual_prior))
+        if row_probability is not None or factual_prior is not None:
+            # Keep both populations' total observed mass. Positive priors
+            # change only the distribution within each measured population.
+            paired_mass = np.ones(len(rows)) if row_probability is None else row_probability*len(rows)
+            pooled_probability = np.concatenate((paired_mass, factual_mass))/len(pooled_target)
     pooled_reference = paired_factual_target = paired_active = None
     paired_target_sha256 = None
     if conditional:
@@ -601,13 +632,12 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         if len(set(rows[measured_ids, 0])) != len(roots):
             raise ValueError('Unique factual supervision requires an actual factual observation at every root.')
         factual_reference_ids = np.r_[measured_ids, np.arange(len(rows), len(pooled_target))]
-        probability = root_sampling_probabilities(rows[measured_ids, 0], root_sampling_fraction)
+        probability = root_sampling_probabilities(rows[measured_ids, 0], root_sampling_fraction, root_sampling_weights)
         if probability is None:
             probability = np.full(len(measured_ids), 1./len(measured_ids))
         # Keep the previous paired-root versus trajectory-bank mass; only
         # remove repetitions caused by unequal candidate coverage per future.
-        factual_reference_probability = np.r_[probability*len(rows),
-            np.ones(len(pooled_target)-len(rows))]/len(pooled_target)
+        factual_reference_probability = np.r_[probability*len(rows), factual_mass]/len(pooled_target)
         factual_reference_rng = np.random.default_rng(np.random.SeedSequence([seed, 840014]))
     catalog_draws = hashlib.sha256()
     if conservative_catalog_weight:
@@ -656,7 +686,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                     else:
                         factual_probability = factual_logits.sigmoid()
                         gain = net.signed_gain(raw, active,
-                            factual_probability if conditional_objective == 'factual_strata' else None)
+                            factual_probability if conditional_objective == 'factual_strata' else None,
+                            event_hierarchy=conditional_objective == 'event_hierarchy')
                         estimate = (factual_logits.sigmoid()+gain).clamp(1e-6, 1.-1e-6)
                         loss = F.binary_cross_entropy(estimate, pooled_target[index])
                         loss += F.binary_cross_entropy_with_logits(factual_logits, paired_factual_target[index])
@@ -668,7 +699,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                             harm_error = F.binary_cross_entropy_with_logits(raw[:, 2], 1.-pooled_target[index], reduction='none')
                             event_error = torch.where(paired_factual_target[index] > .5, harm_error, rescue_error)
                         else:
-                            event_error = paired_difference_loss(net.event_probabilities(raw), difference, value_target)
+                            event_error = paired_difference_loss(net.event_probabilities(raw,
+                                conditional_objective == 'event_hierarchy'), difference, value_target)
                         # All neutral and harmful futures keep their observed mass.
                         # Factual bank rows have exactly zero intervention effect.
                         loss += paired_difference_weight*(event_error*active).mean()
@@ -688,7 +720,9 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                     loss += factual_bank_weight*F.binary_cross_entropy_with_logits(
                         factual_logits, continuation[2][index])
             if conservative_catalog_weight:
-                selected = catalog_rng.integers(len(roots), size=conservative_catalog_roots)
+                selected = (catalog_rng.integers(len(roots), size=conservative_catalog_roots)
+                    if root_prior is None else
+                    catalog_rng.choice(len(roots), size=conservative_catalog_roots, p=root_prior))
                 proposed = catalog_rng.integers(len(options),
                     size=(conservative_catalog_roots, conservative_catalog_samples))
                 catalog_draws.update(selected.astype(np.int64).tobytes())
@@ -705,7 +739,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                         torch.zeros((len(selected), 2), dtype=torch.long, device=device))[:, 0].sigmoid()
                     reference = factual[:, None].expand_as(query).reshape(-1)
                     gain = net.signed_gain(raw, net.active_vessels(digits).any(-1),
-                        reference if conditional_objective in ('factual_strata', 'joint_likelihood') else None)
+                        reference if conditional_objective in ('factual_strata', 'joint_likelihood') else None,
+                        event_hierarchy=conditional_objective == 'event_hierarchy')
                     values = reference+gain
                 else:
                     values = raw.sigmoid()
@@ -744,6 +779,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
     model['successor_task_fit'] = dict(ordinary=not conditional,
         objective=('joint likelihood of factual success and same-future intervention outcome; no duplicate marginal loss'
                    if conditional_objective == 'joint_likelihood' else
+                   'absolute success and same-future change likelihood with rescue direction conditional on change'
+                   if conditional and conditional_objective == 'event_hierarchy' else
                    'absolute-outcome cross entropy plus squared same-future differences of one shared task potential'
                    if shared_potential else
                    'absolute success and same-future rescue/harm likelihood conditional on factual outcomes'
@@ -786,14 +823,20 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         paired_local_observations=int((codes > 0).sum()) if conditional else 0,
         factual_comparisons=int((codes > 0).sum()) if conditional else 0,
         paired_difference_weight=float(paired_difference_weight), paired_training_target_sha256=paired_target_sha256,
-        paired_event_difference=conditional and conditional_objective == 'marginal_events',
+        paired_event_difference=conditional and conditional_objective in ('marginal_events', 'event_hierarchy'),
         conditional_objective=conditional_objective if conditional else None, future_public_states_used=False,
         common_motion_response_features=False,
         joint_factual_calibration=False, local_reconciliation=False, local_rank_weight=0.,
         public_vessel_identity=identity_conditioned,
-        sampling=(('root-balanced pooled absolute returns' if root_sampling_fraction else 'uniform pooled absolute returns')
+        sampling=(('root-prior pooled absolute returns' if root_prior is not None else
+                   'root-balanced pooled absolute returns' if root_sampling_fraction else 'uniform pooled absolute returns')
                   if uniform_sampling else 'matched weighted observations'),
         root_sampling_fraction=root_sampling_fraction,
+        root_sampling_prior=None if root_prior is None else root_prior.tolist(),
+        root_sampling_prior_sha256=(None if root_prior is None else hashlib.sha256(root_prior.tobytes()).hexdigest()),
+        factual_sampling_prior=None if factual_prior is None else factual_prior.tolist(),
+        factual_sampling_prior_sha256=(None if factual_prior is None else
+            hashlib.sha256(factual_prior.tobytes()).hexdigest()),
         batch_size=192 if uniform_sampling else 128,
         development_future_weight=1. if uniform_sampling else data.get('development_future_weight', 1.),
         separate_factual_objective=(conditional and not shared_potential) or (not uniform_sampling and factual_bank is not None),

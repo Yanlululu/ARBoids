@@ -3093,6 +3093,19 @@ class PhysicalVesselIdentityTests(unittest.TestCase):
         for fraction in (-.1, 1.1, float('nan')):
             with self.assertRaises(ValueError):
                 root_sampling_probabilities(roots, fraction)
+        for fraction in (.5, 1.):
+            probability = root_sampling_probabilities(roots, fraction, [1., 3.])
+            self.assertTrue((probability > 0).all())
+            self.assertAlmostEqual(float(probability.sum()), 1.)
+            self.assertAlmostEqual(float(probability[roots == 73].sum()),
+                                   (1-fraction)/len(roots)+.75*fraction)
+            np.testing.assert_allclose(probability,
+                root_sampling_probabilities(roots, fraction, [10., 30.]))
+        for weights in ([0., 1.], [-1., 2.], [1., float('nan')], [1.], [[1., 2.]]):
+            with self.assertRaisesRegex(ValueError, 'Root weights'):
+                root_sampling_probabilities(roots, 1., weights)
+        with self.assertRaisesRegex(ValueError, 'Root weights'):
+            root_sampling_probabilities(roots, 0., [1., 3.])
 
     def test_identity_requires_measured_permutations_and_preserves_labels(self):
         import copy
@@ -3352,6 +3365,25 @@ class PhysicalVesselIdentityTests(unittest.TestCase):
             factual_target, torch.zeros(4, dtype=torch.bool))
         torch.testing.assert_close(no_intervention,
             torch.nn.functional.binary_cross_entropy_with_logits(factual, factual_target))
+        from local_intervention_value import paired_difference_loss
+        hierarchy = torch.tensor([[0., -3., 2.], [0., 1., -2.], [0., 0., 0.]],
+                                 dtype=torch.float64, requires_grad=True)
+        difference = torch.tensor([0., -1., 1.], dtype=torch.float64)
+        probabilities = PairedReturnNetwork.event_probabilities(hierarchy, hierarchy=True)
+        torch.testing.assert_close(probabilities.sum(-1), torch.ones(3, dtype=torch.float64))
+        expected = torch.nn.functional.binary_cross_entropy_with_logits(
+            hierarchy[:, 1], difference.abs(), reduction='none')
+        expected += difference.abs()*torch.nn.functional.binary_cross_entropy_with_logits(
+            hierarchy[:, 2], (difference > 0.).double(), reduction='none')
+        event_loss = paired_difference_loss(probabilities, difference)
+        torch.testing.assert_close(event_loss, expected)
+        event_loss.sum().backward()
+        self.assertTrue(torch.isfinite(hierarchy.grad).all())
+        active = torch.tensor([False, True, True])
+        torch.testing.assert_close(PairedReturnNetwork.signed_gain(hierarchy, active, event_hierarchy=True),
+            (probabilities[:, 1]-probabilities[:, 2])*active)
+        with self.assertRaisesRegex(ValueError, 'do not condition'):
+            PairedReturnNetwork.signed_gain(hierarchy, active, torch.ones(3), event_hierarchy=True)
 
     def test_dense_ensemble_disagreement_changes_decisions_without_changing_raw_values(self):
         from unittest.mock import patch
@@ -4033,10 +4065,36 @@ class FactualCrossfitTests(unittest.TestCase):
             selected.append(float((values-values[:, :1]).max().detach()))
         self.assertAlmostEqual(float(np.mean(selected)),
             strata['successor_task_fit']['raw_validation_diagnostics']['selected_predicted_gain'], places=6)
+        hierarchy, hierarchy_control = fit_success_intervention_pair(dict(data, isolate_factual_start=True),
+            None, None, validation_data=dict(validation, isolate_factual_start=True), factual_bank=bank,
+            updates=4, ensemble_size=2, width=4, seed=27, architecture='mlp', device='cpu',
+            network_options=dict(action_encoding='physical_delta'), conditional_objective='event_hierarchy')
+        recipe = dict(hierarchy['successor_task_value']); recipe.pop('kind')
+        learner = PairedReturnDecision(**recipe)
+        restored = PairedReturnDecision(**copy.deepcopy(recipe))
+        self.assertEqual(learner.conditional_objective, 'event_hierarchy')
+        self.assertTrue(hierarchy['successor_task_fit']['paired_event_difference'])
+        self.assertIn('change likelihood', hierarchy['successor_task_fit']['objective'])
+        for key in ('training_observation_sha256', 'training_target_sha256', 'member_updates'):
+            self.assertEqual(hierarchy['successor_task_fit'][key], hierarchy_control['successor_task_fit'][key])
+        selected = []
+        for root in validation['roots']:
+            current = torch.from_numpy(root['context'][None])
+            commands = torch.from_numpy(root['effect_controls'][None])
+            values = learner.catalog_estimates(current, commands)[1]
+            torch.testing.assert_close(values, restored.catalog_estimates(current, commands)[1], atol=0., rtol=0.)
+            selected.append(float((values-values[:, :1]).max().detach()))
+        self.assertAlmostEqual(float(np.mean(selected)),
+            hierarchy['successor_task_fit']['raw_validation_diagnostics']['selected_predicted_gain'], places=6)
+        with self.assertRaisesRegex(ValueError, 'common dense architecture'):
+            fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+                updates=2, ensemble_size=1, width=4, device='cpu', conditional_objective='event_hierarchy')
         conservative_settings = dict(factual_bank=bank, updates=4, ensemble_size=2, width=4, seed=27,
             architecture='mlp', device='cpu', conditional_objective='factual_strata',
             network_options=dict(action_encoding='physical_delta', conservative_catalog_weight=.2,
                 conservative_catalog_samples=5, conservative_catalog_roots=2,
+                root_sampling_weights=[1., 2., 3., 4.],
+                factual_sampling_weights=np.arange(1., 9.),
                 additional_candidate_options=[(2, 0, 7)]))
         conservative = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
             validation_data=dict(validation, isolate_factual_start=True), **conservative_settings)
@@ -4045,6 +4103,8 @@ class FactualCrossfitTests(unittest.TestCase):
         for before, after, baseline in zip(conservative, changed_validation, (strata, matched)):
             fit = before['successor_task_fit']
             self.assertEqual(fit['conservative_catalog_weight'], .2)
+            np.testing.assert_allclose(fit['root_sampling_prior'], [.1, .2, .3, .4])
+            np.testing.assert_allclose(fit['factual_sampling_prior'], np.arange(1., 9.)/36.)
             self.assertEqual(fit['member_training_roots'], [4, 4])
             self.assertEqual(fit['training_target_sha256'], baseline['successor_task_fit']['training_target_sha256'])
             self.assertEqual(fit['supervised_node_labels'], baseline['successor_task_fit']['supervised_node_labels'])
@@ -4056,6 +4116,21 @@ class FactualCrossfitTests(unittest.TestCase):
                 after['successor_task_fit']['raw_validation_diagnostics']['target_sha256'])
         self.assertEqual(conservative[0]['successor_task_fit']['member_conservative_training_draw_sha256'],
                          conservative[1]['successor_task_fit']['member_conservative_training_draw_sha256'])
+        self.assertEqual(conservative[0]['successor_task_fit']['root_sampling_prior_sha256'],
+                         conservative[1]['successor_task_fit']['root_sampling_prior_sha256'])
+        self.assertEqual(conservative[0]['successor_task_fit']['factual_sampling_prior_sha256'],
+                         conservative[1]['successor_task_fit']['factual_sampling_prior_sha256'])
+        with self.assertRaisesRegex(ValueError, 'factual bank and pooled training'):
+            fit_plain_return(dict(data, isolate_factual_start=True), None, updates=1,
+                             device='cpu', factual_sampling_weights=np.ones(8))
+        with self.assertRaisesRegex(ValueError, 'factual bank and pooled training'):
+            fit_plain_return(dict(data, isolate_factual_start=True), None, updates=1,
+                             device='cpu', factual_bank=bank, uniform_sampling=False,
+                             factual_sampling_weights=np.ones(8))
+        for invalid_prior in (np.ones(7), [0.]+[1.]*7, [np.nan]+[1.]*7):
+            with self.assertRaisesRegex(ValueError, 'positive finite mass'):
+                fit_plain_return(dict(data, isolate_factual_start=True), None, updates=1,
+                                 device='cpu', factual_bank=bank, factual_sampling_weights=invalid_prior)
         with self.assertRaisesRegex(ValueError, 'Conservative catalog learning'):
             fit_plain_return(dict(data, isolate_factual_start=True), None, updates=1,
                              device='cpu', conservative_catalog_weight=-1.)
@@ -4078,7 +4153,9 @@ class FactualCrossfitTests(unittest.TestCase):
             joint['successor_task_fit']['raw_validation_diagnostics']['selected_predicted_gain'], places=6)
         unique_settings = dict(factual_bank=bank, updates=2, ensemble_size=1, width=4, seed=27,
             architecture='mlp', device='cpu', conditional_objective='joint_likelihood',
-            network_options=dict(action_encoding='physical_delta', unique_factual_supervision=True))
+            network_options=dict(action_encoding='physical_delta', unique_factual_supervision=True,
+                                 root_sampling_weights=[1., 2., 3., 4.],
+                                 factual_sampling_weights=np.arange(8., 0., -1.)))
         unique = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
             validation_data=dict(validation, isolate_factual_start=True), **unique_settings)
         uneven = copy.deepcopy(data)
@@ -4092,6 +4169,21 @@ class FactualCrossfitTests(unittest.TestCase):
                          fewer_candidates[0]['successor_task_fit']['unique_factual_target_sha256'])
         self.assertNotEqual(unique[0]['successor_task_fit']['training_target_sha256'],
                             fewer_candidates[0]['successor_task_fit']['training_target_sha256'])
+        unweighted_bank = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+            validation_data=dict(validation, isolate_factual_start=True),
+            **dict(unique_settings, network_options={key: value for key, value in
+                unique_settings['network_options'].items() if key != 'factual_sampling_weights'}))
+        for weighted_model, original_model in zip(unique, unweighted_bank):
+            first = weighted_model['successor_task_fit']; original = original_model['successor_task_fit']
+            for field in ('training_observation_sha256', 'training_target_sha256', 'supervised_node_labels'):
+                self.assertEqual(first[field], original[field])
+            np.testing.assert_allclose(first['factual_sampling_prior'], np.arange(8., 0., -1.)/36.)
+            self.assertNotEqual(first['raw_training_diagnostics']['evaluated_parameter_sha256'],
+                                original['raw_training_diagnostics']['evaluated_parameter_sha256'])
+        self.assertEqual(unique[0]['successor_task_fit']['unique_factual_target_sha256'],
+                         unweighted_bank[0]['successor_task_fit']['unique_factual_target_sha256'])
+        self.assertNotEqual(unique[0]['successor_task_fit']['unique_factual_draw_sha256'],
+                            unweighted_bank[0]['successor_task_fit']['unique_factual_draw_sha256'])
         with self.assertRaisesRegex(ValueError, 'joint outcome likelihood'):
             fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
                 **dict(unique_settings, conditional_objective='factual_strata'))
