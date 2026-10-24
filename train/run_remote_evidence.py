@@ -166,7 +166,7 @@ def batched_primitive_program(actor, action):
 
 def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=False,sample_policy=False,initial_jobs=None,
                         response_tick=None,actor_override=None,collect_fleet=False,root_sample_seed=None,
-                        physical_response_tick=None):
+                        physical_response_tick=None,root_selector=None):
     """Batch deterministic policy inference, retaining each episode's RNG."""
     from envs.TADgame import TADEnv
     if physical_response_tick is not None and (not isinstance(physical_response_tick, int)
@@ -180,6 +180,8 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
     if root_sample_seed is not None and (initial_jobs is not None or sample_policy or collect_fleet
                                         or actor.successor_task_value is not None):
         raise ValueError('Decision-root sampling needs complete deterministic factual episodes without M2.')
+    if root_selector is not None and (root_sample_seed is None or not callable(root_selector)):
+        raise ValueError('Proposal-state sampling needs a factual reservoir and a public-state selector.')
     if actor.gate_period!=1 or actor.intent_strength:
         raise ValueError('Batched credit evaluation requires per-step soft-preference control.')
     results=[]
@@ -234,6 +236,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
         trajectories=[[] for _ in current] if keep_steps else None
         fleet_trajectories=[[] for _ in current] if collect_fleet else None
         sampled_roots=[None]*len(current) if root_sample_seed is not None else None
+        first_proposal=np.zeros(len(current),bool)
         root_counts=np.zeros(len(current),int)
         root_rngs=([np.random.default_rng(np.random.SeedSequence(
             [int(root_sample_seed),int(scene[0]),0 if future is None else int(future),39797]))
@@ -250,13 +253,38 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
         for step in range(400):
             if not active:break
             if sampled_roots is not None and step%5==0:
-                for i in active:
-                    if remaining[i]:continue
+                eligible_roots=[i for i in active if not remaining[i]]
+                proposals={}
+                proposal_observations={}
+                if root_selector is not None:
+                    pending=[i for i in eligible_roots if not first_proposal[i]]
+                    if pending:
+                        selected=root_selector(packets(pending),actor)
+                        selected=(selected.detach().cpu().numpy() if torch.is_tensor(selected)
+                                  else np.asarray(selected))
+                        if selected.shape!=(len(pending),) or selected.dtype!=np.bool_:
+                            raise ValueError('A public-state selector must return one Boolean per factual state.')
+                        proposals=dict(zip(pending,selected.tolist()))
+                        observed=getattr(root_selector,'last_observations',None)
+                        if observed is not None:
+                            if not isinstance(observed,dict) or any(len(value)!=len(pending) for value in observed.values()):
+                                raise ValueError('Proposal observations must match the selected factual batch.')
+                            proposal_observations={i:{key:np.asarray(value[j]).copy() for key,value in observed.items()}
+                                for j,i in enumerate(pending)}
+                for i in eligible_roots:
                     root_counts[i]+=1
-                    if root_rngs[i].integers(root_counts[i])==0:
+                    if first_proposal[i]:continue
+                    accepted=proposals.get(i,False)
+                    if accepted or root_rngs[i].integers(root_counts[i])==0:
                         sampled_roots[i]=dict(environment=copy.deepcopy(environments[i]),
                             observation=observations[i].copy(),random_state=copy.deepcopy(random_states[i]),
                             root_steps=step)
+                        if root_selector is not None:
+                            sampled_roots[i]['selection_reason']=('first_accepted_proposal' if accepted
+                                else 'uniform_eligible_factual_state')
+                            if i in proposal_observations:
+                                sampled_roots[i]['proposal_observation']=proposal_observations[i]
+                    first_proposal[i]=accepted
             controls={};fresh=[i for i in active if remaining[i]==0]
             if fresh:
                 decisions=(np.stack([initial_jobs[begin+i]['action'] for i in fresh])

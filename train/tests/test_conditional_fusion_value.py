@@ -654,6 +654,16 @@ class ConditionalFusionValueTests(unittest.TestCase):
             measured = remote.batched_credit_rows('unused', tasks, device='cpu',
                 actor_override=Actor(), response_tick=40, physical_response_tick=20, keep_steps=True)
             measured_rng = np.random.get_state()
+            uniform = remote.batched_credit_rows('unused', tasks, device='cpu',
+                actor_override=Actor(), root_sample_seed=19, keep_steps=True)
+            uniform_rng = np.random.get_state()
+            seen = []
+            def selector(public, factual_actor):
+                seen.extend(public['clock'][:, 0].tolist())
+                return public['clock'][:, 0] >= 10
+            directed = remote.batched_credit_rows('unused', tasks, device='cpu',
+                actor_override=Actor(), root_sample_seed=19, root_selector=selector, keep_steps=True)
+            directed_rng = np.random.get_state()
         np.testing.assert_equal(original_rng, measured_rng)
         for before, after, expected in zip(original, measured, (20, 7)):
             physical = after['row'].pop('physical_response')
@@ -663,6 +673,20 @@ class ConditionalFusionValueTests(unittest.TestCase):
             np.testing.assert_equal(before, after)
         self.assertEqual(measured[0]['row']['response']['steps'], 40)
         self.assertEqual(measured[1]['row']['response']['steps'], 7)
+        np.testing.assert_equal(uniform_rng, directed_rng)
+        self.assertEqual(seen, [0., 0., 5., 5., 10.])
+        for index, (before, after) in enumerate(zip(uniform, directed)):
+            sampled = before.pop('root_snapshot'); chosen = after.pop('root_snapshot')
+            np.testing.assert_equal(before, after)
+            self.assertEqual(chosen['eligible_states'], sampled['eligible_states'])
+            if index == 0:
+                self.assertEqual(chosen['root_steps'], 10)
+                self.assertEqual(chosen['selection_reason'], 'first_accepted_proposal')
+                self.assertEqual(chosen['environment'].steps, 10)
+            else:
+                self.assertEqual(chosen['selection_reason'], 'uniform_eligible_factual_state')
+                self.assertEqual(chosen['root_steps'], sampled['root_steps'])
+                np.testing.assert_equal(chosen['random_state'], sampled['random_state'])
 
     def test_generic_candidate_paths_share_task_coordinates(self):
         from mechanism_controls import generic_shared_task_features
@@ -2493,6 +2517,204 @@ class SharedTemporalProgramTests(unittest.TestCase):
 
 
 class PhysicalVesselIdentityTests(unittest.TestCase):
+    def test_proposal_roots_use_both_native_decisions_and_preserve_factual_actions(self):
+        import copy
+        import numpy as np
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from local_intervention_value import (JointTaskPotential, PlainJointReturnDecision,
+            LocalDifferenceDecision, FactualProposalRootSelector)
+        class Actor:
+            successor_task_value = None
+            def __call__(self, packet, **kwargs):
+                self.last_kwargs = kwargs
+                return action.clone(), None
+        net = JointTaskPotential(4, context_conditioned=True, motion_basis=False)
+        context = torch.zeros(3, 21); controls = torch.zeros(3, 2, 6)
+        order = torch.tensor([[1, 0]]).expand(3, -1); action = torch.zeros(3, 2, 3)
+        common = dict(width=4, states=[net.state_dict()], options=[(0, 0, 0), (1, 0, 1)],
+            motion_basis=False, intervention_budget=1, decision_period=5, isolate_factual_start=True,
+            context_conditioned=True)
+        ordinary = PlainJointReturnDecision(**common, defenders=2, gain_margin=.02)
+        paired = LocalDifferenceDecision(**common, contexts=context[:1], controls=controls[:1],
+            corrections=np.zeros((1, 2), np.float32), uncertainty=np.zeros((1, 2), np.float32),
+            observed=np.zeros((1, 2), bool), margin=.02, confidence=0., global_penalty=0.)
+        selector = FactualProposalRootSelector([paired, ordinary], ['a'*64, 'b'*64])
+        actor = Actor(); packet = dict(node=torch.zeros(3, 2, 16))
+        original = copy.deepcopy(net.state_dict())
+        pvalues = torch.tensor([[[.5, .5], [.5, .55], [.5, .51]]])
+        ovalues = torch.tensor([[.5, .55], [.5, .5], [.5, .51]])
+        with patch('conditional_fusion_value.intervention_task_context', return_value=(context, order)), \
+                patch('conditional_fusion_value.paired_effect_controls', return_value=controls), \
+                patch.object(paired, 'values', return_value=pvalues), \
+                patch.object(ordinary.models[0], 'forward_catalog', return_value=ovalues.logit()):
+            self.assertEqual(selector(packet, actor).tolist(), [True, True, False])
+            self.assertEqual(selector.last_observations['options'].tolist(),
+                [[[0, 0, 0], [1, 0, 1]], [[1, 0, 1], [0, 0, 0]], [[0, 0, 0], [0, 0, 0]]])
+            np.testing.assert_array_equal(selector.last_observations['order'], order.numpy())
+            changed = dict(packet, unobserved_terminal_outcome=torch.tensor([999., -999., 999.]))
+            self.assertEqual(selector(changed, actor).tolist(), [True, True, False])
+            for index, expected in [(0, [False, True, False]), (1, [True, False, False])]:
+                own = FactualProposalRootSelector([paired, ordinary], ['a'*64, 'b'*64],
+                    trigger_estimators=[index])
+                self.assertEqual(own(packet, actor).tolist(), expected)
+                self.assertEqual(own(changed, actor).tolist(), expected)
+                self.assertEqual(own.specification['trigger_estimators'], [index])
+                np.testing.assert_array_equal(own.last_observations['options'],
+                    selector.last_observations['options'])
+        self.assertEqual(actor.last_kwargs, dict(deterministic=True, gate_only=True))
+        torch.testing.assert_close(action, torch.zeros_like(action), rtol=0., atol=0.)
+        for learner in (paired, ordinary):
+            for key, value in learner.models[0].state_dict().items():
+                torch.testing.assert_close(value, original[key], rtol=0., atol=0.)
+        self.assertEqual(selector.specification['proposal_model_sha256'], ['a'*64, 'b'*64])
+        with self.assertRaisesRegex(ValueError, 'unchanged factual'):
+            selector(packet, SimpleNamespace(successor_task_value=ordinary))
+        with self.assertRaisesRegex(ValueError, 'actual frozen estimator hashes'):
+            FactualProposalRootSelector([ordinary], [])
+        for invalid in ([], [2], [0, 0], [True]):
+            with self.assertRaisesRegex(ValueError, 'nonempty subset'):
+                FactualProposalRootSelector([paired, ordinary], ['a'*64, 'b'*64],
+                    trigger_estimators=invalid)
+
+    def test_directed_root_resume_requires_the_same_proposal_estimators(self):
+        import copy
+        import hashlib
+        import tempfile
+        import numpy as np
+        from pathlib import Path
+        from unittest.mock import patch
+        import local_intervention_value as local
+        net = local.JointTaskPotential(4, context_conditioned=True, motion_basis=False)
+        learner = local.PlainJointReturnDecision(width=4, states=[net.state_dict()], defenders=2,
+            options=[(0, 0, 0), (1, 0, 1)], motion_basis=False, intervention_budget=1,
+            decision_period=5, isolate_factual_start=True, context_conditioned=True)
+        selector = local.FactualProposalRootSelector([learner, learner], ['a'*64, 'b'*64])
+        with tempfile.TemporaryDirectory() as directory:
+            policy = Path(directory)/'predecessor.pth'; policy.write_bytes(b'factual-source')
+            output = Path(directory)/'states.pth'
+            record = dict(scene=(71, 2, 1.), future=19, physical_steps=12,
+                contexts=np.zeros((3, 21), np.float32), controls=np.zeros((3, 2, 6), np.float32),
+                orders=np.tile(np.arange(2), (3, 1)), values=np.ones(3), remaining=np.array([12, 7, 2]),
+                root_snapshot=dict(predecessor_sha256=hashlib.sha256(policy.read_bytes()).hexdigest(),
+                    root_steps=5, selection_reason='first_accepted_proposal'))
+            settings = dict(root_sample_seed=13, inference_batch=1, inference_device='cpu',
+                root_selector=selector)
+            with patch.object(local, 'factual_trajectory_batch', return_value=[record]) as measured:
+                saved = local.collect_onpolicy_factual_roots(policy, [(record['scene'], record['future'])],
+                    output, **settings)
+                self.assertIs(measured.call_args.kwargs['root_selector'], selector)
+                self.assertTrue(saved['completed'])
+                self.assertEqual(saved['root_selection'], selector.specification)
+                self.assertEqual(saved['simulation_steps'], 12)
+                local.collect_onpolicy_factual_roots(policy, [(record['scene'], record['future'])], output, **settings)
+                self.assertEqual(measured.call_count, 1)
+                old_digest = hashlib.sha256(output.read_bytes()).hexdigest()
+                changed = copy.copy(selector); changed.specification = dict(selector.specification,
+                    proposal_model_sha256=['b'*64])
+                settings['root_selector'] = changed
+                with self.assertRaisesRegex(ValueError, 'different predecessor, tasks, sampler'):
+                    local.collect_onpolicy_factual_roots(policy, [(record['scene'], record['future'])],
+                        output, **settings)
+                self.assertEqual(measured.call_count, 1)
+                self.assertEqual(hashlib.sha256(output.read_bytes()).hexdigest(), old_digest)
+                settings['root_selector'] = local.FactualProposalRootSelector(
+                    [learner, learner], ['a'*64, 'b'*64], trigger_estimators=[0])
+                with self.assertRaisesRegex(ValueError, 'different predecessor, tasks, sampler'):
+                    local.collect_onpolicy_factual_roots(policy, [(record['scene'], record['future'])],
+                        output, **settings)
+                self.assertEqual(measured.call_count, 1)
+                self.assertEqual(hashlib.sha256(output.read_bytes()).hexdigest(), old_digest)
+
+    def test_factual_wait_discounts_elapsed_ticks_and_respects_terminal_boundaries(self):
+        from local_intervention_value import factual_wait_targets
+        immediate = torch.tensor([.08, .08, .08])
+        wait = torch.tensor([0., .2, .9])
+        elapsed = torch.tensor([5., 10., 1.])
+        live = torch.tensor([True, True, False])
+        expected = factual_wait_targets(immediate, wait, elapsed, live)
+        torch.testing.assert_close(expected, torch.tensor([.08*.995**5, .2*.995**10, 0.]))
+        self.assertLess(float(expected[0]), float(immediate[0]))
+        with self.assertRaises(ValueError):
+            factual_wait_targets(immediate, wait, elapsed, live, 1.01)
+
+    def test_waiting_uses_same_current_state_rule_for_both_estimators(self):
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import JointTaskPotential, PlainJointReturnDecision, LocalDifferenceDecision
+        class FixedWait(torch.nn.Module):
+            def __init__(self, value, observed_returns=False):
+                super().__init__(); self.value = value
+                self.margin_adjusted = not observed_returns
+            def forward(self, context, controls):
+                return context.new_full((len(context),), self.value)
+        net = JointTaskPotential(4, context_conditioned=True, motion_basis=False)
+        context = torch.zeros(1, 21); controls = torch.zeros(1, 2, 6)
+        order = torch.tensor([[1, 0]]); action = torch.zeros(1, 2, 3)
+        common = dict(width=4, states=[net.state_dict()], options=[(0, 0, 0), (1, 0, 1)],
+            motion_basis=False, intervention_budget=1, context_conditioned=True)
+        ordinary = PlainJointReturnDecision(**common, defenders=2, gain_margin=.02)
+        paired = LocalDifferenceDecision(**common, contexts=context, controls=controls,
+            corrections=np.zeros((1, 2), np.float32), uncertainty=np.zeros((1, 2), np.float32),
+            observed=np.zeros((1, 2), bool), margin=.02, confidence=0., global_penalty=0.)
+        for learner, control_key in [(ordinary, '_ordinary_return_controls'), (paired, '_local_difference_controls')]:
+            learner.record_catalog = True
+            packet = dict(node=torch.zeros(1, 2, 16), **{control_key: controls})
+            values = torch.tensor([[[.5, .55]]])
+            prediction = (patch.object(ordinary.models[0], 'forward_catalog', return_value=values[0].logit())
+                if learner is ordinary else patch.object(paired, 'values', return_value=values))
+            with prediction, patch('conditional_fusion_value.intervention_task_context', return_value=(context, order)):
+                for wait, observed, accepted in [(.04, False, False), (.02, False, True),
+                                                 (.04, True, True), (.06, True, False)]:
+                    learner.wait_value = FixedWait(wait, observed)
+                    result = learner(packet, action)
+                    direct = learner.forward_public(context, controls, order, action, torch.tensor([True]))
+                    torch.testing.assert_close(result, direct, rtol=0., atol=0.)
+                    self.assertEqual(result.shape[-1], 14 if accepted else 3)
+                    self.assertAlmostEqual(float(learner.last_catalog['wait_value'][0]), wait, places=6)
+
+    def test_factual_wait_fit_preserves_teacher_and_ignores_future_outcome_labels(self):
+        import copy
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import (JointTaskPotential, PlainJointReturnDecision,
+            factual_opportunity_transitions, fit_factual_wait_opportunity)
+        net = JointTaskPotential(4, context_conditioned=True, motion_basis=False)
+        recipe = dict(kind='plain_joint_return', width=4, states=[net.state_dict()], defenders=2,
+            options=[(0, 0, 0), (1, 0, 1)], motion_basis=False, intervention_budget=1,
+            gain_margin=.02, context_conditioned=True)
+        model = dict(successor_task_value=recipe)
+        x = np.zeros((2, 21), np.float32); x[1, -1] = 5/400
+        bank = dict(completed=True, records=[dict(contexts=x.copy(), controls=np.zeros((2, 2, 6), np.float32),
+            orders=np.tile(np.arange(2), (2, 1)), values=[0., 1.], remaining=[10, 5]) for _ in range(2)])
+        def prediction(self, context, controls, programs, timing, responses=None):
+            return torch.tensor([[.5, .6]], device=context.device).expand(len(context), -1).logit()
+        settings = dict(recipe); settings.pop('kind')
+        learner = PlainJointReturnDecision(**settings)
+        with patch.object(JointTaskPotential, 'forward_catalog', prediction):
+            original = factual_opportunity_transitions(learner, bank, 3)
+            changed = copy.deepcopy(bank)
+            for record in changed['records']:
+                record['values'] = [999., -999.]; record['remaining'] = [-8, -9]
+            altered = factual_opportunity_transitions(learner, changed, 3)
+            self.assertEqual(original['following'].tolist(), [1, -1, 3, -1])
+            self.assertEqual(original['observation_sha256'], altered['observation_sha256'])
+            torch.testing.assert_close(original['opportunity'], altered['opportunity'], rtol=0., atol=0.)
+            fitted = fit_factual_wait_opportunity(model, bank, None, updates=3, width=4, ensemble_size=2,
+                score_batch_size=3)
+        self.assertNotIn('wait_value', model['successor_task_value'])
+        for key, value in net.state_dict().items():
+            torch.testing.assert_close(value, fitted['successor_task_value']['states'][0][key], rtol=0., atol=0.)
+        restored = dict(fitted['successor_task_value']); restored.pop('kind')
+        one = PlainJointReturnDecision(**restored); two = PlainJointReturnDecision(**copy.deepcopy(restored))
+        context = torch.from_numpy(x); control = torch.zeros(2, 2, 6)
+        torch.testing.assert_close(one.wait_value(context, control), two.wait_value(context, control), rtol=0., atol=0.)
+        self.assertEqual(fitted['factual_wait_fit']['updates'], 6)
+        self.assertFalse(fitted['factual_wait_fit']['future_outcomes_used'])
+        malformed = copy.deepcopy(bank); malformed['records'][0]['contexts'][1, -1] = 10/400
+        with self.assertRaises(ValueError):
+            factual_opportunity_transitions(learner, malformed)
+
     def test_graph_return_margin_retains_a_small_predicted_gain(self):
         from unittest.mock import patch
         from local_intervention_value import JointTaskPotential, PlainJointReturnDecision
@@ -2745,6 +2967,77 @@ class PhysicalVesselIdentityTests(unittest.TestCase):
 
 
 class FactualCrossfitTests(unittest.TestCase):
+    def test_continued_fits_preserve_layout_separation_and_own_parameter_history(self):
+        import copy
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import fit_joint_potential, joint_potential_initialization
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        roots = []
+        for index in range(6):
+            context = np.full(21, .02*index, np.float32); context[[4, 12]] = 1.
+            roots.append(dict(context=context, effect_controls=controls, futures=[1, 2],
+                scene=(100+index, 2, 2.), options=[(0, 0, 0), (1, 0, 5), (10, 0, 5)],
+                outcomes={(q, f):dict(success=float((index+q+f) % 3 != 0))
+                          for q in range(3) for f in range(2)}))
+        data = dict(model={}, roots=roots, predecessor_sha256='continued-crossfit', simulation_steps=60)
+        expanded = copy.deepcopy(data)
+        expanded['roots'][0]['futures'].append(3)
+        for q in range(3): expanded['roots'][0]['outcomes'][q, 2] = dict(success=float(q == 1))
+        shared = dict(ensemble_size=3, width=4, seed=7, device='cpu', root_sampling_fraction=.5)
+        fits = {}
+        for ordinary in (False, True):
+            settings = (dict(ordinary=True, ordinary_architecture='interaction') if ordinary else
+                        dict(conditional_strata=True, factual_crossfit=True))
+            with patch('local_intervention_value.torch.save'):
+                original = fit_joint_potential(data, 'unused-continued-test.pth', updates=6, **shared, **settings)
+            before = copy.deepcopy(original['successor_task_value']['states'])
+            initialization = joint_potential_initialization(original, data)
+            with patch('local_intervention_value.torch.save'):
+                continued = fit_joint_potential(expanded, 'unused-continued-test.pth', updates=3,
+                    **shared, **settings, **initialization)
+            self.assertEqual(continued['successor_task_fit']['updates'], 3)
+            self.assertEqual(continued['successor_task_fit']['cumulative_optimizer_steps'], 9)
+            self.assertEqual(continued['successor_task_fit']['initialization_parameter_sha256'],
+                             initialization['initial_training_context']['source_parameter_sha256'])
+            self.assertNotEqual(continued['successor_task_fit']['training_observation_sha256'],
+                                original['successor_task_fit']['training_observation_sha256'])
+            self.assertTrue(any(not torch.equal(tensor, continued['successor_task_value']['states'][0][key])
+                                for key, tensor in before[0].items()))
+            for prior, after in zip(before, original['successor_task_value']['states']):
+                for key, tensor in prior.items(): torch.testing.assert_close(tensor, after[key], atol=0., rtol=0.)
+            with self.assertRaisesRegex(ValueError, 'observations do not match'):
+                joint_potential_initialization(original, expanded)
+            tampered = copy.deepcopy(initialization)
+            first_key = next(key for key, value in tampered['initial_states'][0].items() if value.is_floating_point())
+            tampered['initial_states'][0][first_key].add_(1.)
+            with self.assertRaisesRegex(ValueError, 'parameters do not match'):
+                fit_joint_potential(expanded, 'unused-continued-test.pth', updates=3,
+                                    **shared, **settings, **tampered)
+            if not ordinary:
+                changed = copy.deepcopy(expanded)
+                for index, fold in enumerate(original['successor_task_fit']['factual_crossfit_root_folds']):
+                    if fold == 0:
+                        for outcome in changed['roots'][index]['outcomes'].values(): outcome['success'] = 1.
+                with patch('local_intervention_value.torch.save'):
+                    altered = fit_joint_potential(changed, 'unused-continued-test.pth', updates=3,
+                                                 **shared, **settings, **initialization)
+                for key, tensor in continued['successor_task_value']['states'][0].items():
+                    torch.testing.assert_close(tensor, altered['successor_task_value']['states'][0][key], atol=0., rtol=0.)
+                invalid = copy.deepcopy(initialization)
+                scene = next(iter(invalid['initial_training_context']['layout_folds']))
+                invalid['initial_training_context']['layout_folds'][scene] = (
+                    invalid['initial_training_context']['layout_folds'][scene]+1) % 3
+                with self.assertRaisesRegex(ValueError, 'held-out fold'):
+                    fit_joint_potential(expanded, 'unused-continued-test.pth', updates=3,
+                                        **shared, **settings, **invalid)
+                with self.assertRaisesRegex(ValueError, 'preserve its estimator'):
+                    fit_joint_potential(expanded, 'unused-continued-test.pth', updates=3,
+                        ordinary=True, ordinary_architecture='interaction', **shared, **initialization)
+            fits[ordinary] = continued['successor_task_fit']
+        self.assertEqual(fits[False]['training_observation_sha256'], fits[True]['training_observation_sha256'])
+        self.assertEqual(fits[False]['training_target_sha256'], fits[True]['training_target_sha256'])
+
     def test_factual_calibration_ablation_retains_temporal_statistics(self):
         from local_intervention_value import JointTaskPotential, LocalDifferenceDecision
         net = JointTaskPotential(width=4, output_width=3)

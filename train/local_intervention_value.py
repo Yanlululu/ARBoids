@@ -1586,6 +1586,214 @@ def reconcile_root(root, prior, edge_weight=4., ridge=.5, effective_future_confi
         repair_lower=repair_lower.tolist(), damage_upper=damage_upper.tolist())
 
 
+class FactualWaitHead(nn.Module):
+    def __init__(self, input_width, width=64):
+        super().__init__()
+        self.network = nn.Sequential(nn.Linear(input_width, width), nn.SiLU(),
+            nn.Linear(width, width), nn.SiLU(), nn.Linear(width, 1))
+        nn.init.zeros_(self.network[-1].weight)
+        nn.init.constant_(self.network[-1].bias, -4.6)
+
+    def forward(self, features):
+        return self.network(features).squeeze(-1).sigmoid()
+
+
+class ObservedContinuationHead(nn.Module):
+    """Two terminal returns under factual and deferred-policy continuations."""
+    def __init__(self, input_width, width=64):
+        super().__init__()
+        self.network = nn.Sequential(nn.Linear(input_width, width), nn.SiLU(),
+            nn.Linear(width, width), nn.SiLU(), nn.Linear(width, 2))
+        nn.init.zeros_(self.network[-1].weight)
+        nn.init.zeros_(self.network[-1].bias)
+
+    def forward(self, features):
+        return self.network(features).sigmoid()
+
+
+class FactualWaitValue(nn.Module):
+    """Value of preserving the intervention opportunity under factual feedback.
+
+    Deployment uses only the current public state and current source, rule and
+    factual commands. Recorded later states enter the training transitions only.
+    """
+    def __init__(self, input_width, width, states, mean, scale, observed_returns=False):
+        super().__init__()
+        if not states:
+            raise ValueError('A waiting value requires fitted model states.')
+        mean = torch.as_tensor(mean, dtype=torch.float32)
+        scale = torch.as_tensor(scale, dtype=torch.float32)
+        if (mean.shape != (input_width,) or scale.shape != mean.shape
+                or not torch.isfinite(mean).all() or not torch.isfinite(scale).all()
+                or (scale <= 0).any()):
+            raise ValueError('Waiting-state normalization must be finite and positive.')
+        self.register_buffer('mean', mean)
+        self.register_buffer('scale', scale)
+        self.observed_returns = bool(observed_returns)
+        # A measured task-return difference contains no artificial margin cost.
+        # The decision margin remains the separate current-intervention gate.
+        self.margin_adjusted = not self.observed_returns
+        head_type = ObservedContinuationHead if self.observed_returns else FactualWaitHead
+        self.heads = nn.ModuleList([head_type(input_width, width) for _ in states])
+        for head, state in zip(self.heads, states):
+            head.load_state_dict(state)
+
+    def forward(self, context, controls):
+        features = (state_features(context, controls)-self.mean)/self.scale
+        values = torch.stack([head(features) for head in self.heads]).mean(0)
+        return values[:, 1]-values[:, 0] if self.observed_returns else values
+
+
+def factual_wait_targets(next_opportunity, next_wait, elapsed_ticks, live, gamma=.995):
+    """One factual continuation step, with both exercise values net of cost."""
+    if not 0. < gamma <= 1.:
+        raise ValueError('The waiting discount must lie in (0, 1].')
+    return gamma**elapsed_ticks*torch.maximum(next_opportunity, next_wait)*live
+
+
+@torch.no_grad()
+def factual_opportunity_transitions(learner, factual_bank, batch_size=16):
+    """Score every recorded factual state without reading its outcome labels."""
+    from conditional_fusion_value import append_vessel_identity
+    if not factual_bank.get('completed') or not factual_bank.get('records'):
+        raise ValueError('Waiting needs complete measured factual trajectories.')
+    if learner.wait_value is not None:
+        raise ValueError('Fit waiting against a frozen intervention value without a waiting module.')
+    if not isinstance(batch_size, int) or batch_size < 1:
+        raise ValueError('Opportunity scoring needs a positive batch size.')
+    contexts = []; controls = []; orders = []; following = []; ticks = []; episodes = []
+    for episode, record in enumerate(factual_bank['records']):
+        x = np.asarray(record['contexts'], np.float32)
+        u = np.asarray(record['controls'], np.float32)
+        order = np.asarray(record['orders'], np.int64)
+        n = u.shape[1] if u.ndim == 3 else 0
+        if (not len(x) or x.shape != (len(x), 8*n+5) or u.shape != (len(x), n, 6)
+                or order.shape != (len(x), n) or not np.isfinite(x).all() or not np.isfinite(u).all()
+                or not np.array_equal(np.sort(order, axis=-1), np.broadcast_to(np.arange(n), order.shape))):
+            raise ValueError('Waiting transitions require ordered public states and their actual commands.')
+        clock = np.rint(400*x[:, -1]).astype(np.int64)
+        if (not np.allclose(400*x[:, -1], clock, atol=1e-4, rtol=0.)
+                or np.any(clock % learner.decision_period)
+                or np.any(np.diff(clock) != learner.decision_period)):
+            raise ValueError('Waiting transitions must retain consecutive factual decision times.')
+        start = len(following)
+        following.extend(list(range(start+1, start+len(x)))+[-1])
+        ticks.extend(list(np.diff(clock))+[learner.decision_period])
+        episodes.extend([episode]*len(x))
+        contexts.append(x); controls.append(u); orders.append(order)
+    context = torch.from_numpy(np.concatenate(contexts))
+    control = torch.from_numpy(np.concatenate(controls))
+    order = torch.from_numpy(np.concatenate(orders))
+    if getattr(learner.models[0], 'identity_conditioned', False):
+        context = append_vessel_identity(context, order)
+    record_catalog = learner.record_catalog
+    learner.record_catalog = True
+    scores = []
+    try:
+        for start in range(0, len(context), batch_size):
+            stop = min(start+batch_size, len(context)); size = stop-start
+            learner.forward_public(context[start:stop], control[start:stop], order[start:stop],
+                torch.zeros((size, control.shape[1], 3)), torch.ones(size, dtype=torch.bool))
+            catalog = learner.last_catalog
+            if catalog is None or not torch.isfinite(catalog['score']).all():
+                raise ValueError('A factual state has no finite deployed catalog scores.')
+            scores.append(catalog['score'].amax(-1))
+            if stop % (64*batch_size) == 0 or stop == len(context):
+                print(dict(phase='factual_opportunity_scoring', ordinary=learner.ordinary,
+                    states=stop, total=len(context)), flush=True)
+    finally:
+        learner.record_catalog = record_catalog
+        learner.last_catalog = None
+    margin = learner.gain_margin if isinstance(learner, PlainJointReturnDecision) else learner.margin
+    opportunity = (torch.cat(scores)-margin).clamp(0., 1.)
+    features = state_features(context, control)
+    following = torch.tensor(following, dtype=torch.long)
+    ticks = torch.tensor(ticks, dtype=torch.float32)
+    episodes = torch.tensor(episodes, dtype=torch.long)
+    digest = hashlib.sha256()
+    for value in (features, following, ticks, episodes):
+        digest.update(value.contiguous().numpy().tobytes())
+    return dict(features=features, following=following, elapsed_ticks=ticks, episodes=episodes,
+        opportunity=opportunity, observation_sha256=digest.hexdigest(), margin=float(margin),
+        opportunities_are_model_estimates=True, future_outcome_labels_used=False)
+
+
+@torch.enable_grad()
+def fit_factual_wait_opportunity(model, factual_bank, output, *, updates=3000, width=64,
+        ensemble_size=3, seed=42, device='cpu', score_device='cpu', score_batch_size=16, gamma=.995):
+    """Fit matched stopping heads; the underlying intervention values stay frozen."""
+    if updates < 1 or ensemble_size < 1 or width < 1:
+        raise ValueError('Waiting fitting requires positive capacity and update counts.')
+    if not 0. < gamma <= 1.:
+        raise ValueError('The waiting discount must lie in (0, 1].')
+    recipe = copy.deepcopy(model['successor_task_value'])
+    kind = recipe.pop('kind'); recipe['inference_device'] = score_device
+    if recipe.get('wait_value') is not None:
+        raise ValueError('Use an intervention-only predecessor for waiting fitting.')
+    if recipe.get('intervention_budget') != 1 or recipe.get('commit_factual', False):
+        raise ValueError('Finite waiting fitting requires one unspent intervention opportunity.')
+    if kind == 'plain_joint_return':
+        learner = PlainJointReturnDecision(**recipe).eval()
+    elif kind == 'local_difference_joint' and not recipe.get('ordinary', False):
+        learner = LocalDifferenceDecision(**recipe).eval()
+    else:
+        raise ValueError('Unknown matched intervention estimator for waiting fitting.')
+    transitions = factual_opportunity_transitions(learner, factual_bank, score_batch_size)
+    del learner
+    features = transitions['features'].to(device)
+    mean = features.mean(0); scale = features.std(0, unbiased=False).clamp_min(.05)
+    features = (features-mean)/scale
+    opportunity = transitions['opportunity'].to(device)
+    following = transitions['following'].to(device)
+    live = following >= 0; following = following.clamp_min(0)
+    elapsed = transitions['elapsed_ticks'].to(device)
+    rng = np.random.default_rng(seed+1731)
+    torch.manual_seed(seed+1731)
+    heads = nn.ModuleList([FactualWaitHead(features.shape[1], width).to(device) for _ in range(ensemble_size)])
+    targets = copy.deepcopy(heads).requires_grad_(False)
+    optimizer = torch.optim.AdamW(heads.parameters(), lr=3e-4, weight_decay=.01)
+    for update in range(updates):
+        indices = torch.as_tensor(rng.integers(len(features), size=128), device=device)
+        next_ids = following[indices]
+        with torch.no_grad():
+            future = torch.stack([head(features[next_ids]) for head in targets]).mean(0)
+            expected = factual_wait_targets(opportunity[next_ids], future, elapsed[indices], live[indices], gamma)
+        loss = sum(F.mse_loss(head(features[indices]), expected) for head in heads)
+        optimizer.zero_grad(set_to_none=True); loss.backward()
+        nn.utils.clip_grad_norm_(heads.parameters(), 2.); optimizer.step()
+        with torch.no_grad():
+            for destination, source in zip(targets.parameters(), heads.parameters()):
+                destination.lerp_(source, .01)
+        if (update+1) % 1000 == 0 or update+1 == updates:
+            print(dict(phase='factual_wait_fit', ordinary=kind == 'plain_joint_return',
+                updates_per_member=update+1, members=ensemble_size, loss=float(loss.detach())), flush=True)
+    learned = dict(input_width=features.shape[1], width=width,
+        states=[{key: value.detach().cpu() for key, value in head.state_dict().items()} for head in heads],
+        mean=mean.cpu(), scale=scale.cpu())
+    with torch.no_grad():
+        wait = torch.stack([head(features) for head in heads]).mean(0)
+        target = factual_wait_targets(opportunity[following], wait[following], elapsed, live, gamma)
+        diagnostics = dict(training_bellman_rmse=float((wait-target).square().mean().sqrt()),
+            predicted_wait_mean=float(wait.mean()), immediate_opportunity_mean=float(opportunity.mean()),
+            predicted_exercise_fraction=float((opportunity>wait).float().mean()))
+    result = copy.deepcopy(model)
+    result['successor_task_value']['wait_value'] = learned
+    result['factual_wait_fit'] = dict(seed=seed, width=width, ensemble_members=ensemble_size,
+        updates_per_member=updates, updates=updates*ensemble_size,
+        parameters_per_member=sum(parameter.numel() for parameter in heads[0].parameters()),
+        factual_trajectories=len(factual_bank['records']), factual_states=len(features),
+        training_observation_sha256=transitions['observation_sha256'],
+        training_opportunity_sha256=hashlib.sha256(transitions['opportunity'].numpy().tobytes()).hexdigest(),
+        intervention_values_updated=False, future_outcomes_used=False,
+        future_public_states_used_only_for_training=True, gamma_per_control_tick=gamma,
+        decision_margin=transitions['margin'], score_device=score_device, score_batch_size=score_batch_size,
+        target='discount by actual elapsed control ticks; maximum of next net intervention score and learned wait',
+        terminal_continuation=0., **diagnostics)
+    if output is not None:
+        torch.save(result, output)
+    return result
+
+
 class PlainJointReturnDecision(nn.Module):
     """Absolute-return argmax over the shared complete intervention catalog.
 
@@ -1598,7 +1806,7 @@ class PlainJointReturnDecision(nn.Module):
                  inference_device=None, residual_potential=False, finite_motion_basis=False, dual_motion_basis=False,
                  identity_conditioned=False, gain_margin=0., intervention_budget=0, isolate_factual_start=False,
                  response_conditioned_value=False, physics_residual_response=False, shared_factual_response=False,
-                 shared_successor_value=False, feedback_relative_hold=False):
+                 shared_successor_value=False, feedback_relative_hold=False, wait_value=None):
         super().__init__()
         if not np.isfinite(gain_margin) or not 0. <= gain_margin <= 1.:
             raise ValueError('The ordinary graph-return margin must lie between zero and one.')
@@ -1629,6 +1837,9 @@ class PlainJointReturnDecision(nn.Module):
         self.prior = None
         self.ordinary = True
         self.record_catalog = False; self.last_catalog = None
+        if wait_value is not None and intervention_budget != 1:
+            raise ValueError('A fitted waiting value requires a single intervention budget.')
+        self.wait_value = None if wait_value is None else FactualWaitValue(**wait_value)
 
     def eligible(self, packet):
         eligible = (packet['node'][:, 0, 15]*400.).round().long() % self.decision_period == 0
@@ -1650,6 +1861,16 @@ class PlainJointReturnDecision(nn.Module):
         eligible = self.eligible(packet)
         if not bool(eligible.any()):
             return action
+        context, order = intervention_task_context(packet, True, True)
+        if getattr(self.models[0], 'identity_conditioned', False):
+            from conditional_fusion_value import append_vessel_identity
+            context = append_vessel_identity(context, order)
+        controls = packet['_ordinary_return_controls'].gather(1, order[..., None].expand(-1, -1, 6))
+        return self.forward_public(context, controls, order, action, eligible)
+
+    @torch.no_grad()
+    def forward_public(self, context, controls, order, action, eligible):
+        """Evaluate the same decision from already ordered public measurements."""
         return_device = action.device
         if self.inference_device is not None and self.options.device != torch.device(self.inference_device):
             if str(self.inference_device).startswith('cuda'):
@@ -1657,13 +1878,8 @@ class PlainJointReturnDecision(nn.Module):
                 torch.use_deterministic_algorithms(True)
                 torch.backends.cuda.matmul.allow_tf32 = False
             self.to(self.inference_device)
-        context, order = intervention_task_context(packet, True, True)
-        if getattr(self.models[0], 'identity_conditioned', False):
-            from conditional_fusion_value import append_vessel_identity
-            context = append_vessel_identity(context, order)
         if order.shape[1] != self.programs.shape[1]:
             raise ValueError('The return estimator and deployed fleet must have the same size.')
-        controls = packet['_ordinary_return_controls'].gather(1, order[..., None].expand(-1, -1, 6))
         context = context.to(self.options.device); controls = controls.to(self.options.device)
         order = order.to(self.options.device); action = action.to(self.options.device)
         eligible = eligible.to(self.options.device)
@@ -1680,6 +1896,13 @@ class PlainJointReturnDecision(nn.Module):
         if self.gain_margin:
             gain = values.gather(1, choice[:, None]).squeeze(1)-values[:, 0]
             accept &= gain > self.gain_margin
+        if self.wait_value is not None:
+            wait_margin = self.gain_margin if getattr(self.wait_value, 'margin_adjusted', True) else 0.
+            immediate = values.gather(1, choice[:, None]).squeeze(1)-values[:, 0]-wait_margin
+            continuation = self.wait_value(context, controls)
+            accept &= immediate > continuation
+            if self.record_catalog:
+                self.last_catalog['wait_value'] = continuation.detach().cpu()
         if not bool(accept.any()):
             return action.to(return_device)
         preference = self.models[0].coefficients[self.programs[choice]]
@@ -1826,7 +2049,8 @@ class LocalDifferenceDecision(nn.Module):
                  identity_conditioned=False, factual_probability_calibration=True,
                  paired_response_encoding=False, aligned_response_contrast=False, paired_event_difference=False,
                  isolate_factual_start=False, response_conditioned_value=False, physics_residual_response=False,
-                 shared_factual_response=False, shared_successor_value=False, feedback_relative_hold=False):
+                 shared_factual_response=False, shared_successor_value=False, feedback_relative_hold=False,
+                 wait_value=None):
         super().__init__()
         self.conditional_strata = conditional_strata
         self.paired_event_difference = paired_event_difference
@@ -1869,6 +2093,9 @@ class LocalDifferenceDecision(nn.Module):
         self.intervention_budget = intervention_budget; self.prior = None
         self.record_decisions = False; self.last_decision = None
         self.record_catalog = False; self.last_catalog = None
+        if wait_value is not None and (intervention_budget != 1 or commit_factual or fleet_transfer is not None):
+            raise ValueError('A fitted waiting value requires one opportunity in its fitted fleet without terminal commitment.')
+        self.wait_value = None if wait_value is None else FactualWaitValue(**wait_value)
         self.decision_mode = decision_mode
         self.project_task_value = project_task_value
         self.commit_factual = commit_factual
@@ -2329,6 +2556,20 @@ class LocalDifferenceDecision(nn.Module):
         eligible = self.eligible(packet)
         if not bool(eligible.any()):
             return action
+        context, order = intervention_task_context(packet, True, True)
+        if getattr(self.models[0], 'identity_conditioned', False):
+            from conditional_fusion_value import append_vessel_identity
+            context = append_vessel_identity(context, order)
+        controls = packet['_local_difference_controls'].gather(1, order[..., None].expand(-1, -1, 6))
+        return self.forward_public(context, controls, order, action, eligible)
+
+    @torch.no_grad()
+    def forward_public(self, context, controls, order, action, eligible):
+        """Keep recorded-state fitting identical to the deployed catalog query."""
+        if self.record_decisions:
+            self.last_decision = None
+        if self.record_catalog:
+            self.last_catalog = None
         return_device = action.device
         if self.inference_device is not None and self.options.device != torch.device(self.inference_device):
             if torch.device(self.inference_device).type == 'cuda':
@@ -2336,14 +2577,9 @@ class LocalDifferenceDecision(nn.Module):
                 torch.use_deterministic_algorithms(True)
                 torch.backends.cuda.matmul.allow_tf32 = False
             self.to(self.inference_device)
-        context, order = intervention_task_context(packet, True, True)
-        if getattr(self.models[0], 'identity_conditioned', False):
-            from conditional_fusion_value import append_vessel_identity
-            context = append_vessel_identity(context, order)
         b, n = order.shape
         if n != self.programs.shape[1] and self.fleet_transfer is None:
             raise ValueError('Fit a fleet-compatible representation before claiming cross-fleet results.')
-        controls = packet['_local_difference_controls'].gather(1, order[..., None].expand(-1, -1, 6))
         if context.device != self.options.device:
             context = context.to(self.options.device); controls = controls.to(self.options.device)
             order = order.to(self.options.device); eligible = eligible.to(self.options.device)
@@ -2489,12 +2725,23 @@ class LocalDifferenceDecision(nn.Module):
             # not a commitment to suppress every decision until that time.
             # Both estimators reconsider it at the next decision period.
             accept &= self.options[choice, 1] == 0
+        wait = None
+        if self.wait_value is not None:
+            wait_margin = self.margin if getattr(self.wait_value, 'margin_adjusted', True) else 0.
+            if self.ordinary:
+                immediate = score.gather(1, choice[:, None]).flatten()-score[:, 0]-wait_margin
+            else:
+                immediate = score.gather(1, choice[:, None]).flatten()-wait_margin
+            wait = self.wait_value(context, controls)
+            accept &= immediate > wait
         if self.record_catalog:
             reference = estimates[:, :, 0].mean(0)
             predicted = (estimates.mean(0)-reference[:, None]) if self.ordinary else corrected
             self.last_catalog = dict(options=self.options.detach().cpu(),
                 factual_value=reference.detach().cpu(), predicted_gain=predicted.detach().cpu(),
                 score=score.detach().cpu())
+            if wait is not None:
+                self.last_catalog['wait_value'] = wait.detach().cpu()
         if self.record_decisions:
             reference = estimates[:, :, 0].mean(0)
             predicted = (estimates.mean(0)-reference[:, None]) if self.ordinary else corrected
@@ -2505,6 +2752,8 @@ class LocalDifferenceDecision(nn.Module):
                 predicted_gain=torch.where(accept, chosen_gain, torch.zeros_like(chosen_gain)).detach().cpu(),
                 candidate_gain=chosen_gain.detach().cpu(),
                 score=score.gather(1, choice[:, None]).flatten().detach().cpu())
+            if wait is not None:
+                self.last_decision['wait_value'] = wait.detach().cpu()
         if self.ordinary:
             commit = eligible & (choice == 0) & self.commit_factual
         else:
@@ -2525,7 +2774,7 @@ class LocalDifferenceDecision(nn.Module):
         # Retain the explicit terminal-commit option for historical recipes.
         # Current rolling recipes leave commit_factual false and reconsider
         # both factual and deferred alternatives at later observations.
-        tick = packet['node'][:, 0, 15].to(action.device)*400.
+        tick = context[:, -1].to(action.device)*400.
         remaining = (400-tick.round()).clamp_min(1.)[:, None, None]*one
         committed = torch.cat((action[..., :3], free, remaining, 2*free,
             torch.zeros_like(action[..., :2]), remaining, free.expand(-1, -1, 2),
@@ -2550,6 +2799,78 @@ def conservative_catalog_loss(proposals, observed_mean, temperature=.1):
     return temperature*(torch.logsumexp(proposals/temperature, -1)-np.log(proposals.shape[1]))-observed_mean
 
 
+def _joint_parameter_digest(states):
+    digest = hashlib.sha256()
+    for state in states:
+        for key, value in sorted(state.items()):
+            digest.update(key.encode())
+            digest.update(value.detach().cpu().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def joint_potential_initialization(model, data, factual_bank=None):
+    """Verify a prior fit and preserve its layout separation when continuing it."""
+    fit = model['successor_task_fit']; recipe = model['successor_task_value']
+    ordinary = bool(fit['ordinary'])
+    expected_kind = 'plain_joint_return' if ordinary else 'local_difference_joint'
+    if recipe['kind'] != expected_kind or fit['predecessor_sha256'] != data['predecessor_sha256']:
+        raise ValueError('Continued learning requires the same estimator and frozen predecessor.')
+    if factual_bank is not None and factual_bank['predecessor_sha256'] != data['predecessor_sha256']:
+        raise ValueError('Continued factual data require the same frozen predecessor.')
+    roots = [observed_programs(root) for root in data['roots']]
+    rows = learning_records(dict(data, roots=roots))[0]
+    digest = hashlib.sha256()
+    for root in roots:
+        digest.update(np.asarray(root['context'], np.float32).tobytes())
+        digest.update(np.asarray(root['effect_controls'], np.float32).tobytes())
+        digest.update(np.asarray(root['options'], np.int64).tobytes())
+        digest.update(np.asarray(root.get('future_weights', np.ones(len(root['futures']))), np.float32).tobytes())
+        digest.update(np.asarray([(q, f, item['success']) for (q, f), item in
+                                  sorted(root['outcomes'].items())], np.float64).tobytes())
+    bank_values = None
+    if factual_bank is not None:
+        arrays = [np.concatenate([record[key] for record in factual_bank['records']]).astype(np.float32)
+                  for key in ('contexts', 'controls', 'values', 'remaining')]
+        for array in arrays: digest.update(array.tobytes())
+        bank_values = (discounted_task_values(arrays[2], arrays[3]).astype(np.float32)
+                       if fit['value_target'] == 'discounted_return' else arrays[2])
+    if digest.hexdigest() != fit['training_observation_sha256']:
+        raise ValueError('Initialization observations do not match the original fit.')
+    if fit['value_target'] != 'success':
+        measured = [measured_root_values(root, fit['value_target']) for root in roots]
+        rows[:, 6] = [measured[int(row[0])][int(row[1]), int(row[2])] for row in rows]
+    target_digest = hashlib.sha256(np.asarray(rows[:, 6], np.float32).tobytes())
+    if bank_values is not None: target_digest.update(bank_values.tobytes())
+    if target_digest.hexdigest() != fit['training_target_sha256']:
+        raise ValueError('Initialization return labels do not match the original fit.')
+    if fit.get('response_label_sha256') is not None:
+        ids, targets = measured_response_records(roots, rows)
+        if hashlib.sha256(ids.tobytes()+targets.tobytes()).hexdigest() != fit['response_label_sha256']:
+            raise ValueError('Initialization physical responses do not match the original fit.')
+    if fit.get('factual_response_label_sha256') is not None:
+        ids, targets = measured_factual_response_records(factual_bank)
+        if hashlib.sha256(ids.tobytes()+targets.tobytes()).hexdigest() != fit['factual_response_label_sha256']:
+            raise ValueError('Initialization factual responses do not match the original fit.')
+    states = copy.deepcopy(recipe['states']); members = len(states)
+    folds = None
+    if fit.get('factual_crossfit', False):
+        root_folds, bank_folds, folds = factual_crossfit_groups(roots, factual_bank, members, fit['seed'])
+        if (root_folds.tolist() != fit['factual_crossfit_root_folds']
+                or bank_folds.tolist() != fit['factual_crossfit_trajectory_folds']):
+            raise ValueError('Initialization layout folds do not match the original fit.')
+    return dict(initial_states=states, initial_training_context=dict(
+        ordinary=ordinary, width=fit['width'], seed=fit['seed'], ensemble_size=members,
+        predecessor_sha256=fit['predecessor_sha256'], value_target=fit['value_target'],
+        isolate_factual_start=bool(fit.get('isolate_factual_start', False)),
+        feedback_relative_hold=bool(fit.get('feedback_relative_hold', False)),
+        factual_crossfit=bool(fit.get('factual_crossfit', False)), layout_folds=folds,
+        source_parameter_sha256=_joint_parameter_digest(states),
+        source_training_observation_sha256=fit['training_observation_sha256'],
+        source_training_target_sha256=fit['training_target_sha256'],
+        source_updates=fit['updates'],
+        source_total_updates=fit.get('cumulative_optimizer_steps', fit['updates'])))
+
+
 def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble_size=3, width=64,
                         edge_weight=4., anchor_weight=2., seed=42, device='cuda:0', bandwidth=.06,
                         margin=.02, confidence=.5, global_penalty=.2, peer_conditioned=True,
@@ -2570,7 +2891,7 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
                         value_target='success', factual_response_supervision=False, shared_factual_response=False,
                         shared_successor_value=False, conservative_catalog_weight=0.,
                         conservative_catalog_temperature=.1, conservative_catalog_samples=64,
-                        conservative_catalog_roots=4):
+                        conservative_catalog_roots=4, initial_training_context=None):
     from plain_return import root_sampling_probabilities
     if value_target not in ('success', 'discounted_return'):
         raise ValueError('Choose measured success or discounted_return as the value target.')
@@ -2606,15 +2927,27 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         raise ValueError('Measured-response supervision requires the interaction-return comparator.')
     if dual_motion_basis and not finite_motion_basis:
         raise ValueError('The dual motion basis requires finite motion features.')
-    if initial_states is not None and ordinary:
+    if initial_training_context is not None:
+        expected = dict(ordinary=ordinary, width=width, seed=seed, ensemble_size=ensemble_size,
+            predecessor_sha256=data.get('predecessor_sha256'), value_target=value_target,
+            isolate_factual_start=bool(data.get('isolate_factual_start', False)),
+            feedback_relative_hold=bool(data.get('feedback_relative_hold', False)),
+            factual_crossfit=factual_crossfit)
+        if initial_states is None or any(initial_training_context.get(key) != value for key, value in expected.items()):
+            raise ValueError('Continued learning must preserve its estimator, execution semantics and layout grouping.')
+        if (not isinstance(initial_training_context.get('source_total_updates'), int)
+                or initial_training_context['source_total_updates'] < 0):
+            raise ValueError('Continued learning requires the measured prior optimizer budget.')
+    if initial_states is not None and ordinary and (ordinary_architecture != 'interaction'
+                                                    or initial_training_context is None):
         raise ValueError('Ordinary return learning cannot inherit conditional parameters.')
     if updates < 0 or (updates == 0 and initial_states is None):
         raise ValueError('Calibration without optimizer updates requires a fitted parameter prior.')
     if initial_states is not None and len(initial_states) != ensemble_size:
         raise ValueError('Warm initialization must provide every ensemble member.')
     if factual_crossfit and (ordinary or not conditional_strata or ensemble_size < 2
-                            or initial_states is not None):
-        raise ValueError('Factual cross-fitting requires fresh conditional-stratum ensemble members.')
+                            or initial_states is not None and initial_training_context is None):
+        raise ValueError('Factual cross-fitting requires fresh members or verified layout-preserving initialization.')
     if factual_calibration_kind not in ('probability', 'logit'):
         raise ValueError('Unknown factual probability calibration map.')
     if paired_response_encoding and (ordinary or not conditional_strata):
@@ -2640,12 +2973,10 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         raise ValueError('Learning snapshots need positive total budgets shared equally across ensemble members.')
     initialization_sha256 = None
     if initial_states is not None:
-        initialization = hashlib.sha256()
-        for state in initial_states:
-            for key, value in sorted(state.items()):
-                initialization.update(key.encode())
-                initialization.update(value.detach().cpu().numpy().tobytes())
-        initialization_sha256 = initialization.hexdigest()
+        initialization_sha256 = _joint_parameter_digest(initial_states)
+        if (initial_training_context is not None
+                and initialization_sha256 != initial_training_context['source_parameter_sha256']):
+            raise ValueError('Initialization parameters do not match their verified training context.')
     if ordinary_architecture not in ('mlp', 'interaction'):
         raise ValueError('Choose the plain MLP or the explicit interaction-return comparator.')
     if ordinary and ordinary_architecture == 'mlp':
@@ -2674,6 +3005,10 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
     root_folds = bank_folds = layout_folds = None
     if factual_crossfit:
         root_folds, bank_folds, layout_folds = factual_crossfit_groups(roots, factual_bank, ensemble_size, seed)
+        if initial_training_context is not None:
+            previous_folds = initial_training_context.get('layout_folds')
+            if not previous_folds or any(layout_folds.get(scene) != fold for scene, fold in previous_folds.items()):
+                raise ValueError('Continued learning would move a previously trained layout into its held-out fold.')
     def population_probability(indices):
         return root_sampling_probabilities(rows[indices, 0], root_sampling_fraction) if len(indices) else None
     response_ids = response_targets = None
@@ -3436,6 +3771,9 @@ def fit_joint_potential(data, output, *, ordinary=False, updates=24000, ensemble
         probability_corrected_local_sampling=balanced_local_sampling and not ordinary,
         learning_rate_schedule=f'cosine {learning_rate:g} to {learning_rate/10.:g} over each member budget',
         initialization_parameter_sha256=initialization_sha256,
+        initialization_training_context=copy.deepcopy(initial_training_context),
+        cumulative_optimizer_steps=(updates if initial_states is None else
+            initial_training_context['source_total_updates']+updates if initial_training_context is not None else None),
         frozen_parameter_calibration=updates == 0,
         effective_future_confidence=effective_future_confidence,
         additional_candidate_catalog_size=len(extra_options-{(0, 0, 0)}),
@@ -4146,7 +4484,82 @@ def factual_trajectory_states(task):
         scene=scene, future=future, physical_steps=elapsed)
 
 
-def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None):
+class FactualProposalRootSelector:
+    """Find the first native intervention proposal without applying it to the facts."""
+    def __init__(self, learners, model_sha256, *, trigger_estimators=None):
+        self.learners = list(learners)
+        hashes = list(model_sha256)
+        if (not self.learners or len(hashes) != len(self.learners) or
+                any(not isinstance(value, str) or len(value) != 64 or
+                    any(character not in '0123456789abcdef' for character in value) for value in hashes)):
+            raise ValueError('Proposal roots require their actual frozen estimator hashes.')
+        triggers = tuple(range(len(self.learners))) if trigger_estimators is None else tuple(trigger_estimators)
+        if (not triggers or len(set(triggers)) != len(triggers) or
+                any(type(index) is not int or not 0 <= index < len(self.learners) for index in triggers)):
+            raise ValueError('Proposal triggers must name a nonempty subset of the observed estimators.')
+        self.trigger_estimators = triggers
+        for learner in self.learners:
+            if (not isinstance(learner, (LocalDifferenceDecision, PlainJointReturnDecision)) or
+                    learner.intervention_budget != 1 or learner.decision_period != 5 or
+                    not learner.isolate_factual_start or learner.feedback_relative_hold or
+                    getattr(learner, 'fleet_transfer', None) is not None):
+                raise ValueError('Proposal roots require the matched native single-vessel decision rules.')
+            if not torch.equal(learner.options.cpu(), self.learners[0].options.cpu()):
+                raise ValueError('The proposal estimators must share the complete candidate catalog.')
+            learner.eval()
+        self.specification = dict(kind='first_accepted_proposal_else_uniform',
+            proposal_model_sha256=hashes, decision_period=5,
+            selection_inputs='current public state and factual commands',
+            acceptance='native decision including confidence, margin and any waiting value',
+            fallback='uniform eligible factual state when every proposal is declined',
+            common_for_all_estimators=True)
+        if set(triggers) != set(range(len(self.learners))):
+            self.specification['trigger_estimators'] = sorted(triggers)
+        self.last_observations = None
+
+    @torch.no_grad()
+    def __call__(self, packet, actor):
+        from conditional_fusion_value import (intervention_task_context, paired_effect_controls,
+                                               append_vessel_identity)
+        if actor.successor_task_value is not None:
+            raise ValueError('Proposal sampling must follow the unchanged factual predecessor.')
+        action = actor(packet, deterministic=True, gate_only=True)[0]
+        context, order = intervention_task_context(packet, True, True)
+        controls = paired_effect_controls(actor, packet, action)
+        controls = controls.gather(1, order[..., None].expand(-1, -1, 6))
+        accepted = torch.zeros(len(context), dtype=torch.bool, device=action.device)
+        native_options = []
+        for estimator_index, learner in enumerate(self.learners):
+            public = (append_vessel_identity(context, order)
+                if getattr(learner.models[0], 'identity_conditioned', False) else context)
+            proposed = learner.forward_public(public, controls, order, action, learner.eligible(packet))
+            option = torch.zeros((len(context), 3), dtype=torch.long, device=action.device)
+            if proposed.shape[-1] == 14:
+                changed = (proposed[..., 9:13] >= 0.).any(-1)
+                if bool((changed.sum(-1) > 1).any()):
+                    raise ValueError('A proposal root cannot be selected by a multi-vessel intervention.')
+                active = changed.any(-1)
+                preferences = proposed[..., 11:13].gather(1, order[..., None].expand(-1, -1, 2))
+                coefficients = learner.models[0].coefficients.to(action.device)
+                matches = (preferences[:, :, None] == coefficients[None, None]).all(-1)
+                if bool((active[:, None] & (matches.sum(-1) != 1)).any()):
+                    raise ValueError('A native intervention must use the shared fusion alphabet.')
+                digits = matches.to(torch.long).argmax(-1)
+                option[:, 0] = (digits*10**torch.arange(order.shape[1], device=action.device)).sum(-1)
+                option[:, 1] = proposed[:, 0, 8].round().to(torch.long)
+                option[:, 2] = (proposed[:, 0, 4]-proposed[:, 0, 8]).round().to(torch.long)
+                option[~active] = 0
+                if estimator_index in self.trigger_estimators:
+                    accepted |= active
+            elif proposed.shape != action.shape:
+                raise ValueError('Proposal sampling received an unknown native decision program.')
+            native_options.append(option)
+        self.last_observations = {key:value.detach().cpu().numpy().copy() for key,value in dict(
+            context=context, controls=controls, order=order, options=torch.stack(native_options, 1)).items()}
+        return accepted
+
+
+def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root_selector=None):
     """Measure factual trajectories with batched copies of the same controller."""
     import conditional_fusion_value as c
     import develop_source_fusion as d
@@ -4170,7 +4583,7 @@ def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None):
     r.SOURCE = d.SOURCE
     measured = r.batched_credit_rows(policy, [(t[1], t[2]) for t in tasks],
         batch_size=len(tasks), device=device, keep_steps=True, initial_jobs=jobs,
-        root_sample_seed=root_sample_seed)
+        root_sample_seed=root_sample_seed, root_selector=root_selector)
     records = []
     actor = d.joint_load(str(policy), policy.stat().st_mtime_ns).to(device)
     try:
@@ -4215,7 +4628,7 @@ def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None):
 
 
 def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
-                                  period=5, inference_batch=32, inference_device='cuda:0'):
+                                  period=5, inference_batch=32, inference_device='cuda:0', root_selector=None):
     """Sample one eligible decision state from each fresh factual episode.
 
     Reservoir sampling follows the deployed batched controller without
@@ -4227,6 +4640,9 @@ def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
     import run_remote_evidence as r
     if period < 1 or inference_batch < 1 or int(root_sample_seed) < 0:
         raise ValueError('Factual root sampling needs a positive period and batch, and a nonnegative seed.')
+    if root_selector is not None and (period != 5 or
+            not isinstance(root_selector, FactualProposalRootSelector)):
+        raise ValueError('Directed factual roots require a native proposal selector at the deployed decision period.')
     policy=Path(policy);output=Path(output)
     digest=hashlib.sha256(policy.read_bytes()).hexdigest()
     tasks=[(tuple(scene),future) for scene,future in tasks]
@@ -4236,6 +4652,9 @@ def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
         root_sample_seed=int(root_sample_seed),inference_batch=inference_batch,
         inference_device=inference_device,
         root_sampling='uniform eligible factual decision state; separate reservoir random stream')
+    if root_selector is not None:
+        specification.update(root_sampling='first accepted native proposal; uniform fallback; unchanged factual trajectory',
+            root_selection=copy.deepcopy(root_selector.specification))
     bank=(torch.load(output,map_location='cpu',weights_only=False) if output.exists() else
         dict(records=[],simulation_steps=0,trajectories=0,state_labels=0,completed=False,
             **specification))
@@ -4252,7 +4671,8 @@ def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
         return bank
     for begin in range(len(records),len(tasks),inference_batch):
         group=[(str(policy),scene,future,None,period) for scene,future in tasks[begin:begin+inference_batch]]
-        measured=factual_trajectory_batch(group,device=inference_device,root_sample_seed=root_sample_seed)
+        measured=factual_trajectory_batch(group,device=inference_device,root_sample_seed=root_sample_seed,
+            root_selector=root_selector)
         for row in measured:
             snapshot=row['root_snapshot']
             if snapshot['predecessor_sha256']!=digest or snapshot['root_steps']>=row['physical_steps']:
@@ -4667,7 +5087,7 @@ def _recollect_snapshot_root_batch(task):
             prefix_future=original['prefix_future'], root_steps=int(snapshot['root_steps']),
             lookback=original.get('lookback'), order=order[0].numpy(),
             future_weights=np.asarray(original.get('future_weights', np.ones(len(original['futures']))), np.float32),
-            design_root=root_id, root_sampling=dict(kind='uniform_eligible_factual_state',
+            design_root=root_id, root_sampling=dict(kind=snapshot.get('selection_reason', 'uniform_eligible_factual_state'),
                 eligible_states=snapshot['eligible_states'], root_sample_seed=snapshot['root_sample_seed'],
                 inference_batch=snapshot['inference_batch'], inference_device=snapshot['inference_device'])))
         steps.append(0)
