@@ -165,9 +165,13 @@ def batched_primitive_program(actor, action):
 
 
 def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=False,sample_policy=False,initial_jobs=None,
-                        response_tick=None,actor_override=None,collect_fleet=False,root_sample_seed=None):
+                        response_tick=None,actor_override=None,collect_fleet=False,root_sample_seed=None,
+                        physical_response_tick=None):
     """Batch deterministic policy inference, retaining each episode's RNG."""
     from envs.TADgame import TADEnv
+    if physical_response_tick is not None and (not isinstance(physical_response_tick, int)
+            or not 1 <= physical_response_tick <= 400):
+        raise ValueError('The measured physical response needs an integer tick from one to four hundred.')
     initialize();torch.backends.cuda.matmul.allow_tf32=False
     actor=(d.joint_load(str(policy),Path(policy).stat().st_mtime_ns) if actor_override is None else actor_override).to(device)
     fleet=getattr(actor,'feedback_fleet_policy',None)
@@ -196,8 +200,15 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
         midpoint_checked=np.zeros(len(current),bool)
         intervention_pending=np.zeros(len(current),bool)
         intervention_activation=np.zeros(len(current),int)
+        isolated_starts=np.full(len(current),bool(getattr(actor.successor_task_value,
+            'isolate_factual_start',False)))
+        relative_holds=np.full(len(current),bool(getattr(actor.successor_task_value,
+            'feedback_relative_hold',False)))
+        relative_offsets=[None]*len(current)
         if initial_jobs is not None:
             for i,job in enumerate(initial_jobs[begin:begin+len(current)]):
+                isolated_starts[i]=bool(job.get('isolate_factual_start',isolated_starts[i]))
+                relative_holds[i]=bool(job.get('feedback_relative_hold',relative_holds[i]))
                 state=job.get('controller_state')
                 if state is None:continue
                 # A suffix intervention changes the remaining program, not
@@ -210,6 +221,13 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                 action[:,8]+=elapsed;remaining[i]=int(action[0,4])
                 action[:,4]+=elapsed;options[i]=action;ticks[i]=elapsed
                 midpoint_checked[i]=state['midpoint_checked']
+                if relative_holds[i]:
+                    if not state.get('feedback_relative_hold') or 'feedback_relative_offsets' not in state:
+                        raise ValueError('A resumed relative intervention needs its original feedback displacement.')
+                    relative_offsets[i]=np.asarray(state['feedback_relative_offsets'],np.float32).copy()
+        if relative_holds.any() and (not relative_holds.all() or not isolated_starts.all()
+                or not (getattr(actor,'actuator_fusion_refinement',None) or {}).get('task_feedback_prediction')):
+            raise ValueError('Relative feedback requires a uniform isolated task-feedback batch.')
         returns=np.zeros(len(current));task_returns=np.zeros(len(current));rows=[None]*len(current)
         intervention_events=[[] for _ in current]
         decision_records=[[] for _ in current] if keep_steps else None
@@ -221,6 +239,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
             [int(root_sample_seed),int(scene[0]),0 if future is None else int(future),39797]))
             for scene,future in current] if sampled_roots is not None else None)
         responses=[None]*len(current) if response_tick is not None else None
+        physical_responses=[None]*len(current) if physical_response_tick is not None else None
         response_ticks = (None if response_tick is None else
             [int(response_tick)]*len(current) if np.isscalar(response_tick) else
             response_tick[begin:begin+len(current)])
@@ -244,6 +263,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                     if initial_jobs is not None and step==0 else
                     actor(packets(fresh),deterministic=not sample_policy)[0].cpu().numpy())
                 for i,action in zip(fresh,decisions):
+                    relative_offsets[i]=None
                     if keep_steps:decision_records[i].append(dict(step=step,action=action.copy()))
                     value_program=action.shape[-1]==14
                     action,activation=batched_primitive_program(actor,action)
@@ -349,16 +369,38 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                     if remaining[i]>0 else np.full((len(controls[i]),2),-1.,dtype=np.float32)
                     for i in active])
                 refinement_packet['_committed_actuator_preferences']=torch.as_tensor(held_preferences,device=device)
+                if isolated_starts.any():
+                    first_local_tick=np.asarray([isolated_starts[i] and remaining[i]>0
+                        and options[i].shape[-1]==13 and ticks[i]==int(options[i][0,8])
+                        and (held_preferences[j]>=0.).any() for j,i in enumerate(active)],bool)
+                    if first_local_tick.any():
+                        refinement_packet['_isolate_factual_actuator_start']=torch.as_tensor(first_local_tick,device=device)
                 if actor.response_feedback_value is None:
                     native=np.broadcast_to(source_controls[:,:,2:3],held_preferences.shape)
                     coefficients=(np.where(preferences>=0.,preferences,native)
                         if actuator_preferences else native)
                     refinement_packet['_preferred_actuator_coefficients']=torch.as_tensor(
                         np.array(coefficients,copy=True),device=device)
-                physical=refine_actuator_interactions(actor,refinement_packet,
-                    torch.as_tensor(source_controls,device=device),
-                    torch.as_tensor(np.stack([controls[i] for i in active]),device=device),
-                    **actor.actuator_fusion_refinement).cpu().numpy()
+                if relative_holds.all():
+                    from conditional_fusion_value import refine_feedback_relative_intervention
+                    offsets=np.stack([relative_offsets[i] if relative_offsets[i] is not None else
+                        np.full((len(controls[i]),2),np.nan,dtype=np.float32) for i in active])
+                    physical,offsets=refine_feedback_relative_intervention(actor,refinement_packet,
+                        torch.as_tensor(source_controls,device=device),torch.as_tensor(offsets,device=device),
+                        **actor.actuator_fusion_refinement)
+                    for i,offset in zip(active,offsets.cpu().numpy()):
+                        relative_offsets[i]=offset.copy()
+                        if (intervention_events[i] and
+                                intervention_events[i][-1]['time']==float(environments[i].Current_T)):
+                            event=intervention_events[i][-1]
+                            event.update(execution_mode='feedback_relative_hold',
+                                fusion_offset=offset[event['subjects']].tolist())
+                    physical=physical.cpu().numpy()
+                else:
+                    physical=refine_actuator_interactions(actor,refinement_packet,
+                        torch.as_tensor(source_controls,device=device),
+                        torch.as_tensor(np.stack([controls[i] for i in active]),device=device),
+                        **actor.actuator_fusion_refinement).cpu().numpy()
                 for i,control in zip(active,physical):controls[i]=control
                 if collect_fleet:
                     decision=fleet.last_decision
@@ -373,12 +415,18 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                         discount=float(actor.training_gamma))
                 if responses is not None and responses[i] is None and (done or step+1==response_ticks[i]):
                     responses[i]=dict(packet=d.joint_packet(env,obs),terminal=int(done),steps=step+1)
+                if physical_responses is not None and physical_responses[i] is None and (done or step+1==physical_response_tick):
+                    physical_responses[i]=dict(packet=d.joint_packet(env,obs),terminal=int(done),steps=step+1)
                 if keep_steps:
+                    controller=(None if remaining[i]<=0 else dict(program=options[i].copy(),
+                        ticks=int(ticks[i]),remaining=int(remaining[i]),
+                        midpoint_checked=bool(midpoint_checked[i])))
+                    if controller is not None and relative_holds[i]:
+                        controller.update(feedback_relative_hold=True,
+                            feedback_relative_offsets=relative_offsets[i].copy())
                     trajectories[i].append(dict(packet=before,action=controls[i].copy(),done=done,physical_steps=1,
                         reward=reward,source_reward=sr,discount=actor.training_gamma,
-                        controller_state=None if remaining[i]<=0 else dict(program=options[i].copy(),
-                            ticks=int(ticks[i]),remaining=int(remaining[i]),
-                            midpoint_checked=bool(midpoint_checked[i]))))
+                        controller_state=controller))
                 random_states[i]=np.random.get_state();observations[i]=obs;returns[i]+=(.99**step)*sr
                 task_returns[i]+=(actor.training_gamma**step)*reward
                 if remaining[i]>0:remaining[i]-=1;ticks[i]+=1
@@ -392,6 +440,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                         interventions=intervention_events[i])
                     if future is not None:row['future_seed']=int(future)
                     if responses is not None:row['response']=responses[i]
+                    if physical_responses is not None:row['physical_response']=physical_responses[i]
                     rows[i]=row
                 else:following.append(i)
             active=following
@@ -945,7 +994,8 @@ def source_successor_branch(task):
         with torch.no_grad():
             action=(job['action'].copy() if count==0 else
                 actor(d.mechanism_tensor(d.joint_packet(env,obs)),deterministic=True)[0][0].numpy())
-        obs,reward,done,source_reward,steps=d.joint_advance(env,obs,actor,action,observe_step=observe_response)
+        obs,reward,done,source_reward,steps=d.joint_advance(env,obs,actor,action,observe_step=observe_response,
+            isolate_factual_start=job.get('isolate_factual_start') if count==0 else None)
         task_return+=actor.training_gamma**count*reward;source_return+=.99**count*source_reward;count+=steps
     seed,n,agility=scene
     row=dict(seed=int(seed),defenders=n,agility=agility,**d.outcome(env,done),

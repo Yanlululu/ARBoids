@@ -4035,8 +4035,9 @@ def joint_remaining_program(control,action,elapsed,preserve_phase=False):
     return suffix
 
 
-def joint_advance(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_step=None):
-    commands=joint_commands(env,obs,actor,action,maximum,refine_midpoint,observe_step)
+def joint_advance(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_step=None,
+                  isolate_factual_start=None):
+    commands=joint_commands(env,obs,actor,action,maximum,refine_midpoint,observe_step,isolate_factual_start)
     try:
         physical=next(commands)
         while True:
@@ -4047,8 +4048,16 @@ def joint_advance(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_st
         commands.close()
 
 
-def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_step=None):
+def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_step=None,
+                   isolate_factual_start=None):
     """One coordinated gate decision; both source proposals still update at 5 Hz."""
+    if isolate_factual_start is None:
+        isolate_factual_start=bool(getattr(getattr(actor,'successor_task_value',None),
+                                          'isolate_factual_start',False))
+    relative_hold=bool(getattr(getattr(actor,'successor_task_value',None),'feedback_relative_hold',False))
+    if relative_hold and (not isolate_factual_start or
+            not (getattr(actor,'actuator_fusion_refinement',None) or {}).get('task_feedback_prediction')):
+        raise ValueError('Relative intervention execution requires the isolated task-feedback planner.')
     if action.shape[-1]==14:
         # A delayed intervention is preceded by the actual predecessor policy.
         # Column 13 names that policy relative to the actor's value chain;
@@ -4080,7 +4089,7 @@ def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_s
             observer=(None if observe_step is None else
                 lambda current,observation,elapsed,terminal:observe_step(current,observation,count+elapsed,terminal))
             obs,r,done,sr,steps=yield from joint_commands(env,obs,actor,suffix,
-                maximum-count if maximum else 0,refine_midpoint,observer)
+                maximum-count if maximum else 0,refine_midpoint,observer,isolate_factual_start)
             return obs,reward+(actor.training_gamma**count)*r,done,source_return+(.99**count)*sr,count+steps
         action=action[:,:13]
     duration=int(action[0,4]) if action.shape[-1]>4 else actor.physical_span
@@ -4096,6 +4105,7 @@ def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_s
     period=max(actor.gate_period,duration) if action.shape[-1]>3 and (active or waiting) else actor.gate_period
     period=min(period,maximum) if maximum else period
     reward=0.;source_return=0.;done=0;control=action[:,:3].copy()
+    relative_offsets=torch.full((1,len(control),2),float('nan')) if relative_hold else None
     intent=action
     soft=bool(actor.preference_strength and active)
     immediate=bool(actor.immediate_commitment
@@ -4174,6 +4184,8 @@ def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_s
             if action.shape[-1]==13 and step<duration:
                 refinement_packet['_committed_actuator_preferences']=torch.as_tensor(
                     preferences[None],dtype=torch.float32)
+                if isolate_factual_start and step==int(action[0,8]) and (preferences>=0.).any():
+                    refinement_packet['_isolate_factual_actuator_start']=torch.ones(1,dtype=torch.bool)
             elif scheduled is not None and step<duration:
                 refinement_packet['_committed_actuator_preferences']=torch.as_tensor(
                     np.repeat(scheduled[None,:,None],2,axis=-1),dtype=torch.float32)
@@ -4183,9 +4195,18 @@ def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_s
                     if action.shape[-1]==13 and step<duration else native)
                 refinement_packet['_preferred_actuator_coefficients']=torch.as_tensor(
                     coefficients[None],dtype=torch.float32)
-            physical=refine_actuator_interactions(actor,refinement_packet,
-                torch.as_tensor(control[None],dtype=torch.float32),
-                torch.as_tensor(physical[None],dtype=torch.float32),**actor.actuator_fusion_refinement)[0].numpy()
+            if relative_hold:
+                from conditional_fusion_value import refine_feedback_relative_intervention
+                refinement_packet.setdefault('_committed_actuator_preferences',
+                    torch.full((1,len(control),2),-1.))
+                resolved,relative_offsets=refine_feedback_relative_intervention(actor,refinement_packet,
+                    torch.as_tensor(control[None],dtype=torch.float32),relative_offsets,
+                    **actor.actuator_fusion_refinement)
+                physical=resolved[0].numpy()
+            else:
+                physical=refine_actuator_interactions(actor,refinement_packet,
+                    torch.as_tensor(control[None],dtype=torch.float32),
+                    torch.as_tensor(physical[None],dtype=torch.float32),**actor.actuator_fusion_refinement)[0].numpy()
         obs,r,done,sr=yield physical
         if observe_step is not None:observe_step(env,obs,step+1,done)
         reward+=(actor.training_gamma**step)*r;source_return+=(.99**step)*sr

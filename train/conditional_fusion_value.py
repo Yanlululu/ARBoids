@@ -5292,7 +5292,93 @@ def select_feedback_fleet_plan(costs,library,reference_start,selection):
 
 
 @torch.no_grad()
-def refine_actuator_interactions(actor,packet,source_action,preferred_action,*,beam_width=128,
+def refine_feedback_relative_intervention(actor, packet, source_action, offsets, **configuration):
+    """Keep a single-vessel fusion displacement relative to live M1 feedback.
+
+    The requested coefficients define the first intervention command. Its
+    displacement from the factual joint choice is retained for this window;
+    every following command uses the newly observed state's joint choice.
+    Peers always receive that current factual choice, so their reaction is
+    through the changed physical state rather than an altered activation plan.
+    """
+    held = packet.get('_committed_actuator_preferences')
+    shape = source_action[..., :2].shape
+    if held is None or held.shape != shape or offsets.shape != shape:
+        raise ValueError('Relative feedback needs current preferences and one two-actuator offset per vessel.')
+    active = (held >= 0.).any(-1)
+    if (bool((active.sum(-1) > 1).any()) or
+            bool((active & ~(held >= 0.).all(-1)).any()) or
+            not bool(torch.isfinite(held).all()) or bool((held > 1.).any())):
+        raise ValueError('Relative feedback may change one vessel with two bounded fusion coefficients.')
+    initialized = torch.isfinite(offsets).all(-1)
+    if (bool((~initialized & ~torch.isnan(offsets).all(-1)).any()) or
+            bool((offsets[initialized].abs() > 1.).any())):
+        raise ValueError('Relative offsets must be uninitialized pairs or finite displacements in [-1,1].')
+    factual_packet = dict(packet)
+    factual_packet.pop('_committed_actuator_preferences', None)
+    factual_packet.pop('_isolate_factual_actuator_start', None)
+    factual_packet['_preferred_actuator_coefficients'] = source_action[..., 2:3].expand(-1, -1, 2)
+    factual_preference = source_action
+    if getattr(actor, 'generic_fusion_adapter', None) is not None:
+        factual_preference = actor.generic_fusion_adapter.control(actor, factual_packet, source_action)
+    factual, coefficients = _refine_actuator_interactions(actor, factual_packet,
+        source_action, factual_preference, return_coefficients=True, **configuration)
+    offsets = torch.where((active & ~initialized)[..., None], held-coefficients, offsets)
+    resolved = (coefficients+torch.nan_to_num(offsets)).clamp(0., 1.)
+    resolved = torch.where((active & ~initialized)[..., None], held, resolved)
+    rule = packet['node'][..., 11:13]
+    command = resolved*source_action[..., :2]+(1.-resolved)*rule
+    replacement = torch.cat((command, torch.ones_like(source_action[..., 2:3])), -1)
+    # Preserve the exact factual path for a null displacement, including
+    # roundoff and all peer controls. An inactive vessel never inherits NaNs.
+    changed = active & (torch.nan_to_num(offsets).abs().amax(-1) > 1e-7)
+    return torch.where(changed[..., None], replacement, factual), offsets
+
+
+@torch.no_grad()
+def refine_actuator_interactions(actor,packet,source_action,preferred_action,**configuration):
+    """Apply a local intervention after the already chosen factual fleet plan.
+
+    At its first active control tick, exactly one vessel changes its mixture.
+    The other controls equal the factual joint decision at this same state.
+    Later ticks use the ordinary coupled feedback under the held intervention.
+    """
+    isolated=packet.get('_isolate_factual_actuator_start')
+    if isolated is None or not bool(isolated.any()):
+        return _refine_actuator_interactions(actor,packet,source_action,preferred_action,**configuration)
+    if isolated.shape!=(len(source_action),) or isolated.dtype!=torch.bool:
+        raise ValueError('Local intervention activation needs one boolean per fleet state.')
+    held=packet.get('_committed_actuator_preferences')
+    if held is None or held.shape!=source_action[...,:2].shape:
+        raise ValueError('Local intervention activation needs its actual held actuator coefficients.')
+    active=(held>=0.).any(-1)
+    if not bool((active[isolated].sum(-1)==1).all()):
+        raise ValueError('An isolated intervention must change exactly one vessel.')
+    def subset(mask):
+        return {key:(value[mask] if torch.is_tensor(value) and value.ndim
+                     and value.shape[0]==len(source_action) else value)
+                for key,value in packet.items() if key!='_isolate_factual_actuator_start'}
+    result=torch.empty_like(source_action[...,:3])
+    if bool((~isolated).any()):
+        result[~isolated]=_refine_actuator_interactions(actor,subset(~isolated),
+            source_action[~isolated],preferred_action[~isolated],**configuration)
+    factual_packet=subset(isolated)
+    factual_packet.pop('_committed_actuator_preferences',None)
+    factual_source=source_action[isolated]
+    factual_packet['_preferred_actuator_coefficients']=factual_source[...,2:3].expand(-1,-1,2)
+    factual_preference=factual_source
+    if getattr(actor,'generic_fusion_adapter',None) is not None:
+        factual_preference=actor.generic_fusion_adapter.control(actor,factual_packet,factual_source)
+    factual=_refine_actuator_interactions(actor,factual_packet,factual_source,factual_preference,**configuration)
+    rule=factual_packet['node'][...,11:13]
+    command=factual[...,:2]*factual[...,2:3]+rule*(1.-factual[...,2:3])
+    replacement=held[isolated]*factual_source[...,:2]+(1.-held[isolated])*rule
+    command=torch.where(active[isolated,...,None],replacement,command)
+    result[isolated]=torch.cat((command,torch.ones_like(factual_source[...,2:3])),-1)
+    return result
+
+
+def _refine_actuator_interactions(actor,packet,source_action,preferred_action,*,beam_width=128,
                                  risk_weight=32.,preference_width=.4,selection='joint',
                                  source_preference=False,prior_map=None,coupled_prediction=False,
                                  contact_distance=5.,synchronized_prediction=False,
@@ -5308,7 +5394,8 @@ def refine_actuator_interactions(actor,packet,source_action,preferred_action,*,b
                                  task_stopping=False,escape_weight=0.,
                                  target_envelope_degrees=0.,target_envelope_weight=0.,
                                  task_feedback_prediction=False,independent_feedback_proposal=False,
-                                 nominal_feedback_proposals=False,feedback_refinement_rounds=0):
+                                 nominal_feedback_proposals=False,feedback_refinement_rounds=0,
+                                 return_coefficients=False):
     """Jointly reconcile task preferences with two-actuator candidate motion.
 
     The conditional value proposes a fusion preference. Candidate interaction
@@ -5317,6 +5404,8 @@ def refine_actuator_interactions(actor,packet,source_action,preferred_action,*,b
     combinations; subsequent coordinate minimization removes simple pruning
     errors. The independent selector receives exactly the same candidates.
     """
+    if return_coefficients and not (task_stopping and task_feedback_prediction):
+        raise ValueError('Exact fusion coefficients require the complete task-feedback planner.')
     if independent_feedback_proposal and not (task_stopping and task_feedback_prediction):
         raise ValueError('Independent completion requires the common complete-feedback candidate library.')
     if (nominal_feedback_proposals or feedback_refinement_rounds) and not (task_stopping and task_feedback_prediction):
@@ -5541,7 +5630,8 @@ def refine_actuator_interactions(actor,packet,source_action,preferred_action,*,b
                 choice=proposal
             gates=candidates.gather(2,choice[...,None,None].expand(-1,-1,1,2)).squeeze(2)
             gates=gates.gather(1,order.argsort(-1)[...,None].expand_as(gates))
-            return torch.cat((gates*source+(1.-gates)*rule,torch.ones_like(source_action[...,2:3])),-1)
+            physical=torch.cat((gates*source+(1.-gates)*rule,torch.ones_like(source_action[...,2:3])),-1)
+            return (physical,gates) if return_coefficients else physical
         paths = actor.candidate_risk(dict(packet), source, candidate_grid=candidates, return_paths=True)
         target, velocity = actor.public_target_motion(packet)
         times = torch.arange(1, paths.shape[-2]+1, device=source.device)*actor.prediction_step

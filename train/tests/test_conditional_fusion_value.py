@@ -8,6 +8,178 @@ from conditional_fusion_value import (
 
 
 class ConditionalFusionValueTests(unittest.TestCase):
+    def test_relative_intervention_follows_feedback_keeps_peers_and_null_identity(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import conditional_fusion_value as conditional
+        source = torch.tensor([[[.8, -.4, .6], [.2, .7, .4], [-.5, .3, .5]]])
+        node = torch.zeros(1, 3, 16)
+        node[..., 11:13] = torch.tensor([[[-.2, .1], [.6, -.3], [.4, .8]]])
+        coefficients = torch.tensor([[[.2, .8], [.4, .6], [.7, .3]]])
+        held = torch.full((1, 3, 2), -1.)
+        held[0, 1] = torch.tensor([.8, .2])
+        packet = dict(node=node, _committed_actuator_preferences=held,
+                      _isolate_factual_actuator_start=torch.tensor([True]))
+        actor = SimpleNamespace(generic_fusion_adapter=None)
+        def factual(*args, return_coefficients=False, **kwargs):
+            command = coefficients*source[..., :2]+(1-coefficients)*node[..., 11:13]
+            result = torch.cat((command, torch.ones_like(source[..., :1])), -1)
+            return (result, coefficients) if return_coefficients else result
+        offsets = torch.full_like(held, float('nan'))
+        with patch.object(conditional, '_refine_actuator_interactions', side_effect=factual):
+            isolated = conditional.refine_actuator_interactions(actor, packet, source, source)
+            first, offsets = conditional.refine_feedback_relative_intervention(actor, packet, source, offsets)
+            torch.testing.assert_close(first, isolated, rtol=0., atol=0.)
+            torch.testing.assert_close(offsets[0, 1], torch.tensor([.4, -.4]))
+            self.assertTrue(torch.isnan(offsets[0, [0, 2]]).all())
+            coefficients[0, 1] = torch.tensor([.9, .1])
+            following, retained = conditional.refine_feedback_relative_intervention(actor, packet, source, offsets)
+            torch.testing.assert_close(following[0, 1, :2], torch.tensor([.2, -.3]), rtol=0., atol=1e-7)
+            torch.testing.assert_close(following[:, [0, 2]], factual()[:, [0, 2]], rtol=0., atol=0.)
+            torch.testing.assert_close(retained, offsets, equal_nan=True, rtol=0., atol=0.)
+            held[0, 1] = coefficients[0, 1]
+            unchanged, zero = conditional.refine_feedback_relative_intervention(
+                actor, packet, source, torch.full_like(held, float('nan')))
+            torch.testing.assert_close(unchanged, factual(), rtol=0., atol=0.)
+            self.assertEqual(float(zero[0, 1].abs().sum()), 0.)
+            held[0, 0] = .5
+            with self.assertRaisesRegex(ValueError, 'one vessel'):
+                conditional.refine_feedback_relative_intervention(actor, packet, source, zero)
+
+    def test_relative_training_and_merge_preserve_execution_semantics(self):
+        import copy
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import (
+            fit_joint_potential, merge_paired_data, LocalDifferenceDecision, PlainJointReturnDecision)
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        root = dict(context=np.zeros(21, np.float32), effect_controls=controls,
+            scene=(19, 2, 2.), prefix_future=None, root_steps=5, futures=[101, 102],
+            feedback_relative_hold=True, options=[(0, 0, 0), (1, 0, 5)],
+            outcomes={(q, f): dict(success=float(q == f)) for q in range(2) for f in range(2)})
+        data = dict(model={}, roots=[root], predecessor_sha256='relative-test', simulation_steps=20,
+                    feedback_relative_hold=True, isolate_factual_start=True)
+        absolute = dict(data, feedback_relative_hold=False)
+        with self.assertRaisesRegex(ValueError, 'different physical experiments'):
+            merge_paired_data([data, absolute])
+        merged = merge_paired_data([data, copy.deepcopy(data)])
+        self.assertTrue(merged['feedback_relative_hold'])
+        self.assertEqual(len(merged['roots'][0]['outcomes']), 4)
+        for ordinary in (False, True):
+            with patch('local_intervention_value.torch.save'):
+                model = fit_joint_potential(data, 'unused-relative-test.pth', ordinary=ordinary,
+                    ordinary_architecture='interaction', updates=2, ensemble_size=1, width=4, device='cpu')
+            recipe = dict(model['successor_task_value']); recipe.pop('kind')
+            decision = PlainJointReturnDecision(**recipe) if ordinary else LocalDifferenceDecision(**recipe)
+            self.assertTrue(decision.feedback_relative_hold)
+            self.assertTrue(model['successor_task_fit']['feedback_relative_hold'])
+        invalid = copy.deepcopy(data); invalid['roots'][0]['feedback_relative_hold'] = False
+        with self.assertRaisesRegex(ValueError, 'measured relative branches'):
+            fit_joint_potential(invalid, 'unused-relative-invalid.pth', updates=2, ensemble_size=1,
+                                width=4, device='cpu')
+
+    def test_conservative_catalog_rejects_an_unmeasured_optimistic_choice(self):
+        from local_intervention_value import conservative_catalog_loss
+        values = torch.nn.Parameter(torch.tensor([.2, .8]))
+        optimizer = torch.optim.SGD([values], lr=.02)
+        for _ in range(400):
+            candidates = torch.cat((values.new_zeros(1), values))[None]
+            observed = candidates[:, :2].mean(-1)
+            loss = 20.*(values[0]-.2).square()+.2*conservative_catalog_loss(candidates, observed).mean()
+            optimizer.zero_grad(); loss.backward(); optimizer.step()
+        self.assertGreater(float(values[0].detach()), .15)
+        self.assertLess(float(values[1].detach()), float(values[0].detach()))
+        self.assertEqual(int(torch.cat((values.new_zeros(1), values)).argmax()), 1)
+        values = torch.tensor([[.1, .3, -.2], [.4, -.1, .2]], requires_grad=True)
+        observed = values[:, :2].mean(-1)
+        base = conservative_catalog_loss(values, observed)
+        shift = torch.tensor([.6, -.2])
+        shifted = conservative_catalog_loss(values+shift[:, None], observed+shift)
+        torch.testing.assert_close(base, shifted, rtol=1e-5, atol=1e-7)
+        with self.assertRaises(ValueError):
+            conservative_catalog_loss(values, observed, temperature=0.)
+
+    def test_conservative_matched_fits_keep_real_targets_and_reload(self):
+        import io
+        import pickle
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import fit_joint_potential, LocalDifferenceDecision, PlainJointReturnDecision
+        roots = []
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        for index, options in enumerate(([(0, 0, 0), (1, 0, 5), (10, 3, 20)], [(0, 0, 0), (9, 0, 5)])):
+            context = np.full(21, .02*index, np.float32); context[[4, 12]] = 1.
+            roots.append(dict(context=context, effect_controls=controls, futures=[1, 2], root_steps=5,
+                options=options, outcomes={(q, f):dict(success=float(q == f), duration=.2*(40+3*q+f),
+                    following=context+.01*q, response_steps=20-f, response_sampling='physical_tick')
+                    for q in range(len(options)) for f in range(2)}))
+        data = dict(model={}, roots=roots, predecessor_sha256='conservative-value-test', simulation_steps=80)
+        before = pickle.dumps(data); models = []
+        for ordinary in (False, True):
+            pair = []
+            for weight in (0., .2):
+                with patch('local_intervention_value.torch.save'):
+                    model = fit_joint_potential(data, 'unused-conservative-test.pth', updates=3,
+                        ensemble_size=1, width=4, device='cpu', ordinary=ordinary, ordinary_architecture='interaction',
+                        conditional_strata=not ordinary, paired_response_encoding=not ordinary,
+                        aligned_response_contrast=not ordinary, paired_event_difference=not ordinary,
+                        finite_motion_basis=True, response_supervision_weight=4.,
+                        response_supervision_architecture='linear', response_conditioned_value=True,
+                        physics_residual_response=True, response_value_weight=1., value_target='discounted_return',
+                        additional_candidate_options=[(2, 0, 5), (20, 3, 20), (9, 5, 40)],
+                        conservative_catalog_weight=weight, conservative_catalog_samples=5,
+                        conservative_catalog_roots=2)
+                pair.append(model)
+                self.assertEqual(model['successor_task_fit']['conservative_catalog_weight'], weight)
+                buffer = io.BytesIO(); torch.save(model, buffer); buffer.seek(0)
+                restored = torch.load(buffer, weights_only=False)
+                recipe = dict(restored['successor_task_value']); recipe.pop('kind')
+                learner = PlainJointReturnDecision(**recipe) if ordinary else LocalDifferenceDecision(**recipe)
+                prediction = learner.models[0].forward_catalog(torch.from_numpy(roots[0]['context'][None]),
+                    torch.from_numpy(controls[None]), learner.programs, learner.options[:, 1:])
+                self.assertTrue(torch.isfinite(prediction).all())
+            self.assertTrue(any(not torch.equal(value, pair[1]['successor_task_value']['states'][0][name])
+                for name, value in pair[0]['successor_task_value']['states'][0].items()))
+            self.assertEqual(pair[0]['successor_task_fit']['training_parameters_per_member'],
+                             pair[1]['successor_task_fit']['training_parameters_per_member'])
+            models.extend(pair)
+        self.assertEqual(before, pickle.dumps(data))
+        for key in ('training_observation_sha256', 'training_target_sha256', 'response_label_sha256', 'updates'):
+            self.assertTrue(all(model['successor_task_fit'][key] == models[0]['successor_task_fit'][key] for model in models))
+
+    def test_conservative_sampling_keeps_held_out_labels_out_of_gradients(self):
+        import copy
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import fit_joint_potential
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        roots = []
+        for index in range(6):
+            context = np.full(21, .02*index, np.float32); context[[4, 12]] = 1.
+            roots.append(dict(context=context, effect_controls=controls, futures=[1, 2], scene=(100+index, 2, 2.),
+                options=[(0, 0, 0), (1, 0, 5), (10, 0, 5)],
+                outcomes={(q, f):dict(success=float((index+q+f) % 3 != 0))
+                    for q in range(3) for f in range(2)}))
+        data = dict(model={}, roots=roots, predecessor_sha256='conservative-crossfit', simulation_steps=60)
+        settings = dict(updates=6, ensemble_size=3, width=4, device='cpu', conditional_strata=True,
+            factual_crossfit=True, paired_response_encoding=True, aligned_response_contrast=True,
+            paired_event_difference=True, finite_motion_basis=True,
+            conservative_catalog_weight=.2, conservative_catalog_samples=4, conservative_catalog_roots=2,
+            additional_candidate_options=[(9, 5, 20), (90, 5, 20)])
+        with patch('local_intervention_value.torch.save'):
+            first = fit_joint_potential(data, 'unused-conservative-crossfit.pth', **settings)
+        changed = copy.deepcopy(data)
+        for index, fold in enumerate(first['successor_task_fit']['factual_crossfit_root_folds']):
+            if fold == 0:
+                for outcome in changed['roots'][index]['outcomes'].values():
+                    outcome['success'] = 1.
+        with patch('local_intervention_value.torch.save'):
+            second = fit_joint_potential(changed, 'unused-conservative-crossfit.pth', **settings)
+        for key, value in first['successor_task_value']['states'][0].items():
+            torch.testing.assert_close(value, second['successor_task_value']['states'][0][key], rtol=0., atol=0.)
+        self.assertNotEqual(first['successor_task_fit']['training_target_sha256'],
+                            second['successor_task_fit']['training_target_sha256'])
+
     def test_target_scenarios_use_their_own_fleet_feedback_paths(self):
         from conditional_fusion_value import task_envelope_fusion_factors, task_stopped_fleet_cost
         paths=torch.full((1,2,2,2,1,2),20.)
@@ -275,6 +447,73 @@ class ConditionalFusionValueTests(unittest.TestCase):
         self.assertNotEqual(first['acquisition_design']['design_sha256'],
                             third['acquisition_design']['design_sha256'])
 
+    def test_confirmation_uses_fresh_futures_and_preserves_all_original_outcomes(self):
+        import copy
+        import numpy as np
+        from local_intervention_value import confirmation_local_design
+        options = [(0, 0, 0), (1, 0, 5), (2, 0, 5), (10, 5, 10), (20, 5, 10)]
+        outcomes = {(q, f): dict(success=float(value), duration=10.)
+                    for q, pair in enumerate(((0, 1), (1, 1), (1, 0), (0, 0), (1, 1)))
+                    for f, value in enumerate(pair)}
+        root = dict(scene=(100, 3, 2.), prefix_future=9, root_steps=5, options=options,
+                    futures=[17, 29], outcomes=outcomes, root_snapshot=dict(root_steps=5))
+        adverse = copy.deepcopy(root); adverse['scene'] = (101, 3, 2.)
+        adverse['outcomes'] = {(q, f): dict(success=float(q == 0), duration=10.)
+                               for q, f in outcomes}
+        source = dict(completed=True, roots=[root, adverse]); before = copy.deepcopy(source)
+        configuration = dict(source_data_sha256='ab'*32, candidates=2, repetitions=5,
+                             seed=73, value_target='success')
+        first = confirmation_local_design(source, **configuration)
+        second = confirmation_local_design(source, **configuration)
+        self.assertEqual(source, before)
+        self.assertEqual(first['acquisition_design'], second['acquisition_design'])
+        self.assertEqual(first['roots'][0]['options'], [options[q] for q in (0, 1, 4)])
+        self.assertEqual(first['roots'][1]['options'], options[:3])
+        self.assertFalse(first['acquisition_design']['root_outcome_filtering'])
+        self.assertEqual(first['acquisition_design']['planned_observations'], 30)
+        self.assertTrue(first['acquisition_design']['same_observations_for_ordinary'])
+        for scheduled, original in zip(first['roots'], source['roots']):
+            self.assertEqual(len(scheduled['futures']), 5)
+            self.assertFalse(set(scheduled['futures']) & set(original['futures']))
+            self.assertIs(scheduled['root_snapshot'], original['root_snapshot'])
+            self.assertTrue(all('success' not in row for row in scheduled['outcomes'].values()))
+            np.testing.assert_array_equal(scheduled['future_weights'], np.ones(5))
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import local_intervention_value as local
+        def measured(task):
+            rows = []
+            for index, scheduled in task[1]:
+                observed = copy.deepcopy(scheduled)
+                observed['design_root'] = index
+                observed['outcomes'] = {key: dict(success=float(key[0] == 0), duration=7.)
+                                        for key in scheduled['outcomes']}
+                rows.append((observed, 10+index))
+            return rows
+        with tempfile.TemporaryDirectory() as directory:
+            policy = Path(directory)/'policy.pth'; output = Path(directory)/'observations.pth'
+            torch.save(dict(successor_task_value=None), policy)
+            settings = dict(workers=1, root_batch_size=2, inference_batch=32,
+                            physical_response_horizon=20)
+            with patch.object(local, '_recollect_snapshot_root_batch', side_effect=measured) as worker:
+                observed = local.recollect_breadth_design(policy, first, output, **settings)
+                self.assertTrue(observed['completed'])
+                self.assertEqual(observed['measured_terminal_observations'], 30)
+                self.assertEqual(observed['simulation_steps'], 21)
+                self.assertTrue(all(row['success'] == float(q == 0)
+                    for root in observed['roots'] for (q, _), row in root['outcomes'].items()))
+                local.recollect_breadth_design(policy, first, output, **settings)
+                self.assertEqual(worker.call_count, 1)
+            self.assertEqual(source, before)
+        incomplete = copy.deepcopy(source)
+        del incomplete['roots'][0]['outcomes'][0, 1]
+        with self.assertRaisesRegex(ValueError, 'at least two actual paired futures'):
+            confirmation_local_design(incomplete, **configuration)
+        joint = copy.deepcopy(source); joint['roots'][0]['options'][1] = (11, 0, 5)
+        with self.assertRaisesRegex(ValueError, 'single-vessel alternatives'):
+            confirmation_local_design(joint, **configuration)
+
     def test_breadth_replay_resumes_exact_roots_and_preserves_negative_labels(self):
         import copy
         import tempfile
@@ -313,6 +552,117 @@ class ConditionalFusionValueTests(unittest.TestCase):
                 changed['acquisition_design']['design_sha256'] = 'changed'
                 with self.assertRaisesRegex(ValueError, 'different predecessor, design'):
                     local.recollect_breadth_design(policy, changed, output, workers=1)
+
+    def test_breadth_batch_resize_preserves_completed_paired_roots(self):
+        import copy
+        import hashlib
+        import pickle
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import local_intervention_value as local
+        design = local.breadth_local_design(dict(roots=[dict(scene=(i, 3, 2.),
+            prefix_future=None, root_steps=0, root_snapshot=dict(root_steps=0)) for i in range(4)]),
+            [(0, 0, 0), (1, 0, 5), (2, 0, 5)], pairs_per_root=1, repetitions=2, seed=9)
+        def measured(task):
+            rows = []
+            for index, root in task[1]:
+                row = copy.deepcopy(root)
+                row['design_root'] = index
+                row['outcomes'] = {key: dict(success=float(index % 2), duration=7.)
+                                   for key in root['outcomes']}
+                rows.append((row, 10+index))
+            return rows
+        with tempfile.TemporaryDirectory() as directory:
+            policy = Path(directory)/'policy.pth'; output = Path(directory)/'observations.pth'
+            torch.save(dict(successor_task_value=None), policy)
+            settings = dict(workers=1, root_batch_size=2, inference_batch=32,
+                            physical_response_horizon=20)
+            with patch.object(local, '_recollect_snapshot_root_batch', side_effect=measured):
+                complete = local.recollect_breadth_design(policy, design, output, **settings)
+            partial = dict(complete, completed=False, roots=complete['roots'][:2],
+                           next_design_root=2, simulation_steps=21)
+            self.assertEqual(complete['physical_response_capture_runs'], [
+                dict(first_design_root=0, kind='fixed_horizon_and_separate_window_end')])
+            partial.pop('physical_response_capture_runs')
+            torch.save(partial, output)
+            preserved = pickle.dumps(partial['roots'])
+            native_digest = hashlib.sha256(output.read_bytes()).hexdigest()
+            settings['inference_batch'] = 128
+            with patch.object(local, '_recollect_snapshot_root_batch', side_effect=measured) as worker:
+                with self.assertRaisesRegex(ValueError, 'different predecessor, design'):
+                    local.recollect_breadth_design(policy, design, output, **settings)
+                self.assertEqual(worker.call_count, 0)
+                self.assertEqual(hashlib.sha256(output.read_bytes()).hexdigest(), native_digest)
+                resumed = local.recollect_breadth_design(policy, design, output,
+                    resume_inference_batch=True, **settings)
+                self.assertEqual(worker.call_count, 1)
+                self.assertEqual(worker.call_args.args[0][2], 128)
+                self.assertEqual([index for index, _ in worker.call_args.args[0][1]], [2, 3])
+            self.assertEqual(pickle.dumps(resumed['roots'][:2]), preserved)
+            self.assertEqual(resumed['simulation_steps'], 46)
+            self.assertEqual(resumed['inference_batch_runs'], [
+                dict(first_design_root=0, inference_batch=32, inference_device='cpu'),
+                dict(first_design_root=2, inference_batch=128, inference_device='cpu')])
+            self.assertEqual(resumed['physical_response_capture_runs'], [
+                dict(first_design_root=0, kind='maximum_of_window_end_and_horizon'),
+                dict(first_design_root=2, kind='fixed_horizon_and_separate_window_end')])
+            self.assertTrue(resumed['completed'])
+
+    def test_batched_physical_response_keeps_window_end_and_all_actual_outcomes(self):
+        import sys
+        import numpy as np
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import run_remote_evidence as remote
+        class Environment:
+            def __init__(self, n, protocol):
+                self.n = n
+            def reset(self, agility, noisy_agility):
+                self.limit = int(agility); self.steps = 0; self.Current_T = 0.
+                self.state = float(np.random.normal())
+                return np.array([self.state]), {}
+        class Actor:
+            gate_period = 1; intent_strength = 0.; training_gamma = .97
+            training_step_cost = .01; environment_protocol = 'test'
+            successor_task_value = None; cooperative_role_credit = None
+            response_feedback_value = None
+            def to(self, device):
+                return self
+            def cpu(self):
+                return self
+            def __call__(self, packets, **kwargs):
+                return packets['state'][:, None, :].expand(-1, 2, 3), None
+        def packet(env, observation):
+            return dict(state=np.array([env.state], np.float32),
+                        clock=np.array([env.steps], np.float32))
+        def step(env, controls, gamma, cost):
+            env.state += float(controls.mean())*.01+float(np.random.normal())
+            env.steps += 1; env.Current_T = env.steps*.05
+            return np.array([env.state]), env.state, env.steps == env.limit, env.state*.5
+        def outcome(env, done):
+            return dict(success=int(env.state > 0.), outcome=float(env.state),
+                        duration=env.Current_T)
+        tasks = [((17, 2, 55.), 100), ((18, 2, 7.), 101)]
+        with patch.dict(sys.modules, {'envs.TADgame': SimpleNamespace(TADEnv=Environment)}), \
+                patch.object(remote, 'initialize'), patch.object(remote.d, 'joint_packet', side_effect=packet), \
+                patch.object(remote.d, 'joint_task_step', side_effect=step), \
+                patch.object(remote.d, 'outcome', side_effect=outcome):
+            original = remote.batched_credit_rows('unused', tasks, device='cpu',
+                actor_override=Actor(), response_tick=40, keep_steps=True)
+            original_rng = np.random.get_state()
+            measured = remote.batched_credit_rows('unused', tasks, device='cpu',
+                actor_override=Actor(), response_tick=40, physical_response_tick=20, keep_steps=True)
+            measured_rng = np.random.get_state()
+        np.testing.assert_equal(original_rng, measured_rng)
+        for before, after, expected in zip(original, measured, (20, 7)):
+            physical = after['row'].pop('physical_response')
+            self.assertEqual(physical['steps'], expected)
+            self.assertEqual(physical['packet']['clock'].item(), expected)
+            self.assertEqual(physical['terminal'], int(expected == 7))
+            np.testing.assert_equal(before, after)
+        self.assertEqual(measured[0]['row']['response']['steps'], 40)
+        self.assertEqual(measured[1]['row']['response']['steps'], 7)
 
     def test_generic_candidate_paths_share_task_coordinates(self):
         from mechanism_controls import generic_shared_task_features
@@ -587,6 +937,523 @@ class ConditionalFusionValueTests(unittest.TestCase):
         learner = LocalDifferenceDecision(**recipe)
         self.assertTrue(torch.isfinite(learner.values(torch.from_numpy(context[None]),
                                                      torch.from_numpy(controls[None]))).all())
+
+    def test_physical_contrasts_cancel_only_common_future_motion(self):
+        import numpy as np
+        from local_intervention_value import learning_records, measured_response_records, measured_response_contrasts
+        context = np.zeros(21, np.float32)
+        root = dict(context=context, options=[(0, 0, 0), (1, 0, 5)], outcomes={
+            (q, f): dict(success=float(q == f), following=context+10*f+.2*q,
+                response_steps=20-3*q, response_sampling='physical_tick') for q in range(2) for f in range(2)})
+        rows, _, anchors, _ = learning_records(dict(roots=[root]))
+        ids, targets = measured_response_records([root], rows)
+        pairs, differences = measured_response_contrasts(rows, anchors, ids, targets)
+        np.testing.assert_array_equal(pairs, [[0, 2], [1, 3]])
+        np.testing.assert_allclose(differences[:, :-1], .2, atol=1e-6)
+        np.testing.assert_allclose(differences[:, -1], -.15, atol=1e-6)
+        remaining, _ = measured_response_contrasts(rows, anchors, ids[[0, 2, 3]], targets[[0, 2, 3]])
+        np.testing.assert_array_equal(remaining, [[0, 2]])
+        with self.assertRaisesRegex(ValueError, 'common future'):
+            measured_response_contrasts(rows, [[0, 3]], ids, targets)
+        with self.assertRaisesRegex(ValueError, 'paired measured'):
+            measured_response_contrasts(rows, anchors, ids[:2], targets[:2])
+
+    def test_factual_response_targets_align_physical_vessels_and_observed_clocks(self):
+        import copy
+        import pickle
+        import numpy as np
+        from local_intervention_value import measured_factual_response_records
+        from conditional_fusion_value import append_vessel_identity
+        order = np.array([[1, 0], [0, 1], [1, 0]])
+        nodes = np.arange(16, dtype=np.float32).reshape(2, 8)
+        contexts = np.stack([np.concatenate(((nodes+index*.2)[permutation].flatten(),
+            np.full(5, .05*index, np.float32))) for index, permutation in enumerate(order)])
+        record = dict(contexts=contexts, controls=np.zeros((3, 2, 6), np.float32),
+            orders=order, remaining=np.array([45., 25., 20.]))
+        bank = dict(records=[record, dict(record, contexts=contexts[:2], controls=record['controls'][:2],
+            orders=order[:2], remaining=np.array([25., 5.]))])
+        original = pickle.dumps(bank)
+        indices, targets = measured_factual_response_records(bank)
+        np.testing.assert_array_equal(indices, [0, 3])
+        expected = np.r_[np.full(16, .2), np.full(5, .05), 1.]
+        np.testing.assert_allclose(targets, np.stack((expected, expected)), atol=1e-6)
+        identified = copy.deepcopy(bank)
+        for item in identified['records']:
+            item['contexts'] = append_vessel_identity(torch.from_numpy(item['contexts']),
+                torch.from_numpy(item['orders'])).numpy()
+        identity_ids, identity_targets = measured_factual_response_records(identified)
+        np.testing.assert_array_equal(indices, identity_ids)
+        np.testing.assert_array_equal(targets, identity_targets)
+        self.assertEqual(original, pickle.dumps(bank))
+        identified['records'][0]['contexts'][0, 16] = 0.
+        with self.assertRaisesRegex(ValueError, 'identities'):
+            measured_factual_response_records(identified)
+        with self.assertRaisesRegex(ValueError, 'exactly 20'):
+            measured_factual_response_records(dict(records=[dict(record, remaining=np.array([45., 26., 20.]))]))
+        with self.assertRaisesRegex(ValueError, 'ordered states'):
+            measured_factual_response_records(dict(records=[dict(record, orders=np.zeros_like(order))]))
+
+    def test_factual_response_learning_matches_data_and_excludes_held_out_trajectories(self):
+        import copy
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import fit_joint_potential, LocalDifferenceDecision, PlainJointReturnDecision
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        roots, records = [], []
+        for index in range(6):
+            context = np.full(21, .02*index, np.float32); context[[4, 12]] = 1.
+            scene = (800+index, 2, 2.)
+            roots.append(dict(context=context, effect_controls=controls, futures=[1, 2], scene=scene,
+                options=[(0, 0, 0), (1, 0, 5)], outcomes={(q, f): dict(success=float((index+q+f) % 3 != 0),
+                    duration=.2*(40+index+q+f), following=context+.1*f+.03*q,
+                    response_steps=20, response_sampling='physical_tick') for q in range(2) for f in range(2)}))
+            records.append(dict(scene=scene, contexts=np.stack((context, context+.05)),
+                controls=np.stack((controls, controls)), orders=np.array([[0, 1], [0, 1]]),
+                remaining=np.array([40., 20.]), values=np.full(2, float(index % 2))))
+        data = dict(model={}, roots=roots, predecessor_sha256='trajectory-response', simulation_steps=60)
+        bank = dict(records=records, predecessor_sha256='trajectory-response', trajectories=6, simulation_steps=240)
+        shared = dict(updates=6, ensemble_size=3, width=4, device='cpu', root_sampling_fraction=.5,
+            finite_motion_basis=True, response_supervision_weight=4., response_supervision_architecture='linear',
+            response_conditioned_value=True, response_value_weight=1., value_target='discounted_return',
+            factual_response_supervision=True, physics_residual_response=True)
+        conditional = dict(conditional_strata=True, factual_crossfit=True, paired_response_encoding=True,
+            aligned_response_contrast=True, paired_event_difference=True, response_contrast_weight=1.)
+        with patch('local_intervention_value.torch.save'):
+            paired = fit_joint_potential(data, 'unused-trajectory-response.pth', factual_bank=bank,
+                **shared, **conditional)
+            ordinary = fit_joint_potential(data, 'unused-trajectory-response.pth', factual_bank=bank,
+                **shared, ordinary=True, ordinary_architecture='interaction')
+        for key in ('training_observation_sha256', 'training_target_sha256', 'response_label_sha256',
+                    'factual_response_label_sha256', 'measured_factual_response_labels', 'updates'):
+            self.assertEqual(paired['successor_task_fit'][key], ordinary['successor_task_fit'][key])
+        self.assertEqual(paired['successor_task_fit']['measured_factual_response_labels'], 6)
+        for model, cls in ((paired, LocalDifferenceDecision), (ordinary, PlainJointReturnDecision)):
+            recipe = dict(model['successor_task_value']); recipe.pop('kind')
+            learner = cls(**recipe)
+            self.assertEqual(model['successor_task_fit']['training_parameters_per_member'],
+                sum(parameter.numel() for parameter in learner.models[0].parameters()))
+            self.assertTrue(torch.isfinite(learner.models[0].forward_catalog(
+                torch.from_numpy(context[None]), torch.from_numpy(controls[None]),
+                learner.programs, learner.options[:, 1:])).all())
+        changed = copy.deepcopy(bank)
+        for index, fold in enumerate(paired['successor_task_fit']['factual_crossfit_trajectory_folds']):
+            if fold == 0: changed['records'][index]['contexts'][1, [0, 1, 8, 9]] += .2
+        with patch('local_intervention_value.torch.save'):
+            refit = fit_joint_potential(data, 'unused-trajectory-response.pth', factual_bank=changed,
+                **shared, **conditional)
+        self.assertNotEqual(paired['successor_task_fit']['factual_response_label_sha256'],
+            refit['successor_task_fit']['factual_response_label_sha256'])
+        for name, weight in paired['successor_task_value']['states'][0].items():
+            torch.testing.assert_close(weight, refit['successor_task_value']['states'][0][name], rtol=0., atol=0.)
+        with self.assertRaisesRegex(ValueError, 'measured trajectories'):
+            fit_joint_potential(data, 'unused-trajectory-response.pth', **shared, **conditional)
+        scalar_models = []
+        for is_ordinary, cls in ((False, LocalDifferenceDecision), (True, PlainJointReturnDecision)):
+            with patch('local_intervention_value.torch.save'):
+                scalar = fit_joint_potential(data, 'unused-shared-successor.pth', factual_bank=bank,
+                    **shared, ordinary=is_ordinary, ordinary_architecture='interaction',
+                    shared_successor_value=True, shared_factual_response=True)
+            scalar_models.append(scalar)
+            recipe = dict(scalar['successor_task_value']); recipe.pop('kind')
+            learner = cls(**recipe)
+            self.assertTrue(all(net.shared_successor_value for net in learner.models))
+            self.assertTrue(torch.isfinite(learner.models[0].forward_catalog(
+                torch.from_numpy(context[None]), torch.from_numpy(controls[None]),
+                learner.programs, learner.options[:, 1:])).all())
+            self.assertEqual(scalar['successor_task_fit']['response_value_difference_weight'],
+                0. if is_ordinary else 2.)
+            self.assertFalse(scalar['success_objective'])
+        for key in ('training_observation_sha256', 'training_target_sha256', 'response_label_sha256',
+                    'factual_response_label_sha256', 'training_parameters_per_member', 'updates'):
+            self.assertEqual(scalar_models[0]['successor_task_fit'][key], scalar_models[1]['successor_task_fit'][key])
+
+    def test_public_response_prior_reconstructs_the_successor_world_frame(self):
+        from local_intervention_value import public_physical_response_prior
+        dtype = torch.float64
+        bearing = torch.tensor([.6, .8], dtype=dtype)
+        inward = -bearing
+        radius = 60.
+        relative = torch.tensor([[65., 3.], [70., -4.], [75., 8.]], dtype=dtype)
+        velocity = torch.tensor([[.8, -.1], [-.3, .2], [.2, .5]], dtype=dtype)
+        yaw = torch.tensor([0., .4, -.6], dtype=dtype)
+        angular = torch.tensor([.02, -.01, .03], dtype=dtype)
+        target_velocity = torch.tensor([1.5, .4], dtype=dtype)
+
+        def world(vector):
+            return torch.stack((inward[0]*vector[..., 0]-inward[1]*vector[..., 1],
+                                inward[1]*vector[..., 0]+inward[0]*vector[..., 1]), -1)
+
+        target = radius*bearing
+        position_world = target+world(relative)
+        before = torch.cat((relative/30., velocity/3., torch.stack((yaw.cos(), yaw.sin()), -1),
+                            angular[:, None], position_world.norm(dim=-1, keepdim=True)/30.), -1)
+        global_before = torch.cat((bearing, target_velocity/5., torch.tensor([.1], dtype=dtype)))
+        context = torch.cat((before.flatten(), global_before))[None]
+        following_yaw = yaw+4.*angular
+        states = torch.cat((relative+4.*velocity, following_yaw[:, None], velocity, angular[:, None]), -1)
+        paths = states[None, :, None, None].expand(1, 3, 10, 3, 6)
+        node, global_response = public_physical_response_prior(context, paths)
+        target_after = target+4.*world(target_velocity)
+        new_inward = -target_after/target_after.norm()
+
+        def observed(vector):
+            return torch.stack(((vector*new_inward).sum(-1),
+                                new_inward[0]*vector[..., 1]-new_inward[1]*vector[..., 0]), -1)
+
+        position_after = position_world+4.*world(velocity)
+        following = torch.cat((observed(position_after-target_after)/30., observed(world(velocity))/3.,
+            observed(world(torch.stack((following_yaw.cos(), following_yaw.sin()), -1))),
+            angular[:, None], position_after.norm(dim=-1, keepdim=True)/30.), -1)
+        expected_global = torch.cat((target_after/target_after.norm(), observed(world(target_velocity))/5.,
+                                     torch.tensor([.15], dtype=dtype)))
+        torch.testing.assert_close(node[0, :, 0], following-before, rtol=1e-10, atol=1e-10)
+        torch.testing.assert_close(global_response[0, :5], expected_global-global_before, rtol=1e-10, atol=1e-10)
+        self.assertEqual(float(global_response[0, -1]), 1.)
+        self.assertTrue(torch.equal(node, node[:, :, :1].expand_as(node)))
+
+    def test_predicted_consequences_preserve_catalog_clocks_and_vessel_permutations(self):
+        from local_intervention_value import JointTaskPotential
+        torch.manual_seed(199)
+        context = .05*torch.randn(2, 29)
+        controls = .2*torch.randn(2, 3, 6)
+        programs = torch.tensor([[0, 0, 0], [9, 0, 0], [9, 0, 0], [0, 7, 0], [0, 7, 0], [1, 0, 0]])
+        timing = torch.tensor([[0, 0], [0, 20], [0, 40], [95, 40], [120, 5], [5, 4]])
+        permutation = torch.tensor([2, 0, 1])
+        reordered = torch.cat((context[:, :24].reshape(2, 3, 8)[:, permutation].flatten(1), context[:, -5:]), -1)
+        for dual in (False, True):
+            for paired, physics, shared, scalar in ((False, False, False, False), (True, False, False, False),
+                    (False, True, False, False), (True, True, False, False),
+                    (False, True, True, False), (True, True, True, False), (False, True, True, True)):
+                net = JointTaskPotential(width=8, output_width=3 if paired else 1, context_conditioned=True,
+                    motion_basis=True, finite_motion_basis=True, dual_motion_basis=dual,
+                    paired_response_encoding=paired, aligned_response_contrast=paired,
+                    paired_event_difference=paired, response_conditioned_value=True, physics_residual_response=physics,
+                    shared_factual_response=shared, shared_successor_value=scalar)
+                actual = net.forward_catalog(context, controls, programs, timing)
+                expected = torch.stack([net(context, controls, p[None].expand(2, -1), t[None].expand(2, -1))
+                    for p, t in zip(programs, timing)], 1)
+                torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+                torch.testing.assert_close(actual, net.forward_catalog(reordered, controls[:, permutation],
+                    programs[:, permutation], timing), rtol=2e-5, atol=2e-6)
+                if paired:
+                    torch.testing.assert_close(actual[..., 0], actual[:, :1, 0].expand(-1, len(programs)))
+                    self.assertLess(float(actual[:, 0, 1:].detach().sigmoid().max()), 2e-7)
+                actual.sum().backward()
+                for head in (net.response_node, net.response_global):
+                    self.assertTrue(torch.isfinite(head.weight.grad).all())
+                    self.assertGreater(float(head.weight.grad.abs().sum()), 0.)
+                responses = []
+                for q in (1, 2):
+                    program = programs[q:q+1].expand(2, -1); clock = timing[q:q+1].expand(2, -1)
+                    encoded, representation = net.encode(context, controls, program, clock)
+                    prior = net.physical_prior(context, controls, program, clock)
+                    response = net.response_prediction(encoded, representation, program, clock, prior,
+                        net.factual_response_residual(context, controls) if shared else None)
+                    if physics:
+                        for actual_prior, expected_prior in zip(response, prior):
+                            torch.testing.assert_close(actual_prior, expected_prior, rtol=0., atol=0.)
+                    responses.append(response)
+                for left, right in zip(*responses):
+                    torch.testing.assert_close(left, right, rtol=2e-5, atol=2e-6)
+
+    def test_shared_successor_value_uses_the_same_physical_pool_for_facts_and_interventions(self):
+        from local_intervention_value import JointTaskPotential
+        torch.manual_seed(214)
+        net = JointTaskPotential(width=8, context_conditioned=True, motion_basis=True,
+            finite_motion_basis=True, response_conditioned_value=True, physics_residual_response=True,
+            shared_factual_response=True, shared_successor_value=True)
+        context = .05*torch.randn(2, 29)
+        controls = .2*torch.randn(2, 3, 6)
+        observed = .1*torch.randn(2, 30)
+        clock = torch.zeros(2, 2, dtype=torch.long)
+        factual = torch.zeros(2, 3, dtype=torch.long)
+        program = torch.tensor([[9, 0, 0], [0, 7, 0]])
+        before = net.observed_response_logits(context, controls, factual, clock, observed)
+        after = net.observed_response_logits(context, controls, program, clock, observed)
+        torch.testing.assert_close(before, after, rtol=0., atol=0.)
+        changed = observed.clone(); changed[:, [0, 8, 16]] += .3
+        moved = net.observed_response_logits(context, controls, program, clock, changed)
+        self.assertFalse(torch.allclose(before, moved))
+        (moved.sigmoid()-before.sigmoid()).sum().backward()
+        self.assertGreater(float(net.head[0].weight.grad.abs().sum()), 0.)
+        with self.assertRaisesRegex(ValueError, 'scalar potential'):
+            JointTaskPotential(shared_successor_value=True)
+
+    def test_shared_factual_motion_preserves_factual_value_and_cancels_common_prediction_errors(self):
+        from local_intervention_value import JointTaskPotential, response_basis
+        torch.manual_seed(213)
+        context = .05*torch.randn(2, 29)
+        controls = .2*torch.randn(2, 3, 6)
+        programs = torch.tensor([[9, 0, 0], [0, 7, 0]])
+        timing = torch.tensor([[0, 20], [5, 40]])
+        zero = torch.zeros_like(programs); zero_clock = torch.zeros_like(timing)
+        basis = response_basis(context, controls, timing)
+        for paired in (False, True):
+            net = JointTaskPotential(width=8, output_width=3 if paired else 1, context_conditioned=True,
+                motion_basis=True, finite_motion_basis=True, paired_response_encoding=paired,
+                aligned_response_contrast=paired, paired_event_difference=paired,
+                response_conditioned_value=True, physics_residual_response=True)
+            with torch.no_grad():
+                for head in (net.response_node, net.response_global):
+                    head.weight.normal_(0., .1); head.bias.normal_(0., .1)
+            parameter_count = sum(parameter.numel() for parameter in net.parameters())
+            factual_value = net(context, controls, zero, zero_clock, basis)
+            net.shared_factual_response = True
+            torch.testing.assert_close(net(context, controls, zero, zero_clock, basis), factual_value)
+            residual = net.factual_response_residual(context, controls, basis)
+            predicted = []; priors = []
+            for choices, clock in ((zero, zero_clock), (programs, timing)):
+                encoded, representation = net.encode(context, controls, choices, clock, basis)
+                prior = net.physical_prior(context, controls, choices, clock, basis)
+                prediction = net.response_prediction(encoded, representation, choices, clock, prior, residual)
+                predicted.append(torch.cat((prediction[0].flatten(1), prediction[1]), -1))
+                priors.append(torch.cat((prior[0].flatten(1), prior[1]), -1))
+            torch.testing.assert_close(predicted[1]-predicted[0], priors[1]-priors[0])
+            expected = net.observed_response_logits(context, controls, programs, timing,
+                predicted[1], predicted[0])
+            torch.testing.assert_close(net(context, controls, programs, timing, basis), expected)
+            self.assertEqual(sum(parameter.numel() for parameter in net.parameters()), parameter_count)
+        with self.assertRaisesRegex(ValueError, 'public physical response prior'):
+            JointTaskPotential(shared_factual_response=True)
+
+    def test_measured_consequence_teacher_shares_value_head_without_future_decoder_gradients(self):
+        from local_intervention_value import JointTaskPotential, response_basis
+        torch.manual_seed(208)
+        context = .05*torch.randn(2, 29)
+        controls = .2*torch.randn(2, 3, 6)
+        programs = torch.tensor([[0, 7, 0], [9, 0, 0]])
+        timing = torch.tensor([[5, 10], [0, 20]])
+        basis = response_basis(context, controls, timing)
+        for paired in (False, True):
+            net = JointTaskPotential(width=8, output_width=3 if paired else 1, context_conditioned=True,
+                motion_basis=True, finite_motion_basis=True, paired_response_encoding=paired,
+                aligned_response_contrast=paired, paired_event_difference=paired,
+                response_conditioned_value=True, physics_residual_response=True)
+            targets = []
+            with torch.no_grad():
+                for choices, clock in ((programs, timing), (torch.zeros_like(programs), torch.zeros_like(timing))):
+                    encoded, representation = net.encode(context, controls, choices, clock, basis)
+                    node, global_response = net.response_prediction(encoded, representation, choices, clock,
+                        net.physical_prior(context, controls, choices, clock, basis))
+                    targets.append(torch.cat((node.flatten(1), global_response), -1))
+            expected = net(context, controls, programs, timing, basis)
+            teacher = net.observed_response_logits(context, controls, programs, timing, targets[0],
+                factual=targets[1])
+            torch.testing.assert_close(teacher, expected, rtol=0., atol=0.)
+            teacher.sum().backward()
+            self.assertIsNone(net.response_node.weight.grad)
+            self.assertIsNone(net.response_global.weight.grad)
+            self.assertIsNone(net.node[0].weight.grad)
+            self.assertGreater(float(net.future_node[0].weight.grad.abs().sum()), 0.)
+            self.assertGreater(float(net.head[-1].weight.grad.abs().sum()), 0.)
+            if paired:
+                self.assertGreater(float(net.paired_head[-1].weight.grad.abs().sum()), 0.)
+                with self.assertRaisesRegex(ValueError, 'same-future factual'):
+                    net.observed_response_logits(context, controls, programs, timing, targets[0])
+            with self.assertRaisesRegex(ValueError, 'aligned physical labels'):
+                net.observed_response_logits(context, controls, programs, timing, targets[0][:, :-1])
+
+    def test_held_out_physical_effects_do_not_change_training_scales_or_weights(self):
+        import copy
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import fit_joint_potential
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        roots = []
+        for index in range(6):
+            context = np.full(21, .02*index, np.float32); context[[4, 12]] = 1.
+            roots.append(dict(context=context, effect_controls=controls, futures=[1, 2], scene=(100+index, 2, 2.),
+                options=[(0, 0, 0), (1, 0, 5)], outcomes={(q, f): dict(success=float((index+q+f) % 3 != 0),
+                    duration=.2*(40+index+q+f), following=context+.1*f+.03*q,
+                    response_steps=20, response_sampling='physical_tick')
+                    for q in range(2) for f in range(2)}))
+        data = dict(model={}, roots=roots, predecessor_sha256='physical-crossfit', simulation_steps=60)
+        settings = dict(updates=6, ensemble_size=3, width=4, device='cpu', conditional_strata=True,
+            factual_crossfit=True, root_sampling_fraction=.5, paired_response_encoding=True,
+            aligned_response_contrast=True, paired_event_difference=True, finite_motion_basis=True,
+            response_supervision_weight=4., response_supervision_architecture='linear',
+            response_conditioned_value=True, response_contrast_weight=1., response_value_weight=1.,
+            value_target='discounted_return')
+        with patch('local_intervention_value.torch.save'):
+            model = fit_joint_potential(data, 'unused-physical-crossfit-test.pth', **settings)
+        changed = copy.deepcopy(data)
+        for index, fold in enumerate(model['successor_task_fit']['factual_crossfit_root_folds']):
+            if fold == 0:
+                for (q, future), outcome in changed['roots'][index]['outcomes'].items():
+                    if q: outcome['following'] += 100.
+                    outcome['duration'] += .2*(q+1)
+        with patch('local_intervention_value.torch.save'):
+            refit = fit_joint_potential(changed, 'unused-physical-crossfit-test.pth', **settings)
+        np.testing.assert_array_equal(model['successor_task_fit']['response_contrast_scales'][0],
+                                      refit['successor_task_fit']['response_contrast_scales'][0])
+        self.assertNotEqual(model['successor_task_fit']['response_contrast_label_sha256'],
+                            refit['successor_task_fit']['response_contrast_label_sha256'])
+        self.assertNotEqual(model['successor_task_fit']['training_target_sha256'],
+                            refit['successor_task_fit']['training_target_sha256'])
+        for name, weight in model['successor_task_value']['states'][0].items():
+            torch.testing.assert_close(weight, refit['successor_task_value']['states'][0][name], rtol=0., atol=0.)
+
+    def test_response_conditioned_matched_fits_reload_without_future_inputs(self):
+        import io
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import fit_joint_potential, LocalDifferenceDecision, PlainJointReturnDecision
+        context = np.zeros(21, np.float32); context[[4, 12]] = 1.
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        root = dict(context=context, effect_controls=controls, futures=[1, 2],
+            options=[(0, 0, 0), (1, 0, 5), (10, 3, 20)],
+            outcomes={(q, f): dict(success=float(q == f), following=context+.01*q,
+                response_steps=20-f, response_sampling='physical_tick') for q in range(3) for f in range(2)})
+        data = dict(model={}, roots=[root], predecessor_sha256='response-value-test', simulation_steps=40)
+        models = []
+        for ordinary, contrast_weight, physics, value_weight, shared in (
+                (False, 0., False, 0., False), (False, 1., False, 0., False), (True, 0., False, 0., False),
+                (False, 1., True, 0., False), (True, 0., True, 0., False), (False, 1., True, 1., False),
+                (True, 0., True, 1., False), (False, 0., True, 1., True), (True, 0., True, 1., True)):
+            with patch('local_intervention_value.torch.save'):
+                model = fit_joint_potential(data, 'unused-response-value-test.pth', updates=2, ensemble_size=1,
+                    width=4, device='cpu', ordinary=ordinary, ordinary_architecture='interaction',
+                    conditional_strata=not ordinary, paired_response_encoding=not ordinary,
+                    aligned_response_contrast=not ordinary, paired_event_difference=not ordinary,
+                    finite_motion_basis=True, response_supervision_weight=4.,
+                    response_supervision_architecture='linear', response_conditioned_value=True,
+                    response_contrast_weight=contrast_weight, physics_residual_response=physics,
+                    response_value_weight=value_weight, shared_factual_response=shared)
+            buffer = io.BytesIO(); torch.save(model, buffer); buffer.seek(0)
+            model = torch.load(buffer, weights_only=False)
+            recipe = dict(model['successor_task_value']); recipe.pop('kind')
+            learner = PlainJointReturnDecision(**recipe) if ordinary else LocalDifferenceDecision(**recipe)
+            self.assertTrue(model['successor_task_fit']['response_heads_used_at_inference'])
+            self.assertEqual(model['successor_task_fit']['physics_residual_response'], physics)
+            self.assertEqual(model['successor_task_fit']['shared_factual_response'], shared)
+            self.assertTrue(all(net.shared_factual_response == shared for net in learner.models))
+            self.assertEqual(model['successor_task_fit']['measured_response_contrasts'], 4 if contrast_weight else 0)
+            self.assertEqual(len(model['successor_task_fit']['response_contrast_scales']), int(bool(contrast_weight)))
+            self.assertEqual(model['successor_task_fit']['response_value_weight'], value_weight)
+            self.assertEqual(model['successor_task_fit']['measured_response_value_pairs'], 4 if value_weight else 0)
+            self.assertEqual(model['successor_task_fit']['training_parameters_per_member'],
+                             sum(parameter.numel() for parameter in learner.models[0].parameters()))
+            value = learner.models[0].forward_catalog(torch.from_numpy(context[None]),
+                torch.from_numpy(controls[None]), learner.programs, learner.options[:, 1:])
+            self.assertTrue(torch.isfinite(value).all())
+            models.append(model)
+        for key in ('training_observation_sha256', 'response_label_sha256', 'updates', 'measured_response_labels'):
+            for other in models[1:]:
+                self.assertEqual(models[0]['successor_task_fit'][key], other['successor_task_fit'][key])
+        with self.assertRaisesRegex(ValueError, 'supervised linear response'):
+            fit_joint_potential(data, 'unused-response-value-test.pth', response_conditioned_value=True)
+        with self.assertRaisesRegex(ValueError, 'paired response-conditioned'):
+            fit_joint_potential(data, 'unused-response-value-test.pth', response_contrast_weight=1.)
+        with self.assertRaisesRegex(ValueError, 'physical response prior'):
+            fit_joint_potential(data, 'unused-response-value-test.pth', physics_residual_response=True)
+        with self.assertRaisesRegex(ValueError, 'Measured consequence values'):
+            fit_joint_potential(data, 'unused-response-value-test.pth', response_value_weight=1.)
+        with self.assertRaisesRegex(ValueError, 'paired response-conditioned'):
+            fit_joint_potential(data, 'unused-response-value-test.pth', ordinary=True,
+                finite_motion_basis=True, response_supervision_weight=4., response_supervision_architecture='linear',
+                response_conditioned_value=True, response_contrast_weight=1.)
+
+    def test_discounted_task_targets_preserve_measured_outcomes_and_dense_timing(self):
+        import numpy as np
+        from local_intervention_value import discounted_task_values, measured_root_values, paired_difference_loss
+        success = np.array([0., 1., 1., 0.]); ticks = np.array([1, 1, 40, 400])
+        values = discounted_task_values(success, ticks)
+        expected = []
+        for outcome, count in zip(success, ticks):
+            rewards = np.full(count, -.001); rewards[-1] += 2*outcome-1
+            expected.append((np.power(.995, np.arange(count))@rewards+1.001)/2)
+        np.testing.assert_allclose(values, expected, rtol=0., atol=1e-13)
+        np.testing.assert_array_equal(values[:2], [0., 1.])
+        self.assertLess(values[2], values[1])
+        self.assertGreater(values[3], values[0])
+        root = dict(root_steps=5, outcomes={(0, 0): dict(success=1., duration=9.),
+            (1, 0): dict(success=1., duration=5.)})
+        self.assertEqual(measured_root_values(root), {(0, 0): 1., (1, 0): 1.})
+        self.assertGreater(measured_root_values(root, 'discounted_return')[1, 0],
+                           measured_root_values(root, 'discounted_return')[0, 0])
+        logits = torch.tensor([[.2, -.3, .1], [.4, -.1, .5]], requires_grad=True)
+        probabilities = logits.softmax(-1); difference = torch.tensor([.2, -.4])
+        target = torch.tensor([[.8, .2, 0.], [.6, 0., .4]])
+        loss = paired_difference_loss(probabilities, difference, 'discounted_return')
+        torch.testing.assert_close(loss, -(target*probabilities.log()).sum(-1))
+        loss.sum().backward(); self.assertTrue(torch.isfinite(logits.grad).all())
+        binary = torch.tensor([1., -1.])
+        torch.testing.assert_close(paired_difference_loss(probabilities, binary),
+            paired_difference_loss(probabilities, binary, 'discounted_return'), rtol=0., atol=0.)
+        for remaining in (0, 401, 1.2, float('nan')):
+            with self.assertRaises(ValueError): discounted_task_values(1., remaining)
+
+    def test_return_reconciliation_uses_paired_duration_and_effective_futures(self):
+        import copy
+        import numpy as np
+        from local_intervention_value import reconcile_root, measured_root_values
+        root = dict(context=np.zeros(21, np.float32), futures=[1, 2], root_steps=5,
+            options=[(0, 0, 0), (1, 0, 10), (10, 0, 10)],
+            outcomes={(q, f): dict(success=1., duration=duration+.2*f)
+                for q, duration in enumerate((21., 5., 41.)) for f in range(2)})
+        original = copy.deepcopy(root)
+        result = reconcile_root(root, [.7, .7, .7], value_target='discounted_return')
+        self.assertGreater(result[0][1], result[0][0])
+        self.assertLess(result[0][2], result[0][0])
+        self.assertAlmostEqual(result[0][0], np.mean([measured_root_values(root, 'discounted_return')[0, f] for f in range(2)]))
+        repeated = reconcile_root(dict(root, future_weights=np.array([100., 100.])),
+            [.7, .7, .7], value_target='discounted_return')
+        np.testing.assert_allclose(result[0], repeated[0], rtol=0., atol=1e-14)
+        np.testing.assert_allclose(result[1], repeated[1], rtol=0., atol=1e-14)
+        self.assertEqual(result[3]['paired_effective_count'][1], 2.)
+        self.assertGreater(result[1][1], 0.)
+        self.assertEqual(root['outcomes'], original['outcomes'])
+
+    def test_discounted_response_fits_share_targets_reload_and_recalibrate(self):
+        import copy
+        import io
+        import pickle
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import fit_joint_potential, LocalDifferenceDecision, PlainJointReturnDecision, refresh_local_calibration
+        context = np.zeros(21, np.float32); context[[4, 12]] = 1.
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        root = dict(context=context, effect_controls=controls, futures=[1, 2], root_steps=5,
+            options=[(0, 0, 0), (1, 0, 5), (10, 3, 20)],
+            outcomes={(q, f): dict(success=float(q == f), duration=.2*(40+3*q+f), following=context+.01*q,
+                response_steps=20-f, response_sampling='physical_tick') for q in range(3) for f in range(2)})
+        data = dict(model={}, roots=[root], predecessor_sha256='return-value-test', simulation_steps=40)
+        bank = dict(records=[dict(contexts=np.stack((context, context+.01)), controls=np.stack((controls, controls)),
+            values=np.array([1., 0.]), remaining=np.array([35., 20.]))], predecessor_sha256='return-value-test',
+            trajectories=1, simulation_steps=40)
+        before = pickle.dumps((data, bank)); models = []
+        for ordinary in (False, True):
+            with patch('local_intervention_value.torch.save'):
+                model = fit_joint_potential(data, 'unused-return-value-test.pth', factual_bank=bank,
+                    updates=2, ensemble_size=1, width=4, device='cpu', ordinary=ordinary,
+                    ordinary_architecture='interaction', conditional_strata=not ordinary,
+                    paired_response_encoding=not ordinary, aligned_response_contrast=not ordinary,
+                    paired_event_difference=not ordinary, finite_motion_basis=True,
+                    response_supervision_weight=4., response_supervision_architecture='linear',
+                    response_conditioned_value=True, response_contrast_weight=0. if ordinary else 1.,
+                    physics_residual_response=True, response_value_weight=1., value_target='discounted_return')
+            buffer = io.BytesIO(); torch.save(model, buffer); buffer.seek(0)
+            model = torch.load(buffer, weights_only=False)
+            recipe = dict(model['successor_task_value']); recipe.pop('kind')
+            learner = PlainJointReturnDecision(**recipe) if ordinary else LocalDifferenceDecision(**recipe)
+            prediction = learner.models[0].forward_catalog(torch.from_numpy(context[None]),
+                torch.from_numpy(controls[None]), learner.programs, learner.options[:, 1:])
+            self.assertTrue(torch.isfinite(prediction).all())
+            self.assertEqual(model['successor_task_fit']['value_target'], 'discounted_return')
+            self.assertFalse(model['success_objective'])
+            if not ordinary:
+                self.assertFalse(recipe['temporal_value_bounds'])
+                recalibrated = refresh_local_calibration(model, data, device='cpu')
+                np.testing.assert_allclose(recalibrated['successor_task_value']['corrections'], recipe['corrections'], atol=1e-6)
+                refreshed = refresh_local_calibration(model, data, device='cpu', confidence_only=True)
+                np.testing.assert_allclose(refreshed['successor_task_value']['uncertainty'], recipe['uncertainty'], atol=1e-6)
+            models.append(model)
+        self.assertEqual(before, pickle.dumps((data, bank)))
+        for key in ('training_observation_sha256', 'training_target_sha256', 'response_label_sha256', 'updates'):
+            self.assertEqual(models[0]['successor_task_fit'][key], models[1]['successor_task_fit'][key])
+        self.assertNotIn('discounted_return', str(data['roots'][0]['outcomes']))
+        with self.assertRaisesRegex(ValueError, 'paired difference learning'):
+            fit_joint_potential(data, 'unused-return-value-test.pth', value_target='discounted_return')
 
     def test_actuator_resolution_retains_source_hull_and_exact_reference(self):
         from conditional_fusion_value import actuator_candidate_grid
