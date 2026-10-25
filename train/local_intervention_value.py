@@ -5439,7 +5439,8 @@ def recurrent_observed_options(trajectory, orders, actor, period=5):
     return np.asarray(result, dtype=np.int64)
 
 
-def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root_selector=None, recurrent_m2=False):
+def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root_selector=None, recurrent_m2=False,
+                             fixed_inference_width=0):
     """Measure factual trajectories with batched copies of the same controller."""
     import conditional_fusion_value as c
     import develop_source_fusion as d
@@ -5463,7 +5464,8 @@ def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root
     r.SOURCE = d.SOURCE
     measured = r.batched_credit_rows(policy, [(t[1], t[2]) for t in tasks],
         batch_size=len(tasks), device=device, keep_steps=True, initial_jobs=jobs,
-        root_sample_seed=root_sample_seed, root_selector=root_selector, recurrent_m2=recurrent_m2)
+        root_sample_seed=root_sample_seed, root_selector=root_selector, recurrent_m2=recurrent_m2,
+        fixed_inference_width=fixed_inference_width)
     records = []
     actor = d.joint_load(str(policy), policy.stat().st_mtime_ns).to(device)
     try:
@@ -5471,7 +5473,7 @@ def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root
             _, scene, future, expected, period = task
             row = trajectory['row']; selected = trajectory['steps'][::period]
             if expected is not None and row['success'] != expected:
-                if root_sample_seed is not None:
+                if root_sample_seed is not None or fixed_inference_width:
                     raise ValueError('A sampled factual root must retain its actual batched trajectory.')
                 # Resolve a discrete decision near a floating-point tie with
                 # the canonical single-episode evaluator used by the reference.
@@ -5487,9 +5489,13 @@ def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root
                     group = selected[start:start+64]
                     packet = {key: torch.as_tensor(np.stack([item['packet'][key] for item in group]),
                               device=device) for key in group[0]['packet']}
-                    native = actor(packet, deterministic=True, gate_only=True)[0]
+                    native = r.fixed_batch_inference(
+                        lambda batch: actor(batch, deterministic=True, gate_only=True)[0],
+                        packet, width=fixed_inference_width)
                     context, order = c.intervention_task_context(packet, True, True)
-                    effect = c.paired_effect_controls(actor, packet, native)
+                    effect = r.fixed_batch_inference(
+                        lambda batch, action: c.paired_effect_controls(actor, batch, action),
+                        packet, native, width=fixed_inference_width)
                     contexts.append(context.cpu().numpy())
                     orders.append(order.cpu().numpy())
                     controls.append(effect.gather(1, order[..., None].expand(-1, -1, 6)).cpu().numpy())
@@ -5505,6 +5511,8 @@ def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root
                 records[-1]['root_snapshot']=dict(trajectory['root_snapshot'],
                     predecessor_sha256=hashlib.sha256(policy.read_bytes()).hexdigest(),
                     inference_batch=len(tasks),inference_device=device,root_sample_seed=int(root_sample_seed))
+                if fixed_inference_width:
+                    records[-1]['root_snapshot']['fixed_inference_width']=fixed_inference_width
     finally:
         actor.cpu()
     return records
@@ -5512,7 +5520,7 @@ def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root
 
 def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
                                   period=5, inference_batch=32, inference_device='cuda:0', root_selector=None,
-                                  recurrent_m2=False):
+                                  recurrent_m2=False, fixed_inference_width=0):
     """Sample one eligible decision state from each fresh factual episode.
 
     Reservoir sampling follows the deployed batched controller without
@@ -5524,6 +5532,9 @@ def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
     import run_remote_evidence as r
     if period < 1 or inference_batch < 1 or int(root_sample_seed) < 0:
         raise ValueError('Factual root sampling needs a positive period and batch, and a nonnegative seed.')
+    if (not isinstance(fixed_inference_width,int) or isinstance(fixed_inference_width,bool)
+            or fixed_inference_width<0 or fixed_inference_width and root_selector is not None):
+        raise ValueError('Fixed factual inference requires a nonnegative integer width and uniform root selection.')
     if root_selector is not None and (period != 5 or
             not isinstance(root_selector, FactualProposalRootSelector)):
         raise ValueError('Directed factual roots require a native proposal selector at the deployed decision period.')
@@ -5536,6 +5547,7 @@ def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
         root_sample_seed=int(root_sample_seed),inference_batch=inference_batch,
         inference_device=inference_device,
         root_sampling='uniform eligible factual decision state; separate reservoir random stream')
+    if fixed_inference_width:specification['fixed_inference_width']=fixed_inference_width
     if recurrent_m2:
         if period != 5:
             raise ValueError('Recurrent state sampling must retain the five-tick decision clock.')
@@ -5548,6 +5560,7 @@ def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
         dict(records=[],simulation_steps=0,trajectories=0,state_labels=0,completed=False,
             **specification))
     if (bool(bank.get('recurrent_m2',False)) != recurrent_m2
+            or bank.get('fixed_inference_width',0) != fixed_inference_width
             or any(bank.get(key)!=value for key,value in specification.items())):
         raise ValueError('Saved factual roots use a different predecessor, tasks, sampler or inference batch.')
     records=bank['records']
@@ -5562,7 +5575,7 @@ def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
     for begin in range(len(records),len(tasks),inference_batch):
         group=[(str(policy),scene,future,None,period) for scene,future in tasks[begin:begin+inference_batch]]
         measured=factual_trajectory_batch(group,device=inference_device,root_sample_seed=root_sample_seed,
-            root_selector=root_selector,recurrent_m2=recurrent_m2)
+            root_selector=root_selector,recurrent_m2=recurrent_m2,fixed_inference_width=fixed_inference_width)
         for row in measured:
             snapshot=row['root_snapshot']
             if snapshot['predecessor_sha256']!=digest or snapshot['root_steps']>=row['physical_steps']:
@@ -5650,7 +5663,7 @@ def factual_bank_from_model(model, data):
 
 
 def source_successor_batches(tasks, *, batch_size=128, device='cpu', physical_response_horizon=0,
-                             recurrent_m2=False):
+                             recurrent_m2=False, fixed_inference_width=0):
     """Batch finite interventions, optionally followed by a frozen recurrent policy."""
     import develop_source_fusion as d
     import run_remote_evidence as r
@@ -5676,7 +5689,7 @@ def source_successor_batches(tasks, *, batch_size=128, device='cpu', physical_re
         rows = r.batched_credit_rows(policy, [(scene, future) for _, _, scene, future, _ in group],
             batch_size=batch_size, device=device, initial_jobs=[job for _, job, _, _, _ in group],
             response_tick=[tick for _, _, _, _, tick in group],
-            physical_response_tick=physical_response_horizon or None)
+            physical_response_tick=physical_response_horizon or None,fixed_inference_width=fixed_inference_width)
         for (index, _, _, _, _), row in zip(group, rows):
             result[index] = row
     return result
@@ -5943,10 +5956,13 @@ def _recollect_snapshot_root_batch(task):
     feedback_relative_hold = task[7] if len(task) > 7 else False
     feedback_relative_scale = task[8] if len(task) > 8 else None
     recurrent_m2 = task[9] if len(task) > 9 else False
+    fixed_inference_width = task[10] if len(task) > 10 else 0
     policy = Path(policy)
     digest = hashlib.sha256(policy.read_bytes()).hexdigest()
     r.initialize_source_branches(str(d.SOURCE))
-    actor = d.joint_load(str(policy), policy.stat().st_mtime_ns).cpu()
+    if fixed_inference_width:torch.backends.cuda.matmul.allow_tf32=False
+    actor = d.joint_load(str(policy), policy.stat().st_mtime_ns).to(
+        inference_device if fixed_inference_width else 'cpu')
     if actor.successor_task_value is not None and not recurrent_m2:
         raise ValueError('Snapshot comparisons require their frozen predecessor without M2.')
     if recurrent_m2:
@@ -5964,12 +5980,20 @@ def _recollect_snapshot_root_batch(task):
             raise ValueError('Batched roots need actual snapshots from this exact predecessor and clock.')
         scene = tuple(original['scene']); n = int(scene[1])
         env = copy.deepcopy(snapshot['environment']); obs = snapshot['observation'].copy()
-        packet = d.mechanism_tensor(d.joint_packet(env, obs))
+        public_packet = d.mechanism_tensor(d.joint_packet(env, obs))
+        packet = public_packet
+        if fixed_inference_width:
+            packet = {key: value.to(inference_device) for key, value in packet.items()}
         with torch.no_grad():
-            control = actor(packet, deterministic=True, gate_only=True)[0][0].numpy()[:, :3]
-            context, order = c.intervention_task_context(packet, True, True)
-            effect = c.paired_effect_controls(actor, packet, torch.as_tensor(control[None]))
-        inverse = order[0].argsort().numpy(); one = np.ones((n, 1), np.float32)
+            native = r.fixed_batch_inference(
+                lambda batch: actor(batch, deterministic=True, gate_only=True)[0],
+                packet, width=fixed_inference_width)
+            control = native[0].cpu().numpy()[:, :3]
+            context, order = c.intervention_task_context(public_packet, True, True)
+            effect = r.fixed_batch_inference(
+                lambda batch, action: c.paired_effect_controls(actor, batch, action),
+                packet, native[..., :3], width=fixed_inference_width)
+        inverse = order[0].argsort().cpu().numpy(); one = np.ones((n, 1), np.float32)
         options = list(map(tuple, original['options']))
         if recurrent_m2 and (int(snapshot['root_steps']) % recurrence['decision_period'] or
                 any(option != (0, 0, 0) and option[1:] != (0, 5) for option in options)):
@@ -5980,7 +6004,7 @@ def _recollect_snapshot_root_batch(task):
                 raise ValueError('Policy-local roots require their actual frozen-policy reference option.')
             with torch.no_grad():
                 query_context, query_order = actor.successor_task_value.public_context(packet)
-                if not torch.equal(query_order, order):
+                if not torch.equal(query_order.cpu(), order.cpu()):
                     raise ValueError('The policy-local reference must use the same vessel ordering.')
                 selected = actor.successor_task_value.selected_catalog_indices(query_context, effect[:, order[0]])
                 reference = tuple(actor.successor_task_value.options[selected[0]].tolist())
@@ -6002,12 +6026,13 @@ def _recollect_snapshot_root_batch(task):
                     np.zeros((n, 2), np.float32), delay*one, first, preference,
                     np.zeros_like(one)), -1))
         position = len(roots)
-        roots.append(dict(context=context[0].numpy(), effect_controls=effect[0, order[0]].numpy(),
+        roots.append(dict(context=context[0].cpu().numpy(),
+            effect_controls=effect[0, order[0].to(effect.device)].cpu().numpy(),
             options=options, outcomes={}, futures=list(original['futures']), scene=scene,
             feedback_relative_hold=feedback_relative_hold,
             feedback_relative_scale=feedback_relative_scale,
             prefix_future=original['prefix_future'], root_steps=int(snapshot['root_steps']),
-            lookback=original.get('lookback'), order=order[0].numpy(),
+            lookback=original.get('lookback'), order=order[0].cpu().numpy(),
             future_weights=np.asarray(original.get('future_weights', np.ones(len(original['futures']))), np.float32),
             design_root=root_id, root_sampling=dict(kind=snapshot.get('selection_reason', 'uniform_eligible_factual_state'),
                 eligible_states=snapshot['eligible_states'], root_sample_seed=snapshot['root_sample_seed'],
@@ -6027,7 +6052,8 @@ def _recollect_snapshot_root_batch(task):
                 max(1, physical_response_horizon, options[q][1]+options[q][2])))
             identities.append((position, q, f))
     measured = source_successor_batches(jobs, batch_size=inference_batch, device=inference_device,
-        physical_response_horizon=physical_response_horizon, recurrent_m2=recurrent_m2)
+        physical_response_horizon=physical_response_horizon, recurrent_m2=recurrent_m2,
+        fixed_inference_width=fixed_inference_width)
     continuation_controls = {}
     if response_feature_batch:
         # These are features of already measured states. Encoding them in
@@ -6048,8 +6074,12 @@ def _recollect_snapshot_root_batch(task):
                         batch = group[begin:begin+response_feature_batch]
                         packet = {name:torch.as_tensor(np.stack([record[name] for _, record in batch]),
                             device=inference_device, dtype=torch.float32) for name in batch[0][1]}
-                        native = actor(packet, deterministic=True, gate_only=True)[0]
-                        controls = c.paired_effect_controls(actor, packet, native).cpu().numpy()
+                        native = r.fixed_batch_inference(
+                            lambda batch: actor(batch, deterministic=True, gate_only=True)[0],
+                            packet, width=fixed_inference_width)
+                        controls = r.fixed_batch_inference(
+                            lambda batch, action: c.paired_effect_controls(actor, batch, action),
+                            packet, native, width=fixed_inference_width).cpu().numpy()
                         continuation_controls.update((index, controls[local])
                             for local, (index, _) in enumerate(batch))
         finally:
@@ -6109,7 +6139,7 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
                             inference_batch=32, inference_device='cpu', physical_response_horizon=0,
                             root_batch_size=1, isolate_factual_start=False, response_feature_batch=0,
                             resume_inference_batch=False, feedback_relative_hold=False,
-                            feedback_relative_scale=None, continuation_base_policy=None):
+                            feedback_relative_scale=None, continuation_base_policy=None, fixed_inference_width=0):
     """Measure bounded roots with an explicit, resumable inference schedule."""
     import develop_source_fusion as d
     import run_remote_evidence as r
@@ -6139,6 +6169,9 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
         raise ValueError('Root-parallel acquisition requires a bounded paired design.')
     if workers < 1 or inference_batch < 0:
         raise ValueError('Use a positive worker count and nonnegative branch batch size.')
+    if (not isinstance(fixed_inference_width, int) or isinstance(fixed_inference_width, bool)
+            or fixed_inference_width < 0 or fixed_inference_width and root_batch_size <= 1):
+        raise ValueError('Fixed inference requires snapshot batches and a nonnegative integer width.')
     if (not isinstance(root_batch_size, int) or root_batch_size < 1 or
             (root_batch_size > 1 and (not inference_batch or
              any('root_snapshot' not in root for root in blueprint['roots'])))):
@@ -6165,11 +6198,12 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
             simulation_steps=0, next_design_root=0, completed=False, inherited_labels=False,
             training_data=str(output), inference_batch=inference_batch,
             inference_device=inference_device, root_dispatch_kind='independent_bounded_roots',
-            root_batch_size=root_batch_size))
+            root_batch_size=root_batch_size, fixed_inference_width=fixed_inference_width))
     changed_batch = result['inference_batch'] != inference_batch
     if (result['predecessor_sha256'] != digest or result['acquisition_design'] != design
             or (changed_batch and not resume_inference_batch) or result['inference_device'] != inference_device
             or result.get('root_batch_size', 1) != root_batch_size
+            or result.get('fixed_inference_width', 0) != fixed_inference_width
             or (result.get('isolate_factual_start', False) != isolate_factual_start and result['roots'])
             or (result.get('feedback_relative_hold', False) != feedback_relative_hold and result['roots'])
             or (result.get('feedback_relative_scale') != feedback_relative_scale and result['roots'])
@@ -6177,6 +6211,8 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
         raise ValueError('The saved breadth data uses a different predecessor, design or branch batch.')
     if physical_response_horizon:
         result['physical_response_horizon'] = physical_response_horizon
+    if fixed_inference_width:
+        result['fixed_inference_width'] = fixed_inference_width
     if isolate_factual_start:
         result['isolate_factual_start'] = True
     if feedback_relative_hold:
@@ -6232,7 +6268,9 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
         pending = [(str(policy), [(index, blueprint['roots'][index])
             for index in range(begin, min(begin+root_batch_size, len(blueprint['roots'])))],
             inference_batch, inference_device, physical_response_horizon)
-            + ((isolate_factual_start, response_feature_batch, feedback_relative_hold, feedback_relative_scale, True)
+            + ((isolate_factual_start, response_feature_batch, feedback_relative_hold, feedback_relative_scale,
+                recurrence is not None, fixed_inference_width) if fixed_inference_width else
+               (isolate_factual_start, response_feature_batch, feedback_relative_hold, feedback_relative_scale, True)
                if recurrence is not None else
                (isolate_factual_start, response_feature_batch, feedback_relative_hold, feedback_relative_scale)
                if feedback_relative_scale is not None else

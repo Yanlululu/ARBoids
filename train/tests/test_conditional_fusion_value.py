@@ -10,7 +10,7 @@ from conditional_fusion_value import (
 class ConditionalFusionValueTests(unittest.TestCase):
     def test_factual_calibration_preserves_trajectory_mass_and_validation_split(self):
         import numpy as np
-        from paired_successor_value import measured_factual_values, measured_pairs, fit_successor
+        from paired_successor_value import measured_factual_values, measured_pairs, fit_successor, physical_response
         records=[]; roots=[]
         for index,count in enumerate((1,4,2)):
             context=np.full(13,index/10.,np.float32)
@@ -32,6 +32,10 @@ class ConditionalFusionValueTests(unittest.TestCase):
         self.assertAlmostEqual(float((factual['target']*factual['sampling_weight']).sum()
                                    /factual['sampling_weight'].sum()),.5)
         data=dict(completed=True,roots=roots)
+        physical=dict(following=roots[0]['context']+.2,response_steps=20,response_sampling='physical_tick')
+        np.testing.assert_allclose(physical_response(roots[0],physical,20),np.full(13,.2),rtol=1e-6)
+        self.assertIsNone(physical_response(roots[0],physical,5))
+        self.assertIsNone(physical_response(roots[0],roots[0]['outcomes'][1,0],20))
         tensors,_=measured_pairs([data],training)
         torch.testing.assert_close(tensors['population_weight'],torch.tensor([2.,3.]))
         split=dict(successor_task_fit=dict(training_layouts=training,validation_layouts=validation),
@@ -42,9 +46,23 @@ class ConditionalFusionValueTests(unittest.TestCase):
         self.assertEqual(fitted['fit']['population_weight_range'],[2.,3.])
         self.assertTrue(all(bool(torch.isfinite(parameter).all())
                             for parameter in fitted['networks'][0].parameters()))
+        import copy
+        terminal_only=copy.deepcopy(data)
+        for root in terminal_only['roots']:
+            for outcome in root['outcomes'].values():
+                outcome.pop('continuation_context')
+                outcome.pop('continuation_order')
+        fitted=fit_successor([terminal_only],terminal_only,split,paired=True,updates=2,
+            members=1,width=8,batch_size=4,value_form='paired_subject_outcome',
+            complete_catalog=False,factual_banks=[bank],physical_weight=0.,response_difference_weight=0.)
+        self.assertEqual(fitted['fit']['physical_pairs'],0)
+        self.assertFalse(fitted['fit']['physical_supervision'])
+        self.assertTrue(all(bool(torch.isfinite(parameter).all())
+                            for parameter in fitted['networks'][0].parameters()))
 
     def test_paired_outcome_value_preserves_factual_mass_and_measured_credit(self):
-        from paired_successor_value import PairedOutcomeSuccessorNetwork, paired_outcome_conditional_loss
+        from paired_successor_value import (PairedOutcomeSuccessorNetwork, SubjectOutcomeSuccessorNetwork,
+                                            paired_outcome_conditional_loss)
         factual=torch.logit(torch.tensor([.8,.8,.2]))
         rescue=torch.logit(torch.tensor([.6,.6,.5]))
         harm=torch.logit(torch.tensor([.1,.1,.25]))
@@ -67,6 +85,19 @@ class ConditionalFusionValueTests(unittest.TestCase):
         self.assertEqual(response.shape,(2,29))
         torch.testing.assert_close(values[0],factual[0])
         self.assertTrue(bool(torch.isfinite(values).all()))
+        net=SubjectOutcomeSuccessorNetwork(3,width=8).eval()
+        values,_,factual,_,_=net.forward_components(context,controls,programs,timing)
+        torch.testing.assert_close(values[0],factual[0])
+        order=torch.tensor([2,0,1])
+        permuted=torch.cat((context[:,:24].reshape(2,3,8)[:,order].flatten(1),
+                            context[:,24:27][:,order],context[:,-5:]),-1)
+        torch.testing.assert_close(net(permuted,controls[:,order],programs[:,order],timing),
+                                   values,atol=1e-6,rtol=1e-5)
+        values[1].backward()
+        self.assertTrue(all(parameter.grad is None or bool(torch.isfinite(parameter.grad).all())
+                            for parameter in net.parameters()))
+        with self.assertRaisesRegex(ValueError,'single changed vessel'):
+            net(context,controls,torch.ones_like(programs),timing)
 
     def test_terminal_fleet_credit_preserves_late_success_and_failure(self):
         from run_remote_evidence import fleet_return_targets, fleet_anchor_kl
@@ -83,6 +114,16 @@ class ConditionalFusionValueTests(unittest.TestCase):
         self.assertLess(discounted[1],discounted[0])
         with self.assertRaisesRegex(ValueError,'terminal outcomes'):
             fleet_return_targets([episode(.5,1)],'terminal_success')
+        paired=[dict(episode(success,2),factual_success=factual)
+                for success,factual in ((1,1),(0,0),(1,0),(0,1))]
+        _,paired_advantages,paired_targets=fleet_return_targets(paired,'paired_terminal_success')
+        self.assertEqual(paired_targets,[0.,0.,0.,0.,1.,1.,-1.,-1.])
+        self.assertEqual(paired_advantages,paired_targets)
+        paired[2]['fleet_steps'][0]['value']=.25
+        _,paired_advantages,_=fleet_return_targets(paired,'paired_terminal_success')
+        self.assertEqual(paired_advantages[4],.75)
+        with self.assertRaisesRegex(ValueError,'measured fixed-predecessor'):
+            fleet_return_targets([episode(1,1)],'paired_terminal_success')
         reference=torch.distributions.Categorical(logits=torch.tensor([[0.,-90.]]))
         logits=torch.tensor([[0.,-180.]],requires_grad=True)
         current=torch.distributions.Categorical(logits=logits)
@@ -334,6 +375,12 @@ class ConditionalFusionValueTests(unittest.TestCase):
                 actor = Actor(null)
                 batched = remote.batched_credit_rows('unused', [((17, 3, 2.), 100)], device='cpu',
                     actor_override=actor, keep_steps=True)[0]
+                fixed = remote.batched_credit_rows('unused', [((17, 3, 2.), 100)]*3, device='cpu',
+                    actor_override=actor, keep_steps=True, fixed_inference_width=8)
+                for fixed_row in fixed:
+                    np.testing.assert_array_equal(np.stack([s['action'] for s in fixed_row['steps']]),
+                        np.stack([s['action'] for s in batched['steps']]))
+                    self.assertEqual(fixed_row['row']['outcome'],batched['row']['outcome'])
                 env = Environment(3, 'test'); obs, _ = env.reset(2., False)
                 action = actor(remote.d.mechanism_tensor(packet(env, obs)))[0][0].numpy()
                 commands = remote.d.joint_commands(env, obs, actor, action)
@@ -352,6 +399,24 @@ class ConditionalFusionValueTests(unittest.TestCase):
                     np.repeat((.25+.04*torch.arange(5, dtype=torch.float32)).numpy()[:, None], 2, axis=1))
                 if null:
                     np.testing.assert_array_equal(np.stack(single)[:, 1], np.stack(single)[:, 0])
+
+    def test_fixed_inference_preserves_rows_when_pair_groups_shrink_and_reorder(self):
+        from run_remote_evidence import fixed_batch_inference
+        packet={'x':torch.arange(21,dtype=torch.float32).reshape(7,3)}
+        offsets=torch.arange(7,dtype=torch.float32)[:,None]
+        def numerical_kernel(batch,shift):
+            # Simulate shape-dependent arithmetic from the actual GPU kernel.
+            value=batch['x']+shift+len(shift)*1.e-4
+            return value,value[:, :1]*2.
+        whole=fixed_batch_inference(numerical_kernel,packet,offsets,width=4)
+        order=torch.tensor([6,2,1,5,0,4,3])
+        chunks=[order[:2],order[2:5],order[5:]]
+        pieces=[fixed_batch_inference(numerical_kernel,{'x':packet['x'][ids]},
+            offsets[ids],width=4) for ids in chunks]
+        for index,expected in enumerate(whole):
+            torch.testing.assert_close(torch.cat([piece[index] for piece in pieces])[order.argsort()],
+                expected,rtol=0.,atol=0.)
+        self.assertFalse(torch.equal(numerical_kernel(packet,offsets)[0],whole[0]))
 
     def test_fleet_attention_learns_whole_plan_values_and_transfers_parameters(self):
         import numpy as np
@@ -419,6 +484,86 @@ class ConditionalFusionValueTests(unittest.TestCase):
             recipe = dict(model['successor_task_value']); recipe.pop('kind'); recipe['intervention_budget'] = 0
             decision = factory(**recipe).eval()
             self.assertEqual(decision.network.representation, 'fleet_attention')
+            self.assertEqual(sum(p.numel() for member in (decision.network, *decision.ensemble)
+                                 for p in member.parameters()), model['successor_task_fit']['trainable_parameters'])
+
+    def test_standalone_fleet_values_keep_duration_catalogs_and_episode_budget(self):
+        from plain_return import PlainReturnNetwork, PlainReturnDecision, recurrent_single_vessel_specification
+        catalog_for = lambda n: [(0, 0, 0)]+sorted((digit*10**boat, 0, span)
+            for boat in range(n) for digit in (1, 2, 3, 4, 6, 7, 8, 9) for span in (5, 20, 40))
+        for representation in ('fleet_attention', 'fleet_quadratic'):
+            settings = dict(action_encoding='physical_delta', feedback_relative_scale=.25,
+                            state_baseline=True, representation=representation)
+            net = PlainReturnNetwork(2, 8, **settings)
+            decision = PlainReturnDecision(2, 8, net.state_dict(), catalog_for(2), **settings,
+                feedback_relative_hold=True, isolate_factual_start=True, intervention_budget=1).eval()
+            with self.assertRaisesRegex(ValueError, 'Recurrent sampling'):
+                recurrent_single_vessel_specification(decision)
+            packet = dict(node=torch.zeros(2, 2, 16), _conditional_count=torch.tensor([0, 1]))
+            torch.testing.assert_close(decision.eligible(packet), torch.tensor([True, False]))
+            for n in (3, 8, 2):
+                values = decision.catalog_estimates(torch.randn(2, 8*n+5), torch.randn(2, n, 6))[1]
+                self.assertEqual(tuple(values.shape), (2, 24*n+1))
+                self.assertEqual(decision.options.tolist(), [list(q) for q in catalog_for(n)])
+                self.assertEqual(decision.intervention_budget, 1)
+
+    def test_fleet_quadratic_response_retains_factual_anchor_and_matched_learning(self):
+        import numpy as np
+        from local_intervention_value import fit_success_intervention_pair
+        from plain_return import PlainReturnNetwork, PlainReturnDecision, PairedReturnDecision
+        settings = dict(identity_conditioned=True, action_encoding='physical_delta',
+                        feedback_relative_scale=.25, state_baseline=True, representation='fleet_quadratic')
+        torch.manual_seed(43)
+        net = PlainReturnNetwork(6, 40, **settings).eval()
+        self.assertEqual(sum(p.numel() for p in net.parameters()), 24855)
+        context = torch.randn(2, 59); controls = torch.randn(2, 6, 6)
+        programs = torch.tensor([[0]*6, [5, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 9]])
+        timing = torch.tensor([[0, 0], [0, 20], [0, 5], [0, 40]])
+        initial = net.forward_catalog(context, controls, programs, timing)
+        torch.testing.assert_close(initial, initial[:, :1].expand_as(initial), rtol=0., atol=0.)
+        torch.nn.init.normal_(net.layers[-1].weight, std=.1)
+        catalog = net.forward_catalog(context, controls, programs, timing, chunk_size=2)
+        explicit = torch.stack([net(context, controls, q.expand(2, -1), t.expand(2, -1))
+                                for q, t in zip(programs, timing)], 1)
+        torch.testing.assert_close(catalog, explicit)
+        torch.testing.assert_close(catalog[:, 0], catalog[:, 1], rtol=0., atol=0.)
+        permutation = torch.tensor([5, 2, 0, 4, 1, 3])
+        permuted = torch.cat((context[:, :48].reshape(2, 6, 8)[:, permutation].flatten(1),
+                             context[:, 48:54][:, permutation], context[:, -5:]), -1)
+        torch.testing.assert_close(catalog, net.forward_catalog(permuted, controls[:, permutation],
+                                                               programs[:, permutation], timing))
+        state, shared, baseline = net.encode_fleet_state(torch.cat((context, controls.flatten(1)), -1))
+        action = torch.zeros(2, net.action_size); action[:, 0] = 1.; action[:, -4:] = .1
+        responses = []
+        for offset in (-.3, -.1, .1, .3):
+            action[:, 1:5] = offset*torch.tensor([1., -.4, .2, .7])
+            responses.append(net.fleet_action_value(state, shared, baseline, action))
+        torch.testing.assert_close(responses[3]-3*responses[2]+3*responses[1]-responses[0],
+                                   torch.zeros_like(responses[0]), rtol=0., atol=1e-6)
+        net.zero_grad(); explicit[:, :2].sum().backward()
+        self.assertTrue(all(p.grad is None or not bool(p.grad.any()) for p in net.layers.parameters()))
+        self.assertTrue(any(p.grad is not None and bool(p.grad.any()) for p in net.baseline.parameters()))
+        commands = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        roots = [dict(context=np.full(21, index/10., np.float32), effect_controls=commands,
+            scene=(390+index, 2, 2.), futures=[101, 102], options=[(0, 0, 0), (1, 0, 20), (90, 0, 40)],
+            feedback_relative_hold=True, feedback_relative_scale=.25,
+            outcomes={(q, f): dict(success=float((q+f+index)%2)) for q in range(3) for f in range(2)})
+            for index in range(4)]
+        data = dict(model={}, roots=roots[:2], predecessor_sha256='fleet-quadratic', simulation_steps=20,
+            isolate_factual_start=True, feedback_relative_hold=True, feedback_relative_scale=.25)
+        catalog_for = lambda n: [(0, 0, 0)]+sorted((digit*10**boat, 0, span)
+            for boat in range(n) for digit in (1, 2, 3, 4, 6, 7, 8, 9) for span in (5, 20, 40))
+        paired, ordinary = fit_success_intervention_pair(data, None, None,
+            validation_data=dict(data, roots=roots[2:]), updates=4, ensemble_size=2,
+            architecture='mlp', parameter_budget=2500, conditional_objective='shared_potential', device='cpu',
+            network_options=dict(action_encoding='physical_delta', state_baseline=True,
+                representation='fleet_quadratic', additional_candidate_options=catalog_for(2)))
+        for key in ('training_observation_sha256', 'training_target_sha256', 'trainable_parameters',
+                    'member_initialization_parameter_sha256', 'member_updates', 'representation'):
+            self.assertEqual(paired['successor_task_fit'][key], ordinary['successor_task_fit'][key])
+        for model, factory in ((paired, PairedReturnDecision), (ordinary, PlainReturnDecision)):
+            recipe = dict(model['successor_task_value']); recipe.pop('kind'); recipe['intervention_budget'] = 1
+            decision = factory(**recipe).eval()
             self.assertEqual(sum(p.numel() for member in (decision.network, *decision.ensemble)
                                  for p in member.parameters()), model['successor_task_fit']['trainable_parameters'])
 
@@ -1588,6 +1733,16 @@ class ConditionalFusionValueTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'different predecessor, design'):
                     local.recollect_breadth_design(policy, design, scaled_output,
                         **dict(scaled_settings, feedback_relative_scale=.5))
+            fixed_output = Path(directory)/'fixed.pth'
+            with patch.object(local, '_recollect_snapshot_root_batch', side_effect=measured) as worker:
+                fixed = local.recollect_breadth_design(policy, design, fixed_output,
+                    fixed_inference_width=8, **scaled_settings)
+                self.assertEqual(worker.call_args.args[0][10], 8)
+                self.assertEqual(fixed['fixed_inference_width'], 8)
+                digest = hashlib.sha256(fixed_output.read_bytes()).hexdigest()
+                with self.assertRaisesRegex(ValueError, 'different predecessor, design'):
+                    local.recollect_breadth_design(policy, design, fixed_output, **scaled_settings)
+                self.assertEqual(hashlib.sha256(fixed_output.read_bytes()).hexdigest(), digest)
 
     def test_batched_physical_response_keeps_window_end_and_all_actual_outcomes(self):
         import sys
@@ -5155,6 +5310,39 @@ class FactualCrossfitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'paired binary success'):
             fit_paired_mlp_return(dict(data, isolate_factual_start=True), None,
                 updates=1, device='cpu', value_target='discounted_return', conditional_objective='factual_strata')
+
+
+class PublicTargetAccelerationTests(unittest.TestCase):
+    def test_public_response_preserves_vessel_permutations_and_fleet_sizes(self):
+        from develop_source_fusion import PublicTargetAcceleration,PublicTargetFeedback
+        torch.manual_seed(319)
+        network=PublicTargetAcceleration(8,True)
+        torch.nn.init.normal_(network.readout[-1].weight,std=.1)
+        predictor=PublicTargetFeedback(width=8,states=[network.state_dict()],
+            representation='interaction_acceleration',kinematic_weight=.5)
+        for count in (3,6,8):
+            motion=torch.randn(2,count,6);boids=torch.randn(2,count,2).tanh()
+            target=torch.tensor([[30.,10.],[-20.,15.]])
+            velocity=torch.tensor([[0.,0.],[2.,-.4]])
+            permutation=torch.randperm(count)
+            expected=predictor.predict_state(motion,boids,target,velocity)
+            actual=predictor.predict_state(motion[:,permutation],boids[:,permutation],target,velocity)
+            for left,right in zip(expected,actual):
+                self.assertTrue(torch.isfinite(left).all())
+                torch.testing.assert_close(left,right,atol=1e-6,rtol=1e-6)
+            linear=predictor.kinematic_component().predict_state(motion,boids,target,velocity)
+            torch.testing.assert_close(linear[0],target+.2*velocity)
+            torch.testing.assert_close(linear[1],velocity)
+
+    def test_prediction_validation_keeps_initial_and_later_states_together(self):
+        import numpy as np
+        from run_remote_evidence import target_response_validation_roots
+        families=[(1,6,2.),(2,6,2.),(3,6,2.)]
+        data=dict(specification=dict(root_scenes=families+families))
+        held=target_response_validation_roots(data,np.arange(6),319,[0,3])
+        self.assertEqual(held.tolist(),[0,3])
+        with self.assertRaisesRegex(ValueError,'same layout'):
+            target_response_validation_roots(data,np.arange(6),319,[0])
 
 
 if __name__ == '__main__':

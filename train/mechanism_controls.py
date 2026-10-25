@@ -389,16 +389,22 @@ def fit_generic_adapter(base,data,mode,output,updates=10000,seed=42,device='cuda
 def _batched_model_episodes(task):
     import develop_source_fusion as d
     import run_remote_evidence as r
-    path,indices,tasks,device=task
+    path,indices,tasks,device=task[:4]
+    fixed_inference_width=task[4] if len(task)>4 else 0
     r.SOURCE=d.SOURCE
-    return indices,r.batched_credit_rows(path,tasks,batch_size=len(tasks),device=device)
+    return indices,r.batched_credit_rows(path,tasks,batch_size=len(tasks),device=device,
+        fixed_inference_width=fixed_inference_width)
 
 
 def evaluate_models(models,tasks,workers=3,result_suffix='source-development',evaluation_context=None,
-                    opponent_checkpoint=None,inference_batch=0,inference_device='cpu',isolate_inference=True):
+                    opponent_checkpoint=None,inference_batch=0,inference_device='cpu',isolate_inference=True,
+                    fixed_inference_width=0):
     from concurrent.futures import ProcessPoolExecutor,as_completed
     import develop_source_fusion as d
     import run_remote_evidence as r
+    if (not isinstance(fixed_inference_width,int) or isinstance(fixed_inference_width,bool)
+            or fixed_inference_width<0 or fixed_inference_width and not inference_batch):
+        raise ValueError('Fixed inference requires batched evaluation and a nonnegative integer width.')
     if inference_batch:
         if inference_batch < 1 or workers < 1:
             raise ValueError('Batched evaluation requires a positive batch size and worker count.')
@@ -409,6 +415,7 @@ def evaluate_models(models,tasks,workers=3,result_suffix='source-development',ev
         evaluation_context=dict(evaluation_context or {},inference_batch=inference_batch,
             inference_device=inference_device,episode_executor='batched_native_single_value_stage')
         if not isolate_inference:evaluation_context['inference_process']='calling_process'
+        if fixed_inference_width:evaluation_context['fixed_inference_width']=fixed_inference_width
     if opponent_checkpoint is not None:
         evaluation_context=dict(evaluation_context or {},
             frozen_opponent_sha256=hashlib.sha256(Path(opponent_checkpoint).read_bytes()).hexdigest())
@@ -429,7 +436,8 @@ def evaluate_models(models,tasks,workers=3,result_suffix='source-development',ev
         if inference_batch:
             pending=[i for i,row in enumerate(rows) if row is None]
             groups=[pending[begin:begin+inference_batch] for begin in range(0,len(pending),inference_batch)]
-            jobs=[(str(path),indices,[tasks[index] for index in indices],inference_device) for indices in groups]
+            jobs=[(str(path),indices,[tasks[index] for index in indices],inference_device,
+                fixed_inference_width) for indices in groups]
             # Keep CUDA inside child processes even with one worker, so the
             # controller can subsequently fork a fresh training stage safely.
             # A training process that already initialized CUDA must evaluate

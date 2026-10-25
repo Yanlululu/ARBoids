@@ -95,6 +95,24 @@ def recurrent_single_vessel_specification(value):
     return specification
 
 
+def standalone_single_vessel_windows(value):
+    """Retain every measured duration when sharing a fleet value across sizes."""
+    options = value.options.detach().cpu().numpy()
+    windows = sorted({tuple(option[1:]) for option in options[1:]})
+    expected = {(0, 0, 0)} | {(digit*10**boat, delay, span)
+        for boat in range(value.network.defenders) for digit in (1, 2, 3, 4, 6, 7, 8, 9)
+        for delay, span in windows}
+    if (not value.isolate_factual_start or not value.feedback_relative_hold
+            or value.decision_period != 5 or value.wait_value is not None
+            or value.policy_reference is not None or not windows
+            or any(delay < 0 or span <= 0 or delay+span > 400 or delay % 5 or span % 5
+                   for delay, span in windows)
+            or tuple(options[0]) != (0, 0, 0)
+            or len(options) != len(expected) or set(map(tuple, options)) != expected):
+        raise ValueError('Shared fleet values need complete standalone single-vessel program windows.')
+    return tuple(windows)
+
+
 def single_coordinate_catalog(defenders):
     """Union of one-coordinate neighbors of every single-vessel plan."""
     digits = (1, 2, 3, 4, 6, 7, 8, 9)
@@ -170,9 +188,9 @@ class PlainReturnNetwork(nn.Module):
         super().__init__()
         if action_encoding not in ('categorical', 'physical_delta'):
             raise ValueError('Unknown dense intervention action representation.')
-        if representation not in ('dense', 'fleet_attention'):
+        if representation not in ('dense', 'fleet_attention', 'fleet_quadratic'):
             raise ValueError('Unknown intervention state/action representation.')
-        if representation == 'fleet_attention' and (not state_baseline or width % 4):
+        if representation in ('fleet_attention', 'fleet_quadratic') and (not state_baseline or width % 4):
             raise ValueError('Fleet attention requires a state baseline and a width divisible by four.')
         self.representation = representation
         self.defenders = defenders
@@ -191,18 +209,30 @@ class PlainReturnNetwork(nn.Module):
         self.feedback_relative_scale = feedback_relative_scale
         self.state_size = (14 + identity_conditioned) * defenders + 5
         self.action_size = 10*defenders+2 if action_encoding == 'categorical' else 5*defenders+4
-        if representation == 'fleet_attention':
+        if representation in ('fleet_attention', 'fleet_quadratic'):
             # All vessels share the same state/action maps. The pooled output
             # is a value of the complete program, without additive boat values.
             self.state_embed = nn.Sequential(nn.Linear(14+identity_conditioned, width), nn.SiLU(),
                 nn.Linear(width, width), nn.SiLU())
             self.state_attention = nn.TransformerEncoderLayer(width, 4, 2*width, dropout=0.,
                 activation='gelu', batch_first=True, norm_first=True)
-            self.action_embed = nn.Linear(5, width)
-            self.action_attention = nn.TransformerEncoderLayer(width, 4, 2*width, dropout=0.,
-                activation='gelu', batch_first=True, norm_first=True)
-            self.baseline = nn.Sequential(nn.Linear(2*width+6, width), nn.ReLU(), nn.Linear(width, 1))
-            self.layers = nn.Sequential(nn.Linear(2*width+10, width+8), nn.ReLU(), nn.Linear(width+8, 1))
+            if representation == 'fleet_quadratic':
+                self.baseline = nn.Sequential(nn.Linear(2*width+6, width), nn.ReLU(), nn.Linear(width, 1))
+                self.layers = nn.Sequential(nn.Linear(3*width+10, width), nn.SiLU(), nn.Linear(width, 14))
+                # Conditional coefficients see the whole fleet and duration.
+                # Restrict local action interpolation to a quadratic response
+                # while retaining interactions in the shared state encoder.
+                rows, columns = torch.triu_indices(4, 4)
+                self.register_buffer('quadratic_rows', rows, persistent=False)
+                self.register_buffer('quadratic_columns', columns, persistent=False)
+                nn.init.zeros_(self.layers[-1].weight)
+                nn.init.zeros_(self.layers[-1].bias)
+            else:
+                self.action_embed = nn.Linear(5, width)
+                self.action_attention = nn.TransformerEncoderLayer(width, 4, 2*width, dropout=0.,
+                    activation='gelu', batch_first=True, norm_first=True)
+                self.baseline = nn.Sequential(nn.Linear(2*width+6, width), nn.ReLU(), nn.Linear(width, 1))
+                self.layers = nn.Sequential(nn.Linear(2*width+10, width+8), nn.ReLU(), nn.Linear(width+8, 1))
             return
         self.layers = nn.Sequential(
             nn.Linear(self.state_size+self.action_size, width), nn.ReLU(),
@@ -220,7 +250,7 @@ class PlainReturnNetwork(nn.Module):
             flat = features.reshape(-1, features.shape[-1])
             value = self.subject_conditioned_values(flat[:, :self.state_size], flat[:, self.state_size:])
             return value.reshape(*shape, 1)
-        if self.representation == 'fleet_attention':
+        if self.representation in ('fleet_attention', 'fleet_quadratic'):
             shape = features.shape[:-1]
             flat = features.reshape(-1, features.shape[-1])
             state, shared, baseline = self.encode_fleet_state(flat[:, :self.state_size])
@@ -249,8 +279,8 @@ class PlainReturnNetwork(nn.Module):
         if baseline is None:
             public_state = torch.cat((state[:, :context_size], torch.zeros_like(state[:, context_size:])), -1)
             baseline = (self.encode_fleet_state(public_state)[2]
-                        if self.representation == 'fleet_attention' else self.baseline(public_state))
-        if self.representation == 'fleet_attention':
+                        if self.representation in ('fleet_attention', 'fleet_quadratic') else self.baseline(public_state))
+        if self.representation in ('fleet_attention', 'fleet_quadratic'):
             encoded, shared, _ = self.encode_fleet_state(subject_state)
             return self.fleet_action_value(encoded, shared, baseline, actions)
         residual = self.layers(torch.cat((subject_state, actions), -1))
@@ -259,7 +289,7 @@ class PlainReturnNetwork(nn.Module):
     def configure_fleet(self, defenders):
         if defenders == self.defenders:
             return
-        if self.representation != 'fleet_attention' or not isinstance(defenders, int) or defenders < 1:
+        if self.representation not in ('fleet_attention', 'fleet_quadratic') or not isinstance(defenders, int) or defenders < 1:
             raise ValueError('The plain MLP and deployed fleet must have the same size; fleet attention can transfer.')
         self.defenders = defenders
         self.state_size = (14+self.identity_conditioned)*defenders+5
@@ -280,6 +310,14 @@ class PlainReturnNetwork(nn.Module):
 
     def fleet_action_value(self, state, shared, baseline, actions):
         local = actions[:, :5*self.defenders].reshape(-1, self.defenders, 5)
+        if self.representation == 'fleet_quadratic':
+            offsets = local[..., 1:]
+            basis = torch.cat((offsets, offsets[..., self.quadratic_rows]*
+                               offsets[..., self.quadratic_columns]), -1)
+            pooled = torch.cat((state.mean(1), state.amax(1), shared, actions[:, -4:]), -1)
+            coefficients = self.layers(torch.cat((state, pooled[:, None].expand(-1, self.defenders, -1)), -1))
+            residual = (coefficients*basis).sum((-1, -2))
+            return baseline+residual[:, None]
         encoded = self.action_attention(state+self.action_embed(local))
         residual = self.layers(torch.cat((encoded.mean(1), encoded.amax(1), shared, actions[:, -4:]), -1))
         active = local[..., 0].bool().any(-1)
@@ -326,7 +364,7 @@ class PlainReturnNetwork(nn.Module):
             state = torch.cat((context, controls.flatten(1)), -1)
             public_state = torch.cat((context, torch.zeros_like(controls.flatten(1))), -1)
             baseline = (self.encode_fleet_state(public_state)[2]
-                        if self.representation == 'fleet_attention' else self.baseline(public_state))
+                        if self.representation in ('fleet_attention', 'fleet_quadratic') else self.baseline(public_state))
             output = []
             for start in range(0, len(programs), chunk_size):
                 actions = self.action_features(programs[None, start:start+chunk_size],
@@ -337,7 +375,7 @@ class PlainReturnNetwork(nn.Module):
                     baseline[:, None].expand(-1, count, -1).flatten(0, 1))
                 output.append(value.reshape(len(context), count))
             return torch.cat(output, 1)
-        if self.representation == 'fleet_attention':
+        if self.representation in ('fleet_attention', 'fleet_quadratic'):
             state, shared, baseline = self.encode_fleet_state(torch.cat((context, controls.flatten(1)), -1))
             output = []
             for start in range(0, len(programs), chunk_size):
@@ -505,10 +543,8 @@ class PlainReturnDecision(nn.Module):
                 self.policy_reference = reference
         elif self.policy_neighborhood:
             raise ValueError('A local policy neighborhood cannot omit its frozen reference.')
-        if representation == 'fleet_attention':
-            recurrent_single_vessel_specification(self)
-            if self.policy_reference is not None or self.wait_value is not None:
-                raise ValueError('Fleet transfer requires a shared standalone continuation value.')
+        if representation in ('fleet_attention', 'fleet_quadratic'):
+            self.program_windows = standalone_single_vessel_windows(self)
         if decision_rule == 'subject_counterfactual':
             recurrent_single_vessel_specification(self)
             if self.policy_reference is not None or self.wait_value is not None:
@@ -551,8 +587,9 @@ class PlainReturnDecision(nn.Module):
         self.network.configure_fleet(defenders)
         for member in self.ensemble:
             member.configure_fleet(defenders)
-        options = [(0, 0, 0)]+sorted((digit*10**boat, 0, 5)
-            for boat in range(defenders) for digit in (1, 2, 3, 4, 6, 7, 8, 9))
+        options = [(0, 0, 0)]+sorted((digit*10**boat, delay, span)
+            for boat in range(defenders) for digit in (1, 2, 3, 4, 6, 7, 8, 9)
+            for delay, span in self.program_windows)
         self.options = torch.as_tensor(options, dtype=self.options.dtype, device=self.options.device)
         self.programs = (self.options[:, :1]//(10**torch.arange(defenders, device=self.options.device))) % 10
         if self.decision_rule == 'subject_counterfactual':
@@ -1104,16 +1141,18 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
     output_width = 3 if conditional and not shared_potential else 1
     if state_baseline and (action_encoding != 'physical_delta' or output_width != 1):
         raise ValueError('A separate state baseline requires scalar physical-action values.')
-    if representation not in ('dense', 'fleet_attention'):
+    if representation not in ('dense', 'fleet_attention', 'fleet_quadratic'):
         raise ValueError('Unknown intervention state/action representation.')
-    if representation == 'fleet_attention' and (not state_baseline or not feedback_relative_hold
+    if representation in ('fleet_attention', 'fleet_quadratic') and (not state_baseline or not feedback_relative_hold
             or policy_neighborhood):
         raise ValueError('Shared fleet fitting requires standalone relative interventions with a state baseline.')
     count = lambda width: (2*width*width + (input_size+3+output_width)*width + output_width
         + (2*width*width+((14+identity_conditioned)*defenders+9)*width+1 if state_baseline else 0))
     if representation == 'fleet_attention':
         count = lambda width: 21*width*width+(80+identity_conditioned)*width+98
-    width = min(range(8, 2049, 4 if representation == 'fleet_attention' else 1),
+    elif representation == 'fleet_quadratic':
+        count = lambda width: 14*width*width+(60+identity_conditioned)*width+15
+    width = min(range(8, 2049, 4 if representation in ('fleet_attention', 'fleet_quadratic') else 1),
                 key=lambda value: abs(count(value)-parameter_budget))
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
@@ -1424,7 +1463,9 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
         isolate_factual_start=isolate_factual_start,
         comparison_reference=('actual frozen-policy option at each root' if policy_neighborhood else 'zero intervention'),
         feedback_relative_hold=feedback_relative_hold, feedback_relative_scale=feedback_relative_scale,
-        architecture=('shared per-vessel state and physical-action attention; whole-plan pooled state baseline and gated residual'
+        architecture=('fleet-conditioned quadratic local response in feedback offsets and clipped physical command changes; shared state baseline'
+                      if representation == 'fleet_quadratic' else
+                      'shared per-vessel state and physical-action attention; whole-plan pooled state baseline and gated residual'
                       if representation == 'fleet_attention' else
                       'separate state baseline and action residual, each three ReLU hidden layers, zero residual for inactive plans'
                       if state_baseline else 'single dense MLP, three ReLU hidden layers, factual and paired-event outputs'

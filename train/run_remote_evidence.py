@@ -164,16 +164,68 @@ def batched_primitive_program(actor, action):
     return action[:, :13].copy(), max(delay, 0) if depth >= 0 else 0
 
 
+def fixed_batch_inference(function, packet, *arguments, width=0):
+    """Keep neural arithmetic shapes fixed when paired trajectories terminate.
+
+    Duplicate padding is discarded before execution. It fixes arithmetic
+    shapes while retaining each real trajectory and the controller's math.
+    """
+    if not isinstance(width, int) or isinstance(width, bool) or width < 0:
+        raise ValueError('The fixed inference width must be a nonnegative integer.')
+    if not width:
+        return function(packet, *arguments)
+    count = len(next(iter(packet.values())))
+    if not count or any(not torch.is_tensor(x) or len(x) != count
+                        for x in (*packet.values(), *arguments)):
+        raise ValueError('Fixed inference requires aligned nonempty tensor batches.')
+    pieces = []
+    tuple_output = None
+    for begin in range(0, count, width):
+        stop = min(begin+width, count)
+        def padded(value):
+            part = value[begin:stop]
+            return (part if len(part) == width else
+                    torch.cat((part, part[-1:].expand(width-len(part), *part.shape[1:])), 0))
+        result = function({key:padded(value) for key,value in packet.items()},
+                          *(padded(value) for value in arguments))
+        is_tuple = isinstance(result, tuple)
+        outputs = result if is_tuple else (result,)
+        if (tuple_output is not None and tuple_output != is_tuple or
+                any(not torch.is_tensor(value) or len(value) != width for value in outputs)):
+            raise ValueError('Fixed inference must return one aligned tensor or a tensor tuple.')
+        tuple_output = is_tuple
+        pieces.append(tuple(value[:stop-begin] for value in outputs))
+    joined = tuple(torch.cat(values, 0) for values in zip(*pieces))
+    return joined if tuple_output else joined[0]
+
+
 def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=False,sample_policy=False,initial_jobs=None,
                         response_tick=None,actor_override=None,collect_fleet=False,root_sample_seed=None,
-                        physical_response_tick=None,root_selector=None,recurrent_m2=False):
+                        physical_response_tick=None,root_selector=None,recurrent_m2=False,fixed_inference_width=0):
     """Batch deterministic policy inference, retaining each episode's RNG."""
     from envs.TADgame import TADEnv
     if physical_response_tick is not None and (not isinstance(physical_response_tick, int)
             or not 1 <= physical_response_tick <= 400):
         raise ValueError('The measured physical response needs an integer tick from one to four hundred.')
     initialize();torch.backends.cuda.matmul.allow_tf32=False
+    if (not isinstance(fixed_inference_width,int) or isinstance(fixed_inference_width,bool)
+            or fixed_inference_width<0 or fixed_inference_width and
+            (sample_policy or collect_fleet or root_selector is not None)):
+        raise ValueError('Fixed inference is available for deterministic execution without stateful proposal collection.')
+    def infer(function,packet,*arguments):
+        return fixed_batch_inference(function,packet,*arguments,width=fixed_inference_width)
     actor=(d.joint_load(str(policy),Path(policy).stat().st_mtime_ns) if actor_override is None else actor_override).to(device)
+    def actor_action(packet, *, deterministic=True, gate_only=False):
+        action=actor(packet,deterministic=deterministic,gate_only=gate_only)[0]
+        if fixed_inference_width and not gate_only and action.shape[-1]==3:
+            from plain_return import PlainReturnDecision
+            if isinstance(actor.successor_task_value,PlainReturnDecision):
+                # Match the factual rows returned beside accepted interventions.
+                # A chunk with no accepted intervention must use the same format.
+                one=torch.ones_like(action[...,:1]);free=-one
+                action=torch.cat((action,free,one,2*free,torch.zeros_like(action[...,:2]),
+                    one,free.expand(-1,-1,2),free.expand(-1,-1,2),free),-1)
+        return action
     fleet=getattr(actor,'feedback_fleet_policy',None)
     if collect_fleet and (fleet is None or not fleet.sample or not fleet.collect):
         raise ValueError('Fleet training requires a sampling whole-fleet policy and decision collection.')
@@ -306,7 +358,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
             if fresh:
                 decisions=(np.stack([initial_jobs[begin+i]['action'] for i in fresh])
                     if initial_jobs is not None and step==0 else
-                    actor(packets(fresh),deterministic=not sample_policy)[0].cpu().numpy())
+                    infer(lambda packet:actor_action(packet,deterministic=not sample_policy),packets(fresh)).cpu().numpy())
                 for i,action in zip(fresh,decisions):
                     relative_offsets[i]=None
                     if keep_steps:decision_records[i].append(dict(step=step,action=action.copy()))
@@ -352,7 +404,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                     batch['_proposal_offset']=torch.as_tensor(np.stack([
                         options[i][:,6:8] if options[i].shape[-1]>6 else np.zeros_like(options[i][:,:2])
                         for i in committed]),device=device)
-                decisions=actor(batch,deterministic=True,gate_only=True)[0].cpu().numpy()
+                decisions=infer(lambda packet:actor_action(packet,gate_only=True),batch).cpu().numpy()
                 if actor.midpoint_intervention_values is not None and not actor.preference_strength:
                     local=[j for j,i in enumerate(committed) if not midpoint_checked[i]
                         and not (step==0 and initial_jobs is not None
@@ -368,7 +420,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                         suffix=np.stack([d.joint_remaining_program(decisions[j],options[i],ticks[i],
                             actor.phase_preserving_refinement)
                             for j,i in zip(local,selected)])
-                        revised=actor.midpoint_intervention_values(packets(selected),
+                        revised=infer(actor.midpoint_intervention_values,packets(selected),
                             torch.as_tensor(suffix,device=device)).cpu().numpy()
                         changed=[]
                         for j,i,prior,action in zip(local,selected,suffix,revised):
@@ -382,7 +434,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                             updated=packets([committed[j] for j in changed])
                             updated['_committed_gates']=fixed[changed]
                             updated['_held_gates']=fixed[changed]
-                            decisions[changed]=actor(updated,deterministic=True,gate_only=True)[0].cpu().numpy()
+                            decisions[changed]=infer(lambda packet:actor_action(packet,gate_only=True),updated).cpu().numpy()
                 if not actor.preference_strength:
                     commanded=fixed.cpu().numpy()
                     decisions[:,:,2]=np.where(commanded>=0.,commanded,decisions[:,:,2])
@@ -392,7 +444,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
             source_controls=(np.stack([controls[i] for i in active])
                 if getattr(actor,'actuator_fusion_refinement',None) or actuator_preferences or relative_holds.all() else None)
             if actor.response_feedback_value is not None:
-                physical=actor.response_feedback_value(packets(active),torch.as_tensor(
+                physical=infer(actor.response_feedback_value,packets(active),torch.as_tensor(
                     np.stack([controls[i] for i in active]),device=device)).cpu().numpy()
                 for i,control in zip(active,physical):controls[i]=control
             if actuator_preferences:
@@ -432,9 +484,10 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                         refinement_packet['_policy_neighborhood']=torch.as_tensor(policy_neighborhood[active],device=device)
                     offsets=np.stack([relative_offsets[i] if relative_offsets[i] is not None else
                         np.full((len(controls[i]),2),np.nan,dtype=np.float32) for i in active])
-                    physical,offsets=refine_feedback_relative_intervention(actor,refinement_packet,
-                        torch.as_tensor(source_controls,device=device),torch.as_tensor(offsets,device=device),
-                        relative_scale=relative_scales[0],source_feedback=source_feedback,**(refinement or {}))
+                    physical,offsets=infer(lambda packet,source,offset:
+                        refine_feedback_relative_intervention(actor,packet,source,offset,
+                            relative_scale=relative_scales[0],source_feedback=source_feedback,**(refinement or {})),
+                        refinement_packet,torch.as_tensor(source_controls,device=device),torch.as_tensor(offsets,device=device))
                     for i,offset in zip(active,offsets.cpu().numpy()):
                         relative_offsets[i]=offset.copy()
                         if (intervention_events[i] and
@@ -445,10 +498,10 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                                 feedback_relative_scale=relative_scales[i])
                     physical=physical.cpu().numpy()
                 else:
-                    physical=refine_actuator_interactions(actor,refinement_packet,
-                        torch.as_tensor(source_controls,device=device),
-                        torch.as_tensor(np.stack([controls[i] for i in active]),device=device),
-                        **actor.actuator_fusion_refinement).cpu().numpy()
+                    physical=infer(lambda packet,source,preferred:
+                        refine_actuator_interactions(actor,packet,source,preferred,**actor.actuator_fusion_refinement),
+                        refinement_packet,torch.as_tensor(source_controls,device=device),
+                        torch.as_tensor(np.stack([controls[i] for i in active]),device=device)).cpu().numpy()
                 for i,control in zip(active,physical):controls[i]=control
                 if collect_fleet:
                     decision=fleet.last_decision
@@ -488,6 +541,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                         conditional_interventions=int(getattr(env,'_conditional_option_count',0)),
                         interventions=intervention_events[i])
                     if future is not None:row['future_seed']=int(future)
+                    if fixed_inference_width:row['fixed_inference_width']=fixed_inference_width
                     if responses is not None:row['response']=responses[i]
                     if physical_responses is not None:row['physical_response']=physical_responses[i]
                     rows[i]=row
@@ -530,19 +584,29 @@ def fleet_return_targets(rollouts, credit_target='discounted_task'):
     Terminal-success credit keeps the probability of eventual success as the
     state baseline. It neither discounts a late capture nor centers advantages
     across decisions from trajectories of different lengths.
+    The paired variant subtracts the observed frozen-predecessor outcome on
+    the same exogenous random stream. That outcome is independent of sampled
+    learner actions; shared successes and failures cancel without changing
+    the task objective. Its critic predicts remaining terminal improvement.
     """
-    if credit_target not in ('discounted_task', 'terminal_success'):
+    if credit_target not in ('discounted_task', 'terminal_success', 'paired_terminal_success'):
         raise ValueError('Unknown fleet learning target.')
     records=[];advantages=[];targets=[]
     for rollout in rollouts:
         steps=rollout['fleet_steps']
-        if credit_target=='terminal_success':
+        if credit_target in ('terminal_success','paired_terminal_success'):
             target=float(rollout['row']['success'])
             if target not in (0.,1.):
                 raise ValueError('Fleet success credit requires actual terminal outcomes.')
+            if credit_target=='paired_terminal_success':
+                factual=rollout.get('factual_success')
+                if factual not in (0.,1.):
+                    raise ValueError('Paired fleet credit requires a measured fixed-predecessor outcome.')
+                target-=float(factual)
             for record in steps:
-                probability=1./(1.+np.exp(-np.clip(float(record['value']),-60.,60.)))
-                records.append(record);advantages.append(target-probability);targets.append(target)
+                baseline=(float(record['value']) if credit_target=='paired_terminal_success' else
+                    1./(1.+np.exp(-np.clip(float(record['value']),-60.,60.))))
+                records.append(record);advantages.append(target-baseline);targets.append(target)
             continue
         following_value=0.;advantage=0.;local_advantages=[];local_targets=[]
         for record in reversed(steps):
@@ -571,7 +635,7 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
     """
     from conditional_fusion_value import FeedbackFleetPolicy
     initialize();predecessor=Path(predecessor);output=Path(output)
-    if credit_target not in ('discounted_task','terminal_success'):
+    if credit_target not in ('discounted_task','terminal_success','paired_terminal_success'):
         raise ValueError('Unknown fleet learning target.')
     if not np.isfinite(anchor_kl_weight) or anchor_kl_weight<0.:
         raise ValueError('The fixed-predecessor trust penalty must be nonnegative.')
@@ -617,6 +681,10 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
     if credit_target!='discounted_task':
         specification.update(credit_target=credit_target,
             objective='undiscounted observed terminal-success policy gradient with a probability baseline')
+    if credit_target=='paired_terminal_success':
+        specification.update(objective='terminal-success policy gradient with a measured common-task predecessor control variate',
+            factual_control_variate='one frozen deterministic predecessor episode on each identical task and random stream',
+            factual_policy_sha256=source_hash,critic_initialization='zero terminal-gain output')
     if anchor_kl_weight:
         specification.update(anchor_kl_weight=anchor_kl_weight,
             anchor_policy_sha256=source_hash,anchor_policy_frozen=True)
@@ -632,6 +700,16 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
     learner=FeedbackFleetPolicy(width,analytic_temperature,
         (model.get('feedback_fleet_policy') or {}).get('state'),candidate_contrast,
         sampling_temperature,representation).to(device)
+    reference_actor=None
+    if credit_target=='paired_terminal_success':
+        reference_actor=copy.deepcopy(d.joint_load(str(predecessor),predecessor.stat().st_mtime_ns)).to(device)
+        reference_actor.eval().requires_grad_(False)
+        if reference_actor.feedback_fleet_policy is not None:
+            reference_actor.feedback_fleet_policy.sample=False
+            reference_actor.feedback_fleet_policy.collect=False
+        if not history:
+            torch.nn.init.zeros_(learner.critic[-1].weight)
+            torch.nn.init.zeros_(learner.critic[-1].bias)
     anchor=None
     if anchor_kl_weight:
         anchor_recipe=source.get('feedback_fleet_policy') or {}
@@ -652,12 +730,19 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
             max(1,(episodes_per_iteration+len(training_agilities)-1)//len(training_agilities)),
             tuple((6,agility) for agility in training_agilities))][:episodes_per_iteration]
         with torch.no_grad():
+            reference_rows=(batched_credit_rows(predecessor,tasks,batch_size=batch_size,device=device,
+                actor_override=reference_actor) if reference_actor is not None else None)
             rollouts=batched_credit_rows(predecessor,tasks,batch_size=batch_size,device=device,
                 actor_override=actor,collect_fleet=True)
+        if reference_rows is not None:
+            if len(reference_rows)!=len(rollouts):
+                raise ValueError('Every sampled fleet trajectory needs its actual matched predecessor episode.')
+            for rollout,reference_row in zip(rollouts,reference_rows):
+                rollout['factual_success']=float(reference_row['success'])
         learner.to(device);learner.sample=False;learner.collect=False;learner.train()
         records,advantages,targets=fleet_return_targets(rollouts,credit_target)
         advantages=torch.tensor(advantages,dtype=torch.float32,device=device)
-        if credit_target=='terminal_success':
+        if credit_target in ('terminal_success','paired_terminal_success'):
             advantages=advantages/advantages.std(unbiased=False).clamp_min(.1)
         else:
             advantages=(advantages-advantages.mean())/advantages.std().clamp_min(1e-6)
@@ -703,6 +788,14 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
             task_return=float(np.mean([rollout['row']['task_return'] for rollout in rollouts])),
             loss=float(np.mean(losses)),mean_kl=float(np.mean(divergences)),
             elapsed_seconds=time.monotonic()-started,tasks=tasks)
+        if reference_rows is not None:
+            record.update(factual_success=sum(row['success'] for row in reference_rows),
+                factual_outcomes=[bool(row['success']) for row in reference_rows],
+                factual_physical_steps=sum(row['physical_steps'] for row in reference_rows),
+                rescued=sum(rollout['row']['success'] and not reference['success']
+                    for rollout,reference in zip(rollouts,reference_rows)),
+                harmed=sum(reference['success'] and not rollout['row']['success']
+                    for rollout,reference in zip(rollouts,reference_rows)))
         learning.append(record)
         model['feedback_fleet_policy']=dict(width=width,analytic_temperature=analytic_temperature,
             state={key:value.detach().cpu().clone() for key,value in learner.state_dict().items()})
@@ -716,9 +809,13 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
             cuda_rng=torch.cuda.get_rng_state(device) if device.startswith('cuda') else None,
             numpy_rng=np.random.get_state(),total_training_episodes=sum(row['episodes'] for row in learning),
             total_physical_steps=sum(row['physical_steps'] for row in learning))
+        if reference_rows is not None:
+            model['fleet_learning'].update(total_factual_episodes=sum(row['episodes'] for row in learning),
+                total_factual_physical_steps=sum(row['factual_physical_steps'] for row in learning),
+                total_environment_episodes=2*sum(row['episodes'] for row in learning))
         atomic_save(model,output)
         print(dict(phase='feedback_fleet_learning',policy=str(output),seed=seed,
-            **{key:value for key,value in record.items() if key!='tasks'}),flush=True)
+            **{key:value for key,value in record.items() if key not in ('tasks','factual_outcomes')}),flush=True)
         del records,rollouts,features,costs,logits,values,loss
         actor.to(device)
     actor.cpu();learner.eval();learner.sample=False;learner.collect=False
@@ -726,7 +823,8 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
 
 
 def collect_target_feedback_data(predecessor,factual_bank,output,*,seed=42,steps=12,
-                                 branches=3,batch_size=64,device='cuda:0',record_sequences=False):
+                                 branches=3,batch_size=64,device='cuda:0',record_sequences=False,
+                                 include_initial_roots=False,fixed_inference_width=0):
     """Observe short candidate continuations for public target-motion fitting."""
     initialize();d.numerical_source()
     predecessor=Path(predecessor);factual_bank=Path(factual_bank);output=Path(output)
@@ -739,6 +837,16 @@ def collect_target_feedback_data(predecessor,factual_bank,output,*,seed=42,steps
     bank=torch.load(factual_bank,map_location='cpu',weights_only=False)
     if not bank.get('completed') or bank['predecessor_sha256']!=digest:
         raise ValueError('Use completed factual states from this exact predecessor.')
+    records=list(bank['records'])
+    if include_initial_roots:
+        from envs.TADgame import TADEnv
+        for record in bank['records']:
+            scene=record['scene'];scene_seed,n,agility=scene
+            np.random.seed(scene_seed)
+            environment=TADEnv(n,protocol=actor.environment_protocol)
+            observation,_=environment.reset(agility=agility,noisy_agility=False)
+            records.append(dict(scene=scene,root_snapshot=dict(environment=environment,
+                observation=observation.copy())))
     specification=dict(predecessor=str(predecessor),predecessor_sha256=digest,
         factual_bank=str(factual_bank),factual_bank_sha256=hashlib.sha256(factual_bank.read_bytes()).hexdigest(),
         seed=seed,steps=steps,branches=branches,batch_size=batch_size,inference_device=device,
@@ -747,6 +855,9 @@ def collect_target_feedback_data(predecessor,factual_bank,output,*,seed=42,steps
         excluded_inputs='attacker agility, hidden water velocity, attacker controller and realized future',
         continuation='fixed actuator fusion coefficients with refreshed unchanged SAC and Boids commands')
     if record_sequences:specification['record_sequences']=True
+    if include_initial_roots:
+        specification.update(include_initial_roots=True,root_scenes=[tuple(x['scene']) for x in records])
+    if fixed_inference_width:specification['fixed_inference_width']=fixed_inference_width
     result=(torch.load(output,map_location='cpu',weights_only=False) if output.exists() else
         dict(specification=specification,next_task=0,nodes=[],global_state=[],targets=[],root_ids=[],
             physical_steps=0,completed=False))
@@ -755,7 +866,7 @@ def collect_target_feedback_data(predecessor,factual_bank,output,*,seed=42,steps
             'public_target','public_velocity','next_public_target','next_public_velocity')})
     if result['specification']!=specification:
         raise ValueError('Cannot resume public dynamics acquisition with changed states or sampling.')
-    jobs=[(root,branch) for root in range(len(bank['records'])) for branch in range(branches)]
+    jobs=[(root,branch) for root in range(len(records)) for branch in range(branches)]
     if result['completed']:
         if result['next_task']!=len(jobs):raise ValueError('Completed dynamics data have an incomplete task prefix.')
         actor.cpu();return result
@@ -765,7 +876,7 @@ def collect_target_feedback_data(predecessor,factual_bank,output,*,seed=42,steps
     for begin in range(start,len(jobs),batch_size):
         current=jobs[begin:begin+batch_size];environments=[];observations=[];random_states=[];coefficients=[]
         for root,branch in current:
-            snapshot=bank['records'][root]['root_snapshot']
+            snapshot=records[root]['root_snapshot']
             environments.append(copy.deepcopy(snapshot['environment']))
             observations.append(snapshot['observation'].copy())
             future=int(np.random.SeedSequence([seed,root,branch,1776]).generate_state(1)[0])
@@ -782,7 +893,9 @@ def collect_target_feedback_data(predecessor,factual_bank,output,*,seed=42,steps
                 for key in packets[0]}
             with torch.no_grad():
                 nodes,global_state,target,velocity,axis=d.PublicTargetMotion.encode(packet,True)
-                source=actor(packet,deterministic=True,gate_only=True)[0][...,:2]
+                source=fixed_batch_inference(lambda current:
+                    actor(current,deterministic=True,gate_only=True)[0][...,:2],
+                    packet,width=fixed_inference_width)
                 gates=torch.as_tensor(np.stack([coefficients[i] for i in active]),device=device)
                 action=torch.cat((gates*source+(1.-gates)*packet['node'][...,11:13],
                     torch.ones_like(source[...,:1])),-1).cpu().numpy()
@@ -818,7 +931,30 @@ def collect_target_feedback_data(predecessor,factual_bank,output,*,seed=42,steps
     actor.cpu();return result
 
 
-def fit_target_feedback_model(data,output,*,updates=6000,ensemble_size=3,width=48,seed=42,device='cuda:0'):
+def target_response_validation_roots(data,roots,seed,requested=None):
+    """Keep every initial and later snapshot of one layout on one side."""
+    unique=np.unique(roots)
+    scenes=data['specification'].get('root_scenes')
+    if requested is None and scenes is not None:
+        families=list(dict.fromkeys(tuple(scenes[int(root)]) for root in unique))
+        chosen=np.random.default_rng(seed).permutation(len(families))[:max(1,len(families)//5)]
+        selected={families[int(index)] for index in chosen}
+        held=np.asarray([root for root in unique if tuple(scenes[int(root)]) in selected])
+    else:
+        held=(np.random.default_rng(seed).permutation(unique)[:max(1,len(unique)//5)]
+            if requested is None else np.asarray(requested,dtype=np.int64))
+    if not len(held) or len(np.unique(held))!=len(held) or not set(held)<set(unique):
+        raise ValueError('Target-response validation needs distinct observed roots and a separate training group.')
+    if scenes is not None:
+        validation={tuple(scenes[int(root)]) for root in held}
+        training={tuple(scenes[int(root)]) for root in unique if root not in set(held)}
+        if validation & training:
+            raise ValueError('Initial and later states from the same layout cannot cross prediction validation.')
+    return held
+
+
+def fit_target_feedback_model(data,output,*,updates=6000,ensemble_size=3,width=48,seed=42,device='cuda:0',
+                              representation='pooled_residual',validation_root_ids=None):
     """Fit measured one-step public responses, validating on separate roots."""
     if not data.get('completed') or updates<ensemble_size or updates%ensemble_size:
         raise ValueError('Target-response learning needs complete data and equal positive member budgets.')
@@ -827,8 +963,7 @@ def fit_target_feedback_model(data,output,*,updates=6000,ensemble_size=3,width=4
         raise ValueError('The target-response predecessor changed after observation collection.')
     roots=np.concatenate(data['root_ids']);unique=np.unique(roots)
     if len(unique)<5:raise ValueError('Public response validation requires at least five distinct factual roots.')
-    shuffled=np.random.default_rng(seed).permutation(unique)
-    held_roots=shuffled[:max(1,len(unique)//5)]
+    held_roots=target_response_validation_roots(data,roots,seed,validation_root_ids)
     held=np.isin(roots,held_roots);train_ids=np.flatnonzero(~held);held_ids=np.flatnonzero(held)
     nodes=torch.as_tensor(np.concatenate(data['nodes']),device=device)
     global_state=torch.as_tensor(np.concatenate(data['global_state']),device=device)
@@ -845,7 +980,7 @@ def fit_target_feedback_model(data,output,*,updates=6000,ensemble_size=3,width=4
     states=[];records=[];per_member=updates//ensemble_size
     for member in range(ensemble_size):
         torch.manual_seed(seed+1009*member)
-        network=d.PublicTargetMotion(width,True).to(device)
+        network=d.target_feedback_network(width,True,representation).to(device)
         optimizer=torch.optim.Adam(network.parameters(),lr=1e-3)
         best_loss=baseline;best_step=0
         best_state={key:value.detach().cpu().clone() for key,value in network.state_dict().items()}
@@ -870,7 +1005,7 @@ def fit_target_feedback_model(data,output,*,updates=6000,ensemble_size=3,width=4
         print(dict(phase='public_target_feedback_fit',seed=seed,**records[-1],
             constant_velocity_normalized_mse=baseline),flush=True)
         del network,optimizer
-    predictor=d.PublicTargetFeedback(width,states,True).to(device)
+    predictor=d.PublicTargetFeedback(width,states,True,representation=representation).to(device)
     with torch.no_grad():
         predictions=[torch.cat(network(nodes[held_ids],global_state[held_ids],times[held_ids]),-1)
             for network in predictor.models]
@@ -880,6 +1015,7 @@ def fit_target_feedback_model(data,output,*,updates=6000,ensemble_size=3,width=4
         baseline_mse=(target[held_ids].square()*validation_weights[:,None]).sum(0).cpu().tolist()
     model=copy.deepcopy(torch.load(predecessor,map_location='cpu',weights_only=False))
     model['target_feedback']=dict(width=width,states=states,absolute_frame=True,control_step=.2)
+    if representation!='pooled_residual':model['target_feedback']['representation']=representation
     model['target_feedback_fit']=dict(completed=True,seed=seed,updates=updates,ensemble_size=ensemble_size,
         width=width,parameters_per_member=sum(value.numel() for value in predictor.models[0].parameters()),
         observations=len(target),training_roots=int(len(unique)-len(held_roots)),validation_roots=held_roots.tolist(),
@@ -894,7 +1030,8 @@ def fit_target_feedback_model(data,output,*,updates=6000,ensemble_size=3,width=4
 
 
 def fit_target_feedback_rollout_model(data,output,*,initial_model=None,updates=6000,
-                                     ensemble_size=3,width=48,seed=42,device='cuda:0',mixture=False):
+                                     ensemble_size=3,width=48,seed=42,device='cuda:0',mixture=False,
+                                     representation='pooled_residual',validation_root_ids=None):
     """Fit recursive public target dynamics on measured candidate continuations.
 
     Each rollout uses measured public fleet states as exogenous inputs. The
@@ -931,7 +1068,7 @@ def fit_target_feedback_rollout_model(data,output,*,initial_model=None,updates=6
     sequence_roots=np.asarray([np.unique(root_ids[sequence==i]).item() for i in unique_sequences])
     roots=np.unique(sequence_roots)
     if len(roots)<5:raise ValueError('Recursive prediction validation needs at least five factual roots.')
-    held_roots=np.random.default_rng(seed).permutation(roots)[:max(1,len(roots)//5)]
+    held_roots=target_response_validation_roots(data,roots,seed,validation_root_ids)
     held=np.isin(sequence_roots,held_roots);training_ids=np.flatnonzero(~held);validation_ids=np.flatnonzero(held)
     def root_weights(ids):
         _,inverse,counts=np.unique(sequence_roots[ids],return_inverse=True,return_counts=True)
@@ -947,7 +1084,8 @@ def fit_target_feedback_rollout_model(data,output,*,initial_model=None,updates=6
         fit=initial['target_feedback_fit'];recipe=initial['target_feedback']
         if (fit['acquisition']['predecessor_sha256']!=specification['predecessor_sha256']
                 or set(fit['validation_roots'])!=set(held_roots.tolist())
-                or recipe['width']!=width or len(recipe['states'])!=ensemble_size):
+                or recipe['width']!=width or len(recipe['states'])!=ensemble_size
+                or recipe.get('representation','pooled_residual')!=representation):
             raise ValueError('Warm target dynamics must preserve the predecessor, capacity and held-out root split.')
     def errors(predictor,indices):
         target=arrays['public_target'][indices,0];velocity=arrays['public_velocity'][indices,0]
@@ -991,7 +1129,7 @@ def fit_target_feedback_rollout_model(data,output,*,initial_model=None,updates=6
         networks=torch.nn.ModuleList()
         for member in range(ensemble_size):
             torch.manual_seed(seed+1009*member)
-            network=d.PublicTargetMotion(width,True).to(device)
+            network=d.target_feedback_network(width,True,representation).to(device)
             if initial is not None:network.load_state_dict(initial['target_feedback']['states'][member])
             networks.append(network)
         initial_losses=[validate(network) for network in networks]
@@ -1043,7 +1181,7 @@ def fit_target_feedback_rollout_model(data,output,*,initial_model=None,updates=6
         del networks,network,optimizer,schedule,best_state
     for member in range(0 if mixture else ensemble_size):
         torch.manual_seed(seed+1009*member)
-        network=d.PublicTargetMotion(width,True).to(device)
+        network=d.target_feedback_network(width,True,representation).to(device)
         zero_state={key:value.detach().cpu().clone() for key,value in network.state_dict().items()}
         if initial is not None:network.load_state_dict(initial['target_feedback']['states'][member])
         initial_loss=validate(network);best_loss=min(baseline,initial_loss);best_step=0
@@ -1070,7 +1208,8 @@ def fit_target_feedback_rollout_model(data,output,*,initial_model=None,updates=6
             selected_update=best_step,initial_validation_normalized_mse=initial_loss,
             validation_normalized_mse=best_loss))
         del network,optimizer,schedule
-    predictor=d.PublicTargetFeedback(width,states,True,scenario_mode='members' if mixture else 'mean').to(device)
+    predictor=d.PublicTargetFeedback(width,states,True,scenario_mode='members' if mixture else 'mean',
+        representation=representation).to(device)
     normalized,coordinate_mse=validate(predictor,True)
     initial_error=None
     if initial is not None:
@@ -1078,6 +1217,7 @@ def fit_target_feedback_rollout_model(data,output,*,initial_model=None,updates=6
         initial_error=validate(before);del before
     model=copy.deepcopy(torch.load(predecessor,map_location='cpu',weights_only=False))
     model['target_feedback']=dict(width=width,states=states,absolute_frame=True,control_step=.2)
+    if representation!='pooled_residual':model['target_feedback']['representation']=representation
     if mixture:model['target_feedback']['scenario_mode']='members'
     model['target_feedback_fit']=dict(completed=True,seed=seed,updates=updates,ensemble_size=ensemble_size,
         width=width,parameters_per_member=sum(value.numel() for value in predictor.models[0].parameters()),

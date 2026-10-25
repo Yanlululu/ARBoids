@@ -311,12 +311,16 @@ class PairedOutcomeSuccessorNetwork(PairedSuccessorNetwork):
         changed = factual*(1.-harm_logit.sigmoid())+(1.-factual)*rescue_logit.sigmoid()
         return torch.where(active, changed, factual)
 
+    def effect_features(self, controls, programs, timing, nodes, pooled, reference_nodes, reference):
+        return torch.cat((pooled, pooled-reference), -1)
+
     def forward_components(self, context, controls, programs, timing):
         nodes, pooled = self.encode(context, controls, programs, timing)
-        _, reference = self.encode(context, controls, torch.zeros_like(programs),
-                                   torch.zeros_like(timing))
+        reference_nodes, reference = self.encode(context, controls, torch.zeros_like(programs),
+                                                torch.zeros_like(timing))
         factual = self.task_value(reference).squeeze(-1)
-        rescue, harm = self.outcome_effect(torch.cat((pooled, pooled-reference), -1)).unbind(-1)
+        features = self.effect_features(controls, programs, timing, nodes, pooled, reference_nodes, reference)
+        rescue, harm = self.outcome_effect(features).unbind(-1)
         active = self.active_vessels(programs).any(-1)
         probability = self.plan_probability(factual, rescue, harm, active)
         response = torch.cat((self.node_response(nodes).flatten(1), self.global_response(pooled)), -1)
@@ -328,6 +332,32 @@ class PairedOutcomeSuccessorNetwork(PairedSuccessorNetwork):
 
     def forward(self, context, controls, programs, timing):
         return self.forward_components(context, controls, programs, timing)[0]
+
+
+class SubjectOutcomeSuccessorNetwork(PairedOutcomeSuccessorNetwork):
+    """Resolve the changed vessel before predicting its whole-team consequence.
+
+    The factual and intervention encoders still condition on every peer. Their
+    changed-vessel embeddings and actual command delta reach the conditional
+    outcome head directly, preserving a local intervention's signal alongside
+    the pooled team response. This head uses no future outcomes at execution.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.outcome_effect = nn.Sequential(nn.Linear(7*self.width+15, self.width),
+            nn.SiLU(), nn.Linear(self.width, 2))
+        nn.init.constant_(self.outcome_effect[-1].bias, -3.)
+
+    def effect_features(self, controls, programs, timing, nodes, pooled, reference_nodes, reference):
+        active = self.active_vessels(programs)
+        if bool((active.sum(-1) > 1).any()):
+            raise ValueError('Subject-conditioned outcomes require a single changed vessel.')
+        weights = active.to(nodes.dtype)[..., None]
+        subject = lambda values: (values*weights).sum(1)
+        local, _ = self.action_features(programs, timing, controls)
+        return torch.cat((pooled, pooled-reference, subject(nodes), subject(reference_nodes),
+                          subject(nodes-reference_nodes), subject(local)), -1)
 
 
 def paired_outcome_conditional_loss(rescue_logit, harm_logit, joint_target):
@@ -581,7 +611,8 @@ def paired_successor_objective(candidate_logits, reference_logits,
 def physical_response(root, outcome, fixed_horizon=False):
     """Reorder the measured successor back to the decision's vessel identities."""
     if fixed_horizon:
-        if outcome.get('following') is None or outcome.get('response_steps') != 20:
+        horizon=20 if fixed_horizon is True else int(fixed_horizon)
+        if outcome.get('following') is None or outcome.get('response_steps') != horizon:
             return None
         if outcome.get('response_sampling') != 'physical_tick':
             raise ValueError('The fixed-horizon response must be a measured physical state.')
@@ -853,17 +884,19 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
                   response_difference_weight=.1, learning_rate=3e-4, members=1,
                   value_form='potential', complete_catalog=True, factual_banks=(),
                   all_action_pairs=False, select_by_validation=False, root_balanced=False,
-                  factual_value_weight=1.):
+                  factual_value_weight=1., physical_horizon=None):
     """Fit matched architectures and update budgets; reserve validation layouts."""
-    if value_form not in ('potential', 'physical_bottleneck', 'planned_successor', 'constrained_planned', 'local_quadratic', 'event_time', 'paired_outcome'):
+    if value_form not in ('potential', 'physical_bottleneck', 'planned_successor', 'constrained_planned', 'local_quadratic', 'event_time', 'paired_outcome', 'paired_subject_outcome'):
         raise ValueError('Unknown successor value representation.')
     factory = {'potential': PairedSuccessorNetwork, 'physical_bottleneck': PhysicalBottleneckSuccessorNetwork,
                'planned_successor': PlannedSuccessorNetwork,
                'constrained_planned': ConstrainedPlannedSuccessorNetwork,
                'local_quadratic': LocalQuadraticSuccessorNetwork,
                'event_time': EventTimeSuccessorNetwork,
-               'paired_outcome': PairedOutcomeSuccessorNetwork}[value_form]
-    if value_form=='paired_outcome' and all_action_pairs:
+               'paired_outcome': PairedOutcomeSuccessorNetwork,
+               'paired_subject_outcome': SubjectOutcomeSuccessorNetwork}[value_form]
+    conditional_outcomes = value_form in ('paired_outcome', 'paired_subject_outcome')
+    if conditional_outcomes and all_action_pairs:
         raise ValueError('Conditional outcome learning uses the common factual reference.')
     train_layouts = split_model['successor_task_fit']['training_layouts']
     validation_layouts = split_model['successor_task_fit']['validation_layouts']
@@ -873,7 +906,10 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
         raise ValueError('Local response models require relative one-period interventions.')
     if not np.isfinite(factual_value_weight) or factual_value_weight < 0.:
         raise ValueError('The factual calibration weight must be finite and nonnegative.')
-    if factual_banks and value_form != 'paired_outcome' and (relative_scale is not None
+    if physical_horizon is not None and (type(physical_horizon) is not int or
+            not 1 <= physical_horizon <= 20 or not conditional_outcomes):
+        raise ValueError('An explicit outcome-response horizon must use one to twenty common physical ticks.')
+    if factual_banks and not conditional_outcomes and (relative_scale is not None
             or value_form not in ('planned_successor', 'constrained_planned')):
         raise ValueError('M1 factual trajectories belong to the M1-continuation planned successor fit.')
     if complete_catalog:
@@ -882,7 +918,13 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
         raise ValueError('Validation requires completed measured collections.')
     if set(map(tuple, train_layouts)) & set(map(tuple, validation_layouts)):
         raise ValueError('Training and validation layouts must be disjoint.')
-    fixed_horizon = value_form in ('planned_successor', 'constrained_planned') and relative_scale is None
+    execution_widths = {data.get('fixed_inference_width', 0)
+                        for data in (*datasets, *factual_banks, validation)}
+    if len(execution_widths) != 1:
+        raise ValueError('Outcome pairs and factual calibration must share one numerical execution protocol.')
+    fixed_inference_width = next(iter(execution_widths))
+    fixed_horizon = (physical_horizon if physical_horizon is not None else
+        value_form in ('planned_successor', 'constrained_planned') and relative_scale is None)
     data, roots = measured_pairs(datasets, train_layouts, fixed_horizon, all_action_pairs)
     sampling_weights = None
     if root_balanced:
@@ -893,14 +935,16 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
     if not bool((population_weights == 1.).all()):
         sampling_weights = population_weights if sampling_weights is None else sampling_weights*population_weights
     factual_values = (measured_factual_values(factual_banks, train_layouts)
-                      if factual_banks and value_form == 'paired_outcome' else None)
+                      if factual_banks and conditional_outcomes else None)
     successor_states = (measured_successors(datasets, train_layouts, factual_banks, fixed_horizon)
                         if value_form in ('physical_bottleneck', 'planned_successor', 'constrained_planned') else None)
     n = data['controls'].shape[1]
     valid = data['mask'].bool()
-    if not bool(valid.any()):
+    physical_supervision = physical_weight > 0. or (paired and response_difference_weight > 0.)
+    if not bool(valid.any()) and physical_supervision:
         raise ValueError('Physical representation training needs measured successor states.')
-    scale = torch.cat((data['physical'][valid], data['reference_physical'][valid])).std(0).clamp_min(.05)
+    scale = (torch.cat((data['physical'][valid], data['reference_physical'][valid])).std(0).clamp_min(.05)
+             if bool(valid.any()) else torch.ones(data['physical'].shape[-1]))
     networks = []; history = []; selected_updates = []; started = time.monotonic()
     torch.set_grad_enabled(True)
     for member in range(members):
@@ -914,7 +958,7 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
                 if sampling_weights is None else
                 torch.multinomial(sampling_weights, batch_size, replacement=True, generator=generator))
             b = {k: v[indices] for k, v in data.items()}
-            if value_form == 'paired_outcome':
+            if conditional_outcomes:
                 logits, response, factual, rescue, harm = net.forward_components(
                     b['context'], b['controls'], b['programs'], b['timing'])
                 reference_logits, reference_response = net.forward_with_response(
@@ -931,7 +975,7 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
                 b['target'], b['reference_target'], b['physical'], b['reference_physical'], b['mask'], scale,
                 paired=paired, physical_weight=physical_weight, effect_weight=effect_weight,
                 response_difference_weight=response_difference_weight, absolute_weight=float(value_form != 'event_time'))
-            if value_form == 'paired_outcome' and paired:
+            if conditional_outcomes and paired:
                 conditional_loss = paired_outcome_conditional_loss(rescue, harm, b['joint_target'])
                 loss = loss+conditional_loss
                 parts['conditional_outcome'] = conditional_loss.detach()
@@ -999,6 +1043,9 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
             measured_successor_state_labels=0 if successor_states is None else len(successor_states[0]),
             measured_factual_state_labels=0 if factual_values is None else len(factual_values['target']),
             factual_value_weight=factual_value_weight,
+            physical_response_horizon=physical_horizon,
+            physical_supervision=physical_supervision,
+            fixed_inference_width=fixed_inference_width,
             population_weight_range=[float(population_weights.min()), float(population_weights.max())],
             validation_catalog_complete=complete_catalog,
             all_action_pairs=all_action_pairs, selected_updates=selected_updates,
@@ -1013,7 +1060,8 @@ def make_checkpoint(result, base_path, options, *, gain_margin=.02, runtime_sour
     base_path = Path(base_path).resolve()
     checkpoint = dict(format='paired-successor-v1', base_policy=str(base_path),
         base_sha256=hashlib.sha256(base_path.read_bytes()).hexdigest(),
-        successor_task_value=dict(kind=('paired_outcome_successor_return' if isinstance(first, PairedOutcomeSuccessorNetwork)
+        successor_task_value=dict(kind=('subject_outcome_successor_return' if isinstance(first, SubjectOutcomeSuccessorNetwork)
+            else 'paired_outcome_successor_return' if isinstance(first, PairedOutcomeSuccessorNetwork)
             else 'constrained_planned_successor_return' if isinstance(first, ConstrainedPlannedSuccessorNetwork)
             else 'planned_successor_return' if isinstance(first, PlannedSuccessorNetwork)
             else 'physical_bottleneck_successor_return' if isinstance(first, PhysicalBottleneckSuccessorNetwork)
@@ -1071,6 +1119,9 @@ def install_runtime():
 
     class PairedOutcomeSuccessorDecision(PlainReturnDecision):
         network_type = PairedOutcomeSuccessorNetwork
+
+    class SubjectOutcomeSuccessorDecision(PlainReturnDecision):
+        network_type = SubjectOutcomeSuccessorNetwork
 
     class PhysicalBottleneckSuccessorDecision(PlainReturnDecision):
         network_type = PhysicalBottleneckSuccessorNetwork
@@ -1211,6 +1262,7 @@ def install_runtime():
         actor = copy.deepcopy(original(str(base), base.stat().st_mtime_ns, ablation))
         recipe = dict(checkpoint['successor_task_value']); kind = recipe.pop('kind')
         factory = (OnPolicyGateDecision if kind == 'on_policy_gate' else
+                   SubjectOutcomeSuccessorDecision if kind == 'subject_outcome_successor_return' else
                    PairedOutcomeSuccessorDecision if kind == 'paired_outcome_successor_return' else
                    ConsensusSuccessorDecision if kind == 'consensus_successor_return'
                    else ConstrainedPlannedSuccessorDecision if kind == 'constrained_planned_successor_return'
@@ -1856,7 +1908,7 @@ def main():
     fit.add_argument('--seed', type=int, default=43)
     fit.add_argument('--updates', type=int, default=2000)
     fit.add_argument('--members', type=int, default=1)
-    fit.add_argument('--value-form', choices=('potential', 'physical_bottleneck', 'planned_successor', 'constrained_planned', 'local_quadratic', 'event_time', 'paired_outcome'), default='potential')
+    fit.add_argument('--value-form', choices=('potential', 'physical_bottleneck', 'planned_successor', 'constrained_planned', 'local_quadratic', 'event_time', 'paired_outcome', 'paired_subject_outcome'), default='potential')
     fit.add_argument('--physical-weight', type=float, default=.1)
     fit.add_argument('--effect-weight', type=float, default=4.)
     fit.add_argument('--response-difference-weight', type=float, default=.1)

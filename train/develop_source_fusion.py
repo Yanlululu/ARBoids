@@ -2157,17 +2157,69 @@ class PublicTargetMotion(nn.Module):
         return target+horizon[:,None]*velocity+world(displacement),velocity+world(delta_velocity)
 
 
+class PublicTargetAcceleration(nn.Module):
+    """Learn public target acceleration with explicit encounter geometry.
+
+    The response couples displacement to the predicted velocity change while
+    allowing a bounded correction for the measured control interval. Vessel
+    features remain permutation invariant and contain no target controller,
+    hidden heading, agility or realized future.
+    """
+    def __init__(self,width=48,absolute_frame=True):
+        super().__init__()
+        self.absolute_frame=bool(absolute_frame)
+        self.nodes=nn.Sequential(nn.Linear(18,width),nn.SiLU(),nn.Linear(width,width),nn.SiLU())
+        self.attention=nn.Linear(width,1)
+        self.readout=nn.Sequential(nn.Linear(3*width+6+2*self.absolute_frame,64),nn.SiLU(),
+            nn.Linear(64,64),nn.SiLU(),nn.Linear(64,4))
+        nn.init.zeros_(self.readout[-1].weight);nn.init.zeros_(self.readout[-1].bias)
+
+    def forward(self,nodes,global_state,time):
+        relative=30.*nodes[...,:2];relative_velocity=5.*nodes[...,2:4]
+        velocity=5.*global_state[:,1:3];speed=velocity.norm(dim=-1,keepdim=True)
+        direction=(velocity/speed.clamp_min(.25))[:,None]
+        distance=relative.norm(dim=-1,keepdim=True)
+        radial=relative/distance.clamp_min(1.)
+        def along(vector):return (vector*direction).sum(-1,keepdim=True)
+        def across(vector):
+            return direction[...,0:1]*vector[...,1:2]-direction[...,1:2]*vector[...,0:1]
+        geometry=torch.cat((distance/30.,1./(1.+distance/5.),
+            (relative_velocity*radial).sum(-1,keepdim=True)/5.,
+            along(relative)/30.,across(relative)/30.,
+            along(relative_velocity)/5.,across(relative_velocity)/5.,
+            along(nodes[...,4:6]),across(nodes[...,4:6])),-1)
+        encoded=self.nodes(torch.cat((nodes,geometry),-1))
+        attention=self.attention(encoded).softmax(1)
+        inputs=torch.cat((encoded.mean(1),encoded.amax(1),(attention*encoded).sum(1),
+            global_state,speed/5.,time[:,None]/3.2),-1)
+        response=self.readout(inputs).tanh()
+        delta_velocity=20.*time[:,None]*response[:,:2]
+        displacement=(.5*time[:,None]+.025)*delta_velocity+.25*(time[:,None]/.2)*response[:,2:]
+        return displacement,delta_velocity
+
+
+def target_feedback_network(width,absolute_frame,representation='pooled_residual'):
+    if representation=='pooled_residual':return PublicTargetMotion(width,absolute_frame)
+    if representation=='interaction_acceleration':return PublicTargetAcceleration(width,absolute_frame)
+    raise ValueError('Unknown public target-response representation.')
+
+
 class PublicTargetFeedback(nn.Module):
     """Advance the public target response separately inside every fleet forecast."""
-    def __init__(self,width=48,states=(),absolute_frame=True,control_step=.2,scenario_mode='mean'):
+    def __init__(self,width=48,states=(),absolute_frame=True,control_step=.2,scenario_mode='mean',
+                 kinematic_weight=0.,representation='pooled_residual'):
         super().__init__()
         if not states or not np.isclose(control_step,.2):
             raise ValueError('Target feedback needs fitted members at the source control interval.')
         if scenario_mode not in ('mean','members'):
             raise ValueError('Target feedback must use its mean response or complete member trajectories.')
+        if not np.isfinite(kinematic_weight) or not 0. <= kinematic_weight <= 1.:
+            raise ValueError('The public kinematic scenario needs a finite weight between zero and one.')
         self.scenario_mode=scenario_mode
+        self.kinematic_weight=float(kinematic_weight)
+        self.representation=representation
         self.control_step=float(control_step);self.absolute_frame=bool(absolute_frame)
-        self.models=nn.ModuleList([PublicTargetMotion(width,self.absolute_frame) for _ in states])
+        self.models=nn.ModuleList([target_feedback_network(width,self.absolute_frame,representation) for _ in states])
         for network,state in zip(self.models,states):network.load_state_dict(state)
 
     def predict_state(self,motion,boids,target,velocity,component=None):
@@ -2190,6 +2242,20 @@ class PublicTargetFeedback(nn.Module):
         class Component:
             def predict_state(self,motion,boids,target,velocity):
                 return parent.predict_state(motion,boids,target,velocity,component=index)
+        return Component()
+
+    def kinematic_component(self):
+        """Retain measured target momentum as a separate complete future.
+
+        Averaging an uncertain learned acceleration into every forecast can
+        hide a dangerous fleet response. This scenario advances only the
+        public position and velocity; each candidate still refreshes the
+        unchanged source and Boids feedback against that same future.
+        """
+        interval=self.control_step
+        class Component:
+            def predict_state(self,motion,boids,target,velocity):
+                return target+interval*velocity,velocity
         return Component()
 
 

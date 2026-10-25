@@ -5574,6 +5574,15 @@ def _refine_actuator_interactions(actor,packet,source_action,preferred_action,*,
             if target_response is not None:
                 scenarios=len(response_components)
                 weights=source.new_full((scenarios,),1./scenarios)
+                kinematic_weight=getattr(target_response,'kinematic_weight',0.)
+                if kinematic_weight:
+                    # Preserve distinct fleet responses instead of averaging
+                    # incompatible target accelerations before simulation.
+                    learned=(response_components if kinematic_weight<1. else ())
+                    response_components=(*learned,target_response.kinematic_component())
+                    weights=source.new_tensor([(1.-kinematic_weight)/scenarios]*len(learned)
+                        +[kinematic_weight])
+                    scenarios=len(response_components)
             def forecast(choices):
                 count=choices.shape[1]
                 plans=candidates[:,None].expand(-1,count,-1,-1,-1).gather(3,
