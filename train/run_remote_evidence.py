@@ -166,7 +166,7 @@ def batched_primitive_program(actor, action):
 
 def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=False,sample_policy=False,initial_jobs=None,
                         response_tick=None,actor_override=None,collect_fleet=False,root_sample_seed=None,
-                        physical_response_tick=None,root_selector=None):
+                        physical_response_tick=None,root_selector=None,recurrent_m2=False):
     """Batch deterministic policy inference, retaining each episode's RNG."""
     from envs.TADgame import TADEnv
     if physical_response_tick is not None and (not isinstance(physical_response_tick, int)
@@ -177,9 +177,14 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
     fleet=getattr(actor,'feedback_fleet_policy',None)
     if collect_fleet and (fleet is None or not fleet.sample or not fleet.collect):
         raise ValueError('Fleet training requires a sampling whole-fleet policy and decision collection.')
+    if not isinstance(recurrent_m2,bool) or recurrent_m2 and root_sample_seed is None:
+        raise ValueError('Recurrent root sampling requires an explicit reservoir seed.')
     if root_sample_seed is not None and (initial_jobs is not None or sample_policy or collect_fleet
-                                        or actor.successor_task_value is not None):
+                                        or actor.successor_task_value is not None and not recurrent_m2):
         raise ValueError('Decision-root sampling needs complete deterministic factual episodes without M2.')
+    if recurrent_m2:
+        from plain_return import recurrent_single_vessel_specification
+        recurrent_single_vessel_specification(actor.successor_task_value)
     if root_selector is not None and (root_sample_seed is None or not callable(root_selector)):
         raise ValueError('Proposal-state sampling needs a factual reservoir and a public-state selector.')
     if actor.gate_period!=1 or actor.intent_strength:
@@ -207,12 +212,14 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
         relative_holds=np.full(len(current),bool(getattr(actor.successor_task_value,
             'feedback_relative_hold',False)))
         relative_scales=[getattr(actor.successor_task_value,'feedback_relative_scale',None)]*len(current)
+        policy_neighborhood=np.full(len(current),bool(getattr(actor.successor_task_value,'policy_neighborhood',False)))
         relative_offsets=[None]*len(current)
         if initial_jobs is not None:
             for i,job in enumerate(initial_jobs[begin:begin+len(current)]):
                 isolated_starts[i]=bool(job.get('isolate_factual_start',isolated_starts[i]))
                 relative_holds[i]=bool(job.get('feedback_relative_hold',relative_holds[i]))
                 relative_scales[i]=job.get('feedback_relative_scale',relative_scales[i])
+                policy_neighborhood[i]=bool(job.get('policy_neighborhood',policy_neighborhood[i]))
                 state=job.get('controller_state')
                 if state is None:continue
                 # A suffix intervention changes the remaining program, not
@@ -231,9 +238,11 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                     if state.get('feedback_relative_scale') != relative_scales[i]:
                         raise ValueError('A resumed relative intervention must retain its original fusion scale.')
                     relative_offsets[i]=np.asarray(state['feedback_relative_offsets'],np.float32).copy()
+        refinement=getattr(actor,'actuator_fusion_refinement',None)
+        source_feedback=not refinement and not getattr(actor,'interaction_enabled',False)
         if relative_holds.any() and (not relative_holds.all() or not isolated_starts.all()
-                or not (getattr(actor,'actuator_fusion_refinement',None) or {}).get('task_feedback_prediction')):
-            raise ValueError('Relative feedback requires a uniform isolated task-feedback batch.')
+                or not ((refinement or {}).get('task_feedback_prediction') or source_feedback)):
+            raise ValueError('Relative feedback requires uniform isolated source or task-feedback execution.')
         if (len(set(relative_scales)) != 1 or any(scale is not None and
                 (not relative_holds[i] or not np.isfinite(scale) or not 0. < scale <= 1.)
                 for i,scale in enumerate(relative_scales))):
@@ -381,7 +390,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
             following=[]
             actuator_preferences=any(remaining[i]>0 and options[i].shape[-1]==13 for i in active)
             source_controls=(np.stack([controls[i] for i in active])
-                if getattr(actor,'actuator_fusion_refinement',None) or actuator_preferences else None)
+                if getattr(actor,'actuator_fusion_refinement',None) or actuator_preferences or relative_holds.all() else None)
             if actor.response_feedback_value is not None:
                 physical=actor.response_feedback_value(packets(active),torch.as_tensor(
                     np.stack([controls[i] for i in active]),device=device)).cpu().numpy()
@@ -395,7 +404,7 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                     torch.as_tensor(np.stack([controls[i] for i in active]),device=device),
                     torch.as_tensor(preferences,device=device)).cpu().numpy()
                 for i,control in zip(active,physical):controls[i]=control
-            if getattr(actor,'actuator_fusion_refinement',None):
+            if getattr(actor,'actuator_fusion_refinement',None) or relative_holds.all():
                 from conditional_fusion_value import refine_actuator_interactions
                 refinement_packet=packets(active)
                 held_preferences=np.stack([
@@ -419,11 +428,13 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
                         np.array(coefficients,copy=True),device=device)
                 if relative_holds.all():
                     from conditional_fusion_value import refine_feedback_relative_intervention
+                    if policy_neighborhood.any():
+                        refinement_packet['_policy_neighborhood']=torch.as_tensor(policy_neighborhood[active],device=device)
                     offsets=np.stack([relative_offsets[i] if relative_offsets[i] is not None else
                         np.full((len(controls[i]),2),np.nan,dtype=np.float32) for i in active])
                     physical,offsets=refine_feedback_relative_intervention(actor,refinement_packet,
                         torch.as_tensor(source_controls,device=device),torch.as_tensor(offsets,device=device),
-                        relative_scale=relative_scales[0],**actor.actuator_fusion_refinement)
+                        relative_scale=relative_scales[0],source_feedback=source_feedback,**(refinement or {}))
                     for i,offset in zip(active,offsets.cpu().numpy()):
                         relative_offsets[i]=offset.copy()
                         if (intervention_events[i] and
@@ -504,10 +515,53 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
     return results
 
 
+def fleet_anchor_kl(anchor_distribution, distribution):
+    """Evaluate the trust penalty in log space, including very rare plans."""
+    independent=isinstance(distribution,torch.distributions.Independent)
+    reference=anchor_distribution.base_dist if independent else anchor_distribution
+    current=distribution.base_dist if independent else distribution
+    value=(reference.probs*(reference.logits-current.logits)).sum(-1)
+    return value.sum(-1) if independent else value
+
+
+def fleet_return_targets(rollouts, credit_target='discounted_task'):
+    """Assign observed episode outcomes without changing the environment reward.
+
+    Terminal-success credit keeps the probability of eventual success as the
+    state baseline. It neither discounts a late capture nor centers advantages
+    across decisions from trajectories of different lengths.
+    """
+    if credit_target not in ('discounted_task', 'terminal_success'):
+        raise ValueError('Unknown fleet learning target.')
+    records=[];advantages=[];targets=[]
+    for rollout in rollouts:
+        steps=rollout['fleet_steps']
+        if credit_target=='terminal_success':
+            target=float(rollout['row']['success'])
+            if target not in (0.,1.):
+                raise ValueError('Fleet success credit requires actual terminal outcomes.')
+            for record in steps:
+                probability=1./(1.+np.exp(-np.clip(float(record['value']),-60.,60.)))
+                records.append(record);advantages.append(target-probability);targets.append(target)
+            continue
+        following_value=0.;advantage=0.;local_advantages=[];local_targets=[]
+        for record in reversed(steps):
+            value=float(record['value']);discount=record['discount']*(not record['done'])
+            delta=record['reward']+discount*following_value-value
+            advantage=delta+discount*.95*advantage
+            local_advantages.append(advantage);local_targets.append(advantage+value)
+            following_value=value
+        records.extend(steps);advantages.extend(reversed(local_advantages));targets.extend(reversed(local_targets))
+    return records,advantages,targets
+
+
 def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episodes_per_iteration=32,
                               batch_size=32,width=48,epochs=4,minibatch=64,learning_rate=3e-4,
                               analytic_temperature=2.,entropy_weight=.01,device='cuda:0',
-                              candidate_contrast=False,sampling_temperature=1.):
+                              candidate_contrast=False,sampling_temperature=1.,
+                              training_agilities=(2.,2.5),training_task_base=4166500000,
+                              representation='candidate_graph',credit_target='discounted_task',
+                              anchor_kl_weight=0.):
     """Optimize candidate selection on actual complete source episodes.
 
     SAC, Boids, dynamics and the task reward stay frozen. Each action is one
@@ -517,6 +571,15 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
     """
     from conditional_fusion_value import FeedbackFleetPolicy
     initialize();predecessor=Path(predecessor);output=Path(output)
+    if credit_target not in ('discounted_task','terminal_success'):
+        raise ValueError('Unknown fleet learning target.')
+    if not np.isfinite(anchor_kl_weight) or anchor_kl_weight<0.:
+        raise ValueError('The fixed-predecessor trust penalty must be nonnegative.')
+    training_agilities=tuple(map(float,training_agilities))
+    if (not training_agilities or len(set(training_agilities))!=len(training_agilities)
+            or not np.isfinite(training_agilities).all() or min(training_agilities)<=0.
+            or not isinstance(training_task_base,int) or training_task_base<0):
+        raise ValueError('Fleet training requires distinct positive agilities and a nonnegative task base.')
     source_hash=hashlib.sha256(predecessor.read_bytes()).hexdigest()
     source=torch.load(predecessor,map_location='cpu',weights_only=False)
     config=source.get('actuator_fusion_refinement') or {}
@@ -531,7 +594,11 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
         predecessor=str(predecessor),predecessor_sha256=source_hash,
         objective='on-policy clipped joint-fleet task-return policy gradient with a learned state baseline',
         candidate_budget='same 81 balanced fleet plans plus every single-vessel reference change',
-        source_policies_frozen=True,training_task_base=4166500000,training_defenders=6)
+        source_policies_frozen=True,training_task_base=training_task_base,training_defenders=6)
+    if training_agilities!=(2.,2.5):
+        specification['training_agilities']=training_agilities
+    if representation!='candidate_graph':
+        specification['representation']=representation
     if candidate_contrast:
         specification['candidate_contrast']=True
         specification['objective']='within-state candidate-contrast clipped joint-fleet task-return policy gradient'
@@ -547,15 +614,30 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
     if config.get('feedback_refinement_rounds'):
         specification['feedback_refinement_rounds']=config['feedback_refinement_rounds']
         specification['candidate_budget']+=' with common complete-feedback single-vessel neighborhood expansions'
+    if credit_target!='discounted_task':
+        specification.update(credit_target=credit_target,
+            objective='undiscounted observed terminal-success policy gradient with a probability baseline')
+    if anchor_kl_weight:
+        specification.update(anchor_kl_weight=anchor_kl_weight,
+            anchor_policy_sha256=source_hash,anchor_policy_frozen=True)
     model=torch.load(output,map_location='cpu',weights_only=False) if output.exists() else copy.deepcopy(source)
     history=model.get('fleet_learning',{})
     if history and history['specification']!=specification:
         raise ValueError('Cannot resume fleet learning with changed data, budget or source parameters.')
+    recipe=model.get('feedback_fleet_policy') or {}
+    if recipe and recipe.get('representation','candidate_graph')!=representation:
+        raise ValueError('A changed fleet representation requires fresh parameters.')
     torch.manual_seed(seed);np.random.seed(seed)
     actor=copy.deepcopy(d.joint_load(str(predecessor),predecessor.stat().st_mtime_ns)).to(device)
     learner=FeedbackFleetPolicy(width,analytic_temperature,
         (model.get('feedback_fleet_policy') or {}).get('state'),candidate_contrast,
-        sampling_temperature).to(device)
+        sampling_temperature,representation).to(device)
+    anchor=None
+    if anchor_kl_weight:
+        anchor_recipe=source.get('feedback_fleet_policy') or {}
+        if not anchor_recipe.get('state'):
+            raise ValueError('The trust penalty needs a previously learned candidate policy.')
+        anchor=FeedbackFleetPolicy(**anchor_recipe).to(device).eval().requires_grad_(False)
     actor.feedback_fleet_policy=learner
     optimizer=torch.optim.Adam(learner.parameters(),lr=learning_rate)
     if history:
@@ -566,25 +648,19 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
     completed=int(history.get('completed_iterations',0));learning=list(history.get('iterations',[]))
     for iteration in range(completed,iterations):
         started=time.monotonic();learner.sample=True;learner.collect=True;learner.eval()
-        tasks=[(scene,None) for scene in d.bank(4166500000+seed*100000+iteration*episodes_per_iteration,
-            max(1,(episodes_per_iteration+1)//2),((6,2.),(6,2.5)))][:episodes_per_iteration]
+        tasks=[(scene,None) for scene in d.bank(training_task_base+seed*100000+iteration*episodes_per_iteration,
+            max(1,(episodes_per_iteration+len(training_agilities)-1)//len(training_agilities)),
+            tuple((6,agility) for agility in training_agilities))][:episodes_per_iteration]
         with torch.no_grad():
             rollouts=batched_credit_rows(predecessor,tasks,batch_size=batch_size,device=device,
                 actor_override=actor,collect_fleet=True)
         learner.to(device);learner.sample=False;learner.collect=False;learner.train()
-        records=[];advantages=[];targets=[]
-        for rollout in rollouts:
-            following_value=0.;advantage=0.;steps=rollout['fleet_steps']
-            local_advantages=[];local_targets=[]
-            for record in reversed(steps):
-                value=float(record['value']);discount=record['discount']*(not record['done'])
-                delta=record['reward']+discount*following_value-value
-                advantage=delta+discount*.95*advantage
-                local_advantages.append(advantage);local_targets.append(advantage+value)
-                following_value=value
-            records.extend(steps);advantages.extend(reversed(local_advantages));targets.extend(reversed(local_targets))
+        records,advantages,targets=fleet_return_targets(rollouts,credit_target)
         advantages=torch.tensor(advantages,dtype=torch.float32,device=device)
-        advantages=(advantages-advantages.mean())/advantages.std().clamp_min(1e-6)
+        if credit_target=='terminal_success':
+            advantages=advantages/advantages.std(unbiased=False).clamp_min(.1)
+        else:
+            advantages=(advantages-advantages.mean())/advantages.std().clamp_min(1e-6)
         targets=torch.tensor(targets,dtype=torch.float32,device=device)
         losses=[];divergences=[];stop=False;updates=0
         with torch.enable_grad():
@@ -603,8 +679,18 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
                     log_ratio=distribution.log_prob(choices)-previous
                     ratio=log_ratio.exp();advantage=advantages[indices]
                     policy_loss=-torch.minimum(ratio*advantage,ratio.clamp(.8,1.2)*advantage).mean()
-                    value_loss=torch.nn.functional.smooth_l1_loss(values,targets[indices])
+                    value_loss=(torch.nn.functional.binary_cross_entropy_with_logits(values,targets[indices])
+                        if credit_target=='terminal_success' else
+                        torch.nn.functional.smooth_l1_loss(values,targets[indices]))
                     loss=policy_loss+.5*value_loss-entropy_weight*distribution.entropy().mean()
+                    if anchor is not None:
+                        with torch.no_grad():
+                            anchor_logits,_=anchor(features,costs)
+                            anchor_distribution=anchor.policy_distribution(anchor_logits,selection,
+                                features.shape[2],temperature=learner.sampling_temperature)
+                        loss=loss+anchor_kl_weight*fleet_anchor_kl(anchor_distribution,distribution).mean()
+                    if not bool(torch.isfinite(loss)):
+                        raise FloatingPointError('Fleet learning produced a nonfinite objective before an update.')
                     divergence=((ratio-1)-log_ratio).mean().detach()
                     if epoch>0 and float(divergence)>.03:
                         stop=True;break
@@ -621,6 +707,8 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
         model['feedback_fleet_policy']=dict(width=width,analytic_temperature=analytic_temperature,
             state={key:value.detach().cpu().clone() for key,value in learner.state_dict().items()})
         if candidate_contrast:model['feedback_fleet_policy']['candidate_contrast']=True
+        if representation!='candidate_graph':
+            model['feedback_fleet_policy']['representation']=representation
         if sampling_temperature!=1.:
             model['feedback_fleet_policy']['sampling_temperature']=sampling_temperature
         model['fleet_learning']=dict(specification=specification,completed_iterations=iteration+1,

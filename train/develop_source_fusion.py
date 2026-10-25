@@ -4063,9 +4063,11 @@ def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_s
     relative_scale=getattr(getattr(actor,'successor_task_value',None),'feedback_relative_scale',None)
     if relative_scale is not None and not relative_hold:
         raise ValueError('A scaled fusion displacement requires relative feedback execution.')
+    refinement=getattr(actor,'actuator_fusion_refinement',None)
+    source_feedback=not refinement and not getattr(actor,'interaction_enabled',False)
     if relative_hold and (not isolate_factual_start or
-            not (getattr(actor,'actuator_fusion_refinement',None) or {}).get('task_feedback_prediction')):
-        raise ValueError('Relative intervention execution requires the isolated task-feedback planner.')
+            not ((refinement or {}).get('task_feedback_prediction') or source_feedback)):
+        raise ValueError('Relative intervention requires isolated source or task-feedback execution.')
     if action.shape[-1]==14:
         # A delayed intervention is preceded by the actual predecessor policy.
         # Column 13 names that policy relative to the actor's value chain;
@@ -4186,7 +4188,7 @@ def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_s
             physical=apply_actuator_preferences(mechanism_tensor(joint_packet(env,obs)),
                 torch.as_tensor(control[None],dtype=torch.float32),torch.as_tensor(physical[None],dtype=torch.float32),
                 torch.as_tensor(preferences[None],dtype=torch.float32))[0].numpy()
-        if getattr(actor,'actuator_fusion_refinement',None):
+        if getattr(actor,'actuator_fusion_refinement',None) or relative_hold:
             from conditional_fusion_value import refine_actuator_interactions
             refinement_packet=mechanism_tensor(joint_packet(env,obs))
             if action.shape[-1]==13 and step<duration:
@@ -4205,11 +4207,13 @@ def joint_commands(env,obs,actor,action,maximum=0,refine_midpoint=True,observe_s
                     coefficients[None],dtype=torch.float32)
             if relative_hold:
                 from conditional_fusion_value import refine_feedback_relative_intervention
+                if getattr(actor.successor_task_value,'policy_neighborhood',False):
+                    refinement_packet['_policy_neighborhood']=torch.ones(1,dtype=torch.bool)
                 refinement_packet.setdefault('_committed_actuator_preferences',
                     torch.full((1,len(control),2),-1.))
                 resolved,relative_offsets=refine_feedback_relative_intervention(actor,refinement_packet,
                     torch.as_tensor(control[None],dtype=torch.float32),relative_offsets,
-                    relative_scale=relative_scale,**actor.actuator_fusion_refinement)
+                    relative_scale=relative_scale,source_feedback=source_feedback,**(refinement or {}))
                 physical=resolved[0].numpy()
             else:
                 physical=refine_actuator_interactions(actor,refinement_packet,

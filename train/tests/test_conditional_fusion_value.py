@@ -8,6 +8,925 @@ from conditional_fusion_value import (
 
 
 class ConditionalFusionValueTests(unittest.TestCase):
+    def test_factual_calibration_preserves_trajectory_mass_and_validation_split(self):
+        import numpy as np
+        from paired_successor_value import measured_factual_values, measured_pairs, fit_successor
+        records=[]; roots=[]
+        for index,count in enumerate((1,4,2)):
+            context=np.full(13,index/10.,np.float32)
+            controls=np.array([[.8,.4,-.6,-.2,.1,.1]],np.float32)
+            records.append(dict(scene=(index,1,2.),future=100+index,
+                contexts=np.tile(context,(count,1)),controls=np.tile(controls,(count,1,1)),
+                orders=np.zeros((count,1),int),values=np.full(count,index%2,np.float32)))
+            roots.append(dict(scene=(index,1,2.),prefix_future=100+index,root_steps=0,
+                context=context,effect_controls=controls,order=[0],options=[(0,0,0),(1,0,5)],
+                futures=[None],population_weight=2.+index,outcomes={(q,0):dict(success=float(q),
+                    outcome=1 if q else 2,duration=10.,continuation_context=context+.01*q,
+                    continuation_order=[0]) for q in (0,1)}))
+        bank=dict(completed=True,records=records)
+        training=[(0,1,2.),(1,1,2.)];validation=[(2,1,2.)]
+        factual=measured_factual_values([bank,bank],training)
+        self.assertEqual(len(factual['target']),5)
+        self.assertAlmostEqual(float(factual['sampling_weight'][0]),1.)
+        self.assertAlmostEqual(float(factual['sampling_weight'][1:].sum()),1.)
+        self.assertAlmostEqual(float((factual['target']*factual['sampling_weight']).sum()
+                                   /factual['sampling_weight'].sum()),.5)
+        data=dict(completed=True,roots=roots)
+        tensors,_=measured_pairs([data],training)
+        torch.testing.assert_close(tensors['population_weight'],torch.tensor([2.,3.]))
+        split=dict(successor_task_fit=dict(training_layouts=training,validation_layouts=validation),
+            successor_task_value=dict(feedback_relative_scale=.25,intervention_budget=1))
+        fitted=fit_successor([data],data,split,paired=True,updates=2,members=1,width=8,batch_size=4,
+            value_form='paired_outcome',complete_catalog=False,root_balanced=True,factual_banks=[bank])
+        self.assertEqual(fitted['fit']['measured_factual_state_labels'],5)
+        self.assertEqual(fitted['fit']['population_weight_range'],[2.,3.])
+        self.assertTrue(all(bool(torch.isfinite(parameter).all())
+                            for parameter in fitted['networks'][0].parameters()))
+
+    def test_paired_outcome_value_preserves_factual_mass_and_measured_credit(self):
+        from paired_successor_value import PairedOutcomeSuccessorNetwork, paired_outcome_conditional_loss
+        factual=torch.logit(torch.tensor([.8,.8,.2]))
+        rescue=torch.logit(torch.tensor([.6,.6,.5]))
+        harm=torch.logit(torch.tensor([.1,.1,.25]))
+        actual=PairedOutcomeSuccessorNetwork.plan_probability(factual,rescue,harm,
+                                                            torch.tensor([True,False,True]))
+        torch.testing.assert_close(actual,torch.tensor([.84,.8,.55]))
+        rescue=torch.zeros(2,requires_grad=True);harm=torch.zeros(2,requires_grad=True)
+        # A measured rescue supplies no fabricated harm label; a measured
+        # harmful intervention supplies no fabricated rescue label.
+        target=torch.tensor([[0.,1.,0.,0.],[0.,0.,1.,0.]])
+        loss=paired_outcome_conditional_loss(rescue,harm,target);loss.backward()
+        self.assertLess(float(rescue.grad[0]),0.)
+        self.assertEqual(float(rescue.grad[1]),0.)
+        self.assertEqual(float(harm.grad[0]),0.)
+        self.assertLess(float(harm.grad[1]),0.)
+        net=PairedOutcomeSuccessorNetwork(3,width=8)
+        context=torch.randn(2,32);controls=torch.randn(2,3,6)
+        programs=torch.tensor([[0,0,0],[1,0,0]]);timing=torch.tensor([[0,0],[0,5]])
+        values,response,factual,_,_=net.forward_components(context,controls,programs,timing)
+        self.assertEqual(response.shape,(2,29))
+        torch.testing.assert_close(values[0],factual[0])
+        self.assertTrue(bool(torch.isfinite(values).all()))
+
+    def test_terminal_fleet_credit_preserves_late_success_and_failure(self):
+        from run_remote_evidence import fleet_return_targets, fleet_anchor_kl
+        def episode(success, count):
+            return dict(row=dict(success=success), fleet_steps=[dict(value=0., discount=.5,
+                reward=float(success) if step==count-1 else 0., done=step==count-1)
+                for step in range(count)])
+        observations=[episode(True,1),episode(True,4),episode(False,2)]
+        records,advantages,targets=fleet_return_targets(observations,'terminal_success')
+        self.assertEqual(len(records),7)
+        self.assertEqual(targets,[1.]*5+[0.]*2)
+        self.assertEqual(advantages,[.5]*5+[-.5]*2)
+        _,discounted,_=fleet_return_targets(observations)
+        self.assertLess(discounted[1],discounted[0])
+        with self.assertRaisesRegex(ValueError,'terminal outcomes'):
+            fleet_return_targets([episode(.5,1)],'terminal_success')
+        reference=torch.distributions.Categorical(logits=torch.tensor([[0.,-90.]]))
+        logits=torch.tensor([[0.,-180.]],requires_grad=True)
+        current=torch.distributions.Categorical(logits=logits)
+        value=fleet_anchor_kl(reference,current)
+        self.assertTrue(bool(torch.isfinite(value).all()))
+        value.sum().backward()
+        self.assertTrue(bool(torch.isfinite(logits.grad).all()))
+        torch.testing.assert_close(fleet_anchor_kl(reference,reference),torch.zeros(1))
+
+    def test_stratified_future_sampling_preserves_population_and_matched_learning(self):
+        import numpy as np
+        from plain_return import root_sampling_probabilities, fit_plain_return
+        from local_intervention_value import fit_success_intervention_pair
+        root_ids = np.array([10, 10, 73, 73])
+        # One sampled success and failure represent a pool with eight
+        # successes and two failures, rather than a balanced population.
+        probability = root_sampling_probabilities(root_ids, 1., [1., 3.], [8., 2., 4., 4.])
+        np.testing.assert_allclose(probability, [.2, .05, .375, .375])
+        self.assertAlmostEqual(float(probability[:2] @ np.array([1., 0.])/.25), .8)
+        np.testing.assert_allclose(root_sampling_probabilities(root_ids, .5, observation_weights=np.ones(4)),
+                                   root_sampling_probabilities(root_ids, .5))
+        for weights in ([1., 0., 1., 1.], [1., -1., 1., 1.], [1., float('nan'), 1., 1.], [1., 1.]):
+            with self.assertRaisesRegex(ValueError, 'Observation weights'):
+                root_sampling_probabilities(root_ids, 1., observation_weights=weights)
+        controls = np.array([[.8, .3, -.4, .6, .1, -.2]], np.float32)
+        roots = [dict(context=np.full(13, index/10., np.float32), effect_controls=controls,
+            scene=(3020+index, 1, 2.), futures=[101, 102], options=[(0, 0, 0), (1, 0, 5), (9, 0, 5)],
+            future_weights=np.array([8., 2.], np.float32), feedback_relative_hold=True, feedback_relative_scale=.25,
+            outcomes={(q, f): dict(success=float((q+f+index)%2)) for q in range(3) for f in range(2)})
+            for index in range(4)]
+        data = dict(model={}, roots=roots[:2], predecessor_sha256='stratified-futures', simulation_steps=20,
+            isolate_factual_start=True, feedback_relative_hold=True, feedback_relative_scale=.25)
+        settings = dict(action_encoding='physical_delta', state_baseline=True, root_sampling_fraction=1.)
+        paired, ordinary = fit_success_intervention_pair(data, None, None,
+            validation_data=dict(data, roots=roots[2:]), updates=8, ensemble_size=2,
+            architecture='mlp', parameter_budget=1000, conditional_objective='shared_potential', device='cpu',
+            network_options=dict(settings, future_weighted_sampling=True))
+        for key in ('training_observation_sha256', 'training_target_sha256', 'trainable_parameters',
+                    'member_initialization_parameter_sha256', 'member_updates', 'future_weighted_sampling',
+                    'future_sampling_weight_sha256', 'paired_row_sampling_probability_sha256'):
+            self.assertEqual(paired['successor_task_fit'][key], ordinary['successor_task_fit'][key])
+        self.assertTrue(ordinary['successor_task_fit']['future_weighted_sampling'])
+        self.assertIsNotNone(ordinary['successor_task_fit']['future_sampling_weight_sha256'])
+        unweighted = fit_plain_return(data, None, updates=4, parameter_budget=1000, device='cpu', **settings)
+        self.assertNotEqual(ordinary['successor_task_fit']['paired_row_sampling_probability_sha256'],
+                            unweighted['successor_task_fit']['paired_row_sampling_probability_sha256'])
+        self.assertTrue(any(not torch.equal(value, unweighted['successor_task_value']['state'][key])
+                            for key, value in ordinary['successor_task_value']['state'].items()))
+        self.assertTrue(ordinary['successor_task_fit']['raw_validation_diagnostics']['layouts_disjoint'])
+
+    def test_subject_counterfactual_credit_preserves_critic_and_native_decision(self):
+        from plain_return import PlainReturnNetwork, PlainReturnDecision
+        settings = dict(action_encoding='physical_delta', feedback_relative_scale=.25,
+                        state_baseline=True, representation='fleet_attention')
+        net = PlainReturnNetwork(2, 8, **settings)
+        options = [(0, 0, 0)]+sorted((digit*10**boat, 0, 5)
+            for boat in range(2) for digit in (1, 2, 3, 4, 6, 7, 8, 9))
+        ordinary = PlainReturnDecision(2, 8, net.state_dict(), options, **settings,
+            isolate_factual_start=True, feedback_relative_hold=True,
+            ensemble_states=[net.state_dict()]).eval()
+        critic = PlainReturnDecision(2, 8, net.state_dict(), options, **settings,
+            isolate_factual_start=True, feedback_relative_hold=True, gain_margin=.35,
+            ensemble_states=[net.state_dict()], decision_rule='subject_counterfactual').eval()
+        self.assertEqual(sum(p.numel() for p in critic.parameters()), sum(p.numel() for p in ordinary.parameters()))
+        for key, value in critic.network.state_dict().items():
+            torch.testing.assert_close(value, ordinary.network.state_dict()[key], rtol=0., atol=0.)
+        values = torch.full((2, 17), .4)
+        values[:, 1:9] = .2; values[:, 1] = .7
+        values[:, 9:] = .72; values[:, -1] = .75
+        ranking, returned = critic.aggregate_estimates([values, values])
+        torch.testing.assert_close(returned, values, rtol=0., atol=0.)
+        expected = values.clone()
+        for boat in range(2):
+            indices = critic.counterfactual_indices[boat]
+            baseline = (values[:, indices]*critic.counterfactual_weights).sum(-1)
+            expected[:, indices[1:]] -= baseline[:, None]
+        expected[:, 0] = 0.
+        torch.testing.assert_close(ranking, expected, rtol=0., atol=1e-7)
+        self.assertTrue(bool((ranking.argmax(-1) == 1).all()))
+        self.assertTrue(bool((returned.argmax(-1) == 16).all()))
+        torch.testing.assert_close(critic.counterfactual_advantages(values+.1), ranking, rtol=0., atol=1e-7)
+        changed = values.clone(); changed[:, 9:] += .15
+        torch.testing.assert_close(critic.counterfactual_advantages(changed)[:, :9], ranking[:, :9],
+                                   rtol=0., atol=0.)
+        critic.catalog_estimates = lambda context, controls: (ranking, returned)
+        context = torch.randn(2, 21); controls = torch.randn(2, 2, 6)
+        order = torch.arange(2).expand(2, -1)
+        critic.public_context = lambda packet: (context, order)
+        critic.record_decisions = critic.record_catalog = True
+        packet = dict(node=torch.zeros(2, 2, 16), _plain_return_controls=controls)
+        proposed = critic(packet, torch.zeros(2, 2, 3))
+        self.assertEqual(tuple(proposed.shape), (2, 2, 14))
+        self.assertTrue(bool(critic.last_decision['accepted'].all()))
+        self.assertTrue(bool((critic.selected_catalog_indices(context, controls) == 1).all()))
+        torch.testing.assert_close(critic.last_decision['decision_gain'], ranking[:, 1])
+        torch.testing.assert_close(critic.last_catalog['score'], ranking)
+        self.assertTrue(bool((critic.last_decision['predicted_gain'] < critic.gain_margin).all()))
+        del critic.catalog_estimates
+        for n in (3, 8):
+            ranking, values = critic.catalog_estimates(torch.randn(2, 8*n+5), torch.randn(2, n, 6))
+            self.assertEqual(tuple(values.shape), (2, 8*n+1))
+            self.assertEqual(tuple(critic.counterfactual_indices.shape), (n, 9))
+            torch.testing.assert_close(ranking[:, 0], torch.zeros(2), rtol=0., atol=0.)
+
+    def test_peer_decision_ablation_keeps_subject_commands_and_matched_learning(self):
+        import numpy as np
+        from local_intervention_value import fit_success_intervention_pair
+        from plain_return import PlainReturnNetwork, PlainReturnDecision, PairedReturnDecision
+        torch.manual_seed(298)
+        context = torch.randn(2, 59)
+        programs = torch.tensor([[0, 0, 0, 0, 0, 0], [5, 0, 0, 0, 0, 0],
+                                 [1, 0, 0, 0, 0, 0]])
+        timing = torch.tensor([[0, 0], [0, 5], [0, 5]])
+        settings = dict(identity_conditioned=True, action_encoding='physical_delta',
+            feedback_relative_scale=.25, state_baseline=True)
+        for representation in ('dense', 'fleet_attention'):
+            full = PlainReturnNetwork(6, 16, representation=representation, **settings).eval()
+            net = PlainReturnNetwork(6, 16, representation=representation,
+                peer_decision_conditioned=False, **settings).eval()
+            net.load_state_dict(full.state_dict())
+            self.assertEqual(sum(p.numel() for p in net.parameters()),
+                             sum(p.numel() for p in full.parameters()))
+            commands = torch.randn(2, 6, 6, requires_grad=True)
+            catalog = net.forward_catalog(context, commands, programs, timing, chunk_size=2)
+            explicit = torch.stack([net(context, commands, q.expand(2, -1), t.expand(2, -1))
+                                    for q, t in zip(programs, timing)], 1)
+            torch.testing.assert_close(catalog, explicit)
+            torch.testing.assert_close(catalog[:, 0], catalog[:, 1], rtol=0., atol=0.)
+            changed = commands.detach().clone(); changed[:, 1:] += 7.
+            torch.testing.assert_close(catalog, net.forward_catalog(context, changed, programs, timing),
+                                       rtol=0., atol=1e-7)
+            catalog[:, 2].sum().backward()
+            self.assertFalse(bool(commands.grad[:, 1:].any()))
+            self.assertTrue(bool(commands.grad[:, 0].any()))
+            commands.grad.zero_()
+            net.forward_catalog(context, commands, programs[:1], timing[:1]).sum().backward()
+            self.assertFalse(bool(commands.grad.any()))
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        roots = [dict(context=np.full(21, index/10., np.float32), effect_controls=controls,
+            scene=(2980+index, 2, 2.), futures=[101, 102], options=[(0, 0, 0), (1, 0, 5), (90, 0, 5)],
+            feedback_relative_hold=True, feedback_relative_scale=.25,
+            outcomes={(q, f): dict(success=float((q+f+index)%2)) for q in range(3) for f in range(2)})
+            for index in range(4)]
+        data = dict(model={}, roots=roots[:2], predecessor_sha256='peer-decision-ablation', simulation_steps=20,
+            isolate_factual_start=True, feedback_relative_hold=True, feedback_relative_scale=.25)
+        catalog = [(0, 0, 0)]+sorted((digit*10**boat, 0, 5)
+            for boat in range(2) for digit in (1, 2, 3, 4, 6, 7, 8, 9))
+        paired, ordinary = fit_success_intervention_pair(data, None, None,
+            validation_data=dict(data, roots=roots[2:]), updates=4, ensemble_size=2,
+            architecture='mlp', parameter_budget=2500, conditional_objective='shared_potential', device='cpu',
+            network_options=dict(action_encoding='physical_delta', state_baseline=True,
+                representation='fleet_attention', peer_decision_conditioned=False,
+                additional_candidate_options=catalog))
+        for key in ('training_observation_sha256', 'training_target_sha256', 'trainable_parameters',
+                    'member_initialization_parameter_sha256', 'member_updates', 'peer_decision_conditioned'):
+            self.assertEqual(paired['successor_task_fit'][key], ordinary['successor_task_fit'][key])
+        for model, factory in ((paired, PairedReturnDecision), (ordinary, PlainReturnDecision)):
+            recipe = dict(model['successor_task_value']); recipe.pop('kind'); recipe['intervention_budget'] = 0
+            decision = factory(**recipe).eval()
+            self.assertFalse(decision.network.peer_decision_conditioned)
+            self.assertTrue(all(not member.peer_decision_conditioned for member in decision.ensemble))
+            self.assertEqual(tuple(decision.catalog_estimates(torch.randn(2, 21), torch.randn(2, 2, 6))[1].shape),
+                             (2, 17))
+
+    def test_source_relative_interventions_keep_native_feedback_and_execution_parity(self):
+        import sys
+        import numpy as np
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import conditional_fusion_value as conditional
+        import run_remote_evidence as remote
+        source = torch.tensor([[[.8, -.4, .6], [.2, .7, .4], [-.5, .3, .5]]])
+        node = torch.zeros(1, 3, 16)
+        node[..., 11:13] = torch.tensor([[[-.2, .1], [.6, -.3], [.4, .8]]])
+        held = torch.full((1, 3, 2), -1.); held[0, 1] = torch.tensor([1., 0.])
+        packet = dict(node=node, _committed_actuator_preferences=held)
+        actor = SimpleNamespace(interaction_enabled=False, actuator_fusion_refinement=None,
+                                generic_fusion_adapter=None, response_feedback_value=None)
+        with patch.object(conditional, '_refine_actuator_interactions', side_effect=AssertionError('M1 invoked')):
+            first, offsets = conditional.refine_feedback_relative_intervention(actor, packet, source,
+                torch.full_like(held, float('nan')), relative_scale=.25, source_feedback=True)
+            torch.testing.assert_close(offsets[0, 1], torch.tensor([.25, -.25]), rtol=0., atol=0.)
+            torch.testing.assert_close(first[:, [0, 2]], source[:, [0, 2]], rtol=0., atol=0.)
+            source[0, 1, 2] = .8
+            following, retained = conditional.refine_feedback_relative_intervention(actor, packet, source,
+                offsets, relative_scale=.25, source_feedback=True)
+            theta = torch.tensor([1., .55])
+            expected = theta*source[0, 1, :2]+(1.-theta)*node[0, 1, 11:13]
+            torch.testing.assert_close(following[0, 1, :2], expected)
+            torch.testing.assert_close(retained, offsets, rtol=0., atol=0., equal_nan=True)
+            held[0, 1] = .5
+            unchanged, _ = conditional.refine_feedback_relative_intervention(actor, packet, source,
+                torch.full_like(held, float('nan')), relative_scale=.25, source_feedback=True)
+            torch.testing.assert_close(unchanged, source, rtol=0., atol=0.)
+            actor.interaction_enabled = True
+            with self.assertRaisesRegex(ValueError, 'without mechanism one'):
+                conditional.refine_feedback_relative_intervention(actor, packet, source, offsets,
+                    relative_scale=.25, source_feedback=True)
+
+        class Environment:
+            def __init__(self, n, protocol):
+                self.n = n
+            def reset(self, agility, noisy_agility):
+                self.steps = 0; self.Current_T = 0.; self.state = 0.
+                return np.zeros((self.n, 1), np.float32), {}
+        class Actor:
+            gate_period = 1; intent_strength = 0.; training_gamma = .97
+            training_step_cost = .01; environment_protocol = 'test'; physical_span = 1
+            cooperative_role_credit = response_feedback_value = generic_fusion_adapter = None
+            response_base = actuator_fusion_refinement = midpoint_intervention_values = None
+            interaction_enabled = conditional_commitment = immediate_commitment = False
+            preference_strength = 0.; conditional_enabled = True
+            successor_task_value = SimpleNamespace(isolate_factual_start=True,
+                feedback_relative_hold=True, feedback_relative_scale=.25)
+            def __init__(self, null=False):
+                self.null = null
+            def to(self, device):
+                return self
+            def cpu(self):
+                return self
+            def proposal_distribution(self, obs):
+                return (torch.atanh(obs.new_tensor([.4, -.3])).expand(*obs.shape[:2], 2), None, None)
+            def __call__(self, packets, gate_only=False, **kwargs):
+                proposal = self.proposal_distribution(packets['obs'])[0].tanh()
+                gate = (.25+.04*packets['clock'])[:, None].expand(-1, proposal.shape[1], -1)
+                action = torch.cat((proposal, gate), -1)
+                if gate_only:
+                    return action, None
+                program = action.new_zeros((*action.shape[:2], 13)); program[..., :3] = action
+                program[..., 3] = -1.; program[..., 4] = 5; program[..., 5] = -1.
+                program[..., 9:13] = -1.
+                program[:, 1, 9:13] = .5 if self.null else action.new_tensor([1., 0., 1., 0.])
+                return program, None
+        def packet(env, observation):
+            node = np.zeros((env.n, 16), np.float32); node[:, 11:13] = [-.2, .6]
+            return dict(obs=observation, node=node, clock=np.array([env.steps], np.float32))
+        def step(env, controls, gamma, cost):
+            physical = controls[:, :2]*controls[:, 2:3]+np.array([-.2, .6], np.float32)*(1.-controls[:, 2:3])
+            env.state += float(physical.sum()); env.steps += 1; env.Current_T = env.steps*.2
+            return np.zeros((env.n, 1), np.float32), env.state, int(env.steps == 5), env.state*.5
+        def outcome(env, done):
+            return dict(success=int(env.state > 0.), outcome=env.state, duration=env.Current_T)
+        with patch.dict(sys.modules, {'envs.TADgame': SimpleNamespace(TADEnv=Environment)}), \
+                patch.object(remote, 'initialize'), patch.object(remote.d, 'joint_packet', side_effect=packet), \
+                patch.object(remote.d, 'joint_task_step', side_effect=step), \
+                patch.object(remote.d, 'outcome', side_effect=outcome), \
+                patch.object(conditional, '_refine_actuator_interactions', side_effect=AssertionError('M1 invoked')):
+            for null in (False, True):
+                actor = Actor(null)
+                batched = remote.batched_credit_rows('unused', [((17, 3, 2.), 100)], device='cpu',
+                    actor_override=actor, keep_steps=True)[0]
+                env = Environment(3, 'test'); obs, _ = env.reset(2., False)
+                action = actor(remote.d.mechanism_tensor(packet(env, obs)))[0][0].numpy()
+                commands = remote.d.joint_commands(env, obs, actor, action)
+                control = next(commands); single = []
+                for tick in range(5):
+                    single.append(control.copy())
+                    result = step(env, control, .97, .01)
+                    try:
+                        control = commands.send(result)
+                    except StopIteration as completed:
+                        self.assertEqual(tick, 4)
+                        self.assertEqual(completed.value[-1], 5)
+                np.testing.assert_array_equal(np.stack(single), np.stack([s['action'] for s in batched['steps']]))
+                self.assertEqual(env.state, batched['row']['outcome'])
+                np.testing.assert_array_equal(np.stack(single)[:, [0, 2], 2],
+                    np.repeat((.25+.04*torch.arange(5, dtype=torch.float32)).numpy()[:, None], 2, axis=1))
+                if null:
+                    np.testing.assert_array_equal(np.stack(single)[:, 1], np.stack(single)[:, 0])
+
+    def test_fleet_attention_learns_whole_plan_values_and_transfers_parameters(self):
+        import numpy as np
+        from local_intervention_value import fit_success_intervention_pair
+        from plain_return import PlainReturnNetwork, PlainReturnDecision, PairedReturnDecision
+        settings = dict(identity_conditioned=True, action_encoding='physical_delta',
+            feedback_relative_scale=.25, state_baseline=True, representation='fleet_attention')
+        torch.manual_seed(43)
+        net = PlainReturnNetwork(6, 32, **settings).eval()
+        self.assertEqual(sum(p.numel() for p in net.parameters()), 24194)
+        context = torch.randn(2, 59); controls = torch.randn(2, 6, 6)
+        programs = torch.tensor([[0, 0, 0, 0, 0, 0], [5, 0, 0, 0, 0, 0],
+                                 [1, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 9]])
+        timing = torch.tensor([[0, 0], [0, 5], [0, 5], [0, 5]])
+        catalog = net.forward_catalog(context, controls, programs, timing, chunk_size=2)
+        explicit = torch.stack([net(context, controls, q.expand(2, -1), t.expand(2, -1))
+                                for q, t in zip(programs, timing)], 1)
+        torch.testing.assert_close(catalog, explicit)
+        torch.testing.assert_close(catalog[:, 0], catalog[:, 1], rtol=0., atol=0.)
+        permutation = torch.tensor([5, 2, 0, 4, 1, 3])
+        permuted = torch.cat((context[:, :48].reshape(2, 6, 8)[:, permutation].flatten(1),
+                             context[:, 48:54][:, permutation], context[:, -5:]), -1)
+        torch.testing.assert_close(catalog, net.forward_catalog(permuted, controls[:, permutation],
+                                                               programs[:, permutation], timing))
+        net.zero_grad(); explicit[:, :2].sum().backward()
+        self.assertTrue(all(p.grad is None or not bool(p.grad.any())
+                            for layer in (net.layers, net.action_embed, net.action_attention)
+                            for p in layer.parameters()))
+        self.assertTrue(any(p.grad is not None and bool(p.grad.any()) for p in net.baseline.parameters()))
+        catalog_for = lambda n: [(0, 0, 0)]+sorted((digit*10**boat, 0, 5)
+            for boat in range(n) for digit in (1, 2, 3, 4, 6, 7, 8, 9))
+        for factory in (PlainReturnDecision, PairedReturnDecision):
+            extra = dict(conditional_objective='shared_potential') if factory is PairedReturnDecision else {}
+            decision = factory(6, 32, net.state_dict(), catalog_for(6), **settings,
+                feedback_relative_hold=True, isolate_factual_start=True, intervention_budget=0, **extra).eval()
+            initial = {key:value.clone() for key, value in decision.network.state_dict().items()}
+            for n in (3, 8, 6):
+                state = torch.randn(2, 9*n+5); commands = torch.randn(2, n, 6)
+                values = decision.catalog_estimates(state, commands)[1]
+                self.assertEqual(tuple(values.shape), (2, 8*n+1))
+                self.assertEqual(decision.options.tolist(), [list(q) for q in catalog_for(n)])
+                clone = PlainReturnNetwork(n, 32, **settings).eval()
+                clone.load_state_dict(initial)
+                torch.testing.assert_close(values, clone.forward_catalog(state, commands,
+                    decision.programs, decision.options[:, 1:]).sigmoid())
+                for key, value in decision.network.state_dict().items():
+                    torch.testing.assert_close(value, initial[key], rtol=0., atol=0.)
+        commands = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        roots = [dict(context=np.full(21, index/10., np.float32), effect_controls=commands,
+            scene=(190+index, 2, 2.), futures=[101, 102], options=[(0, 0, 0), (1, 0, 5), (90, 0, 5)],
+            feedback_relative_hold=True, feedback_relative_scale=.25,
+            outcomes={(q, f): dict(success=float((q+f+index)%2)) for q in range(3) for f in range(2)})
+            for index in range(4)]
+        data = dict(model={}, roots=roots[:2], predecessor_sha256='fleet-attention', simulation_steps=20,
+            isolate_factual_start=True, feedback_relative_hold=True, feedback_relative_scale=.25)
+        paired, ordinary = fit_success_intervention_pair(data, None, None,
+            validation_data=dict(data, roots=roots[2:]), updates=4, ensemble_size=2,
+            architecture='mlp', parameter_budget=2500, conditional_objective='shared_potential', device='cpu',
+            network_options=dict(action_encoding='physical_delta', state_baseline=True,
+                representation='fleet_attention', additional_candidate_options=catalog_for(2)))
+        for key in ('training_observation_sha256', 'training_target_sha256', 'trainable_parameters',
+                    'member_initialization_parameter_sha256', 'member_updates', 'representation'):
+            self.assertEqual(paired['successor_task_fit'][key], ordinary['successor_task_fit'][key])
+        for model, factory in ((paired, PairedReturnDecision), (ordinary, PlainReturnDecision)):
+            recipe = dict(model['successor_task_value']); recipe.pop('kind'); recipe['intervention_budget'] = 0
+            decision = factory(**recipe).eval()
+            self.assertEqual(decision.network.representation, 'fleet_attention')
+            self.assertEqual(sum(p.numel() for member in (decision.network, *decision.ensemble)
+                                 for p in member.parameters()), model['successor_task_fit']['trainable_parameters'])
+
+    def test_candidate_attention_preserves_inputs_capacity_and_learning(self):
+        from conditional_fusion_value import FeedbackFleetPolicy
+        torch.manual_seed(43)
+        graph=FeedbackFleetPolicy()
+        attention=FeedbackFleetPolicy(representation='candidate_attention')
+        self.assertEqual(sum(p.numel() for p in attention.parameters())-
+                         sum(p.numel() for p in graph.parameters()),5)
+        for defenders in (3,6):
+            features=torch.randn(2,7,defenders,37)
+            costs=torch.rand(2,7)*3.
+            torch.testing.assert_close(graph(features,costs)[0],attention(features,costs)[0],rtol=0.,atol=0.)
+        torch.nn.init.normal_(attention.actor.weight,std=.1)
+        attention.eval()
+        permutation=torch.tensor([5,0,3,1,4,2])
+        logits,values=attention(features,costs)
+        permuted_logits,permuted_values=attention(features[:,:,permutation],costs)
+        torch.testing.assert_close(logits,permuted_logits)
+        torch.testing.assert_close(values,permuted_values)
+        clone=FeedbackFleetPolicy(representation='candidate_attention',state=attention.state_dict()).eval()
+        torch.testing.assert_close(clone(features,costs)[0],logits)
+        attention.train();logits,values=attention(features,costs)
+        (-logits.log_softmax(-1)[:,0].mean()+values.square().mean()).backward()
+        self.assertTrue(any(p.grad is not None and bool(p.grad.any()) for p in attention.attention.parameters()))
+        with self.assertRaisesRegex(ValueError,'divisible by four'):
+            FeedbackFleetPolicy(width=15,representation='candidate_attention')
+
+    def test_state_baseline_separates_null_actions_and_matches_paired_capacity(self):
+        import numpy as np
+        from local_intervention_value import fit_success_intervention_pair
+        from plain_return import PlainReturnNetwork, PlainReturnDecision, PairedReturnDecision
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        roots = [dict(context=np.full(21, index/10., np.float32), effect_controls=controls,
+            scene=(90+index, 2, 2.), futures=[101, 102], options=[(0, 0, 0), (1, 0, 5), (90, 0, 5)],
+            feedback_relative_hold=True, feedback_relative_scale=.25,
+            outcomes={(q, f): dict(success=float((q+f+index)%2)) for q in range(3) for f in range(2)})
+            for index in range(4)]
+        data = dict(model={}, roots=roots[:2], predecessor_sha256='state-baseline', simulation_steps=20,
+            isolate_factual_start=True, feedback_relative_hold=True, feedback_relative_scale=.25)
+        paired, ordinary = fit_success_intervention_pair(data, None, None,
+            validation_data=dict(data, roots=roots[2:]), updates=4, ensemble_size=2,
+            architecture='mlp', parameter_budget=1000, conditional_objective='shared_potential', device='cpu',
+            network_options=dict(action_encoding='physical_delta', state_baseline=True))
+        for key in ('training_observation_sha256', 'training_target_sha256', 'trainable_parameters',
+                    'member_initialization_parameter_sha256', 'member_updates', 'state_baseline'):
+            self.assertEqual(paired['successor_task_fit'][key], ordinary['successor_task_fit'][key])
+        context = torch.tensor(np.stack([root['context'] for root in roots[2:]]))
+        commands = torch.tensor(np.stack([controls]*2))
+        programs = torch.tensor([[0, 0], [5, 0], [1, 0], [0, 9]])
+        timing = torch.tensor([[0, 0], [0, 5], [0, 5], [0, 5]])
+        for model, factory in ((paired, PairedReturnDecision), (ordinary, PlainReturnDecision)):
+            recipe = dict(model['successor_task_value']); recipe.pop('kind')
+            controller = factory(**recipe)
+            self.assertTrue(controller.network.state_baseline)
+            for net in (controller.network, *controller.ensemble):
+                catalog = net.forward_catalog(context, commands, programs, timing, chunk_size=2)
+                explicit = torch.stack([net(context, commands, q.expand(2, -1), t.expand(2, -1))
+                                        for q, t in zip(programs, timing)], 1)
+                torch.testing.assert_close(catalog, explicit)
+                baseline = net.baseline(torch.cat((context, commands.flatten(1)), -1))[:, 0]
+                torch.testing.assert_close(catalog[:, 0], baseline, rtol=0., atol=0.)
+                torch.testing.assert_close(catalog[:, 1], baseline, rtol=0., atol=0.)
+                net.zero_grad(); explicit[:, :2].sum().backward()
+                self.assertTrue(all(parameter.grad is None or not bool(parameter.grad.any())
+                                    for parameter in net.layers.parameters()))
+                self.assertTrue(any(parameter.grad is not None and bool(parameter.grad.any())
+                                    for parameter in net.baseline.parameters()))
+            self.assertEqual(sum(parameter.numel() for net in (controller.network, *controller.ensemble)
+                                 for parameter in net.parameters()), model['successor_task_fit']['trainable_parameters'])
+        with self.assertRaisesRegex(ValueError, 'scalar physical-action'):
+            PlainReturnNetwork(2, 8, state_baseline=True)
+
+    def test_crossfit_continuation_targets_preserve_outcomes_and_exclude_whole_scenes(self):
+        import copy
+        import hashlib
+        import numpy as np
+        from local_intervention_value import fit_success_intervention_pair
+        from plain_return import crossfit_continuation_targets, fit_plain_return
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        roots = [dict(context=np.full(21, index/10., np.float32), effect_controls=controls,
+            scene=(19+index, 2, 2.), root_steps=5, futures=[101, 102],
+            options=[(0, 0, 0), (1, 0, 5)], feedback_relative_hold=True, feedback_relative_scale=.25,
+            outcomes={(q, f): dict(success=float(q == f), continuation_context=np.zeros(21))
+                      for q in range(2) for f in range(2)}) for index in range(4)]
+        del roots[0]['outcomes'][1, 1]['continuation_context']
+        data = dict(model={}, roots=roots, predecessor_sha256='crossfit-test', simulation_steps=20,
+            feedback_relative_hold=True, feedback_relative_scale=.25, isolate_factual_start=True,
+            continuation_context=dict(continuation_policy_sha256='crossfit-test'))
+        scenes = [tuple(root['scene']) for root in roots]
+        targets = {scene: {(q, f): float(.2+.1*index if q == 0 else .8-.1*index)
+                          for q in range(2) for f in range(2)} for index, scene in enumerate(scenes)}
+        targets[scenes[0]][1, 1] = 1.
+        bootstrap = dict(completed=True, predecessor_sha256='crossfit-test',
+            continuation_context=copy.deepcopy(data['continuation_context']), training_targets=targets,
+            fold_by_scene={scene: index % 2 for index, scene in enumerate(scenes)},
+            fits=[dict(fold=fold, updates=3,
+                       training_scenes=[scene for index, scene in enumerate(scenes) if index % 2 != fold],
+                       excluded_scenes=[scene for index, scene in enumerate(scenes) if index % 2 == fold])
+                  for fold in range(2)])
+        def stamp(value):
+            digest = hashlib.sha256()
+            for scene in sorted(value['training_targets']):
+                digest.update(repr(scene).encode())
+                for key, target in sorted(value['training_targets'][scene].items()):
+                    digest.update(repr((key, target)).encode())
+            value['training_targets_sha256'] = digest.hexdigest()
+        stamp(bootstrap)
+        original = np.asarray([outcome['success'] for root in roots
+                               for _, outcome in sorted(root['outcomes'].items())], np.float32)
+        expected = np.asarray([.5*outcome['success']+.5*targets[tuple(root['scene'])][key]
+                               for root in roots for key, outcome in sorted(root['outcomes'].items())], np.float32)
+        settings = dict(updates=2, ensemble_size=1, architecture='mlp', parameter_budget=1000,
+            conditional_objective='shared_potential', device='cpu',
+            network_options=dict(action_encoding='physical_delta', continuation_bootstrap=bootstrap))
+        paired, ordinary = fit_success_intervention_pair(data, None, None, **settings)
+        for model in (paired, ordinary):
+            fit = model['successor_task_fit']
+            self.assertEqual(fit['measured_terminal_target_sha256'], hashlib.sha256(original.tobytes()).hexdigest())
+            self.assertEqual(fit['training_target_sha256'], hashlib.sha256(expected.tobytes()).hexdigest())
+            self.assertEqual(fit['continuation_bootstrap']['shared_optimizer_updates'], 6)
+            self.assertEqual(fit['continuation_bootstrap_weight'], .5)
+            self.assertFalse(fit['successor_states_added_to_query_inputs'])
+        for key in ('training_observation_sha256', 'training_target_sha256',
+                    'initialization_parameter_sha256', 'trainable_parameters', 'dense_input_width'):
+            self.assertEqual(paired['successor_task_fit'][key], ordinary['successor_task_fit'][key])
+        np.testing.assert_array_equal(original, [outcome['success'] for root in roots
+                                                for _, outcome in sorted(root['outcomes'].items())])
+        leaked = copy.deepcopy(bootstrap); leaked['fits'][0]['training_scenes'].append(scenes[0])
+        with self.assertRaisesRegex(ValueError, 'entire queried scene'):
+            crossfit_continuation_targets(data, leaked)
+        with self.assertRaisesRegex(ValueError, 'same frozen policy'):
+            crossfit_continuation_targets(data, dict(bootstrap, predecessor_sha256='wrong'))
+        missing = copy.deepcopy(bootstrap); del missing['training_targets'][scenes[0]][0, 1]; stamp(missing)
+        with self.assertRaisesRegex(ValueError, 'exactly the recorded branches'):
+            crossfit_continuation_targets(data, missing)
+        terminal = copy.deepcopy(bootstrap); terminal['training_targets'][scenes[0]][1, 1] = .8; stamp(terminal)
+        with self.assertRaisesRegex(ValueError, 'terminal branch'):
+            crossfit_continuation_targets(data, terminal)
+        with self.assertRaisesRegex(ValueError, 'fresh scalar success'):
+            fit_success_intervention_pair(data, None, None, **dict(settings, conditional_objective='paired_ordering'))
+        with self.assertRaisesRegex(ValueError, 'weight in'):
+            fit_plain_return(data, None, updates=1, continuation_bootstrap=bootstrap,
+                             continuation_bootstrap_weight=1., device='cpu')
+
+    def test_recurrent_successor_labels_reconstruct_only_the_actual_eligible_action(self):
+        import copy
+        import hashlib
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import numpy as np
+        from local_intervention_value import (recurrent_continuation_action_bank,
+            retain_vessel_identity, fit_success_intervention_pair)
+        from plain_return import PlainReturnNetwork, PlainReturnDecision
+        catalog = [(0, 0, 0)]+sorted((digit*10**boat, 0, 5)
+            for boat in range(2) for digit in (1, 2, 3, 4, 6, 7, 8, 9))
+        teacher = dict(successor_task_value=dict(kind='plain_mlp_return', defenders=2, width=8,
+            state=PlainReturnNetwork(2, 8, True, action_encoding='physical_delta',
+                feedback_relative_scale=.25).state_dict(), identity_conditioned=True,
+            options=catalog, decision_period=5, intervention_budget=0, gain_margin=.02,
+            action_encoding='physical_delta', isolate_factual_start=True,
+            feedback_relative_hold=True, feedback_relative_scale=.25))
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        root = dict(context=np.zeros(21, np.float32), effect_controls=controls,
+            order=np.array([0, 1]), scene=(19, 2, 2.), root_steps=0, futures=[101, 102],
+            options=[(0, 0, 0), (1, 0, 5)], feedback_relative_hold=True,
+            feedback_relative_scale=.25, outcomes={})
+        for q in range(2):
+            for future in range(2):
+                context = np.zeros(21, np.float32); context[-1] = (5 if q else 1)/400.
+                root['outcomes'][q, future] = dict(success=float(future), continuation_context=context,
+                    continuation_controls=controls.copy(), continuation_order=np.array([1, 0]),
+                    continuation_remaining=10)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'continuation.pth'; torch.save(teacher, path)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            data = dict(model={}, roots=[root], predecessor_sha256=digest, completed=True,
+                simulation_steps=20, feedback_relative_hold=True, feedback_relative_scale=.25,
+                isolate_factual_start=True, continuation_context=dict(continuation_policy_sha256=digest))
+            with patch.object(PlainReturnDecision, 'selected_catalog_indices',
+                    return_value=torch.full((2,), catalog.index((90, 0, 5)))) as choose:
+                bank = recurrent_continuation_action_bank(data, path)
+            self.assertEqual(bank['skipped_non_decision_states'], 2)
+            self.assertFalse(bank['observed_decisions_recorded'])
+            self.assertEqual(bank['simulation_steps'], 0)
+            np.testing.assert_array_equal([row['values'][0] for row in bank['records']], [0., 1.])
+            for record in bank['records']:
+                np.testing.assert_array_equal(record['observed_decision_options'], [[90, 0, 5]])
+            torch.testing.assert_close(choose.call_args.args[0][:, -7:-5], torch.tensor([[1., 0.]]*2))
+            self.assertEqual(choose.call_args.args[0].shape, (2, 23))
+            bank['record_sampling_weights'] = [3., 1.]
+            exposed, bank = retain_vessel_identity(data, bank)
+            settings = dict(updates=2, ensemble_size=1, architecture='mlp', parameter_budget=1000,
+                conditional_objective='shared_potential', device='cpu',
+                network_options=dict(action_encoding='physical_delta', identity_conditioned=True,
+                    additional_candidate_options=catalog))
+            paired, ordinary = fit_success_intervention_pair(exposed, None, None, onpolicy_bank=bank, **settings)
+            for model in (paired, ordinary):
+                fit = model['successor_task_fit']
+                self.assertEqual(fit['onpolicy_reconstructed_action_labels'], 2)
+                self.assertEqual(fit['additional_factual_state_labels'], 0)
+                self.assertEqual(fit['onpolicy_action_reconstruction_policy_sha256'], digest)
+            for key in ('training_observation_sha256', 'training_target_sha256',
+                        'onpolicy_record_sampling_sha256', 'member_onpolicy_action_draw_sha256'):
+                self.assertEqual(paired['successor_task_fit'][key], ordinary['successor_task_fit'][key])
+            altered = copy.deepcopy(bank); altered['records'][0]['contexts'][0, -1] = 6/400.
+            with self.assertRaisesRegex(ValueError, 'eligible measured clock'):
+                fit_success_intervention_pair(exposed, None, None, onpolicy_bank=altered, **settings)
+            altered = copy.deepcopy(bank); altered['record_sampling_weights'][0] = 0.
+            with self.assertRaisesRegex(ValueError, 'record masses'):
+                fit_success_intervention_pair(exposed, None, None, onpolicy_bank=altered, **settings)
+            altered = copy.deepcopy(data); altered['continuation_context']['continuation_policy_sha256'] = 'wrong'
+            with self.assertRaisesRegex(ValueError, 'common frozen continuation'):
+                recurrent_continuation_action_bank(altered, path)
+
+    def test_policy_improvement_disagreement_uses_the_actual_reference(self):
+        from unittest.mock import patch
+        from plain_return import PlainReturnNetwork, PlainReturnDecision, PairedReturnDecision
+        catalog = [(0, 0, 0)]+sorted((digit*10**boat, 0, 5)
+            for boat in range(2) for digit in (1, 2, 3, 4, 6, 7, 8, 9))
+        state = PlainReturnNetwork(2, 8, action_encoding='physical_delta',
+                                   feedback_relative_scale=.25).state_dict()
+        shared = dict(defenders=2, width=8, options=catalog, state=state, decision_period=5,
+            intervention_budget=0, gain_margin=.02, isolate_factual_start=True,
+            action_encoding='physical_delta', feedback_relative_hold=True, feedback_relative_scale=.25)
+        teacher = dict(shared, kind='plain_mlp_return')
+        reference, risky, stable = [catalog.index((code, 0, 5)) for code in (1, 3, 90)]
+        members = torch.full((2, 1, len(catalog)), .01)
+        members[:, 0, 0] = torch.tensor([.2, .8])
+        members[:, 0, reference] = .5
+        members[:, 0, risky] = torch.tensor([.4, .9])
+        members[:, 0, stable] = .6
+        context = torch.zeros(1, 21); controls = torch.zeros(1, 2, 6)
+        for factory in (PlainReturnDecision, PairedReturnDecision):
+            extra = dict(conditional_objective='shared_potential') if factory is PairedReturnDecision else {}
+            learner = factory(**shared, ensemble_states=[state], ensemble_gain_penalty=1.,
+                              policy_reference=teacher, **extra)
+            with patch.object(learner.policy_reference, 'selected_catalog_indices',
+                              return_value=torch.tensor([reference])), \
+                    patch.object(learner.network, 'forward_catalog', return_value=members[0].logit()), \
+                    patch.object(learner.ensemble[0], 'forward_catalog', return_value=members[1].logit()):
+                ranking, raw = learner.catalog_estimates(context, controls)
+                torch.testing.assert_close(raw, members.mean(0))
+                self.assertAlmostEqual(float(ranking[0, reference]), .5, places=6)
+                self.assertAlmostEqual(float(ranking[0, risky]), .4, places=6)
+                self.assertEqual(int(learner.selected_catalog_indices(context, controls)), stable)
+                learner.ensemble_gain_penalty = 0.
+                self.assertEqual(int(learner.selected_catalog_indices(context, controls)), risky)
+                torch.testing.assert_close(learner.catalog_estimates(context, controls)[1], raw)
+
+    def test_policy_local_values_retain_reference_plan_and_single_coordinate_edges(self):
+        import copy
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import fit_success_intervention_pair, raw_paired_value_diagnostics
+        from plain_return import (PlainReturnNetwork, PlainReturnDecision, PairedReturnDecision,
+                                  single_coordinate_catalog, recurrent_decision_specification)
+        catalog = [(0, 0, 0)]+sorted((digit*10**boat, 0, 5)
+            for boat in range(2) for digit in (1, 2, 3, 4, 6, 7, 8, 9))
+        teacher = dict(kind='plain_mlp_return', defenders=2, width=8, options=catalog,
+            state=PlainReturnNetwork(2, 8, action_encoding='physical_delta', feedback_relative_scale=.25).state_dict(),
+            decision_period=5, intervention_budget=0, gain_margin=.02, isolate_factual_start=True,
+            action_encoding='physical_delta', feedback_relative_hold=True, feedback_relative_scale=.25)
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        roots = [dict(scene=(900+index, 2, 2.), context=np.full(21, index*.02, np.float32),
+            effect_controls=controls.copy(), options=[(1, 0, 5), (11, 0, 5), (3, 0, 5)],
+            reference_option=(1, 0, 5), policy_neighborhood=True, futures=[1, 2],
+            feedback_relative_hold=True, feedback_relative_scale=.25,
+            outcomes={(q, f): dict(success=float((q+f+index)%2)) for q in range(3) for f in range(2)})
+            for index in range(4)]
+        data = dict(model={}, roots=roots[:2], predecessor_sha256='teacher', policy_neighborhood=True,
+            policy_reference=teacher, isolate_factual_start=True, feedback_relative_hold=True, feedback_relative_scale=.25)
+        validation = dict(data, roots=roots[2:])
+        paired, ordinary = fit_success_intervention_pair(data, None, None, validation_data=validation,
+            updates=2, ensemble_size=1, width=4, parameter_budget=1000, seed=27, architecture='mlp',
+            device='cpu', conditional_objective='shared_potential', network_options=dict(action_encoding='physical_delta'))
+        for key in ('training_observation_sha256', 'training_target_sha256', 'member_updates',
+                    'member_initialization_parameter_sha256', 'trainable_parameters'):
+            self.assertEqual(paired['successor_task_fit'][key], ordinary['successor_task_fit'][key])
+        for model, factory in ((paired, PairedReturnDecision), (ordinary, PlainReturnDecision)):
+            recipe = dict(model['successor_task_value']); recipe.pop('kind')
+            controller = factory(**recipe)
+            self.assertTrue(recurrent_decision_specification(controller)['policy_neighborhood'])
+            context = torch.tensor(np.asarray([root['context'] for root in roots[2:]]))
+            commands = torch.tensor(np.stack([controls]*2))
+            index = torch.full((2,), catalog.index((1, 0, 5)))
+            def scores(states, control, programs, timing):
+                code = programs[:, 0]+10*programs[:, 1]
+                probability = torch.full_like(code, .3, dtype=torch.float32)
+                for value, probability_value in ((0, .4), (1, .6), (11, .9), (99, .99)):
+                    probability[code == value] = probability_value
+                return probability.logit()
+            with patch.object(controller.policy_reference, 'selected_catalog_indices', return_value=index), \
+                    patch.object(controller.network, 'forward', side_effect=scores):
+                ranking, values = controller.catalog_estimates(context, commands)
+                self.assertEqual(torch.isfinite(values).sum(1).tolist(), [17, 17])
+                self.assertTrue(torch.isneginf(ranking[:, single_coordinate_catalog(2).index((99, 0, 5))]).all())
+                chosen = controller.selected_catalog_indices(context, commands)
+                self.assertEqual(controller.options[chosen].tolist(), [[11, 0, 5]]*2)
+                order = torch.tensor([[0, 1]]*2)
+                packet = dict(node=torch.zeros(2, 2, 16), _plain_return_controls=commands)
+                with patch.object(controller, 'public_context', return_value=(context, order)):
+                    action = controller(packet, torch.zeros(2, 2, 3))
+                torch.testing.assert_close(action[:, :, 9:11], torch.zeros(2, 2, 2))
+            diagnostic = raw_paired_value_diagnostics(model, validation, require_unseen_layouts=True)
+            measured = []
+            for root_index, root in enumerate(roots[2:]):
+                programs = torch.tensor([[1, 0], [1, 1], [3, 0]])
+                raw = controller.network(context[root_index:root_index+1].expand(3, -1),
+                    commands[root_index:root_index+1].expand(3, -1, -1), programs, torch.tensor([[0, 5]]*3)).sigmoid()
+                truth = [np.mean([root['outcomes'][q, f]['success']-root['outcomes'][0, f]['success']
+                                  for f in range(2)]) for q in (1, 2)]
+                measured.extend((raw[1:]-raw[0]).detach().numpy()-truth)
+            self.assertAlmostEqual(diagnostic['mean_absolute_error'], float(np.abs(measured).mean()), places=6)
+        invalid = copy.deepcopy(data); invalid['roots'][0]['options'][1] = (99, 0, 5)
+        with self.assertRaisesRegex(ValueError, 'only one vessel'):
+            fit_success_intervention_pair(invalid, None, None, updates=1, ensemble_size=1, width=4,
+                device='cpu', architecture='mlp', conditional_objective='shared_potential',
+                network_options=dict(action_encoding='physical_delta'))
+
+    def test_recurrent_policy_update_compares_with_the_actual_reference_choice(self):
+        import copy
+        import numpy as np
+        from unittest.mock import patch
+        from plain_return import PlainReturnNetwork, PlainReturnDecision, PairedReturnNetwork, PairedReturnDecision
+        catalog = [(0, 0, 0)]+sorted((digit*10**boat, 0, 5)
+            for boat in range(2) for digit in (1, 2, 3, 4, 6, 7, 8, 9))
+        shared = dict(defenders=2, width=8, options=catalog, decision_period=5,
+            intervention_budget=0, gain_margin=.05, isolate_factual_start=True,
+            action_encoding='physical_delta', feedback_relative_hold=True, feedback_relative_scale=.25)
+        teacher = dict(shared, kind='plain_mlp_return',
+            state=PlainReturnNetwork(2, 8, action_encoding='physical_delta', feedback_relative_scale=.25).state_dict())
+        contexts = torch.zeros(4, 21); controls = torch.zeros(4, 2, 6)
+        first, second = catalog.index((1, 0, 5)), catalog.index((90, 0, 5))
+        reference = torch.full((4, len(catalog)), .2)
+        reference[:, 0] = .5; reference[:, first] = .7; reference[3, 0] = .9
+        predicted = torch.full_like(reference, .1)
+        predicted[:, 0] = torch.tensor([.3, .3, .9, .3])
+        predicted[:, first] = torch.tensor([.7, .4, .4, .4])
+        predicted[:, second] = torch.tensor([.72, .8, .8, .8])
+        expected = torch.tensor([first, second, 0, second])
+        for factory, network in ((PlainReturnDecision, PlainReturnNetwork), (PairedReturnDecision, PairedReturnNetwork)):
+            state = network(2, 8, action_encoding='physical_delta', feedback_relative_scale=.25).state_dict()
+            policy = factory(**shared, state=state, policy_reference=teacher)
+            self.assertTrue(all(not parameter.requires_grad for parameter in policy.policy_reference.parameters()))
+            packet = dict(node=torch.zeros(4, 2, 16), _plain_return_controls=controls)
+            order = torch.arange(2).repeat(4, 1)
+            policy.record_decisions = True
+            with patch.object(policy, 'catalog_estimates', return_value=(predicted, predicted)), \
+                 patch.object(policy.policy_reference, 'catalog_estimates', return_value=(reference, reference)), \
+                 patch.object(policy, 'public_context', return_value=(contexts, order)):
+                torch.testing.assert_close(policy.selected_catalog_indices(contexts, controls), expected)
+                result = policy(packet, torch.zeros(4, 2, 3))
+            torch.testing.assert_close(policy.last_decision['option'], policy.options[expected])
+            torch.testing.assert_close(policy.last_decision['accepted'], torch.tensor([True, True, False, True]))
+            torch.testing.assert_close(policy.last_decision['reference_replaced'], torch.tensor([False, True, True, True]))
+            torch.testing.assert_close(policy.last_decision['reference_option'], policy.options[torch.tensor([first, first, first, 0])])
+            # The retained, changed and removed choices each preserve one-vessel execution.
+            np.testing.assert_array_equal((result[:, :, 9] >= 0).sum(-1).numpy(), [1, 1, 0, 1])
+            self.assertTrue((result[[0, 1, 3], :, 4] == 5).all())
+            altered = copy.deepcopy(teacher); altered['options'][1:3] = altered['options'][2:0:-1]
+            with self.assertRaisesRegex(ValueError, 'same catalog'):
+                factory(**shared, state=state, policy_reference=altered)
+            with self.assertRaisesRegex(ValueError, 'same catalog'):
+                factory(**shared, state=state, policy_reference=dict(teacher, feedback_relative_scale=.5))
+
+    def test_onpolicy_returns_train_actual_actions_without_counterfactual_labels(self):
+        import copy
+        import numpy as np
+        from local_intervention_value import fit_success_intervention_pair
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        root = dict(context=np.zeros(21, np.float32), effect_controls=controls,
+            scene=(19, 2, 2.), root_steps=5, futures=[101, 102], options=[(0, 0, 0), (1, 0, 5)],
+            feedback_relative_hold=True, feedback_relative_scale=.25,
+            outcomes={(q, f): dict(success=float(q == f)) for q in range(2) for f in range(2)})
+        data = dict(model={}, roots=[root], predecessor_sha256='observed-test', simulation_steps=20,
+            feedback_relative_hold=True, feedback_relative_scale=.25, isolate_factual_start=True,
+            continuation_context=dict(continuation_policy_sha256='observed-test'))
+        records = [dict(scene=(20+i, 2, 2.), contexts=np.zeros((2, 21), np.float32),
+            controls=np.repeat(controls[None], 2, axis=0), values=np.full(2, i, np.float32),
+            observed_decision_options=np.array([[90, 0, 5], [0, 0, 0]])) for i in range(2)]
+        bank = dict(records=records, completed=True, recurrent_m2=True, observed_decisions_recorded=True,
+            period=5, predecessor_sha256='observed-test', simulation_steps=20)
+        settings = dict(updates=4, ensemble_size=2, architecture='mlp', parameter_budget=1000,
+            conditional_objective='factual_strata', device='cpu',
+            network_options=dict(action_encoding='physical_delta', additional_candidate_options=[(90, 0, 5)]))
+        paired, ordinary = fit_success_intervention_pair(data, None, None, onpolicy_bank=bank, **settings)
+        before, _ = fit_success_intervention_pair(data, None, None, **settings)
+        for model in (paired, ordinary):
+            fit = model['successor_task_fit']
+            self.assertEqual(fit['additional_factual_state_labels'], 0)
+            self.assertEqual(fit['additional_onpolicy_action_labels'], 4)
+            self.assertEqual(fit['member_onpolicy_action_trajectories'], [2, 2])
+            self.assertEqual(fit['member_updates'], [2, 2])
+        for key in ('training_observation_sha256', 'training_target_sha256', 'member_onpolicy_action_draw_sha256'):
+            self.assertEqual(paired['successor_task_fit'][key], ordinary['successor_task_fit'][key])
+        self.assertEqual(paired['successor_task_fit']['paired_training_target_sha256'],
+                         before['successor_task_fit']['paired_training_target_sha256'])
+        self.assertNotEqual(paired['successor_task_fit']['training_target_sha256'],
+                            before['successor_task_fit']['training_target_sha256'])
+        changed = copy.deepcopy(bank); changed['records'][0]['observed_decision_options'][0, 2] = 10
+        with self.assertRaisesRegex(ValueError, 'actual immediate'):
+            fit_success_intervention_pair(data, None, None, onpolicy_bank=changed, **settings)
+        validation = copy.deepcopy(data); validation['roots'][0]['scene'] = records[0]['scene']
+        with self.assertRaisesRegex(ValueError, 'Validation layouts'):
+            fit_success_intervention_pair(data, None, None, onpolicy_bank=bank, validation_data=validation, **settings)
+
+    def test_recurrent_trajectory_labels_keep_actual_action_and_vessel_identity(self):
+        import copy
+        import numpy as np
+        from types import SimpleNamespace
+        from local_intervention_value import recurrent_observed_options
+        active = np.zeros((2, 14), np.float32)
+        active[:, 4] = 5; active[:, 9:13] = -1.; active[:, 13] = 1
+        active[1, 9:13] = (0., 1., 0., 1.)
+        factual = active.copy(); factual[:, 4] = 1; factual[:, 8] = 1
+        factual[:, 9:14] = -1.
+        trajectory = dict(steps=[{}]*11, decisions=[dict(step=0, action=active),
+            dict(step=5, action=factual), dict(step=10, action=np.zeros((2, 3), np.float32))])
+        orders = np.array([[1, 0], [0, 1], [1, 0]])
+        expected = np.array([[3, 0, 5], [0, 0, 0], [0, 0, 0]])
+        np.testing.assert_array_equal(recurrent_observed_options(trajectory, orders, SimpleNamespace()), expected)
+        for change in ('missing', 'two_vessels', 'delayed'):
+            invalid = copy.deepcopy(trajectory)
+            if change == 'missing':
+                invalid['decisions'].pop()
+            elif change == 'two_vessels':
+                invalid['decisions'][0]['action'][0, 9:13] = (1., 1., 1., 1.)
+            else:
+                invalid['decisions'][0]['action'][:, 8] = 1
+            with self.assertRaises(ValueError):
+                recurrent_observed_options(invalid, orders, SimpleNamespace(successor_task_value=None))
+
+    def test_recurrent_collection_retains_common_continuation_and_frozen_base(self):
+        import copy
+        import hashlib
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import local_intervention_value as local
+        from plain_return import recurrent_single_vessel_specification, validate_recurrent_predecessor
+        catalog = [(0, 0, 0)]+[(digit*10**boat, 0, 5)
+            for boat in range(2) for digit in (1, 2, 3, 4, 6, 7, 8, 9)]
+        recipe = dict(kind='plain_mlp_return', defenders=2, options=catalog,
+            intervention_budget=0, decision_period=5, isolate_factual_start=True,
+            feedback_relative_hold=True, feedback_relative_scale=.25)
+        base = dict(actor={'weight': torch.tensor([.2, .7])}, training_gamma=.995)
+        model = dict(copy.deepcopy(base), successor_task_value=recipe)
+        self.assertEqual(validate_recurrent_predecessor(model, base)['decision_period'], 5)
+        self.assertEqual(validate_recurrent_predecessor(
+            dict(model, learning_snapshots={'states': {1: {'weight': torch.tensor([.3])}}}),
+            base)['decision_period'], 5)
+        self.assertEqual(validate_recurrent_predecessor(dict(model, gate_period=1), base)['decision_period'], 5)
+        with self.assertRaisesRegex(ValueError, 'gate_period'):
+            validate_recurrent_predecessor(dict(model, gate_period=2), base)
+        for changed in (dict(recipe, intervention_budget=1), dict(recipe, decision_period=1),
+                        dict(recipe, options=[(0, 0, 0), (11, 0, 5)]+catalog[2:])):
+            with self.assertRaises(ValueError):
+                recurrent_single_vessel_specification(changed)
+        changed = copy.deepcopy(model); changed['actor']['weight'][0] += .1
+        with self.assertRaisesRegex(ValueError, 'frozen base controller'):
+            validate_recurrent_predecessor(changed, base)
+        with self.assertRaisesRegex(ValueError, 'unrecognized'):
+            validate_recurrent_predecessor(dict(model, pair_scale=0.), base)
+        design = local.breadth_local_design(dict(roots=[dict(scene=(i, 2, 2.),
+            prefix_future=None, root_steps=5, root_snapshot={}) for i in range(2)]),
+            catalog, pairs_per_root=1, repetitions=2, seed=4)
+        def measured(task):
+            self.assertTrue(task[9])
+            self.assertEqual(task[8], .25)
+            rows = []
+            for index, root in task[1]:
+                row = copy.deepcopy(root); row['design_root'] = index
+                row['outcomes'] = {key: dict(success=float(key[0] == 0), duration=7.)
+                                   for key in root['outcomes']}
+                rows.append((row, 10+index))
+            return rows
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)/'base.pth'; policy = Path(directory)/'continuation.pth'
+            output = Path(directory)/'branches.pth'
+            torch.save(base, parent); torch.save(model, policy)
+            settings = dict(workers=1, inference_batch=8, root_batch_size=2,
+                isolate_factual_start=True, feedback_relative_hold=True, feedback_relative_scale=.25,
+                continuation_base_policy=parent)
+            with patch.object(local, '_recollect_snapshot_root_batch', side_effect=measured) as worker:
+                result = local.recollect_breadth_design(policy, design, output, **settings)
+                self.assertTrue(result['completed'])
+                self.assertNotIn('successor_task_value', result['model'])
+                self.assertEqual(result['predecessor_sha256'], hashlib.sha256(policy.read_bytes()).hexdigest())
+                self.assertEqual(result['continuation_context']['base_policy_sha256'],
+                                 hashlib.sha256(parent.read_bytes()).hexdigest())
+                self.assertEqual(len(result['roots']), 2)
+                self.assertEqual(result['measured_terminal_observations'],
+                                 design['acquisition_design']['planned_observations'])
+                self.assertTrue(any(outcome['success'] == 0. for root in result['roots']
+                                    for outcome in root['outcomes'].values()))
+                saved = hashlib.sha256(output.read_bytes()).hexdigest()
+                local.recollect_breadth_design(policy, design, output, **settings)
+                self.assertEqual(worker.call_count, 1)
+                with self.assertRaisesRegex(ValueError, 'different frozen continuation'):
+                    local.recollect_breadth_design(policy, design, output,
+                        **dict(settings, continuation_base_policy=None))
+                self.assertEqual(hashlib.sha256(output.read_bytes()).hexdigest(), saved)
+        with self.assertRaisesRegex(ValueError, 'not zero-intervention labels'):
+            local.fit_success_intervention_pair({}, None, None, factual_bank=dict(recurrent_m2=True))
+
     def test_relative_intervention_follows_feedback_keeps_peers_and_null_identity(self):
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -4018,10 +4937,21 @@ class FactualCrossfitTests(unittest.TestCase):
         ensemble = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
             validation_data=dict(validation, isolate_factual_start=True), factual_bank=bank,
             updates=4, ensemble_size=2, width=4, seed=27, architecture='mlp', device='cpu',
-            network_options=dict(action_encoding='physical_delta'))
+            network_options=dict(action_encoding='physical_delta', snapshot_updates=(1, 2)))
         from plain_return import PlainReturnDecision, PairedReturnDecision, fit_plain_return
         for model in ensemble:
             fit = model['successor_task_fit']; recipe = dict(model['successor_task_value'])
+            snapshots = model['learning_snapshots']
+            self.assertEqual(snapshots['final_updates'], 4)
+            self.assertEqual(snapshots['member_final_updates'], 2)
+            self.assertEqual(snapshots['total_updates_at_snapshot'], {1:2, 2:4})
+            self.assertEqual(set(snapshots['ensemble_states']), {1, 2})
+            for final, saved in zip([recipe['state']]+recipe['ensemble_states'],
+                    [snapshots['states'][2]]+snapshots['ensemble_states'][2]):
+                for key in final:
+                    torch.testing.assert_close(final[key], saved[key], rtol=0., atol=0.)
+            self.assertTrue(any(not torch.equal(snapshots['states'][1][key], snapshots['states'][2][key])
+                for key in snapshots['states'][1]))
             paired_dense = recipe.pop('kind') == 'paired_mlp_return'
             factory = PairedReturnDecision if paired_dense else PlainReturnDecision
             learner = factory(**recipe)
@@ -4194,25 +5124,29 @@ class FactualCrossfitTests(unittest.TestCase):
             self.assertIsNone(model['successor_task_fit']['raw_validation_diagnostics'])
             self.assertFalse(model['successor_task_fit']['validation_evaluated'])
             self.assertEqual(model['successor_task_fit']['member_training_roots'], [4])
-        potential, matched = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
-            validation_data=dict(validation, isolate_factual_start=True), factual_bank=bank,
-            updates=4, ensemble_size=2, width=4, seed=27, architecture='mlp', device='cpu',
-            network_options=dict(action_encoding='physical_delta'), conditional_objective='shared_potential')
-        for key in ('training_observation_sha256', 'training_target_sha256', 'member_updates', 'trainable_parameters'):
-            self.assertEqual(potential['successor_task_fit'][key], matched['successor_task_fit'][key])
-        self.assertFalse(potential['successor_task_fit']['separate_factual_objective'])
-        self.assertNotEqual(potential['successor_task_fit']['raw_validation_diagnostics']['evaluated_parameter_sha256'],
-                            matched['successor_task_fit']['raw_validation_diagnostics']['evaluated_parameter_sha256'])
-        recipe = dict(potential['successor_task_value']); recipe.pop('kind')
-        learner = PairedReturnDecision(**recipe)
-        selected = []
-        for root in validation['roots']:
-            context = torch.from_numpy(root['context'][None]); commands = torch.from_numpy(root['effect_controls'][None])
-            values = learner.catalog_estimates(context, commands)[1]
-            self.assertTrue(bool(((values >= 0.) & (values <= 1.)).all()))
-            selected.append(float((values-values[:, :1]).max().detach()))
-        self.assertAlmostEqual(float(np.mean(selected)),
-            potential['successor_task_fit']['raw_validation_diagnostics']['selected_predicted_gain'], places=6)
+        for objective in ('shared_potential', 'paired_ordering'):
+            potential, matched = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
+                validation_data=dict(validation, isolate_factual_start=True), factual_bank=bank,
+                updates=4, ensemble_size=2, width=4, seed=27, architecture='mlp', device='cpu',
+                network_options=dict(action_encoding='physical_delta'), conditional_objective=objective)
+            for key in ('training_observation_sha256', 'training_target_sha256', 'member_updates', 'trainable_parameters'):
+                self.assertEqual(potential['successor_task_fit'][key], matched['successor_task_fit'][key])
+            self.assertFalse(potential['successor_task_fit']['separate_factual_objective'])
+            self.assertNotEqual(potential['successor_task_fit']['raw_validation_diagnostics']['evaluated_parameter_sha256'],
+                                matched['successor_task_fit']['raw_validation_diagnostics']['evaluated_parameter_sha256'])
+            recipe = dict(potential['successor_task_value']); recipe.pop('kind')
+            learner = PairedReturnDecision(**recipe)
+            selected = []
+            for root in validation['roots']:
+                context = torch.from_numpy(root['context'][None]); commands = torch.from_numpy(root['effect_controls'][None])
+                values = learner.catalog_estimates(context, commands)[1]
+                self.assertTrue(bool(((values >= 0.) & (values <= 1.)).all()))
+                selected.append(float((values-values[:, :1]).max().detach()))
+            self.assertAlmostEqual(float(np.mean(selected)),
+                potential['successor_task_fit']['raw_validation_diagnostics']['selected_predicted_gain'], places=6)
+            self.assertEqual(learner.conditional_objective, objective)
+            if objective == 'paired_ordering':
+                self.assertIn('logit ordering', potential['successor_task_fit']['objective'])
         from plain_return import PairedReturnNetwork, fit_paired_mlp_return
         raw = torch.tensor([[0., np.log(4.), np.log(3./7.)]]).float().expand(3, -1)
         factual = torch.tensor([.2, .8, .2])

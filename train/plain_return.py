@@ -10,7 +10,7 @@ from torch import nn
 from torch.nn import functional as F
 
 
-def root_sampling_probabilities(root_ids, fraction=0., root_weights=None):
+def root_sampling_probabilities(root_ids, fraction=0., root_weights=None, observation_weights=None):
     """Mix observation-uniform sampling with positive mass per measured state.
 
     Optional weights follow sorted unique root ids. No state can be removed.
@@ -20,7 +20,7 @@ def root_sampling_probabilities(root_ids, fraction=0., root_weights=None):
     root_ids = np.asarray(root_ids)
     if root_ids.ndim != 1 or not len(root_ids):
         raise ValueError('Root sampling requires a nonempty one-dimensional population.')
-    if fraction == 0. and root_weights is None:
+    if fraction == 0. and root_weights is None and observation_weights is None:
         return None
     _, inverse, counts = np.unique(root_ids, return_inverse=True, return_counts=True)
     if root_weights is None:
@@ -33,6 +33,16 @@ def root_sampling_probabilities(root_ids, fraction=0., root_weights=None):
         prior = prior/prior.max()
         prior = prior/prior.sum()
         probability = (1-fraction)/len(root_ids)+fraction*prior[inverse]/counts[inverse]
+    if observation_weights is not None:
+        observed = np.asarray(observation_weights, np.float64)
+        if (observed.shape != root_ids.shape or not np.isfinite(observed).all()
+                or np.any(observed <= 0.)):
+            raise ValueError('Observation weights need finite positive mass for every measured outcome.')
+        # Correct the sampled future distribution within each state while
+        # preserving exactly the previously specified mass of that state.
+        observed = observed/observed.max()
+        means = np.bincount(inverse, weights=observed)/counts
+        probability *= observed/means[inverse]
     return probability/probability.sum()
 
 
@@ -55,26 +65,225 @@ def require_plain_predecessor(model, *, allow_plain_return=False, allow_paired_r
                          ', '.join(inherited))
 
 
+def recurrent_single_vessel_specification(value):
+    """Require one complete, nonoverlapping relative-action decision period."""
+    get = value.get if isinstance(value, dict) else lambda key, default=None: getattr(value, key, default)
+    options = get('options')
+    if torch.is_tensor(options):
+        options = options.detach().cpu().numpy()
+    options = np.asarray(options)
+    defenders = get('defenders')
+    if defenders is None:
+        defenders = getattr(get('network'), 'defenders', None)
+    scale = get('feedback_relative_scale')
+    if (get('intervention_budget') != 0 or get('decision_period') != 5
+            or not get('isolate_factual_start') or not get('feedback_relative_hold')
+            or scale is None or not np.isfinite(scale) or not 0. < scale <= 1.
+            or get('wait_value') is not None or get('prior') is not None
+            or not isinstance(defenders, int) or defenders < 1
+            or options.shape != (8*defenders+1, 3)
+            or not np.isfinite(options).all() or not np.equal(options, np.rint(options)).all()):
+        raise ValueError('Recurrent sampling requires isolated relative single-vessel decisions every five ticks.')
+    expected = {(0, 0, 0)} | {(digit*10**boat, 0, 5)
+        for boat in range(defenders) for digit in (1, 2, 3, 4, 6, 7, 8, 9)}
+    if tuple(options[0]) != (0, 0, 0) or set(map(tuple, options)) != expected:
+        raise ValueError('Recurrent sampling needs the complete one-window single-vessel action catalog.')
+    specification = dict(decision_period=5, feedback_relative_scale=float(scale), defenders=defenders)
+    reference = get('policy_reference')
+    if reference is not None and recurrent_single_vessel_specification(reference) != specification:
+        raise ValueError('A recurrent policy reference must retain the same fleet, window and relative scale.')
+    return specification
+
+
+def single_coordinate_catalog(defenders):
+    """Union of one-coordinate neighbors of every single-vessel plan."""
+    digits = (1, 2, 3, 4, 6, 7, 8, 9)
+    codes = {digit*10**boat for boat in range(defenders) for digit in digits}
+    codes.update(a*10**left+b*10**right for left in range(defenders)
+                 for right in range(left+1, defenders) for a in digits for b in digits)
+    return [(0, 0, 0)]+[(code, 0, 5) for code in sorted(codes)]
+
+
+def recurrent_decision_specification(value):
+    """Validate either the original star or a frozen-policy local neighborhood."""
+    get = value.get if isinstance(value, dict) else lambda key, default=None: getattr(value, key, default)
+    if not get('policy_neighborhood', False):
+        return recurrent_single_vessel_specification(value)
+    reference = get('policy_reference')
+    if reference is None:
+        raise ValueError('Local policy neighborhoods require their actual frozen reference.')
+    specification = recurrent_single_vessel_specification(reference)
+    defenders = get('defenders', getattr(get('network'), 'defenders', None))
+    options = get('options')
+    if torch.is_tensor(options):
+        options = options.detach().cpu().numpy()
+    if (defenders != specification['defenders'] or get('intervention_budget') != 0
+            or get('decision_period') != 5 or not get('isolate_factual_start')
+            or not get('feedback_relative_hold')
+            or get('feedback_relative_scale') != specification['feedback_relative_scale']
+            or get('wait_value') is not None or get('prior') is not None
+            or not np.array_equal(np.asarray(options), np.asarray(single_coordinate_catalog(defenders)))):
+        raise ValueError('Local policy neighborhoods require their complete one-coordinate action union and common clock.')
+    return dict(specification, policy_neighborhood=True)
+
+
+def validate_recurrent_predecessor(model, base):
+    """Keep the base controller explicit while freezing a learned continuation."""
+    require_plain_predecessor(base)
+    value = model.get('successor_task_value') or {}
+    if value.get('kind') not in ('plain_mlp_return', 'paired_mlp_return'):
+        raise ValueError('Policy iteration requires a native dense continuation policy.')
+    require_plain_predecessor(model, allow_plain_return=True, allow_paired_return=True)
+    specification = recurrent_decision_specification(value)
+
+    def equal(left, right):
+        if torch.is_tensor(left) or torch.is_tensor(right):
+            return torch.is_tensor(left) and torch.is_tensor(right) and torch.equal(left, right)
+        if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
+            return isinstance(left, np.ndarray) and isinstance(right, np.ndarray) and np.array_equal(left, right)
+        if isinstance(left, dict):
+            return isinstance(right, dict) and left.keys() == right.keys() and all(equal(left[key], right[key]) for key in left)
+        if isinstance(left, (tuple, list)):
+            return isinstance(right, (tuple, list)) and len(left) == len(right) and all(equal(a, b) for a, b in zip(left, right))
+        return left == right
+
+    metadata = {'successor_task_value', 'successor_task_fit', 'learning_snapshots', 'core_algorithm_context', 'execution_revision',
+        'physical_interventions', 'fixed_intervention_clock', 'success_objective', 'mechanism_ablation', 'gate_period'}
+    if model.get('gate_period', 1) != base.get('gate_period', 1):
+        raise ValueError('A recurrent continuation changed its frozen base controller: gate_period')
+    if model.keys()-base.keys()-metadata:
+        raise ValueError('A recurrent continuation added unrecognized base-controller settings.')
+    for key in base.keys()-metadata:
+        if key not in model or not equal(base[key], model[key]):
+            raise ValueError('A recurrent continuation changed its frozen base controller: ' + key)
+    before = tuple(base.get('mechanism_ablation', (False, False, False)))
+    after = tuple(model.get('mechanism_ablation', (False, False, False)))
+    if len(before) != 3 or len(after) != 3 or before[0::2] != after[0::2] or after[1]:
+        raise ValueError('Policy iteration must retain the base candidate interactions.')
+    return specification
+
+
 class PlainReturnNetwork(nn.Module):
     def __init__(self, defenders, width, identity_conditioned=False, output_width=1,
-                 action_encoding='categorical', feedback_relative_scale=None):
+                 action_encoding='categorical', feedback_relative_scale=None, state_baseline=False,
+                 representation='dense', peer_decision_conditioned=True):
         super().__init__()
         if action_encoding not in ('categorical', 'physical_delta'):
             raise ValueError('Unknown dense intervention action representation.')
+        if representation not in ('dense', 'fleet_attention'):
+            raise ValueError('Unknown intervention state/action representation.')
+        if representation == 'fleet_attention' and (not state_baseline or width % 4):
+            raise ValueError('Fleet attention requires a state baseline and a width divisible by four.')
+        self.representation = representation
         self.defenders = defenders
         self.width = width
         self.identity_conditioned = identity_conditioned
         self.action_encoding = action_encoding
+        if state_baseline and (action_encoding != 'physical_delta' or output_width != 1):
+            raise ValueError('A separate state baseline requires scalar physical-action values.')
+        self.state_baseline = bool(state_baseline)
+        if not peer_decision_conditioned and not state_baseline:
+            raise ValueError('Removing peer decisions requires a shared state baseline and physical actions.')
+        self.peer_decision_conditioned = bool(peer_decision_conditioned)
         if feedback_relative_scale is not None and (action_encoding != 'physical_delta' or
                 not np.isfinite(feedback_relative_scale) or not 0. < feedback_relative_scale <= 1.):
             raise ValueError('Relative dense features need a finite scale in (0,1] and physical commands.')
         self.feedback_relative_scale = feedback_relative_scale
         self.state_size = (14 + identity_conditioned) * defenders + 5
         self.action_size = 10*defenders+2 if action_encoding == 'categorical' else 5*defenders+4
+        if representation == 'fleet_attention':
+            # All vessels share the same state/action maps. The pooled output
+            # is a value of the complete program, without additive boat values.
+            self.state_embed = nn.Sequential(nn.Linear(14+identity_conditioned, width), nn.SiLU(),
+                nn.Linear(width, width), nn.SiLU())
+            self.state_attention = nn.TransformerEncoderLayer(width, 4, 2*width, dropout=0.,
+                activation='gelu', batch_first=True, norm_first=True)
+            self.action_embed = nn.Linear(5, width)
+            self.action_attention = nn.TransformerEncoderLayer(width, 4, 2*width, dropout=0.,
+                activation='gelu', batch_first=True, norm_first=True)
+            self.baseline = nn.Sequential(nn.Linear(2*width+6, width), nn.ReLU(), nn.Linear(width, 1))
+            self.layers = nn.Sequential(nn.Linear(2*width+10, width+8), nn.ReLU(), nn.Linear(width+8, 1))
+            return
         self.layers = nn.Sequential(
             nn.Linear(self.state_size+self.action_size, width), nn.ReLU(),
             nn.Linear(width, width), nn.ReLU(),
             nn.Linear(width, width), nn.ReLU(), nn.Linear(width, output_width))
+        if self.state_baseline:
+            self.baseline = nn.Sequential(
+                nn.Linear(self.state_size, width), nn.ReLU(),
+                nn.Linear(width, width), nn.ReLU(),
+                nn.Linear(width, width), nn.ReLU(), nn.Linear(width, 1))
+
+    def forward_features(self, features):
+        if not self.peer_decision_conditioned:
+            shape = features.shape[:-1]
+            flat = features.reshape(-1, features.shape[-1])
+            value = self.subject_conditioned_values(flat[:, :self.state_size], flat[:, self.state_size:])
+            return value.reshape(*shape, 1)
+        if self.representation == 'fleet_attention':
+            shape = features.shape[:-1]
+            flat = features.reshape(-1, features.shape[-1])
+            state, shared, baseline = self.encode_fleet_state(flat[:, :self.state_size])
+            value = self.fleet_action_value(state, shared, baseline, flat[:, self.state_size:])
+            return value.reshape(*shape, 1)
+        value = self.layers(features)
+        if self.state_baseline:
+            action = features[..., self.state_size:self.state_size+5*self.defenders]
+            active = action.reshape(*action.shape[:-1], self.defenders, 5)[..., 0].bool().any(-1)
+            value = self.baseline(features[..., :self.state_size])+active[..., None]*value
+        return value
+
+    def subject_conditioned_values(self, state, actions, baseline=None):
+        """Retain the intervention subject's commands and remove peer decisions.
+
+        The common factual baseline sees all public states, without command
+        conditioning. Each action residual retains the changed vessel's
+        source, rule and factual commands as well as its physical action.
+        """
+        n = self.defenders
+        context_size = (8+self.identity_conditioned)*n+5
+        active = actions[:, :5*n].reshape(-1, n, 5)[..., :1].bool()
+        commands = state[:, context_size:].reshape(-1, n, 6)
+        subject_state = torch.cat((state[:, :context_size],
+                                   (commands*active).flatten(1)), -1)
+        if baseline is None:
+            public_state = torch.cat((state[:, :context_size], torch.zeros_like(state[:, context_size:])), -1)
+            baseline = (self.encode_fleet_state(public_state)[2]
+                        if self.representation == 'fleet_attention' else self.baseline(public_state))
+        if self.representation == 'fleet_attention':
+            encoded, shared, _ = self.encode_fleet_state(subject_state)
+            return self.fleet_action_value(encoded, shared, baseline, actions)
+        residual = self.layers(torch.cat((subject_state, actions), -1))
+        return baseline+active.any(1)*residual
+
+    def configure_fleet(self, defenders):
+        if defenders == self.defenders:
+            return
+        if self.representation != 'fleet_attention' or not isinstance(defenders, int) or defenders < 1:
+            raise ValueError('The plain MLP and deployed fleet must have the same size; fleet attention can transfer.')
+        self.defenders = defenders
+        self.state_size = (14+self.identity_conditioned)*defenders+5
+        self.action_size = 5*defenders+4
+
+    def encode_fleet_state(self, state):
+        n = self.defenders
+        context_size = (8+self.identity_conditioned)*n+5
+        local = [state[:, :8*n].reshape(-1, n, 8)]
+        if self.identity_conditioned:
+            local.append(state[:, 8*n:9*n, None])
+        local.append(state[:, context_size:].reshape(-1, n, 6))
+        encoded = self.state_attention(self.state_embed(torch.cat(local, -1)))
+        shared = torch.cat((state[:, context_size-5:context_size],
+                            state.new_full((len(state), 1), n/6.)), -1)
+        baseline = self.baseline(torch.cat((encoded.mean(1), encoded.amax(1), shared), -1))
+        return encoded, shared, baseline
+
+    def fleet_action_value(self, state, shared, baseline, actions):
+        local = actions[:, :5*self.defenders].reshape(-1, self.defenders, 5)
+        encoded = self.action_attention(state+self.action_embed(local))
+        residual = self.layers(torch.cat((encoded.mean(1), encoded.amax(1), shared, actions[:, -4:]), -1))
+        active = local[..., 0].bool().any(-1)
+        return baseline+active[:, None]*residual
 
     def action_features(self, programs, timing, controls=None):
         if self.action_encoding == 'categorical':
@@ -110,14 +319,43 @@ class PlainReturnNetwork(nn.Module):
     def forward(self, context, controls, programs, timing):
         features = torch.cat((context, controls.flatten(1),
                               self.action_features(programs, timing, controls)), -1)
-        return self.layers(features).squeeze(-1)
+        return self.forward_features(features).squeeze(-1)
 
     def forward_catalog(self, context, controls, programs, timing, chunk_size=1024):
+        if not self.peer_decision_conditioned:
+            state = torch.cat((context, controls.flatten(1)), -1)
+            public_state = torch.cat((context, torch.zeros_like(controls.flatten(1))), -1)
+            baseline = (self.encode_fleet_state(public_state)[2]
+                        if self.representation == 'fleet_attention' else self.baseline(public_state))
+            output = []
+            for start in range(0, len(programs), chunk_size):
+                actions = self.action_features(programs[None, start:start+chunk_size],
+                    timing[None, start:start+chunk_size], controls[:, None])
+                count = actions.shape[1]
+                value = self.subject_conditioned_values(
+                    state[:, None].expand(-1, count, -1).flatten(0, 1), actions.flatten(0, 1),
+                    baseline[:, None].expand(-1, count, -1).flatten(0, 1))
+                output.append(value.reshape(len(context), count))
+            return torch.cat(output, 1)
+        if self.representation == 'fleet_attention':
+            state, shared, baseline = self.encode_fleet_state(torch.cat((context, controls.flatten(1)), -1))
+            output = []
+            for start in range(0, len(programs), chunk_size):
+                actions = self.action_features(programs[None, start:start+chunk_size],
+                    timing[None, start:start+chunk_size], controls[:, None])
+                count = actions.shape[1]
+                value = self.fleet_action_value(
+                    state[:, None].expand(-1, count, -1, -1).flatten(0, 1),
+                    shared[:, None].expand(-1, count, -1).flatten(0, 1),
+                    baseline[:, None].expand(-1, count, -1).flatten(0, 1), actions.flatten(0, 1))
+                output.append(value.reshape(len(context), count))
+            return torch.cat(output, 1)
         # Factor the first affine layer only; this equals ordinary dense MLP
         # evaluation of every state/action pair without duplicating its input.
         first = self.layers[0]
         state = torch.cat((context, controls.flatten(1)), -1)
         state_hidden = F.linear(state, first.weight[:, :self.state_size], first.bias)
+        baseline = self.baseline(state)[:, None] if self.state_baseline else None
         output = []
         for start in range(0, len(programs), chunk_size):
             if self.action_encoding == 'physical_delta':
@@ -130,6 +368,9 @@ class PlainReturnNetwork(nn.Module):
             value = state_hidden[:, None] + (action_hidden if action_hidden.ndim == 3 else action_hidden[None])
             for layer in list(self.layers)[1:]:
                 value = layer(value)
+            if baseline is not None:
+                active = self.active_vessels(programs[start:start+chunk_size]).any(-1)
+                value = baseline+active[None, :, None]*value
             output.append(value.squeeze(-1))
         return torch.cat(output, 1)
 
@@ -137,9 +378,12 @@ class PlainReturnNetwork(nn.Module):
 class PairedReturnNetwork(PlainReturnNetwork):
     """The common dense state/action trunk with factual and signed-event outputs."""
     def __init__(self, defenders, width, identity_conditioned=False, action_encoding='categorical',
-                 feedback_relative_scale=None):
+                 feedback_relative_scale=None, state_baseline=False, representation='dense',
+                 peer_decision_conditioned=True):
         super().__init__(defenders, width, identity_conditioned, output_width=3,
-                         action_encoding=action_encoding, feedback_relative_scale=feedback_relative_scale)
+                         action_encoding=action_encoding, feedback_relative_scale=feedback_relative_scale,
+                         state_baseline=state_baseline, representation=representation,
+                         peer_decision_conditioned=peer_decision_conditioned)
 
     @staticmethod
     def event_probabilities(raw, hierarchy=False):
@@ -177,8 +421,16 @@ class PlainReturnDecision(nn.Module):
                  inference_device=None, intervention_budget=0, identity_conditioned=False,
                  gain_margin=0., isolate_factual_start=False, wait_value=None,
                  action_encoding='categorical', ensemble_states=(), velocity_reference='ground',
-                 ensemble_gain_penalty=0., feedback_relative_hold=False, feedback_relative_scale=None):
+                 ensemble_gain_penalty=0., feedback_relative_hold=False, feedback_relative_scale=None,
+                 policy_reference=None, policy_neighborhood=False, state_baseline=False, representation='dense',
+                 peer_decision_conditioned=True, decision_rule='value_difference', counterfactual_width=.4):
         super().__init__()
+        if decision_rule not in ('value_difference', 'subject_counterfactual'):
+            raise ValueError('Unknown recurrent critic decision rule.')
+        if not np.isfinite(counterfactual_width) or counterfactual_width <= 0.:
+            raise ValueError('The source-centered counterfactual prior requires a positive finite width.')
+        self.decision_rule = decision_rule
+        self.counterfactual_width = float(counterfactual_width)
         if velocity_reference not in ('ground', 'water'):
             raise ValueError('Dense values require an observed ground or water velocity reference.')
         self.velocity_reference = velocity_reference
@@ -188,19 +440,24 @@ class PlainReturnDecision(nn.Module):
         self.feedback_relative_hold = bool(feedback_relative_hold)
         self.feedback_relative_scale = feedback_relative_scale
         self.network = self.network_type(defenders, width, identity_conditioned,
-            action_encoding=action_encoding, feedback_relative_scale=feedback_relative_scale)
+            action_encoding=action_encoding, feedback_relative_scale=feedback_relative_scale,
+            state_baseline=state_baseline, representation=representation,
+            peer_decision_conditioned=peer_decision_conditioned)
         self.network.load_state_dict(state)
         self.ensemble = nn.ModuleList()
         for member_state in ensemble_states:
             member = self.network_type(defenders, width, identity_conditioned,
-                action_encoding=action_encoding, feedback_relative_scale=feedback_relative_scale)
+                action_encoding=action_encoding, feedback_relative_scale=feedback_relative_scale,
+                state_baseline=state_baseline, representation=representation,
+                peer_decision_conditioned=peer_decision_conditioned)
             member.load_state_dict(member_state)
             self.ensemble.append(member)
         self.register_buffer('options', torch.as_tensor(options, dtype=torch.long))
         self.register_buffer('programs',
             (self.options[:, :1] // (10 ** torch.arange(defenders))) % 10)
         self.isolate_factual_start = bool(isolate_factual_start)
-        if self.isolate_factual_start and bool(((self.programs > 0).sum(-1) > 1).any()):
+        self.policy_neighborhood = bool(policy_neighborhood)
+        if self.isolate_factual_start and not self.policy_neighborhood and bool(((self.programs > 0).sum(-1) > 1).any()):
             raise ValueError('Isolated plain-return execution requires a single-vessel candidate catalog.')
         self.register_buffer('coefficients', torch.tensor(
             [[-1., -1.]] + [[a, b] for a in (0., .5, 1.) for b in (0., .5, 1.)]))
@@ -222,6 +479,84 @@ class PlainReturnDecision(nn.Module):
         self.wait_value = None if wait_value is None else FactualWaitValue(**wait_value)
         self.record_decisions = False; self.last_decision = None
         self.record_catalog = False; self.last_catalog = None
+        self.policy_reference = None
+        if policy_reference is not None:
+            if not self.policy_neighborhood:
+                recurrent_single_vessel_specification(self)
+            record = copy.deepcopy(policy_reference)
+            kind = record.pop('kind', None)
+            if kind not in ('plain_mlp_return', 'paired_mlp_return'):
+                raise ValueError('A policy reference must be a frozen native dense continuation.')
+            factory = PlainReturnDecision if kind == 'plain_mlp_return' else PairedReturnDecision
+            reference = factory(**record).requires_grad_(False)
+            if (reference.network.identity_conditioned != self.network.identity_conditioned
+                    or reference.velocity_reference != self.velocity_reference):
+                raise ValueError('A policy reference must use the same catalog and public state representation.')
+            if self.policy_neighborhood:
+                self.policy_reference = reference
+                recurrent_decision_specification(self)
+                mapping = {tuple(option): index for index, option in enumerate(self.options.tolist())}
+                self.register_buffer('reference_indices', torch.tensor([
+                    mapping[tuple(option)] for option in reference.options.tolist()], dtype=torch.long))
+            elif (recurrent_single_vessel_specification(reference) != recurrent_single_vessel_specification(self)
+                    or not torch.equal(reference.options, self.options)):
+                raise ValueError('A policy reference must use the same catalog and public state representation.')
+            else:
+                self.policy_reference = reference
+        elif self.policy_neighborhood:
+            raise ValueError('A local policy neighborhood cannot omit its frozen reference.')
+        if representation == 'fleet_attention':
+            recurrent_single_vessel_specification(self)
+            if self.policy_reference is not None or self.wait_value is not None:
+                raise ValueError('Fleet transfer requires a shared standalone continuation value.')
+        if decision_rule == 'subject_counterfactual':
+            recurrent_single_vessel_specification(self)
+            if self.policy_reference is not None or self.wait_value is not None:
+                raise ValueError('Subject counterfactual ranking requires a standalone recurrent catalog.')
+            self.register_buffer('counterfactual_indices', torch.empty(0, dtype=torch.long), persistent=False)
+            self.register_buffer('counterfactual_subjects', torch.empty(0, dtype=torch.long), persistent=False)
+            self.register_buffer('counterfactual_weights', torch.empty(0), persistent=False)
+            self.configure_counterfactual_catalog()
+
+    def configure_counterfactual_catalog(self):
+        mapping = {tuple(option): index for index, option in enumerate(self.options.tolist())}
+        digits = (1, 2, 3, 4, 6, 7, 8, 9)
+        self.counterfactual_indices = torch.tensor([[0]+[
+            mapping[(digit*10**boat, 0, 5)] for digit in digits]
+            for boat in range(self.network.defenders)], dtype=torch.long, device=self.options.device)
+        self.counterfactual_subjects = (self.programs > 0).long().argmax(-1)
+        offsets = self.feedback_relative_scale*(2.*self.coefficients[list(digits)]-1.)
+        offsets = torch.cat((torch.zeros_like(offsets[:1]), offsets))
+        self.counterfactual_weights = (-(offsets/self.counterfactual_width).square().mean(-1)).softmax(-1)
+
+    def counterfactual_advantages(self, estimates):
+        """Marginalize only the changed vessel, retaining all peers' feedback.
+
+        This is a critic-based local credit comparator on the measured star
+        catalog, not a separately trained decentralized COMA actor. The null
+        decision has zero credit; source-centered blending alternatives define
+        each subject's counterfactual baseline.
+        """
+        gain = estimates-estimates[..., :1]
+        baseline = (gain[..., self.counterfactual_indices]*self.counterfactual_weights).sum(-1)
+        advantages = gain-baseline[..., self.counterfactual_subjects]
+        return torch.cat((torch.zeros_like(advantages[..., :1]), advantages[..., 1:]), -1)
+
+    def decision_scores(self, ranking, values):
+        return ranking if self.ensemble_gain_penalty or self.decision_rule != 'value_difference' else values
+
+    def configure_fleet(self, defenders):
+        if defenders == self.network.defenders:
+            return
+        self.network.configure_fleet(defenders)
+        for member in self.ensemble:
+            member.configure_fleet(defenders)
+        options = [(0, 0, 0)]+sorted((digit*10**boat, 0, 5)
+            for boat in range(defenders) for digit in (1, 2, 3, 4, 6, 7, 8, 9))
+        self.options = torch.as_tensor(options, dtype=self.options.dtype, device=self.options.device)
+        self.programs = (self.options[:, :1]//(10**torch.arange(defenders, device=self.options.device))) % 10
+        if self.decision_rule == 'subject_counterfactual':
+            self.configure_counterfactual_catalog()
 
     def eligible(self, packet):
         eligible = (packet['node'][:, 0, 15]*400.).round().long() % self.decision_period == 0
@@ -237,23 +572,69 @@ class PlainReturnDecision(nn.Module):
             result['_plain_return_controls'] = paired_effect_controls(actor, packet, action)
         return result
 
-    def catalog_estimates(self, context, controls):
-        logits = self.network.forward_catalog(context, controls, self.programs, self.options[:, 1:])
-        if not self.ensemble:
-            return logits, logits.sigmoid()
-        return self.aggregate_estimates([logits.sigmoid()]+[
-            member.forward_catalog(context, controls, self.programs, self.options[:, 1:]).sigmoid()
-            for member in self.ensemble])
+    def reference_choices(self, context, controls):
+        choice = self.policy_reference.selected_catalog_indices(context, controls)
+        return self.reference_indices[choice] if self.policy_neighborhood else choice
 
-    def aggregate_estimates(self, estimates):
+    def neighborhood_indices(self, context, controls):
+        if not self.policy_neighborhood:
+            return None
+        reference = self.programs[self.reference_choices(context, controls)]
+        valid = (self.programs[None] != reference[:, None]).sum(-1) <= 1
+        # Each coordinate has exactly eight alternatives to its present digit.
+        return valid.nonzero(as_tuple=False)[:, 1].reshape(len(context), 8*self.network.defenders+1)
+
+    def network_catalog(self, member, context, controls, indices=None):
+        if indices is None:
+            return member.forward_catalog(context, controls, self.programs, self.options[:, 1:])
+        batch, count = indices.shape
+        raw = member(context[:, None].expand(-1, count, -1).reshape(-1, context.shape[-1]),
+            controls[:, None].expand(-1, count, -1, -1).reshape(-1, self.network.defenders, 6),
+            self.programs[indices].reshape(-1, self.network.defenders),
+            self.options[indices, 1:].reshape(-1, 2)).reshape(batch, count)
+        return raw.new_full((batch, len(self.options)), float('nan')).scatter(1, indices, raw)
+
+    def catalog_estimates(self, context, controls):
+        self.configure_fleet(controls.shape[-2])
+        indices = self.neighborhood_indices(context, controls)
+        logits = self.network_catalog(self.network, context, controls, indices)
+        if not self.ensemble and self.decision_rule == 'value_difference':
+            return logits.masked_fill(torch.isnan(logits), -torch.inf), logits.sigmoid()
+        reference = (self.reference_choices(context, controls)
+                     if self.ensemble_gain_penalty and self.policy_reference is not None else None)
+        return self.aggregate_estimates([logits.sigmoid()]+[
+            self.network_catalog(member, context, controls, indices).sigmoid()
+            for member in self.ensemble], reference)
+
+    def aggregate_estimates(self, estimates, reference=None):
         estimates = torch.stack(estimates)
         values = estimates.mean(0)
+        if self.decision_rule == 'subject_counterfactual':
+            advantage = self.counterfactual_advantages(estimates)
+            ranking = advantage.mean(0)-self.ensemble_gain_penalty*advantage.std(0, unbiased=False)
+            return ranking, values
         # Penalize disagreement of paired gains, not absolute value offsets.
+        # Policy improvement compares each member with the actual frozen
+        # reference plan, so disagreement of that reference with itself is zero.
         # This is a decision criterion, not a calibrated confidence interval
         # or a correction to the raw neural success probabilities.
-        gains = estimates-estimates[:, :, :1]
+        baseline = (estimates[:, :, :1] if reference is None else
+                    estimates.gather(2, reference[None, :, None].expand(len(estimates), -1, 1)))
+        gains = estimates-baseline
         ranking = values-self.ensemble_gain_penalty*gains.std(0, unbiased=False)
-        return ranking, values
+        return ranking.masked_fill(torch.isnan(ranking), -torch.inf), values
+
+    def selected_catalog_indices(self, context, controls):
+        """Recover the exact current choice of a frozen recurrent policy."""
+        if self.wait_value is not None or self.intervention_budget:
+            raise ValueError('A recurrent policy reference cannot have waiting or episode-budget state.')
+        ranking, values = self.catalog_estimates(context, controls)
+        choice = ranking.argmax(-1)
+        score = self.decision_scores(ranking, values)
+        reference = (torch.zeros_like(choice) if self.policy_reference is None else
+                     self.reference_choices(context, controls))
+        improvement = score.gather(1, choice[:, None]).flatten()-score.gather(1, reference[:, None]).flatten()
+        return torch.where(improvement > self.gain_margin, choice, reference)
 
     def public_context(self, packet):
         from conditional_fusion_value import intervention_task_context, append_vessel_identity
@@ -281,8 +662,7 @@ class PlainReturnDecision(nn.Module):
                 torch.backends.cuda.matmul.allow_tf32 = False
             self.to(self.inference_device)
         context, order = self.public_context(packet)
-        if order.shape[1] != self.network.defenders:
-            raise ValueError('The plain MLP and deployed fleet must have the same size.')
+        self.configure_fleet(order.shape[1])
         controls = packet['_plain_return_controls'].gather(
             1, order[..., None].expand(-1, -1, 6))
         device = self.options.device
@@ -292,8 +672,8 @@ class PlainReturnDecision(nn.Module):
         choice = ranking.argmax(-1)
         accept = eligible & (choice != 0)
         gain = values.gather(1, choice[:, None]).flatten()-values[:, 0]
-        decision_gain = (ranking.gather(1, choice[:, None]).flatten()-ranking[:, 0]
-                         if self.ensemble_gain_penalty else gain)
+        score = self.decision_scores(ranking, values)
+        decision_gain = score.gather(1, choice[:, None]).flatten()-score[:, 0]
         if self.gain_margin:
             accept &= decision_gain > self.gain_margin
         wait = None
@@ -301,11 +681,22 @@ class PlainReturnDecision(nn.Module):
             wait_margin = self.gain_margin if getattr(self.wait_value, 'margin_adjusted', True) else 0.
             wait = self.wait_value(context, controls)
             accept &= decision_gain-wait_margin > wait
+        reference_choice = proposal_choice = improvement = None
+        if self.policy_reference is not None:
+            reference_choice = self.reference_choices(context, controls)
+            proposal_choice = choice
+            score = self.decision_scores(ranking, values)
+            improvement = (score.gather(1, choice[:, None]).flatten()-
+                           score.gather(1, reference_choice[:, None]).flatten())
+            choice = torch.where(improvement > self.gain_margin, choice, reference_choice)
+            accept = eligible & (choice != 0)
+            gain = values.gather(1, choice[:, None]).flatten()-values[:, 0]
+            decision_gain = score.gather(1, choice[:, None]).flatten()-score[:, 0]
         if self.record_catalog:
             self.last_catalog = dict(options=self.options.detach().cpu(),
                 factual_value=values[:, 0].detach().cpu(),
                 predicted_gain=(values-values[:, :1]).detach().cpu(),
-                score=(ranking if self.ensemble_gain_penalty else values).detach().cpu())
+                score=self.decision_scores(ranking, values).detach().cpu())
             if wait is not None:
                 self.last_catalog['wait_value'] = wait.detach().cpu()
         if self.record_decisions:
@@ -315,10 +706,15 @@ class PlainReturnDecision(nn.Module):
                 predicted_gain=torch.where(accept, gain, torch.zeros_like(gain)).detach().cpu(),
                 candidate_gain=gain.detach().cpu(),
                 decision_gain=decision_gain.detach().cpu(),
-                score=(ranking if self.ensemble_gain_penalty else values).gather(
+                score=self.decision_scores(ranking, values).gather(
                     1, choice[:, None]).flatten().detach().cpu())
             if wait is not None:
                 self.last_decision['wait_value'] = wait.detach().cpu()
+            if reference_choice is not None:
+                self.last_decision.update(reference_option=self.options[reference_choice].detach().cpu(),
+                    proposal_option=self.options[proposal_choice].detach().cpu(),
+                    proposal_improvement=improvement.detach().cpu(),
+                    reference_replaced=(eligible & (choice != reference_choice)).detach().cpu())
         if not bool(accept.any()):
             return action.to(return_device)
         preference = self.coefficients[self.programs[choice]]
@@ -341,21 +737,25 @@ class PairedReturnDecision(PlainReturnDecision):
                  conditional_objective='marginal_events', **kwargs):
         if learning_objective != 'conditional':
             raise ValueError('Paired dense returns require the conditional learning objective.')
-        if conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood'):
+        if conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood', 'paired_ordering'):
             raise ValueError('Unknown paired dense conditional objective.')
         self.conditional_objective = conditional_objective
-        if conditional_objective == 'shared_potential':
+        if conditional_objective in ('shared_potential', 'paired_ordering'):
             self.network_type = PlainReturnNetwork
+        elif kwargs.get('policy_neighborhood', False):
+            raise ValueError('Local neighborhoods require complete-plan scalar values.')
         super().__init__(*args, **kwargs)
         if not torch.equal(self.options[0], torch.zeros_like(self.options[0])):
             raise ValueError('The paired dense catalog must start with its factual reference.')
         self.ordinary = False
 
     def catalog_estimates(self, context, controls):
+        self.configure_fleet(controls.shape[-2])
         estimates = []
+        indices = self.neighborhood_indices(context, controls)
         for member in [self.network, *self.ensemble]:
-            raw = member.forward_catalog(context, controls, self.programs, self.options[:, 1:])
-            if self.conditional_objective == 'shared_potential':
+            raw = self.network_catalog(member, context, controls, indices)
+            if self.conditional_objective in ('shared_potential', 'paired_ordering'):
                 estimates.append(raw.sigmoid())
                 continue
             factual = raw[:, :1, 0].sigmoid()
@@ -365,10 +765,50 @@ class PairedReturnDecision(PlainReturnDecision):
             estimates.append(factual+gain)
         # The common factual value cancels before ranking and margin checks.
         # Avoid clipping a beneficial contrast at the factual value boundary.
-        return self.aggregate_estimates(estimates)
+        reference = (self.reference_choices(context, controls)
+                     if self.ensemble_gain_penalty and self.policy_reference is not None else None)
+        return self.aggregate_estimates(estimates, reference)
 
 
-def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
+def crossfit_continuation_targets(data, bootstrap):
+    """Validate fixed-policy continuation estimates kept separate from observations."""
+    scenes = {tuple(root['scene']) for root in data['roots']}
+    targets = bootstrap.get('training_targets', {})
+    fits = {fit['fold']: fit for fit in bootstrap.get('fits', ())}
+    folds = bootstrap.get('fold_by_scene', {})
+    if (not bootstrap.get('completed') or bootstrap.get('predecessor_sha256') != data['predecessor_sha256']
+            or bootstrap.get('continuation_context') != data.get('continuation_context')
+            or not data.get('continuation_context') or set(targets) != scenes or set(folds) != scenes
+            or len(fits) < 2 or set(fits) != set(folds.values())
+            or any(fit.get('updates', 0) <= 0 for fit in fits.values())):
+        raise ValueError('Continuation targets require complete cross-fitting under the same frozen policy.')
+    digest = hashlib.sha256()
+    for scene in sorted(targets):
+        fit = fits[folds[scene]]
+        training = {tuple(value) for value in fit['training_scenes']}
+        excluded = {tuple(value) for value in fit['excluded_scenes']}
+        expected = {value for value in scenes if folds[value] == folds[scene]}
+        if excluded != expected or training != scenes-excluded or training & excluded:
+            raise ValueError('A continuation estimate must exclude the entire queried scene and all its futures.')
+        digest.update(repr(scene).encode())
+        for key, value in sorted(targets[scene].items()):
+            if not np.isfinite(value) or not 0. <= value <= 1.:
+                raise ValueError('Continuation success estimates must be finite and bounded.')
+            digest.update(repr((key, value)).encode())
+    if digest.hexdigest() != bootstrap.get('training_targets_sha256'):
+        raise ValueError('Continuation target predictions changed after cross-fitting.')
+    for root in data['roots']:
+        values = targets[tuple(root['scene'])]
+        if set(values) != set(root['outcomes']):
+            raise ValueError('Continuation targets must cover exactly the recorded branches and futures.')
+        for key, outcome in root['outcomes'].items():
+            if 'continuation_context' not in outcome and values[key] != float(outcome['success']):
+                raise ValueError('An already terminal branch must retain its measured outcome.')
+    return targets, dict(target_sha256=digest.hexdigest(), folds=len(fits),
+        shared_optimizer_updates=sum(fit['updates'] for fit in fits.values()))
+
+
+def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, updates=24000,
                      parameter_budget=145731, seed=42, device='cuda:0',
                      expected_observation_sha256=None, factual_bank_weight=1.,
                      uniform_sampling=True, initial_model=None, learning_rate=8e-4,
@@ -380,7 +820,9 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                      transfer_initialization=False, conservative_catalog_weight=0.,
                      conservative_catalog_temperature=.1, conservative_catalog_samples=64,
                      conservative_catalog_roots=4, unique_factual_supervision=False,
-                     root_sampling_weights=None, factual_sampling_weights=None):
+                     root_sampling_weights=None, factual_sampling_weights=None, onpolicy_bank_weight=1.,
+                     continuation_bootstrap=None, continuation_bootstrap_weight=.5, state_baseline=False,
+                     representation='dense', peer_decision_conditioned=True, future_weighted_sampling=False):
     """Fit only absolute outcomes, independently of conditional-learning code.
 
     The default pools all observed state/action returns and samples them
@@ -406,20 +848,44 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
             or not isinstance(conservative_catalog_roots, int) or conservative_catalog_roots < 1):
         raise ValueError('Conservative catalog learning requires valid nonnegative weight, temperature and sample counts.')
     conditional = paired_difference_weight > 0.
+    if onpolicy_bank is not None:
+        reconstructed_actions = (onpolicy_bank.get('observed_decisions_reconstructed', False)
+            and onpolicy_bank.get('reconstruction_policy_sha256') == data.get('predecessor_sha256'))
+        if (factual_bank is not None or not uniform_sampling or value_target != 'success'
+                or not onpolicy_bank.get('completed') or not onpolicy_bank.get('recurrent_m2')
+                or not (onpolicy_bank.get('observed_decisions_recorded') or reconstructed_actions)
+                or onpolicy_bank.get('period') != 5
+                or onpolicy_bank.get('predecessor_sha256') != data.get('predecessor_sha256')
+                or data.get('continuation_context', {}).get('continuation_policy_sha256') != data.get('predecessor_sha256')
+                or not np.isfinite(onpolicy_bank_weight) or onpolicy_bank_weight <= 0.):
+            raise ValueError('Observed action returns require their completed recurrent bank and common continuation.')
     if not isinstance(unique_factual_supervision, bool):
         raise ValueError('Unique factual supervision must be explicitly enabled or disabled.')
     if unique_factual_supervision and conditional and conditional_objective != 'joint_likelihood':
         raise ValueError('Unique factual supervision requires the joint outcome likelihood.')
-    if (conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood')
-            or conditional_objective in ('factual_strata', 'joint_likelihood') and (not conditional or value_target != 'success')):
+    if (conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood', 'paired_ordering')
+            or conditional_objective in ('factual_strata', 'joint_likelihood', 'paired_ordering') and (not conditional or value_target != 'success')):
         raise ValueError('Factual-stratum dense learning requires paired binary success outcomes.')
     if conditional_objective == 'event_hierarchy' and (not conditional or value_target != 'success'):
         raise ValueError('Change-direction learning requires paired binary success outcomes.')
     if conditional_objective == 'joint_likelihood' and paired_difference_weight != 1.:
         raise ValueError('A joint outcome likelihood requires unit weight for its conditional factor.')
-    shared_potential = conditional and conditional_objective == 'shared_potential'
+    shared_potential = conditional and conditional_objective in ('shared_potential', 'paired_ordering')
+    bootstrap_targets = bootstrap_metadata = None
+    if continuation_bootstrap is not None:
+        if (value_target != 'success' or not uniform_sampling or factual_bank is not None
+                or initial_model is not None or conditional and conditional_objective != 'shared_potential'
+                or not np.isfinite(continuation_bootstrap_weight) or not 0. < continuation_bootstrap_weight < 1.):
+            raise ValueError('Cross-fitted continuation mixtures require fresh scalar success learning and a weight in (0,1).')
+        bootstrap_targets, bootstrap_metadata = crossfit_continuation_targets(data, continuation_bootstrap)
+    policy_neighborhood = bool(data.get('policy_neighborhood', False))
+    if policy_neighborhood and (conditional and not shared_potential or factual_bank is not None
+            or conservative_catalog_weight or data.get('policy_reference') is None):
+        raise ValueError('Policy-local paired learning requires complete-plan values and its actual reference policy.')
     if conditional and not uniform_sampling:
         raise ValueError('Dense conditional fitting requires pooled-observation sampling.')
+    if not isinstance(future_weighted_sampling, bool) or future_weighted_sampling and not uniform_sampling:
+        raise ValueError('Future population correction requires explicit pooled-observation sampling.')
     if not isinstance(transfer_initialization, bool):
         raise ValueError('Cross-policy initialization must be explicitly enabled or disabled.')
     if transfer_initialization and initial_model is None:
@@ -441,6 +907,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         raise ValueError('Dense paired differences require isolated single-vessel intervention observations.')
     if not isinstance(intervention_budget, int) or intervention_budget < 0:
         raise ValueError('The shared execution budget must be a nonnegative integer.')
+    if policy_neighborhood and (not feedback_relative_hold or intervention_budget != 0):
+        raise ValueError('Policy-local learning requires recurrent relative execution.')
     if not np.isfinite(gain_margin) or not 0. <= gain_margin <= 1.:
         raise ValueError('The fixed return-gain margin must lie between zero and one.')
     if updates <= 0:
@@ -475,10 +943,25 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
     defenders = len(roots[0]['effect_controls'])
     if any(len(root['context']) != (8+identity_conditioned)*defenders+5 for root in roots):
         raise ValueError('Plain return roots must use the requested public identity representation.')
+    reference_options = []
+    for root in roots:
+        reference = tuple(root.get('reference_option', (0, 0, 0)))
+        if (conditional or policy_neighborhood) and (tuple(root['options'][0]) != reference
+                or not policy_neighborhood and reference != (0, 0, 0)):
+            raise ValueError('The first observed option must be the recorded comparison reference.')
+        if policy_neighborhood:
+            programs_at_root = (np.asarray(root['options'])[:, :1]//(10**np.arange(defenders))) % 10
+            if (((programs_at_root != programs_at_root[:1]).sum(-1) > 1).any()
+                    or not set(map(tuple, root['options'])) <= set(single_coordinate_catalog(defenders))):
+                raise ValueError('Policy-local contrasts may change only one vessel from the recorded reference.')
+        reference_options.append(reference)
     digest = hashlib.sha256()
+    if bootstrap_metadata is not None:
+        digest.update(repr(('crossfit_continuation', bootstrap_metadata['target_sha256'],
+                            float(continuation_bootstrap_weight))).encode())
     if feedback_relative_hold:
         digest.update(repr(('feedback_relative_hold', float(feedback_relative_scale))).encode())
-    rows, weights, factual_targets = [], [], []
+    rows, weights, factual_targets, measured_targets = [], [], [], []
     for root_id, root in enumerate(roots):
         if value_target == 'discounted_return':
             from local_intervention_value import measured_root_values
@@ -492,15 +975,26 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
             digest.update(array.tobytes())
         for (q, future), outcome in sorted(root['outcomes'].items()):
             label = measured[q, future] if value_target == 'discounted_return' else float(outcome['success'])
+            measured_targets.append(label)
+            if bootstrap_targets is not None:
+                estimate = bootstrap_targets[tuple(root['scene'])][q, future]
+                label = (1.-continuation_bootstrap_weight)*label+continuation_bootstrap_weight*estimate
             rows.append((root_id, *root['options'][q], label))
             weights.append(future_weights[future])
             if conditional:
-                if tuple(root['options'][0]) != (0, 0, 0) or (0, future) not in root['outcomes']:
+                if (0, future) not in root['outcomes']:
                     raise ValueError('Every dense conditional label requires its same-future factual outcome.')
-                factual_targets.append(measured[0, future] if value_target == 'discounted_return' else
-                                       float(root['outcomes'][0, future]['success']))
+                factual_label = (measured[0, future] if value_target == 'discounted_return' else
+                                 float(root['outcomes'][0, future]['success']))
+                if bootstrap_targets is not None:
+                    estimate = bootstrap_targets[tuple(root['scene'])][0, future]
+                    factual_label = ((1.-continuation_bootstrap_weight)*factual_label
+                                     +continuation_bootstrap_weight*estimate)
+                factual_targets.append(factual_label)
     continuation = None
     if factual_bank is not None:
+        if factual_bank.get('recurrent_m2', False):
+            raise ValueError('Recurrent trajectory values are not zero-intervention labels; measure paired branches instead.')
         if factual_bank['predecessor_sha256'] != data['predecessor_sha256']:
             raise ValueError('The ordinary labels must come from its own frozen predecessor.')
         arrays = [np.concatenate([record[key] for record in factual_bank['records']]).astype(np.float32)
@@ -513,11 +1007,67 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
             from local_intervention_value import discounted_task_values
             arrays[2] = discounted_task_values(arrays[2], arrays[3]).astype(np.float32)
         continuation = [torch.as_tensor(array, device=device) for array in arrays[:3]]
+    onpolicy = None; onpolicy_probability = None; onpolicy_record_weights = None
+    reconstructed_action_labels = 0
+    if onpolicy_bank is not None:
+        records = onpolicy_bank['records']
+        if not records or any(not len(record['values']) for record in records):
+            raise ValueError('Observed recurrent action trajectories must be nonempty.')
+        for record in records:
+            if record.get('decision_reconstructed', False):
+                ticks = np.asarray(record['contexts'])[:, -1]*400.
+                steps = np.rint(ticks).astype(np.int64)
+                if (not reconstructed_actions or not np.allclose(ticks, steps, atol=1e-3, rtol=0.)
+                        or (steps % onpolicy_bank['period']).any()):
+                    raise ValueError('Reconstructed actions must use their frozen continuation at an eligible measured clock.')
+                reconstructed_action_labels += len(record['values'])
+        if onpolicy_bank.get('observed_decisions_reconstructed', False) and not reconstructed_action_labels:
+            raise ValueError('Reconstructed action provenance requires measured successor records.')
+        arrays = [np.concatenate([record[key] for record in records])
+                  for key in ('contexts', 'controls', 'observed_decision_options', 'values')]
+        if (arrays[2].shape != (len(arrays[3]), 3) or not np.isfinite(arrays[2]).all()
+                or not np.equal(arrays[2], np.rint(arrays[2])).all()):
+            raise ValueError('Observed recurrent action labels must be integer catalog options.')
+        arrays = [np.asarray(array, np.int64 if index == 2 else np.float32)
+                  for index, array in enumerate(arrays)]
+        size = len(arrays[3]); codes_observed = arrays[2][:, 0]
+        digits = (codes_observed[:, None]//(10**np.arange(defenders))) % 10
+        if (not size or arrays[0].shape != (size, (8+identity_conditioned)*defenders+5)
+                or arrays[1].shape != (size, defenders, 6) or arrays[2].shape != (size, 3)
+                or any(not np.isfinite(array).all() for array in arrays)
+                or not np.isin(arrays[3], (0., 1.)).all()
+                or not np.isin(digits, (0, 1, 2, 3, 4, 6, 7, 8, 9)).all()
+                or (codes_observed < 0).any() or (codes_observed >= 10**defenders).any()
+                or ((digits > 0).sum(-1) > 1).any()
+                or not np.array_equal(arrays[2][:, 1:], np.c_[np.zeros(size, np.int64), 5*(codes_observed > 0)])
+                or any(len(record['values']) != len(record['observed_decision_options'])
+                    or not np.all(record['values'] == record['values'][0]) for record in records)):
+            raise ValueError('Observed recurrent returns must retain actual immediate single-vessel action labels.')
+        digest.update(b'observed recurrent action returns')
+        for array in arrays:
+            digest.update(array.tobytes())
+        onpolicy = [torch.as_tensor(array, device=device) for array in arrays]
+        if 'record_sampling_weights' in onpolicy_bank:
+            onpolicy_record_weights = np.asarray(onpolicy_bank['record_sampling_weights'], np.float64)
+            if (onpolicy_record_weights.shape != (len(records),) or not np.isfinite(onpolicy_record_weights).all()
+                    or (onpolicy_record_weights <= 0.).any() or not np.isfinite(onpolicy_record_weights.sum())):
+                raise ValueError('Observed action record masses must be finite, positive and complete.')
+            onpolicy_record_weights = onpolicy_record_weights/onpolicy_record_weights.sum()
+            onpolicy_probability = np.concatenate([np.full(len(record['values']), weight/len(record['values']))
+                for record, weight in zip(records, onpolicy_record_weights)])
+            digest.update(b'observed action record masses'); digest.update(onpolicy_record_weights.tobytes())
+        else:
+            onpolicy_probability = np.concatenate([np.full(len(record['values']),
+                1./(len(records)*len(record['values']))) for record in records])
+        if reconstructed_action_labels:
+            digest.update(b'reconstructed frozen continuation actions')
+            digest.update(onpolicy_bank['reconstruction_policy_sha256'].encode())
     observation_sha = digest.hexdigest()
     if expected_observation_sha256 is not None and observation_sha != expected_observation_sha256:
         raise ValueError('The plain MLP must see exactly the matched observations.')
     rows = np.asarray(rows)
-    row_probability = root_sampling_probabilities(rows[:, 0], root_sampling_fraction, root_sampling_weights)
+    row_probability = root_sampling_probabilities(rows[:, 0], root_sampling_fraction, root_sampling_weights,
+        np.asarray(weights, np.float64) if future_weighted_sampling else None)
     root_prior = (None if root_sampling_weights is None else
         root_sampling_probabilities(np.arange(len(roots)), 1., root_sampling_weights))
     factual_prior = (None if factual_sampling_weights is None else
@@ -536,25 +1086,42 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
     target_digest = hashlib.sha256(np.asarray(rows[:, 4], np.float32).tobytes())
     if continuation is not None:
         target_digest.update(continuation[2].detach().cpu().numpy().tobytes())
+    if onpolicy is not None:
+        target_digest.update(onpolicy[3].detach().cpu().numpy().tobytes())
     training_target_sha256 = target_digest.hexdigest()
     if expected_training_target_sha256 is not None and training_target_sha256 != expected_training_target_sha256:
         raise ValueError('The plain MLP must use exactly the matched measured return targets.')
     sampled_options = {tuple(option) for root in roots for option in root['options'] if option[0]}
     options = [(0, 0, 0)]+sorted((sampled_options | extra_options)-{(0, 0, 0)})
-    if isolate_factual_start and any(sum(code//10**boat % 10 != 0 for boat in range(defenders)) > 1
+    if policy_neighborhood:
+        options = single_coordinate_catalog(defenders)
+    if isolate_factual_start and not policy_neighborhood and any(sum(code//10**boat % 10 != 0 for boat in range(defenders)) > 1
                                     for code, _, _ in options):
         raise ValueError('Isolated plain-return learning requires a single-vessel candidate catalog.')
     importance = torch.as_tensor(np.asarray(weights), device=device)
     action_size = 10*defenders+2 if action_encoding == 'categorical' else 5*defenders+4
     input_size = (14+identity_conditioned)*defenders+5+action_size
     output_width = 3 if conditional and not shared_potential else 1
-    count = lambda width: 2*width*width + (input_size+3+output_width)*width + output_width
-    width = min(range(8, 2049), key=lambda value: abs(count(value)-parameter_budget))
+    if state_baseline and (action_encoding != 'physical_delta' or output_width != 1):
+        raise ValueError('A separate state baseline requires scalar physical-action values.')
+    if representation not in ('dense', 'fleet_attention'):
+        raise ValueError('Unknown intervention state/action representation.')
+    if representation == 'fleet_attention' and (not state_baseline or not feedback_relative_hold
+            or policy_neighborhood):
+        raise ValueError('Shared fleet fitting requires standalone relative interventions with a state baseline.')
+    count = lambda width: (2*width*width + (input_size+3+output_width)*width + output_width
+        + (2*width*width+((14+identity_conditioned)*defenders+9)*width+1 if state_baseline else 0))
+    if representation == 'fleet_attention':
+        count = lambda width: 21*width*width+(80+identity_conditioned)*width+98
+    width = min(range(8, 2049, 4 if representation == 'fleet_attention' else 1),
+                key=lambda value: abs(count(value)-parameter_budget))
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     network_type = PairedReturnNetwork if conditional and not shared_potential else PlainReturnNetwork
     net = network_type(defenders, width, identity_conditioned, action_encoding=action_encoding,
-        feedback_relative_scale=feedback_relative_scale).to(device)
+        feedback_relative_scale=feedback_relative_scale, state_baseline=state_baseline,
+        representation=representation, peer_decision_conditioned=peer_decision_conditioned).to(device)
+    assert sum(parameter.numel() for parameter in net.parameters()) == count(width)
     initialization_sha256 = None
     initialization_updates = 0
     if initial_model is not None:
@@ -565,6 +1132,9 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                 or bool(recipe.get('isolate_factual_start', False)) != isolate_factual_start
                 or bool(recipe.get('feedback_relative_hold', False)) != feedback_relative_hold
                 or recipe.get('feedback_relative_scale') != feedback_relative_scale
+                or recipe.get('state_baseline', False) != state_baseline
+                or recipe.get('representation', 'dense') != representation
+                or recipe.get('peer_decision_conditioned', True) != peer_decision_conditioned
                 or recipe.get('action_encoding', 'categorical') != action_encoding):
             raise ValueError('Plain-return continuation must retain its measured target and execution semantics.')
         if (recipe['defenders'], recipe['width'], recipe.get('identity_conditioned',False)) != (defenders, width, identity_conditioned):
@@ -607,16 +1177,24 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         # Pairing enters only the targets, never a realized future input.
         action_width = net.action_size
         count_pooled = len(pooled_target)
+        reference_options_tensor = torch.as_tensor(reference_options, dtype=torch.long, device=device)[root_ids]
+        reference_programs = (reference_options_tensor[:, :1]//(10**torch.arange(defenders, device=device))) % 10
+        if count_pooled > len(rows):
+            reference_programs = torch.cat((reference_programs,
+                torch.zeros((count_pooled-len(rows), defenders), dtype=torch.long, device=device)))
+            reference_options_tensor = torch.cat((reference_options_tensor,
+                torch.zeros((count_pooled-len(rows), 3), dtype=torch.long, device=device)))
         reference_actions = net.action_features(
-            torch.zeros((count_pooled, defenders), dtype=torch.long, device=device),
-            torch.zeros((count_pooled, 2), device=device),
+            reference_programs, reference_options_tensor[:, 1:],
             pooled_features[:, net.state_size-6*defenders:net.state_size].reshape(-1, defenders, 6))
         pooled_reference = torch.cat((pooled_features[:, :-action_width], reference_actions), -1)
         factual_values = np.asarray(factual_targets, np.float32)
         if continuation is not None:
             factual_values = np.concatenate((factual_values, continuation[2].detach().cpu().numpy()))
         paired_factual_target = torch.as_tensor(factual_values, device=device)
-        paired_active = torch.cat((net.active_vessels(programs).any(-1),
+        changed = ((programs != reference_programs[:len(rows)]).any(-1) if policy_neighborhood
+                   else net.active_vessels(programs).any(-1))
+        paired_active = torch.cat((changed,
             torch.zeros(count_pooled-len(codes), dtype=torch.bool, device=device)))
         paired_target_sha256 = hashlib.sha256(factual_values.tobytes()+
             (pooled_target-paired_factual_target).detach().cpu().numpy().tobytes()).hexdigest()
@@ -632,7 +1210,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         if len(set(rows[measured_ids, 0])) != len(roots):
             raise ValueError('Unique factual supervision requires an actual factual observation at every root.')
         factual_reference_ids = np.r_[measured_ids, np.arange(len(rows), len(pooled_target))]
-        probability = root_sampling_probabilities(rows[measured_ids, 0], root_sampling_fraction, root_sampling_weights)
+        probability = root_sampling_probabilities(rows[measured_ids, 0], root_sampling_fraction, root_sampling_weights,
+            np.asarray(weights, np.float64)[measured_ids] if future_weighted_sampling else None)
         if probability is None:
             probability = np.full(len(measured_ids), 1./len(measured_ids))
         # Keep the previous paired-root versus trajectory-bank mass; only
@@ -640,6 +1219,10 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         factual_reference_probability = np.r_[probability*len(rows), factual_mass]/len(pooled_target)
         factual_reference_rng = np.random.default_rng(np.random.SeedSequence([seed, 840014]))
     catalog_draws = hashlib.sha256()
+    onpolicy_draws = hashlib.sha256()
+    if onpolicy is not None:
+        onpolicy_rng = np.random.default_rng(np.random.SeedSequence([seed, 84272]))
+        onpolicy_programs = (onpolicy[2][:, :1]//(10**torch.arange(defenders, device=device))) % 10
     if conservative_catalog_weight:
         from local_intervention_value import conservative_catalog_loss
         catalog_rng = np.random.default_rng(np.random.SeedSequence([seed, 840013]))
@@ -654,19 +1237,27 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         for step in range(updates):
             if uniform_sampling:
                 index = torch.as_tensor(draw(len(pooled_target), 192, pooled_probability), device=device)
-                raw = net.layers(pooled_features[index])
+                raw = net.forward_features(pooled_features[index])
                 if shared_potential:
                     # Both values come from exactly the ordinary scalar network.
                     # Only the common-future difference adds supervision; the
                     # absolute labels keep precisely their ordinary pooled mass.
-                    factual_logits = net.layers(pooled_reference[index])[:, 0]
+                    factual_logits = net.forward_features(pooled_reference[index])[:, 0]
                     gain = raw[:, 0].sigmoid()-factual_logits.sigmoid()
                     difference = pooled_target[index]-paired_factual_target[index]
                     loss = F.binary_cross_entropy_with_logits(raw[:, 0], pooled_target[index])
-                    loss += paired_difference_weight*((gain-difference).square()*paired_active[index]).mean()
+                    if conditional_objective == 'paired_ordering':
+                        # Concordant pairs still supply their absolute labels.
+                        # Only discordant common futures identify a direction;
+                        # their auxiliary loss is not an effect probability.
+                        contrast = raw[:, 0]-factual_logits
+                        pair_error = F.softplus(-difference*contrast)*difference.abs()
+                    else:
+                        pair_error = (gain-difference).square()
+                    loss += paired_difference_weight*(pair_error*paired_active[index]).mean()
                 elif conditional:
                     from local_intervention_value import paired_difference_loss
-                    factual_logits = net.layers(pooled_reference[index])[:, 0]
+                    factual_logits = net.forward_features(pooled_reference[index])[:, 0]
                     active = paired_active[index]
                     if conditional_objective == 'joint_likelihood':
                         if unique_factual_supervision:
@@ -678,7 +1269,7 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                                                                     p=factual_reference_probability)
                             factual_reference_draws.update(selected.astype(np.int64).tobytes())
                             selected = torch.as_tensor(selected, device=device)
-                            reference_logits = net.layers(pooled_reference[selected])[:, 0]
+                            reference_logits = net.forward_features(pooled_reference[selected])[:, 0]
                             loss += F.binary_cross_entropy_with_logits(reference_logits, paired_factual_target[selected])
                         else:
                             loss = net.joint_outcome_loss(factual_logits, raw, paired_factual_target[index],
@@ -750,6 +1341,27 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                 loss += conservative_catalog_weight*conservative_catalog_loss(
                     values[:, :conservative_catalog_samples], observed_mean,
                     conservative_catalog_temperature).mean()
+            if onpolicy is not None:
+                selected = onpolicy_rng.choice(len(onpolicy[3]), size=192, p=onpolicy_probability)
+                onpolicy_draws.update(selected.astype(np.int64).tobytes())
+                selected = torch.as_tensor(selected, device=device)
+                observed_context, observed_controls = onpolicy[0][selected], onpolicy[1][selected]
+                observed_programs = onpolicy_programs[selected]
+                observed_raw = net(observed_context, observed_controls, observed_programs, onpolicy[2][selected, 1:])
+                if conditional and not shared_potential:
+                    factual_raw = net(observed_context, observed_controls, torch.zeros_like(observed_programs),
+                        torch.zeros((len(selected), 2), device=device))[:, 0]
+                    factual_probability = factual_raw.sigmoid()
+                    observed_gain = net.signed_gain(observed_raw, net.active_vessels(observed_programs).any(-1),
+                        factual_probability if conditional_objective in ('factual_strata', 'joint_likelihood') else None,
+                        event_hierarchy=conditional_objective == 'event_hierarchy')
+                    observed_loss = F.binary_cross_entropy((factual_probability+observed_gain).clamp(1e-6, 1.-1e-6),
+                        onpolicy[3][selected])
+                else:
+                    observed_loss = F.binary_cross_entropy_with_logits(observed_raw, onpolicy[3][selected])
+                # These are actual action returns. No factual or paired-effect
+                # label is manufactured for an unobserved alternative.
+                loss += onpolicy_bank_weight*observed_loss
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(net.parameters(), 5.)
@@ -768,6 +1380,16 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         isolate_factual_start=isolate_factual_start, intervention_budget=intervention_budget,
         feedback_relative_hold=feedback_relative_hold, feedback_relative_scale=feedback_relative_scale,
         gain_margin=float(gain_margin))
+    if state_baseline:
+        model['successor_task_value']['state_baseline'] = True
+    if representation != 'dense':
+        model['successor_task_value']['representation'] = representation
+    if not peer_decision_conditioned:
+        model['successor_task_value']['peer_decision_conditioned'] = False
+    if policy_neighborhood:
+        model['successor_task_value'].update(policy_neighborhood=True,
+            policy_reference=copy.deepcopy(data['policy_reference']))
+        recurrent_decision_specification(model['successor_task_value'])
     if conditional:
         model['successor_task_value']['learning_objective'] = 'conditional'
         model['successor_task_value']['conditional_objective'] = conditional_objective
@@ -776,11 +1398,14 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
     model.update(gate_period=1, physical_interventions=True, fixed_intervention_clock=True,
                  success_objective=value_target == 'success')
     factual_labels = 0 if continuation is None else len(continuation[2])
+    onpolicy_labels = 0 if onpolicy is None else len(onpolicy[3])
     model['successor_task_fit'] = dict(ordinary=not conditional,
         objective=('joint likelihood of factual success and same-future intervention outcome; no duplicate marginal loss'
                    if conditional_objective == 'joint_likelihood' else
                    'absolute success and same-future change likelihood with rescue direction conditional on change'
                    if conditional and conditional_objective == 'event_hierarchy' else
+                   'absolute-outcome cross entropy plus discordant common-future logit ordering of one shared task potential'
+                   if conditional and conditional_objective == 'paired_ordering' else
                    'absolute-outcome cross entropy plus squared same-future differences of one shared task potential'
                    if shared_potential else
                    'absolute success and same-future rescue/harm likelihood conditional on factual outcomes'
@@ -789,14 +1414,23 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                   'absolute normalized discounted-return binary cross entropy'
                    if value_target == 'discounted_return' else 'absolute-outcome binary cross entropy'),
         value_target=value_target, training_target_sha256=training_target_sha256,
+        measured_terminal_target_sha256=hashlib.sha256(np.asarray(measured_targets, np.float32).tobytes()).hexdigest(),
+        continuation_bootstrap_weight=0. if bootstrap_metadata is None else float(continuation_bootstrap_weight),
+        continuation_bootstrap=bootstrap_metadata,
         return_gamma=.995 if value_target == 'discounted_return' else None,
         return_tick_cost=.001 if value_target == 'discounted_return' else None,
         return_normalization='(discounted task return + 1.001) / 2; common root shaping offset omitted'
             if value_target == 'discounted_return' else None,
         isolate_factual_start=isolate_factual_start,
+        comparison_reference=('actual frozen-policy option at each root' if policy_neighborhood else 'zero intervention'),
         feedback_relative_hold=feedback_relative_hold, feedback_relative_scale=feedback_relative_scale,
-        architecture=('single dense MLP, three ReLU hidden layers, factual and paired-event outputs'
+        architecture=('shared per-vessel state and physical-action attention; whole-plan pooled state baseline and gated residual'
+                      if representation == 'fleet_attention' else
+                      'separate state baseline and action residual, each three ReLU hidden layers, zero residual for inactive plans'
+                      if state_baseline else 'single dense MLP, three ReLU hidden layers, factual and paired-event outputs'
                       if conditional and not shared_potential else 'single dense MLP, three ReLU hidden layers'), width=width,
+        state_baseline=bool(state_baseline), representation=representation,
+        peer_decision_conditioned=bool(peer_decision_conditioned),
         action_encoding=action_encoding, dense_input_width=input_size, velocity_reference=velocity_reference,
         physical_action_features=('active vessel, signed feedback offset, quarter-scaled clipped current command difference; linear and logarithmic timing'
                                  if feedback_relative_hold else
@@ -811,7 +1445,21 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
             initial_model['successor_task_fit']['training_observation_sha256']),
         learning_rate_schedule=f'cosine {learning_rate:g} to {learning_rate/10.:g}',
         unique_terminal_observations=data.get('measured_terminal_observations', len(rows)),
-        supervised_node_labels=len(rows)+factual_labels, additional_factual_state_labels=factual_labels,
+        supervised_node_labels=len(rows)+factual_labels+onpolicy_labels, additional_factual_state_labels=factual_labels,
+        additional_onpolicy_action_labels=onpolicy_labels,
+        onpolicy_action_trajectories=0 if onpolicy_bank is None else len(onpolicy_bank['records']),
+        onpolicy_action_draw_sha256=None if onpolicy is None else onpolicy_draws.hexdigest(),
+        onpolicy_bank_weight=0. if onpolicy is None else float(onpolicy_bank_weight),
+        onpolicy_sampling=(None if onpolicy is None else
+            'specified record masses, then uniform five-tick decisions' if onpolicy_record_weights is not None else
+            'uniform trajectories, then uniform recorded five-tick decisions'),
+        onpolicy_record_sampling_sha256=(None if onpolicy_record_weights is None else
+            hashlib.sha256(onpolicy_record_weights.tobytes()).hexdigest()),
+        onpolicy_reconstructed_action_labels=reconstructed_action_labels,
+        onpolicy_action_reconstruction_policy_sha256=(onpolicy_bank['reconstruction_policy_sha256']
+            if reconstructed_action_labels else None),
+        onpolicy_minibatch=0 if onpolicy is None else 192,
+        onpolicy_action_supervision=None if onpolicy is None else 'absolute observed-action return only; no unobserved factual or difference labels',
         training_observation_sha256=observation_sha, training_data=data.get('training_data'),
         factual_bank_training_data=None if factual_bank is None else factual_bank.get('training_data'),
         predecessor_sha256=data['predecessor_sha256'], inherited_stages=initial_model is not None,
@@ -832,6 +1480,11 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
                    'root-balanced pooled absolute returns' if root_sampling_fraction else 'uniform pooled absolute returns')
                   if uniform_sampling else 'matched weighted observations'),
         root_sampling_fraction=root_sampling_fraction,
+        future_weighted_sampling=future_weighted_sampling,
+        future_sampling_weight_sha256=(hashlib.sha256(np.asarray(weights, np.float64).tobytes()).hexdigest()
+            if future_weighted_sampling else None),
+        paired_row_sampling_probability_sha256=(None if row_probability is None else
+            hashlib.sha256(row_probability.tobytes()).hexdigest()),
         root_sampling_prior=None if root_prior is None else root_prior.tolist(),
         root_sampling_prior_sha256=(None if root_prior is None else hashlib.sha256(root_prior.tobytes()).hexdigest()),
         factual_sampling_prior=None if factual_prior is None else factual_prior.tolist(),
@@ -856,9 +1509,15 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         conservative_training_draw_sha256=catalog_draws.hexdigest() if conservative_catalog_weight else None,
         conservative_catalog_reference=('uniform unique measured choices; no synthetic outcome labels'
             if conservative_catalog_weight else None),
-        simulation_steps=data.get('simulation_steps', 0)+(0 if factual_bank is None else factual_bank['simulation_steps']),
+        simulation_steps=data.get('simulation_steps', 0)+(0 if factual_bank is None else factual_bank['simulation_steps'])
+            +(0 if onpolicy_bank is None else onpolicy_bank['simulation_steps']),
         last_loss=float(loss.detach()))
     fit = model['successor_task_fit']
+    if bootstrap_metadata is not None:
+        fit['objective'] = ('measured terminal outcomes mixed with scene-cross-fitted continuation success estimates; '
+                            +fit['objective'])
+        fit['successor_states_used_for_training_targets'] = True
+        fit['successor_states_added_to_query_inputs'] = False
     inherited = []
     if initial_model is not None:
         previous_fit = initial_model['successor_task_fit']
@@ -875,7 +1534,8 @@ def fit_plain_return(data, output, *, factual_bank=None, updates=24000,
         training_observation_sha256=observation_sha, training_target_sha256=training_target_sha256,
         paired_training_target_sha256=paired_target_sha256,
         training_data=data.get('training_data'), factual_bank_training_data=fit['factual_bank_training_data'],
-        roots=len(roots), factual_state_labels=factual_labels,
+        roots=len(roots), factual_state_labels=factual_labels, onpolicy_action_labels=onpolicy_labels,
+        continuation_bootstrap=bootstrap_metadata,
         learning_rate_schedule=fit['learning_rate_schedule'], optimizer_state_retained=False)]
     if sum(stage['updates'] for stage in fit['training_stages']) != fit['total_parameter_updates']:
         raise ValueError('Dense continuation history must account for every previous optimizer update.')

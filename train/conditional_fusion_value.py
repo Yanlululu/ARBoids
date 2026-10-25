@@ -5141,7 +5141,7 @@ class FeedbackFleetPolicy(nn.Module):
     scorer on the reference-change slice of the common forecast library.
     """
     def __init__(self, width=48, analytic_temperature=2., state=None, candidate_contrast=False,
-                 sampling_temperature=1.):
+                 sampling_temperature=1., representation='candidate_graph'):
         super().__init__()
         if width < 8 or not isfinite(analytic_temperature) or analytic_temperature <= 0:
             raise ValueError('The fleet policy needs a positive width and analytic temperature.')
@@ -5150,9 +5150,21 @@ class FeedbackFleetPolicy(nn.Module):
             raise ValueError('Fleet exploration requires a positive finite sampling temperature.')
         self.sampling_temperature=float(sampling_temperature)
         self.candidate_contrast=bool(candidate_contrast)
+        if representation not in ('candidate_graph','candidate_attention'):
+            raise ValueError('Unknown complete-candidate representation.')
+        if representation=='candidate_attention' and width%4:
+            raise ValueError('Ordinary candidate attention needs a width divisible by four.')
+        self.representation=representation
         self.node=nn.Sequential(nn.Linear(37,width),nn.SiLU(),nn.Linear(width,width),nn.SiLU())
-        self.message=nn.Sequential(nn.Linear(2*width+17,width),nn.SiLU(),nn.Linear(width,width),nn.SiLU())
-        self.update=nn.Sequential(nn.Linear(3*width,width),nn.SiLU())
+        if representation=='candidate_graph':
+            self.message=nn.Sequential(nn.Linear(2*width+17,width),nn.SiLU(),nn.Linear(width,width),nn.SiLU())
+            self.update=nn.Sequential(nn.Linear(3*width,width),nn.SiLU())
+        else:
+            # The control receives the same complete-candidate node features.
+            # Ordinary attention replaces explicit pair geometry and messages;
+            # at width 48 its total capacity differs by only five parameters.
+            self.attention=nn.TransformerEncoderLayer(width,4,width+5,dropout=0.,
+                activation='gelu',batch_first=True,norm_first=True)
         self.plan=nn.Sequential(nn.Linear(2*width+1,width),nn.SiLU())
         self.actor=nn.Linear(width,1)
         self.critic=nn.Sequential(nn.Linear(2*width,width),nn.SiLU(),nn.Linear(width,1))
@@ -5187,17 +5199,21 @@ class FeedbackFleetPolicy(nn.Module):
     def forward(self,features,costs):
         b,count,n,_=features.shape
         x=features.reshape(b*count,n,-1)
-        difference=x[:,:,None]-x[:,None]
-        trajectory=difference[...,16:24].reshape(b*count,n,n,4,2)
-        geometry=torch.cat((difference[...,:4],difference[...,:2].norm(dim=-1,keepdim=True),
-            trajectory.flatten(-2),trajectory.norm(dim=-1)),-1)
-        own=self.node(x)
-        mask=~torch.eye(n,dtype=torch.bool,device=x.device)[None,:,:,None]
-        for _ in range(2):
-            message=self.message(torch.cat((own[:,:,None].expand(-1,-1,n,-1),
-                own[:,None].expand(-1,n,-1,-1),geometry),-1))
-            own=own+self.update(torch.cat((own,(message*mask).sum(2)/max(n-1,1),
-                message.masked_fill(~mask,-1e4).amax(2)),-1))
+        if self.representation=='candidate_graph':
+            difference=x[:,:,None]-x[:,None]
+            trajectory=difference[...,16:24].reshape(b*count,n,n,4,2)
+            geometry=torch.cat((difference[...,:4],difference[...,:2].norm(dim=-1,keepdim=True),
+                trajectory.flatten(-2),trajectory.norm(dim=-1)),-1)
+            own=self.node(x)
+            mask=~torch.eye(n,dtype=torch.bool,device=x.device)[None,:,:,None]
+            for _ in range(2):
+                message=self.message(torch.cat((own[:,:,None].expand(-1,-1,n,-1),
+                    own[:,None].expand(-1,n,-1,-1),geometry),-1))
+                own=own+self.update(torch.cat((own,(message*mask).sum(2)/max(n-1,1),
+                    message.masked_fill(~mask,-1e4).amax(2)),-1))
+        else:
+            own=self.node(x)
+            for _ in range(2):own=self.attention(own)
         raw_cost=costs.clamp(0.,1e4)
         plans=self.plan(torch.cat((own.mean(1),own.amax(1),raw_cost.log1p().reshape(-1,1)),-1))
         plans=plans.reshape(b,count,-1)
@@ -5293,13 +5309,13 @@ def select_feedback_fleet_plan(costs,library,reference_start,selection):
 
 @torch.no_grad()
 def refine_feedback_relative_intervention(actor, packet, source_action, offsets, *,
-                                         relative_scale=None, **configuration):
-    """Keep a single-vessel fusion displacement relative to live M1 feedback.
+                                         relative_scale=None, source_feedback=False, **configuration):
+    """Keep recorded fusion displacements relative to live predecessor feedback.
 
     The requested coefficients define the first intervention command. Its
     displacement from the factual joint choice is retained for this window;
     every following command uses the newly observed state's joint choice.
-    Peers always receive that current factual choice, so their reaction is
+    Unspecified peers receive that current factual choice, so their reaction is
     through the changed physical state rather than an altered activation plan.
     With a relative scale, the requested grid instead represents a bounded
     signed displacement; its midpoint is exactly the factual continuation.
@@ -5311,23 +5327,44 @@ def refine_feedback_relative_intervention(actor, packet, source_action, offsets,
     if held is None or held.shape != shape or offsets.shape != shape:
         raise ValueError('Relative feedback needs current preferences and one two-actuator offset per vessel.')
     active = (held >= 0.).any(-1)
-    if (bool((active.sum(-1) > 1).any()) or
+    neighborhood = packet.get('_policy_neighborhood')
+    if neighborhood is not None and (neighborhood.shape != (len(source_action),)
+            or neighborhood.dtype != torch.bool):
+        raise ValueError('A policy-local execution flag must identify each fleet state.')
+    maximum_active = 1 if neighborhood is None else 1+neighborhood.long()
+    # A single-coordinate change to a one-vessel reference can retain that
+    # reference component and activate one additional vessel. The collector
+    # and decision catalog validate the one-coordinate comparison itself.
+    if (bool((active.sum(-1) > maximum_active).any()) or
             bool((active & ~(held >= 0.).all(-1)).any()) or
             not bool(torch.isfinite(held).all()) or bool((held > 1.).any())):
-        raise ValueError('Relative feedback may change one vessel with two bounded fusion coefficients.')
+        raise ValueError('Relative feedback may change one vessel with two bounded fusion coefficients.'
+            if neighborhood is None else
+            'Relative feedback must respect its recorded policy-local plan and bounded fusion coefficients.')
     initialized = torch.isfinite(offsets).all(-1)
     if (bool((~initialized & ~torch.isnan(offsets).all(-1)).any()) or
             bool((offsets[initialized].abs() > 1.).any())):
         raise ValueError('Relative offsets must be uninitialized pairs or finite displacements in [-1,1].')
-    factual_packet = dict(packet)
-    factual_packet.pop('_committed_actuator_preferences', None)
-    factual_packet.pop('_isolate_factual_actuator_start', None)
-    factual_packet['_preferred_actuator_coefficients'] = source_action[..., 2:3].expand(-1, -1, 2)
-    factual_preference = source_action
-    if getattr(actor, 'generic_fusion_adapter', None) is not None:
-        factual_preference = actor.generic_fusion_adapter.control(actor, factual_packet, source_action)
-    factual, coefficients = _refine_actuator_interactions(actor, factual_packet,
-        source_action, factual_preference, return_coefficients=True, **configuration)
+    if source_feedback:
+        if (configuration or getattr(actor, 'interaction_enabled', False)
+                or getattr(actor, 'actuator_fusion_refinement', None)
+                or getattr(actor, 'generic_fusion_adapter', None) is not None
+                or getattr(actor, 'response_feedback_value', None) is not None):
+            raise ValueError('Source-relative feedback requires the native Adapter without mechanism one.')
+        # F01 uses the same intervention rule on its own source policy. Neither
+        # candidate forecasts nor the joint selector participate in this path.
+        factual = source_action[..., :3]
+        coefficients = source_action[..., 2:3].expand(-1, -1, 2)
+    else:
+        factual_packet = dict(packet)
+        factual_packet.pop('_committed_actuator_preferences', None)
+        factual_packet.pop('_isolate_factual_actuator_start', None)
+        factual_packet['_preferred_actuator_coefficients'] = source_action[..., 2:3].expand(-1, -1, 2)
+        factual_preference = source_action
+        if getattr(actor, 'generic_fusion_adapter', None) is not None:
+            factual_preference = actor.generic_fusion_adapter.control(actor, factual_packet, source_action)
+        factual, coefficients = _refine_actuator_interactions(actor, factual_packet,
+            source_action, factual_preference, return_coefficients=True, **configuration)
     displacement = held-coefficients if relative_scale is None else relative_scale*(2.*held-1.)
     offsets = torch.where((active & ~initialized)[..., None], displacement, offsets)
     resolved = (coefficients+torch.nan_to_num(offsets)).clamp(0., 1.)

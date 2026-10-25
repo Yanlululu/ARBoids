@@ -4261,17 +4261,21 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
     for state in states:
         if dense:
             from plain_return import PlainReturnNetwork, PairedReturnNetwork
-            factory = (PairedReturnNetwork if paired and recipe.get('conditional_objective') != 'shared_potential'
+            factory = (PairedReturnNetwork if paired and recipe.get('conditional_objective') not in ('shared_potential', 'paired_ordering')
                        else PlainReturnNetwork)
             net = factory(recipe['defenders'], recipe['width'], recipe.get('identity_conditioned', False),
                 action_encoding=recipe.get('action_encoding', 'categorical'),
-                feedback_relative_scale=recipe.get('feedback_relative_scale'))
+                feedback_relative_scale=recipe.get('feedback_relative_scale'),
+                state_baseline=recipe.get('state_baseline', False),
+                representation=recipe.get('representation', 'dense'),
+                peer_decision_conditioned=recipe.get('peer_decision_conditioned', True))
         else:
             net = JointTaskPotential(recipe['width'], **network)
         net = net.to(device).eval()
         net.load_state_dict(state); models.append(net)
     contexts = torch.as_tensor(np.asarray([root['context'] for root in roots]), dtype=torch.float32, device=device)
     controls = torch.as_tensor(np.asarray([root['effect_controls'] for root in roots]), dtype=torch.float32, device=device)
+    references = torch.as_tensor(np.asarray([root['options'][0] for root in roots]), dtype=torch.long, device=device)
     samples = []; truth = []; group_sizes = []; paired_futures = 0; mean_variances = []
     observation_digest = hashlib.sha256(); target_digest = hashlib.sha256()
     for root_id, root in enumerate(roots):
@@ -4312,7 +4316,7 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
         estimates = []
         for net in models:
             raw = net(contexts[root_id], controls[root_id], programs, part[:, 2:])
-            if paired and not (dense and recipe.get('conditional_objective') == 'shared_potential'):
+            if paired and not (dense and recipe.get('conditional_objective') in ('shared_potential', 'paired_ordering')):
                 if dense:
                     factual = None
                     if recipe.get('conditional_objective', 'marginal_events') in ('factual_strata', 'joint_likelihood'):
@@ -4326,7 +4330,9 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
                     factual, rescue, harm = raw.sigmoid().unbind(-1)
                     gain = (1-factual)*rescue-factual*harm
             else:
-                factual = net(contexts[root_id], controls[root_id], torch.zeros_like(programs), torch.zeros_like(part[:, 2:]))
+                reference = references[root_id]
+                reference_programs = (reference[:, :1]//(10**torch.arange(controls.shape[1], device=device))) % 10
+                factual = net(contexts[root_id], controls[root_id], reference_programs, reference[:, 1:])
                 gain = raw.sigmoid()-factual.sigmoid()
             estimates.append(gain)
         predictions.append(torch.stack(estimates).mean(0).cpu().numpy())
@@ -4363,28 +4369,35 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
 
 
 def fit_success_intervention_pair(data, paired_output, ordinary_output, *, validation_data=None,
-        factual_bank=None, updates=24000, ensemble_size=3, width=64, seed=42, device='cpu',
+        factual_bank=None, onpolicy_bank=None, updates=24000, ensemble_size=3, width=64, seed=42, device='cpu',
         network_options=None, margin=.02, architecture='interaction', parameter_budget=None,
         conditional_objective='marginal_events'):
     """Train both arms on every training layout and audit supplied unseen data.
 
-    The event likelihood and squared paired differences are probability-valued
-    objectives. Ranking and softmax decision losses are excluded because they
-    can improve ordering by changing the magnitude of the reported effect.
+    Event likelihoods and squared paired differences target observed outcomes.
+    Explicit paired ordering adds a directional auxiliary loss; its raw value
+    differences require the same external outcome diagnostics as other scores.
     A full-data refit may precede external validation; its saved diagnostics
     explicitly remain unevaluated until actual unseen observations exist.
     """
+    if factual_bank is not None and factual_bank.get('recurrent_m2', False):
+        raise ValueError('Recurrent trajectory values are not zero-intervention labels; measure paired branches instead.')
     if (not isinstance(ensemble_size, int) or ensemble_size < 1
             or updates < ensemble_size or updates % ensemble_size):
         raise ValueError('Matched success training requires equal positive optimizer budgets for all members.')
     if architecture not in ('interaction', 'mlp'):
         raise ValueError('Choose an interaction or dense ensemble per arm.')
-    if conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood'):
+    if onpolicy_bank is not None and architecture != 'mlp':
+        raise ValueError('Observed recurrent action supervision requires the matched dense learners.')
+    if conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood', 'paired_ordering'):
         raise ValueError('Unknown paired success conditional objective.')
     if conditional_objective == 'event_hierarchy' and architecture != 'mlp':
         raise ValueError('Change-direction learning requires the common dense architecture.')
-    if conditional_objective == 'shared_potential' and architecture != 'mlp':
+    if conditional_objective in ('shared_potential', 'paired_ordering') and architecture != 'mlp':
         raise ValueError('The matched shared-potential experiment requires the common dense architecture.')
+    if data.get('policy_neighborhood', False) and (architecture != 'mlp'
+            or conditional_objective not in ('shared_potential', 'paired_ordering')):
+        raise ValueError('Policy-local paired comparisons require complete-plan scalar dense values.')
     if conditional_objective == 'joint_likelihood' and architecture != 'mlp':
         raise ValueError('The joint outcome likelihood requires the common dense architecture.')
     if (not data.get('roots') or validation_data is not None and (not validation_data.get('roots')
@@ -4395,14 +4408,18 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
                 for root in population['roots'] for item in root['outcomes'].values()]
     if factual_bank is not None:
         outcomes.extend(float(value) for record in factual_bank['records'] for value in record['values'])
+    if onpolicy_bank is not None:
+        outcomes.extend(float(value) for record in onpolicy_bank['records'] for value in record['values'])
     if not np.isin(outcomes, (0., 1.)).all():
         raise ValueError('Success-probability training requires measured binary terminal outcomes in both populations.')
-    for key in ('isolate_factual_start', 'feedback_relative_hold'):
+    for key in ('isolate_factual_start', 'feedback_relative_hold', 'policy_neighborhood'):
         if validation_data is not None and bool(data.get(key, False)) != bool(validation_data.get(key, False)):
             raise ValueError('Training and validation must use identical intervention execution semantics.')
     if validation_data is not None and data.get('feedback_relative_scale') != validation_data.get('feedback_relative_scale'):
         raise ValueError('Training and validation must retain the measured relative fusion scale.')
     training_records = data['roots']+(factual_bank['records'] if factual_bank is not None else [])
+    if onpolicy_bank is not None:
+        training_records += onpolicy_bank['records']
     validation_roots = [] if validation_data is None else validation_data['roots']
     if not all('scene' in root for root in training_records+validation_roots):
         raise ValueError('Matched success training requires recorded layouts for both populations.')
@@ -4411,6 +4428,18 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
     if training_layouts & validation_layouts:
         raise ValueError('Validation layouts must be absent from paired and factual training data.')
     options = dict(network_options or {})
+    if 'onpolicy_bank_weight' in options and architecture != 'mlp':
+        raise ValueError('Observed recurrent action supervision requires the matched dense learners.')
+    if 'continuation_bootstrap' in options and architecture != 'mlp':
+        raise ValueError('Cross-fitted continuation targets require the matched scalar dense learners.')
+    if 'state_baseline' in options and architecture != 'mlp':
+        raise ValueError('A separate state baseline requires the matched dense learners.')
+    if 'representation' in options and architecture != 'mlp':
+        raise ValueError('Shared fleet representations require the matched scalar learners.')
+    if 'peer_decision_conditioned' in options and architecture != 'mlp':
+        raise ValueError('Peer decision ablations require the matched scalar learners.')
+    if 'future_weighted_sampling' in options and architecture != 'mlp':
+        raise ValueError('Future population correction requires the matched dense learners.')
     allowed = {'peer_conditioned', 'context_conditioned', 'motion_basis', 'finite_motion_basis',
         'dual_motion_basis', 'identity_conditioned', 'response_conditioned_value', 'physics_residual_response',
         'shared_factual_response', 'response_supervision_weight', 'response_supervision_architecture',
@@ -4418,7 +4447,9 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         'additional_candidate_options', 'root_sampling_fraction', 'edge_weight', 'anchor_weight', 'action_encoding',
         'snapshot_updates', 'velocity_reference', 'conservative_catalog_weight',
         'conservative_catalog_temperature', 'conservative_catalog_samples', 'conservative_catalog_roots',
-        'unique_factual_supervision', 'root_sampling_weights', 'factual_sampling_weights'}
+        'unique_factual_supervision', 'root_sampling_weights', 'factual_sampling_weights', 'onpolicy_bank_weight',
+        'continuation_bootstrap', 'continuation_bootstrap_weight', 'state_baseline', 'representation',
+        'peer_decision_conditioned', 'future_weighted_sampling'}
     if set(options)-allowed:
         raise ValueError('Matched success settings cannot override targets, coverage, calibration or optimizer budgets.')
     common = dict(updates=updates, ensemble_size=ensemble_size, seed=seed, device=device,
@@ -4469,14 +4500,14 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
                          'additional_candidate_options', 'root_sampling_fraction', 'snapshot_updates', 'velocity_reference',
                          'conservative_catalog_weight', 'conservative_catalog_temperature',
                          'conservative_catalog_samples', 'conservative_catalog_roots', 'unique_factual_supervision',
-                         'root_sampling_weights', 'factual_sampling_weights'}
+                         'root_sampling_weights', 'factual_sampling_weights', 'onpolicy_bank_weight',
+                         'continuation_bootstrap', 'continuation_bootstrap_weight', 'state_baseline', 'representation',
+                         'peer_decision_conditioned', 'future_weighted_sampling'}
         if set(options)-dense_options:
             raise ValueError('Dense success learning uses public state/action inputs without response auxiliary heads.')
-        if ensemble_size > 1 and options.get('snapshot_updates'):
-            raise ValueError('Dense ensemble snapshots require a common member snapshot protocol.')
-        settings = dict(factual_bank=factual_bank, updates=updates//ensemble_size,
+        settings = dict(factual_bank=factual_bank, onpolicy_bank=onpolicy_bank, updates=updates//ensemble_size,
             parameter_budget=paired_capacity if parameter_budget is None else parameter_budget,
-            seed=seed, device=device, value_target='success', intervention_budget=1,
+            seed=seed, device=device, value_target='success', intervention_budget=0 if data.get('policy_neighborhood') else 1,
             gain_margin=margin, root_sampling_fraction=.5)
         settings.update(options)
         paired_members = []; ordinary_members = []
@@ -4496,16 +4527,29 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
             if ensemble_size > 1:
                 model['successor_task_value']['ensemble_states'] = [
                     member['successor_task_value']['state'] for member in members[1:]]
+                if options.get('snapshot_updates'):
+                    steps = set(members[0]['learning_snapshots']['states'])
+                    if any(set(member['learning_snapshots']['states']) != steps for member in members):
+                        raise RuntimeError('Dense ensemble snapshots must align every member at the same update.')
+                    model['learning_snapshots'].update(final_updates=updates,
+                        member_final_updates=updates//ensemble_size,
+                        total_updates_at_snapshot={step:step*ensemble_size for step in sorted(steps)},
+                        ensemble_states={step:[member['learning_snapshots']['states'][step]
+                            for member in members[1:]] for step in sorted(steps)})
             member_fits = [member['successor_task_fit'] for member in members]
             if any(member['training_observation_sha256'] != member_fits[0]['training_observation_sha256']
                    or member['training_target_sha256'] != member_fits[0]['training_target_sha256']
                    or member['root_sampling_prior_sha256'] != member_fits[0]['root_sampling_prior_sha256']
                    or member['factual_sampling_prior_sha256'] != member_fits[0]['factual_sampling_prior_sha256']
+                   or member['future_sampling_weight_sha256'] != member_fits[0]['future_sampling_weight_sha256']
+                   or member['paired_row_sampling_probability_sha256'] != member_fits[0]['paired_row_sampling_probability_sha256']
                    for member in member_fits):
                 raise RuntimeError('Every dense ensemble member must receive the complete common training data.')
             model['successor_task_fit'].update(training_layouts=sorted(training_layouts),
                 member_training_roots=[len(data['roots'])]*ensemble_size,
                 member_factual_trajectories=[0 if factual_bank is None else len(factual_bank['records'])]*ensemble_size,
+                member_onpolicy_action_trajectories=[0 if onpolicy_bank is None else len(onpolicy_bank['records'])]*ensemble_size,
+                member_onpolicy_action_draw_sha256=[member['onpolicy_action_draw_sha256'] for member in member_fits],
                 updates=updates, total_parameter_updates=updates,
                 member_updates=[updates//ensemble_size]*ensemble_size,
                 ensemble_members=ensemble_size, member_seeds=[seed+997*member for member in range(ensemble_size)],
@@ -4523,7 +4567,13 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         'member_factual_trajectories', 'member_updates', 'updates', 'predecessor_sha256')
     if architecture == 'mlp':
         matched_fields += ('member_conservative_training_draw_sha256', 'root_sampling_prior_sha256',
-                          'factual_sampling_prior_sha256')
+                          'factual_sampling_prior_sha256', 'member_onpolicy_action_trajectories',
+                          'member_onpolicy_action_draw_sha256', 'additional_onpolicy_action_labels',
+                          'onpolicy_record_sampling_sha256', 'onpolicy_reconstructed_action_labels',
+                          'onpolicy_action_reconstruction_policy_sha256', 'measured_terminal_target_sha256',
+                          'continuation_bootstrap', 'continuation_bootstrap_weight', 'state_baseline', 'representation',
+                          'peer_decision_conditioned', 'future_weighted_sampling',
+                          'future_sampling_weight_sha256', 'paired_row_sampling_probability_sha256')
     if any(paired['successor_task_fit'][key] != ordinary['successor_task_fit'][key] for key in matched_fields):
         raise RuntimeError('Matched success training produced unequal data coverage or optimizer budgets.')
     for model in (paired, ordinary):
@@ -5079,6 +5129,64 @@ def paired_continuation_bank(data):
         supervision='terminal result at observed post-option predecessor states; no extra environment interaction')
 
 
+def recurrent_continuation_action_bank(data, continuation_policy, *, batch_size=128):
+    """Label measured successor states with their frozen continuation's actual action.
+
+    The terminal observation supervises only that action. In particular it is
+    not a zero-intervention label when the continuation chooses an intervention.
+    Off-clock snapshots are omitted: their next eligible action is not observed
+    at the saved state. Reconstruction uses no terminal outcome or future seed.
+    """
+    import plain_return as plain
+    from conditional_fusion_value import append_vessel_identity
+    policy = Path(continuation_policy)
+    digest = hashlib.sha256(policy.read_bytes()).hexdigest()
+    if (not data.get('completed') or data.get('public_vessel_identity', False)
+            or data.get('predecessor_sha256') != digest
+            or data.get('continuation_context', {}).get('continuation_policy_sha256') != digest
+            or not isinstance(batch_size, int) or batch_size < 1):
+        raise ValueError('Successor action reconstruction needs completed raw data and its common frozen continuation.')
+    model = torch.load(policy, map_location='cpu', weights_only=False)
+    plain.validate_recurrent_predecessor(model, data['model'])
+    recipe = copy.deepcopy(model['successor_task_value'])
+    specification = plain.recurrent_single_vessel_specification(recipe)
+    if recipe.get('velocity_reference', 'ground') != data.get('state_velocity_reference', 'ground'):
+        raise ValueError('Successor action reconstruction must preserve the measured velocity reference.')
+    kind = recipe.pop('kind')
+    factory = plain.PairedReturnDecision if kind == 'paired_mlp_return' else plain.PlainReturnDecision
+    value = factory(**recipe).cpu().eval()
+    bank = paired_continuation_bank(data)
+    records = []
+    for record in bank['records']:
+        ticks = record['contexts'][:, -1]*400.
+        steps = np.rint(ticks).astype(np.int64)
+        if not np.allclose(ticks, steps, atol=1e-3, rtol=0.) or 'orders' not in record:
+            raise ValueError('Successor actions require their measured clock and physical vessel order.')
+        if not (steps % specification['decision_period']).any():
+            records.append(record)
+    if not records:
+        raise ValueError('No measured nonterminal successor lies on the continuation decision clock.')
+    with torch.no_grad():
+        for start in range(0, len(records), batch_size):
+            batch = records[start:start+batch_size]
+            context = torch.as_tensor(np.concatenate([record['contexts'] for record in batch]), dtype=torch.float32)
+            if value.network.identity_conditioned:
+                order = torch.as_tensor(np.concatenate([record['orders'] for record in batch]), dtype=torch.long)
+                context = append_vessel_identity(context, order)
+            controls = torch.as_tensor(np.concatenate([record['controls'] for record in batch]), dtype=torch.float32)
+            choices = value.selected_catalog_indices(context, controls)
+            options = value.options[choices].cpu().numpy()
+            for record, option in zip(batch, options):
+                record.update(observed_decision_options=option[None].copy(), decision_reconstructed=True)
+    bank.update(records=records, trajectories=len(records), state_labels=len(records),
+        skipped_non_decision_states=bank['state_labels']-len(records), recurrent_m2=True,
+        period=specification['decision_period'], observed_decisions_recorded=False,
+        observed_decisions_reconstructed=True, reconstruction_policy_sha256=digest,
+        reconstruction='native frozen-policy selection at measured public state, controls and vessel order',
+        supervision='terminal result of the actual continuation action at a measured post-intervention state')
+    return bank
+
+
 def complete_local_pairs(data, references, output, *, candidates=12, workers=6):
     """Complete promising local comparison paths on the development futures.
 
@@ -5299,14 +5407,46 @@ class FactualProposalRootSelector:
         return accepted
 
 
-def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root_selector=None):
+def recurrent_observed_options(trajectory, orders, actor, period=5):
+    """Label actual boundary decisions without inventing unobserved references."""
+    from run_remote_evidence import batched_primitive_program
+    orders = np.asarray(orders)
+    ticks = list(range(0, len(trajectory['steps']), period))
+    if period != 5 or orders.ndim != 2 or len(orders) != len(ticks):
+        raise ValueError('Recurrent action labels require the observed five-tick states.')
+    decisions = {item['step']: item['action'] for item in trajectory['decisions']}
+    n = orders.shape[1]; result = []
+    for tick, order in zip(ticks, orders):
+        if tick not in decisions or not np.array_equal(np.sort(order), np.arange(n)):
+            raise ValueError('An observed recurrent state lacks its actual decision or vessel order.')
+        action, delay = batched_primitive_program(actor, decisions[tick])
+        if action.shape not in ((n, 3), (n, 13)):
+            raise ValueError('Recurrent labels require native relative decisions.')
+        code = 0
+        if action.shape[-1] == 13:
+            gates = action[:, 9:11]; active = (gates >= 0.).any(-1)
+            if active.any():
+                if (active.sum() != 1 or delay != 0 or not np.all(action[:, 8] == 0)
+                        or not np.all(action[:, 4] == 5)
+                        or not np.array_equal(gates, action[:, 11:13])
+                        or not np.isin(gates[active], (0., .5, 1.)).all()):
+                    raise ValueError('Observed recurrent interventions must span one immediate single-vessel period.')
+                digits = np.where(active, 1+6*gates[:, 0]+2*gates[:, 1], 0).astype(np.int64)
+                if (digits == 5).any():
+                    raise ValueError('The recurrent catalog excludes null relative interventions.')
+                code = int(digits[order] @ (10**np.arange(n)))
+        result.append((code, 0, 5) if code else (0, 0, 0))
+    return np.asarray(result, dtype=np.int64)
+
+
+def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root_selector=None, recurrent_m2=False):
     """Measure factual trajectories with batched copies of the same controller."""
     import conditional_fusion_value as c
     import develop_source_fusion as d
     import run_remote_evidence as r
     policy = Path(tasks[0][0])
     actor = d.joint_load(str(policy), policy.stat().st_mtime_ns)
-    if actor.successor_task_value is not None:
+    if actor.successor_task_value is not None and not recurrent_m2:
         raise ValueError('Factual sampling requires the frozen predecessor.')
     jobs = None
     if root_sample_seed is None:
@@ -5323,7 +5463,7 @@ def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root
     r.SOURCE = d.SOURCE
     measured = r.batched_credit_rows(policy, [(t[1], t[2]) for t in tasks],
         batch_size=len(tasks), device=device, keep_steps=True, initial_jobs=jobs,
-        root_sample_seed=root_sample_seed, root_selector=root_selector)
+        root_sample_seed=root_sample_seed, root_selector=root_selector, recurrent_m2=recurrent_m2)
     records = []
     actor = d.joint_load(str(policy), policy.stat().st_mtime_ns).to(device)
     try:
@@ -5358,6 +5498,9 @@ def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root
                 values=np.full(len(selected), row['success'], np.float32),
                 remaining=np.asarray([elapsed-tick for tick in range(0, elapsed, period)], np.float32),
                 scene=scene, future=future, physical_steps=elapsed))
+            if recurrent_m2:
+                records[-1]['observed_decision_options'] = recurrent_observed_options(
+                    trajectory, records[-1]['orders'], actor, period)
             if root_sample_seed is not None:
                 records[-1]['root_snapshot']=dict(trajectory['root_snapshot'],
                     predecessor_sha256=hashlib.sha256(policy.read_bytes()).hexdigest(),
@@ -5368,7 +5511,8 @@ def factual_trajectory_batch(tasks, *, device='cpu', root_sample_seed=None, root
 
 
 def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
-                                  period=5, inference_batch=32, inference_device='cuda:0', root_selector=None):
+                                  period=5, inference_batch=32, inference_device='cuda:0', root_selector=None,
+                                  recurrent_m2=False):
     """Sample one eligible decision state from each fresh factual episode.
 
     Reservoir sampling follows the deployed batched controller without
@@ -5392,13 +5536,19 @@ def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
         root_sample_seed=int(root_sample_seed),inference_batch=inference_batch,
         inference_device=inference_device,
         root_sampling='uniform eligible factual decision state; separate reservoir random stream')
+    if recurrent_m2:
+        if period != 5:
+            raise ValueError('Recurrent state sampling must retain the five-tick decision clock.')
+        specification.update(recurrent_m2=True, observed_decisions_recorded=True,
+            state_label_role='continuation-policy values; not zero-intervention supervision')
     if root_selector is not None:
         specification.update(root_sampling='first accepted native proposal; uniform fallback; unchanged factual trajectory',
             root_selection=copy.deepcopy(root_selector.specification))
     bank=(torch.load(output,map_location='cpu',weights_only=False) if output.exists() else
         dict(records=[],simulation_steps=0,trajectories=0,state_labels=0,completed=False,
             **specification))
-    if any(bank.get(key)!=value for key,value in specification.items()):
+    if (bool(bank.get('recurrent_m2',False)) != recurrent_m2
+            or any(bank.get(key)!=value for key,value in specification.items())):
         raise ValueError('Saved factual roots use a different predecessor, tasks, sampler or inference batch.')
     records=bank['records']
     if [(tuple(row['scene']),row['future']) for row in records]!=tasks[:len(records)]:
@@ -5412,7 +5562,7 @@ def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
     for begin in range(len(records),len(tasks),inference_batch):
         group=[(str(policy),scene,future,None,period) for scene,future in tasks[begin:begin+inference_batch]]
         measured=factual_trajectory_batch(group,device=inference_device,root_sample_seed=root_sample_seed,
-            root_selector=root_selector)
+            root_selector=root_selector,recurrent_m2=recurrent_m2)
         for row in measured:
             snapshot=row['root_snapshot']
             if snapshot['predecessor_sha256']!=digest or snapshot['root_steps']>=row['physical_steps']:
@@ -5499,8 +5649,9 @@ def factual_bank_from_model(model, data):
         training_data=fit.get('factual_bank_training_data'), completed=True)
 
 
-def source_successor_batches(tasks, *, batch_size=128, device='cpu', physical_response_horizon=0):
-    """Batch finite interventions on a frozen predecessor without value stages."""
+def source_successor_batches(tasks, *, batch_size=128, device='cpu', physical_response_horizon=0,
+                             recurrent_m2=False):
+    """Batch finite interventions, optionally followed by a frozen recurrent policy."""
     import develop_source_fusion as d
     import run_remote_evidence as r
     groups = {}
@@ -5517,8 +5668,11 @@ def source_successor_batches(tasks, *, batch_size=128, device='cpu', physical_re
     r.SOURCE = d.SOURCE
     for (policy, _), group in groups.items():
         actor = d.joint_load(str(policy), Path(policy).stat().st_mtime_ns)
-        if actor.successor_task_value is not None:
+        if actor.successor_task_value is not None and not recurrent_m2:
             raise ValueError('Batched local comparisons require a predecessor without M2.')
+        if recurrent_m2:
+            from plain_return import recurrent_single_vessel_specification
+            recurrent_single_vessel_specification(actor.successor_task_value)
         rows = r.batched_credit_rows(policy, [(scene, future) for _, _, scene, future, _ in group],
             batch_size=batch_size, device=device, initial_jobs=[job for _, job, _, _, _ in group],
             response_tick=[tick for _, _, _, _, tick in group],
@@ -5788,12 +5942,18 @@ def _recollect_snapshot_root_batch(task):
     response_feature_batch = task[6] if len(task) > 6 else 0
     feedback_relative_hold = task[7] if len(task) > 7 else False
     feedback_relative_scale = task[8] if len(task) > 8 else None
+    recurrent_m2 = task[9] if len(task) > 9 else False
     policy = Path(policy)
     digest = hashlib.sha256(policy.read_bytes()).hexdigest()
     r.initialize_source_branches(str(d.SOURCE))
     actor = d.joint_load(str(policy), policy.stat().st_mtime_ns).cpu()
-    if actor.successor_task_value is not None:
+    if actor.successor_task_value is not None and not recurrent_m2:
         raise ValueError('Snapshot comparisons require their frozen predecessor without M2.')
+    if recurrent_m2:
+        from plain_return import recurrent_single_vessel_specification
+        recurrence = recurrent_single_vessel_specification(actor.successor_task_value)
+        if not isolate_factual_start or feedback_relative_scale != recurrence['feedback_relative_scale']:
+            raise ValueError('Recurrent branches must retain the continuation policy relative-action semantics.')
     coefficients = np.asarray([[-1., -1.]]+[[a, b] for a in (0., .5, 1.) for b in (0., .5, 1.)])
     roots = []; jobs = []; identities = []; steps = []
     for root_id, original in scheduled:
@@ -5811,6 +5971,24 @@ def _recollect_snapshot_root_batch(task):
             effect = c.paired_effect_controls(actor, packet, torch.as_tensor(control[None]))
         inverse = order[0].argsort().numpy(); one = np.ones((n, 1), np.float32)
         options = list(map(tuple, original['options']))
+        if recurrent_m2 and (int(snapshot['root_steps']) % recurrence['decision_period'] or
+                any(option != (0, 0, 0) and option[1:] != (0, 5) for option in options)):
+            raise ValueError('Recurrent branches must start at a decision boundary and end after one period.')
+        neighborhood = bool(original.get('policy_neighborhood', False))
+        if neighborhood:
+            if not recurrent_m2 or tuple(original.get('reference_option', ())) != options[0]:
+                raise ValueError('Policy-local roots require their actual frozen-policy reference option.')
+            with torch.no_grad():
+                query_context, query_order = actor.successor_task_value.public_context(packet)
+                if not torch.equal(query_order, order):
+                    raise ValueError('The policy-local reference must use the same vessel ordering.')
+                selected = actor.successor_task_value.selected_catalog_indices(query_context, effect[:, order[0]])
+                reference = tuple(actor.successor_task_value.options[selected[0]].tolist())
+            from plain_return import single_coordinate_catalog
+            programs = (np.asarray(options)[:, :1]//(10**np.arange(n))) % 10
+            if (reference != options[0] or not set(options) <= set(single_coordinate_catalog(n))
+                    or ((programs != programs[:1]).sum(-1) > 1).any()):
+                raise ValueError('Policy-local branches must retain every other frozen-policy fusion component.')
         actions = []
         for code, delay, span in options:
             neutral_relative = (feedback_relative_scale is not None and
@@ -5834,17 +6012,22 @@ def _recollect_snapshot_root_batch(task):
             design_root=root_id, root_sampling=dict(kind=snapshot.get('selection_reason', 'uniform_eligible_factual_state'),
                 eligible_states=snapshot['eligible_states'], root_sample_seed=snapshot['root_sample_seed'],
                 inference_batch=snapshot['inference_batch'], inference_device=snapshot['inference_device'])))
+        if recurrent_m2:
+            roots[-1].update(root_time=float(env.Current_T), continuation_policy_sha256=digest)
+        if neighborhood:
+            roots[-1].update(policy_neighborhood=True, reference_option=options[0])
         steps.append(0)
         for q, f in sorted(original['outcomes']):
             jobs.append((str(policy), dict(environment=env, observation=obs,
                 random_state=snapshot['random_state'], action=actions[q],
                 isolate_factual_start=isolate_factual_start,
+                policy_neighborhood=neighborhood,
                 feedback_relative_hold=feedback_relative_hold,
                 feedback_relative_scale=feedback_relative_scale), scene, original['futures'][f],
                 max(1, physical_response_horizon, options[q][1]+options[q][2])))
             identities.append((position, q, f))
     measured = source_successor_batches(jobs, batch_size=inference_batch, device=inference_device,
-        physical_response_horizon=physical_response_horizon)
+        physical_response_horizon=physical_response_horizon, recurrent_m2=recurrent_m2)
     continuation_controls = {}
     if response_feature_batch:
         # These are features of already measured states. Encoding them in
@@ -5874,6 +6057,21 @@ def _recollect_snapshot_root_batch(task):
     for index, ((position, q, f), row) in enumerate(zip(identities, measured)):
         root = roots[position]; n = len(root['order'])
         item = dict(success=float(row['success']), outcome=row['outcome'], duration=row['duration'])
+        if recurrent_m2:
+            events = row.get('interventions', [])
+            initial = [event for event in events if event['time'] < root['root_time']+1.-1e-5]
+            code = root['options'][q][0]
+            subject = [int(root['order'][boat]) for boat in range(n) if code//10**boat % 10]
+            if (len(initial) != bool(code) or initial and
+                    (sorted(initial[0]['subjects']) != sorted(subject) or abs(initial[0]['time']-root['root_time']) > 1e-5)
+                    or any(event['duration_steps'] != 5
+                           or event['feedback_relative_scale'] != feedback_relative_scale for event in events)
+                    or any(len(event['subjects']) != 1 for event in
+                           (events[len(initial):] if root.get('policy_neighborhood') else events))
+                    or any(right['time']-left['time'] < 1.-1e-5 for left, right in zip(events, events[1:]))):
+                raise ValueError('Measured recurrent branches violated their recorded activation or the common continuation clock.')
+            item.update(initial_intervention=copy.deepcopy(initial[0]) if initial else None,
+                continuation_interventions=len(events)-len(initial))
         physical_response = row.get('physical_response', row.get('response'))
         if (physical_response_horizon and physical_response is not None
                 and physical_response['steps'] <= physical_response_horizon):
@@ -5911,11 +6109,31 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
                             inference_batch=32, inference_device='cpu', physical_response_horizon=0,
                             root_batch_size=1, isolate_factual_start=False, response_feature_batch=0,
                             resume_inference_batch=False, feedback_relative_hold=False,
-                            feedback_relative_scale=None):
+                            feedback_relative_scale=None, continuation_base_policy=None):
     """Measure bounded roots with an explicit, resumable inference schedule."""
     import develop_source_fusion as d
     import run_remote_evidence as r
     policy = Path(policy); output = Path(output)
+    recurrence = None
+    policy_neighborhood = bool(blueprint.get('policy_neighborhood', False))
+    if policy_neighborhood and (continuation_base_policy is None or
+            not all(root.get('policy_neighborhood') for root in blueprint['roots'])):
+        raise ValueError('Policy-local collection requires explicit recurrent reference roots.')
+    if continuation_base_policy is not None:
+        from plain_return import validate_recurrent_predecessor
+        base_path = Path(continuation_base_policy)
+        base = torch.load(base_path, map_location='cpu', weights_only=False)
+        continuation = torch.load(policy, map_location='cpu', weights_only=False)
+        recurrence = validate_recurrent_predecessor(continuation, base)
+        if (root_batch_size <= 1 or not inference_batch or not isolate_factual_start
+                or not feedback_relative_hold or feedback_relative_scale != recurrence['feedback_relative_scale']):
+            raise ValueError('Policy iteration needs isolated recurrent snapshot batches.')
+        continuation_context = dict(base_policy_sha256=hashlib.sha256(base_path.read_bytes()).hexdigest(),
+            continuation_policy_sha256=hashlib.sha256(policy.read_bytes()).hexdigest(),
+            zero_intervention='base control for one decision period, then the common frozen continuation',
+            **recurrence)
+        if policy_neighborhood:
+            continuation_context['comparison_reference'] = 'actual frozen-policy option for the current decision period'
     design = blueprint.get('acquisition_design')
     if design is None or design.get('kind') not in ('breadth_local_pairs', 'paired_effect_confirmation'):
         raise ValueError('Root-parallel acquisition requires a bounded paired design.')
@@ -5967,6 +6185,13 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
         result['feedback_relative_scale'] = float(feedback_relative_scale)
     if root_batch_size > 1:
         result.update(root_batch_size=root_batch_size, root_dispatch_kind='snapshot_root_batches')
+    if result.get('continuation_context') != (continuation_context if recurrence is not None else None) and output.exists():
+        raise ValueError('The saved branches use a different frozen continuation or base controller.')
+    if recurrence is not None:
+        result.update(model=copy.deepcopy(base), continuation_context=continuation_context)
+        if policy_neighborhood:
+            result.update(policy_neighborhood=True,
+                policy_reference=copy.deepcopy(continuation['successor_task_value']))
     if result['model'].get('successor_task_value') is not None:
         raise ValueError('Breadth sampling requires its frozen controller without M2.')
     if result['completed']:
@@ -6007,7 +6232,9 @@ def recollect_breadth_design(policy, blueprint, output, *, workers=4,
         pending = [(str(policy), [(index, blueprint['roots'][index])
             for index in range(begin, min(begin+root_batch_size, len(blueprint['roots'])))],
             inference_batch, inference_device, physical_response_horizon)
-            + ((isolate_factual_start, response_feature_batch, feedback_relative_hold, feedback_relative_scale)
+            + ((isolate_factual_start, response_feature_batch, feedback_relative_hold, feedback_relative_scale, True)
+               if recurrence is not None else
+               (isolate_factual_start, response_feature_batch, feedback_relative_hold, feedback_relative_scale)
                if feedback_relative_scale is not None else
                (isolate_factual_start, response_feature_batch, feedback_relative_hold) if feedback_relative_hold else
                (isolate_factual_start, response_feature_batch) if response_feature_batch else
