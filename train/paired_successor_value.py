@@ -210,8 +210,13 @@ class PairedSuccessorNetwork(nn.Module):
         self.global_response = nn.Linear(2*width+5, 5)
 
     def configure_fleet(self, defenders):
-        if defenders != self.defenders:
-            raise ValueError('Evaluate the fleet size recorded by this trained model.')
+        if not isinstance(defenders, int) or isinstance(defenders, bool) or defenders < 1:
+            raise ValueError('Shared successor values need a positive integer fleet size.')
+        # Every encoder and readout is shared across vessels. Only the public
+        # state and action layouts change; the learned parameters stay fixed.
+        self.defenders = defenders
+        self.state_size = (14+self.identity_conditioned)*defenders+5
+        self.action_size = 5*defenders+4
 
     def active_vessels(self, programs):
         active = programs > 0
@@ -289,6 +294,312 @@ class PairedSuccessorNetwork(nn.Module):
         return torch.cat(result, 1)
 
 
+def connected_fleet_catalog(defenders, span=20):
+    """Join full uniform and heterogeneous plans through single-vessel changes."""
+    if (type(defenders) is not int or not 1 <= defenders <= 18
+            or type(span) is not int or not 0 < span <= 400 or span % 5):
+        raise ValueError('Connected plans need a valid fleet and an immediate five-tick-aligned window.')
+    codes = {0}
+    for digit in range(1, 10):
+        uniform = heterogeneous = 0
+        for boat in range(defenders):
+            codes.add(digit*10**boat)
+            uniform += digit*10**boat
+            heterogeneous += ((digit-1+2*boat) % 9+1)*10**boat
+            codes.update((uniform, heterogeneous))
+    return [(0, 0, 0)]+[(code, 0, span) for code in sorted(codes-{0})]
+
+
+class ConnectedPlanCatalogMixin:
+    """Retain the same connected full-plan construction across fleet sizes."""
+
+    def __init__(self, *, connected_plan_span=20, repeated_greedy=False, **kwargs):
+        expected = connected_fleet_catalog(kwargs['defenders'], connected_plan_span)
+        if (type(repeated_greedy) is not bool
+                or list(map(tuple, kwargs['options'])) != expected
+                or kwargs.get('isolate_factual_start', False)
+                or kwargs.get('feedback_relative_hold', False)
+                or kwargs.get('feedback_relative_scale') is not None
+                or kwargs.get('policy_reference') is not None
+                or kwargs.get('wait_value') is not None
+                or kwargs.get('intervention_budget') != (0 if repeated_greedy else 1)
+                or kwargs.get('decision_period', 5) != 5):
+            raise ValueError('Connected fleet values require their measured absolute windows and explicit execution rule.')
+        super().__init__(**kwargs)
+        self.connected_plan_span = connected_plan_span
+        # The value still estimates one finite option followed by the frozen
+        # factual controller. Repeated greedy execution is a new policy whose
+        # complete trajectories must be evaluated, not relabelled training data.
+        self.repeated_greedy = repeated_greedy
+
+    def configure_fleet(self, defenders):
+        if defenders == self.network.defenders:
+            return
+        options = connected_fleet_catalog(defenders, self.connected_plan_span)
+        self.network.configure_fleet(defenders)
+        for member in self.ensemble:
+            member.configure_fleet(defenders)
+        self.options = torch.as_tensor(options, dtype=self.options.dtype, device=self.options.device)
+        self.programs = (self.options[:, :1]//(10**torch.arange(defenders,
+            device=self.options.device))) % 10
+
+
+class FleetContinuationNetwork(PairedSuccessorNetwork):
+    """Two measured continuation endpoints on one shared fleet representation."""
+
+    def __init__(self, defenders, width=48, identity_conditioned=True,
+                 feedback_relative_scale=.25):
+        super().__init__(defenders, width, identity_conditioned,
+                         feedback_relative_scale=feedback_relative_scale)
+        self.task_value[-1] = nn.Linear(width, 2)
+        del self.node_response, self.global_response
+
+    def public_embedding(self, context, controls):
+        self.configure_fleet(controls.shape[-2])
+        programs = torch.zeros(controls.shape[:2], dtype=torch.long, device=controls.device)
+        timing = torch.zeros((len(controls), 2), dtype=torch.long, device=controls.device)
+        return self.encode(context, controls, programs, timing)[1]
+
+    def forward(self, context, controls):
+        return self.task_value(self.public_embedding(context, controls))
+
+    def initialize_from_intervention(self, state):
+        current = self.state_dict()
+        for key in current:
+            value = state[key]
+            current[key] = value.repeat(2, 1) if key == 'task_value.2.weight' else (
+                value.repeat(2) if key == 'task_value.2.bias' else value)
+        self.load_state_dict(current)
+        return self
+
+
+class FleetDeferredValue(nn.Module):
+    """Success gained by waiting five ticks before a frozen intervention policy.
+
+    Every input is public at the current decision. Future endpoints are used
+    only as training labels; fleet-size changes reuse the same vessel weights.
+    """
+
+    margin_adjusted = False
+
+    def __init__(self, defenders, width, states, identity_conditioned=True,
+                 feedback_relative_scale=.25):
+        super().__init__()
+        if not states:
+            raise ValueError('Deferred fleet value needs fitted measured endpoints.')
+        self.heads = nn.ModuleList([FleetContinuationNetwork(defenders, width,
+            identity_conditioned, feedback_relative_scale) for _ in states])
+        for head, state in zip(self.heads, states):
+            head.load_state_dict(state)
+
+    def configure_fleet(self, defenders):
+        for head in self.heads:
+            head.configure_fleet(defenders)
+
+    def forward(self, context, controls):
+        values = torch.stack([head(context, controls).sigmoid() for head in self.heads]).mean(0)
+        return values[:, 1]-values[:, 0]
+
+
+class DeferredFleetDecisionMixin:
+    """Attach the shared continuation value to an existing intervention rule."""
+
+    def __init__(self, *args, wait_value=None, exercise_value=None, **kwargs):
+        shared = wait_value is not None and wait_value.get('kind') == 'fleet_deferred_value'
+        super().__init__(*args, wait_value=None if shared else wait_value, **kwargs)
+        if shared:
+            if self.intervention_budget != 1 or self.policy_reference is not None:
+                raise ValueError('Deferred fleet execution requires one standalone intervention.')
+            from plain_return import standalone_single_vessel_windows
+            self.program_windows = standalone_single_vessel_windows(self)
+            recipe = dict(wait_value); recipe.pop('kind')
+            self.wait_value = FleetDeferredValue(**recipe)
+        self.exercise_value = None
+        if exercise_value is not None:
+            if (wait_value is not None or self.intervention_budget != 1 or self.policy_reference is not None
+                    or exercise_value.get('kind') != 'fleet_exercise_value'):
+                raise ValueError('Measured exercise needs one standalone intervention and three common endpoints.')
+            from plain_return import standalone_single_vessel_windows
+            self.program_windows = standalone_single_vessel_windows(self)
+            recipe = dict(exercise_value); recipe.pop('kind')
+            self.exercise_value = FleetExerciseValue(**recipe)
+            self.proposal_gain_margin = self.gain_margin
+            self.gain_margin = 0.
+
+    def configure_fleet(self, defenders):
+        super().configure_fleet(defenders)
+        if isinstance(self.wait_value, FleetDeferredValue):
+            self.wait_value.configure_fleet(defenders)
+        if getattr(self, 'exercise_value', None) is not None:
+            self.exercise_value.configure_fleet(defenders)
+
+    def decision_scores(self, ranking, values):
+        if getattr(self, 'exercise_value', None) is not None:
+            return ranking
+        return super().decision_scores(ranking, values)
+
+    def catalog_estimates(self, context, controls):
+        ranking, values = super().catalog_estimates(context, controls)
+        if getattr(self, 'exercise_value', None) is None:
+            return ranking, values
+        proposal = ranking.argmax(-1)
+        score = super().decision_scores(ranking, values)
+        gain = score.gather(1, proposal[:, None]).flatten()-score[:, 0]
+        valid = (proposal != 0) & (gain > self.proposal_gain_margin)
+        endpoints = self.exercise_value(context, controls, self.programs[proposal], self.options[proposal, 1:])
+        factual, current, deferred = endpoints.unbind(-1)
+        advantage = current-torch.maximum(factual, deferred)
+        selected = values.new_full(values.shape, -torch.inf)
+        selected.scatter_(1, proposal[:, None], torch.where(valid, advantage,
+            advantage.new_full(advantage.shape, -torch.inf))[:, None])
+        selected[:, 0] = 0.
+        calibrated = factual[:, None].expand_as(values).clone()
+        calibrated.scatter_(1, proposal[:, None], current[:, None])
+        calibrated[:, 0] = factual
+        return selected, calibrated
+
+
+@torch.enable_grad()
+def fit_fleet_deferred_value(model, data, output=None, *, validation_layouts,
+        updates=2000, seed=43, batch_size=128, learning_rate=1e-4,
+        difference_weight=4., validation_period=250, device='cpu'):
+    """Learn waiting from actual matched terminal outcomes with a frozen trunk.
+
+    Paired and ordinary arms use identical endpoint networks and update draws.
+    Only the paired arm adds the measured common-future difference objective.
+    """
+    from local_intervention_value import (intervention_policy_identity,
+        intervention_value_contract, observed_wait_examples)
+    recipe = model['successor_task_value']; fit = model['successor_task_fit']
+    source, target = intervention_value_contract(model)
+    if (recipe['kind'] != 'subject_outcome_successor_return'
+            or recipe.get('wait_value') is not None or recipe.get('exercise_value') is not None
+            or recipe.get('intervention_budget') != 1
+            or recipe.get('decision_period', 5) != 5 or target != 'success'
+            or source != data.get('predecessor_sha256')
+            or not recipe.get('identity_conditioned') or 'paired' not in fit):
+        raise ValueError('Deferred fleet fitting needs one frozen subject intervention policy.')
+    if data.get('continuation_policy_identity') != intervention_policy_identity(model):
+        raise ValueError('Deferred outcomes must come from this frozen intervention policy.')
+    if (updates < 1 or batch_size < 1 or validation_period < 1
+            or not np.isfinite(learning_rate) or learning_rate <= 0.
+            or not np.isfinite(difference_weight) or difference_weight < 0.):
+        raise ValueError('Deferred fitting requires positive update settings and finite loss weights.')
+    validation = set(map(tuple, validation_layouts))
+    protected = set(map(tuple, fit['validation_layouts']))
+    available = set(map(tuple, fit['training_layouts']))
+    layouts = [tuple(root['scene']) for root in data['roots']]
+    if (not validation or not validation < set(layouts) or not set(layouts) <= available
+            or set(layouts) & protected):
+        raise ValueError('Deferred training and validation must stay within intervention training layouts.')
+    examples = observed_wait_examples(data, identity_conditioned=True, value_target='success')
+    n = recipe['defenders']
+    features = examples['features'].to(device)
+    rows = features[:, :-5].reshape(-1, n, 15)
+    context = torch.cat((rows[..., :8].flatten(1), rows[..., 8], features[:, -5:]), -1)
+    controls = 4.*rows[..., 9:15]
+    pair_roots = np.asarray(examples['pair_roots'])
+    held_out = np.asarray([scene in validation for scene in layouts])[pair_roots]
+    train_indices = np.flatnonzero(~held_out); valid_indices = np.flatnonzero(held_out)
+    targets = torch.as_tensor(examples['returns'], device=device)
+    pair_indices = torch.as_tensor(pair_roots, device=device)
+    probability = examples['probabilities'][train_indices].copy()
+    probability /= probability.sum()
+    valid_probability = torch.as_tensor(examples['probabilities'][valid_indices],
+        dtype=torch.float32, device=device)
+    valid_probability /= valid_probability.sum()
+    validation_indices = torch.as_tensor(valid_indices, device=device)
+    paired = bool(fit['paired']); weight = difference_weight if paired else 0.
+    torch.manual_seed(seed+32641)
+    states = [recipe['state'], *recipe.get('ensemble_states', ())]
+    heads = nn.ModuleList([FleetContinuationNetwork(n, recipe['width'], True,
+        recipe.get('feedback_relative_scale', .25)).initialize_from_intervention(state).to(device)
+        for state in states]).eval()
+    for head in heads:
+        head.requires_grad_(False)
+        head.task_value.requires_grad_(True)
+    with torch.no_grad():
+        embeddings = [head.public_embedding(context, controls).detach() for head in heads]
+    optimizer = torch.optim.AdamW([parameter for parameter in heads.parameters()
+        if parameter.requires_grad], lr=learning_rate, weight_decay=.01)
+    rng = np.random.default_rng(seed+32641); draws = hashlib.sha256()
+    best_scores = [float('inf')]*len(heads); best_states = [None]*len(heads)
+    selected_updates = [0]*len(heads); history = []
+
+    def metrics(prediction, chosen, weights):
+        observed = targets[chosen]
+        endpoint = (weights*(prediction-observed).square().mean(-1)).sum()
+        difference = (weights*((prediction[:, 1]-prediction[:, 0])
+                              -(observed[:, 1]-observed[:, 0])).square()).sum()
+        return dict(endpoint_mse=float(endpoint), difference_mse=float(difference),
+            measured_wait=float(weights@(observed[:, 1]-observed[:, 0])),
+            predicted_wait=float(weights@(prediction[:, 1]-prediction[:, 0])))
+
+    for update in range(updates+1):
+        if update:
+            chosen = rng.choice(train_indices, size=batch_size, p=probability)
+            draws.update(chosen.astype(np.int64).tobytes())
+            indices = torch.as_tensor(chosen, device=device)
+            observed = targets[indices]; loss = features.new_zeros(())
+            for head, embedding in zip(heads, embeddings):
+                prediction = head.task_value(embedding[pair_indices[indices]]).sigmoid()
+                loss = loss+F.mse_loss(prediction, observed)
+                if paired:
+                    loss = loss+weight*F.mse_loss(prediction[:, 1]-prediction[:, 0],
+                                                observed[:, 1]-observed[:, 0])
+            optimizer.zero_grad(set_to_none=True); loss.backward()
+            nn.utils.clip_grad_norm_(heads.parameters(), 2.); optimizer.step()
+        if update % validation_period == 0 or update == updates:
+            with torch.no_grad():
+                measurements = []
+                for member, (head, embedding) in enumerate(zip(heads, embeddings)):
+                    prediction = head.task_value(embedding[pair_indices[validation_indices]]).sigmoid()
+                    measured = metrics(prediction, validation_indices, valid_probability)
+                    score = measured['endpoint_mse']+measured['difference_mse']
+                    if score < best_scores[member]:
+                        best_scores[member] = score; selected_updates[member] = update
+                        best_states[member] = {key: value.detach().cpu().clone()
+                                              for key, value in head.state_dict().items()}
+                    measurements.append(measured)
+                history.append(dict(update=update, members=measurements))
+            print(dict(phase='fleet_deferred_fit', paired=paired, update=update,
+                selected_updates=selected_updates, validation=measurements), flush=True)
+    for head, state in zip(heads, best_states):
+        head.load_state_dict(state)
+    with torch.no_grad():
+        prediction = torch.stack([head.task_value(embedding).sigmoid()
+                                  for head, embedding in zip(heads, embeddings)]).mean(0)[pair_indices]
+        diagnostics = metrics(prediction[validation_indices], validation_indices, valid_probability)
+    learned = dict(kind='fleet_deferred_value', defenders=n, width=recipe['width'], states=best_states,
+        identity_conditioned=True, feedback_relative_scale=recipe.get('feedback_relative_scale', .25))
+    result = copy.deepcopy(model)
+    result['successor_task_value']['wait_value'] = learned
+    result['observed_wait_fit'] = dict(seed=seed, paired=paired, updates_per_member=updates,
+        ensemble_members=len(heads), optimizer_step_calls=updates, selected_updates=selected_updates,
+        training_draw_sha256=draws.hexdigest(), training_observation_sha256=examples['observation_sha256'],
+        training_target_sha256=examples['target_sha256'], training_layouts=sorted(set(layouts)-validation),
+        validation_layouts=sorted(validation), protected_intervention_validation_layouts=sorted(protected),
+        root_states=len(layouts), paired_futures=len(targets), terminal_observations=2*len(targets),
+        training_pairs=len(train_indices), validation_pairs=len(valid_indices), batch_size=batch_size,
+        learning_rate=learning_rate, difference_weight=weight, validation_period=validation_period,
+        checkpoint_selection='validation_endpoint_mse_plus_difference_mse', value_target='success',
+        objective='absolute endpoints and measured paired difference' if paired else 'absolute endpoints',
+        parameters_per_member=sum(parameter.numel() for parameter in heads[0].parameters()),
+        trainable_parameters_per_member=sum(parameter.numel() for parameter in heads[0].parameters()
+                                           if parameter.requires_grad),
+        trunk_initialized_from_intervention=True, trunk_frozen=True, intervention_values_updated=False,
+        future_outcomes_used=True, future_public_states_used=False, current_public_states_only=True,
+        margin_subtracted_from_measured_wait=False, predecessor_sha256=source, defer_ticks=5,
+        continuation_policy_identity=data['continuation_policy_identity'],
+        continuation_policy_sha256=data['continuation_policy_sha256'],
+        continuation_policy_matches_intervention=True,
+        collection_context=copy.deepcopy(data['collection_context']), history=history,
+        validation_diagnostics=diagnostics)
+    if output is not None:
+        torch.save(result, output)
+    return result
+
+
 class PairedOutcomeSuccessorNetwork(PairedSuccessorNetwork):
     """Separate factual success from conditional rescue and harm.
 
@@ -358,6 +669,245 @@ class SubjectOutcomeSuccessorNetwork(PairedOutcomeSuccessorNetwork):
         local, _ = self.action_features(programs, timing, controls)
         return torch.cat((pooled, pooled-reference, subject(nodes), subject(reference_nodes),
                           subject(nodes-reference_nodes), subject(local)), -1)
+
+
+class FleetExerciseNetwork(SubjectOutcomeSuccessorNetwork):
+    """Calibrate a selected single-vessel proposal against actual continuations."""
+
+    def __init__(self, defenders, width=48, identity_conditioned=True,
+                 feedback_relative_scale=.25, calibration_width=24, joint_outcomes=False):
+        super().__init__(defenders, width, identity_conditioned,
+                         feedback_relative_scale=feedback_relative_scale)
+        self.joint_outcomes = bool(joint_outcomes)
+        self.register_buffer('_outcome_bits', ((torch.arange(8)[:, None] >>
+            torch.tensor([2, 1, 0])) & 1).float(), persistent=False)
+        self.calibration = nn.Sequential(nn.Linear(7*width+18, calibration_width), nn.SiLU(),
+                                         nn.Linear(calibration_width, 8 if joint_outcomes else 3))
+        nn.init.zeros_(self.calibration[-1].weight); nn.init.zeros_(self.calibration[-1].bias)
+        del self.node_response, self.global_response
+
+    def initialize_from_intervention(self, state):
+        current = self.state_dict()
+        current.update({key: state[key] for key in current if not key.startswith('calibration.')})
+        self.load_state_dict(current)
+        return self
+
+    def public_embedding(self, context, controls, programs, timing):
+        self.configure_fleet(controls.shape[-2])
+        nodes, pooled = self.encode(context, controls, programs, timing)
+        reference_nodes, reference = self.encode(context, controls, torch.zeros_like(programs),
+                                                torch.zeros_like(timing))
+        factual = self.task_value(reference).squeeze(-1)
+        features = self.effect_features(controls, programs, timing, nodes, pooled, reference_nodes, reference)
+        rescue, harm = self.outcome_effect(features).unbind(-1)
+        probability = self.plan_probability(factual, rescue, harm, self.active_vessels(programs).any(-1))
+        current = torch.logit(probability.clamp(1e-6, 1.-1e-6))
+        base = torch.stack((factual, current, factual), -1)
+        return torch.cat((features, base), -1), base
+
+    def joint_logits(self, features, base):
+        if not self.joint_outcomes:
+            raise ValueError('Joint terminal outcomes require an eight-outcome calibration head.')
+        independent = F.logsigmoid(base[:, None, :]*(2.*self._outcome_bits-1.)).sum(-1)
+        return independent+self.calibration(features)
+
+    def endpoint_logits(self, features, base):
+        if not self.joint_outcomes:
+            return base+self.calibration(features)
+        marginals = self.joint_logits(features, base).softmax(-1)@self._outcome_bits
+        return torch.logit(marginals.clamp(1e-6, 1.-1e-6))
+
+    def forward(self, context, controls, programs, timing):
+        return self.endpoint_logits(*self.public_embedding(context, controls, programs, timing))
+
+
+class FleetExerciseValue(nn.Module):
+    """Measured factual, current-exercise, and five-tick-deferred success."""
+
+    def __init__(self, defenders, width, states, identity_conditioned=True,
+                 feedback_relative_scale=.25, calibration_width=24, joint_outcomes=False):
+        super().__init__()
+        if not states:
+            raise ValueError('Current-exercise values require fitted actual endpoint models.')
+        self.heads = nn.ModuleList([FleetExerciseNetwork(defenders, width, identity_conditioned,
+            feedback_relative_scale, calibration_width, joint_outcomes) for _ in states])
+        for head, state in zip(self.heads, states):
+            head.load_state_dict(state)
+
+    def configure_fleet(self, defenders):
+        for head in self.heads:
+            head.configure_fleet(defenders)
+
+    def forward(self, context, controls, programs, timing):
+        return torch.stack([head(context, controls, programs, timing).sigmoid()
+                            for head in self.heads]).mean(0)
+
+
+@torch.enable_grad()
+def fit_fleet_exercise_value(model, data, output=None, *, validation_layouts,
+        updates=2000, seed=43, batch_size=128, learning_rate=1e-4,
+        difference_weight=4., validation_period=250, calibration_width=24,
+        joint_outcomes=False, device='cpu'):
+    """Fit selected proposals on three actual common-future terminal endpoints.
+
+    The candidate ranking and its shared fleet encoder stay frozen. A residual
+    readout learns the value of exercising that proposal now, and of deferring
+    its frozen policy, so the maximum over candidate predictions is not treated
+    as a calibrated continuation value. No future states enter the readout.
+    """
+    from local_intervention_value import (intervention_policy_identity,
+        intervention_value_contract, observed_exercise_examples)
+    recipe = model['successor_task_value']; fit = model['successor_task_fit']
+    source, target = intervention_value_contract(model)
+    if (recipe['kind'] != 'subject_outcome_successor_return' or recipe.get('wait_value') is not None
+            or recipe.get('exercise_value') is not None or recipe.get('intervention_budget') != 1
+            or recipe.get('decision_period', 5) != 5 or target != 'success'
+            or source != data.get('predecessor_sha256') or not recipe.get('identity_conditioned')
+            or data.get('continuation_policy_identity') != intervention_policy_identity(model)):
+        raise ValueError('Exercise fitting needs actual outcomes from this frozen subject intervention policy.')
+    if (min(updates, batch_size, validation_period, calibration_width) < 1
+            or not np.isfinite(learning_rate) or learning_rate <= 0.
+            or not np.isfinite(difference_weight) or difference_weight < 0.):
+        raise ValueError('Exercise learning requires finite positive optimization settings.')
+    validation = set(map(tuple, validation_layouts)); protected = set(map(tuple, fit['validation_layouts']))
+    layouts = [tuple(root['scene']) for root in data['roots']]
+    if (not validation or not validation < set(layouts) or set(layouts) & protected
+            or not set(layouts) <= set(map(tuple, fit['training_layouts']))):
+        raise ValueError('Exercise fitting must stay within intervention training layouts.')
+    examples = observed_exercise_examples(data); n = recipe['defenders']
+    features = examples['features'].to(device); rows = features[:, :-5].reshape(-1, n, 15)
+    context = torch.cat((rows[..., :8].flatten(1), rows[..., 8], features[:, -5:]), -1)
+    controls = 4.*rows[..., 9:15]
+    options = torch.as_tensor(examples['proposal_options'], device=device)
+    programs = options[:, :1]//(10**torch.arange(n, device=device)) % 10
+    timing = options[:, 1:]
+    pair_roots = np.asarray(examples['pair_roots'])
+    held_out = np.asarray([scene in validation for scene in layouts])[pair_roots]
+    train = np.flatnonzero(~held_out); valid = np.flatnonzero(held_out)
+    probability = examples['probabilities'][train].copy(); probability /= probability.sum()
+    validation_weights = torch.as_tensor(examples['probabilities'][valid], device=device, dtype=torch.float32)
+    validation_weights /= validation_weights.sum()
+    valid_indices = torch.as_tensor(valid, device=device)
+    pair_indices = torch.as_tensor(pair_roots, device=device)
+    targets = torch.as_tensor(examples['returns'], device=device)
+    proposal_accepted = torch.as_tensor(examples['proposal_accepted'], device=device)
+    paired = bool(fit['paired']); weight = difference_weight if paired else 0.
+    torch.manual_seed(seed+33041)
+    states = [recipe['state'], *recipe.get('ensemble_states', ())]
+    heads = nn.ModuleList([FleetExerciseNetwork(n, recipe['width'], True,
+        recipe.get('feedback_relative_scale', .25), calibration_width,
+        joint_outcomes).initialize_from_intervention(state).to(device)
+        for state in states]).eval()
+    for head in heads:
+        head.requires_grad_(False); head.calibration.requires_grad_(True)
+    with torch.no_grad():
+        embeddings = [head.public_embedding(context, controls, programs, timing) for head in heads]
+    optimizer = torch.optim.AdamW([parameter for parameter in heads.parameters()
+        if parameter.requires_grad], lr=learning_rate, weight_decay=.01)
+    rng = np.random.default_rng(seed+33041); draws = hashlib.sha256()
+    best_scores = [None]*len(heads); best_states = [None]*len(heads)
+    selected_updates = [0]*len(heads); history = []
+
+    def metrics(prediction, chosen, weights):
+        observed = targets[chosen]
+        endpoint = (weights*(prediction-observed).square().mean(-1)).sum()
+        predicted_gain = prediction[:, 1:]-prediction[:, :1]
+        measured_gain = observed[:, 1:]-observed[:, :1]
+        difference = (weights*(predicted_gain-measured_gain).square().mean(-1)).sum()
+        exercise = (proposal_accepted[pair_indices[chosen]] &
+                    (prediction[:, 1] > torch.maximum(prediction[:, 0], prediction[:, 2])))
+        selected_endpoint = torch.where(exercise, observed[:, 1], observed[:, 2])
+        return dict(endpoint_mse=float(endpoint), difference_mse=float(difference),
+            observed_selected_success=float(weights@selected_endpoint),
+            observed_current_success=float(weights@observed[:, 1]),
+            observed_deferred_success=float(weights@observed[:, 2]),
+            measured_current_gain=float(weights@measured_gain[:, 0]),
+            predicted_current_gain=float(weights@predicted_gain[:, 0]),
+            measured_deferred_gain=float(weights@measured_gain[:, 1]),
+            predicted_deferred_gain=float(weights@predicted_gain[:, 1]))
+
+    for update in range(updates+1):
+        if update:
+            chosen = rng.choice(train, size=batch_size, p=probability)
+            draws.update(chosen.astype(np.int64).tobytes())
+            indices = torch.as_tensor(chosen, device=device)
+            observed = targets[indices]; loss = features.new_zeros(())
+            for head, (embedding, base) in zip(heads, embeddings):
+                root_indices = pair_indices[indices]
+                residual = head.calibration(embedding[root_indices])
+                prediction = head.endpoint_logits(embedding[root_indices], base[root_indices]).sigmoid()
+                if joint_outcomes:
+                    if paired:
+                        outcome = (observed.long()*observed.new_tensor([4, 2, 1], dtype=torch.long)).sum(-1)
+                        loss = loss+F.cross_entropy(head.joint_logits(embedding[root_indices],
+                            base[root_indices]), outcome)/3.
+                    else:
+                        loss = loss+F.binary_cross_entropy(prediction, observed)
+                else:
+                    loss = loss+F.mse_loss(prediction, observed)
+                loss = loss+.001*residual.square().mean()
+                if paired:
+                    loss = loss+weight*F.mse_loss(prediction[:, 1:]-prediction[:, :1],
+                                                observed[:, 1:]-observed[:, :1])
+                    if joint_outcomes:
+                        loss = loss+weight*F.mse_loss(prediction[:, 1]-prediction[:, 2],
+                                                    observed[:, 1]-observed[:, 2])
+            optimizer.zero_grad(set_to_none=True); loss.backward()
+            nn.utils.clip_grad_norm_(heads.parameters(), 2.); optimizer.step()
+        if update % validation_period == 0 or update == updates:
+            with torch.no_grad():
+                measurements = []
+                for member, (head, (embedding, base)) in enumerate(zip(heads, embeddings)):
+                    selected = pair_indices[valid_indices]
+                    prediction = head.endpoint_logits(embedding[selected], base[selected]).sigmoid()
+                    measured = metrics(prediction, valid_indices, validation_weights)
+                    score = measured['endpoint_mse']+measured['difference_mse']
+                    if joint_outcomes:
+                        score = (-measured['observed_selected_success'], score)
+                    if best_scores[member] is None or score < best_scores[member]:
+                        best_scores[member] = score; selected_updates[member] = update
+                        best_states[member] = {key: value.detach().cpu().clone()
+                                              for key, value in head.state_dict().items()}
+                    measurements.append(measured)
+                history.append(dict(update=update, members=measurements))
+            print(dict(phase='fleet_exercise_fit', paired=paired, update=update,
+                selected_updates=selected_updates, validation=measurements), flush=True)
+    for head, state in zip(heads, best_states):
+        head.load_state_dict(state)
+    with torch.no_grad():
+        predictions = torch.stack([head.endpoint_logits(embedding, base).sigmoid()
+            for head, (embedding, base) in zip(heads, embeddings)]).mean(0)[pair_indices]
+        diagnostics = metrics(predictions[valid_indices], valid_indices, validation_weights)
+    result = copy.deepcopy(model)
+    result['successor_task_value']['exercise_value'] = dict(kind='fleet_exercise_value', defenders=n,
+        width=recipe['width'], states=best_states, identity_conditioned=True,
+        feedback_relative_scale=recipe.get('feedback_relative_scale', .25), calibration_width=calibration_width)
+    if joint_outcomes:
+        result['successor_task_value']['exercise_value']['joint_outcomes'] = True
+    result['observed_exercise_fit'] = dict(seed=seed, paired=paired, updates_per_member=updates,
+        ensemble_members=len(heads), selected_updates=selected_updates, training_draw_sha256=draws.hexdigest(),
+        training_observation_sha256=examples['observation_sha256'], training_target_sha256=examples['target_sha256'],
+        training_layouts=sorted(set(layouts)-validation), validation_layouts=sorted(validation),
+        protected_intervention_validation_layouts=sorted(protected), root_states=len(layouts),
+        training_pairs=len(train), validation_pairs=len(valid), terminal_observations=3*len(targets),
+        batch_size=batch_size, learning_rate=learning_rate, difference_weight=weight,
+        validation_period=validation_period, checkpoint_selection=(
+            'validation_observed_current_or_deferred_success_then_endpoint_and_difference_mse'
+            if joint_outcomes else 'validation_endpoint_mse_plus_difference_mse'),
+        joint_outcomes=bool(joint_outcomes), joint_outcome_order=['000', '001', '010', '011', '100', '101', '110', '111'],
+        joint_likelihood_supervision=bool(joint_outcomes and paired),
+        decision_validation_uses_frozen_parent_continuations=bool(joint_outcomes),
+        calibration_width=calibration_width, value_target='success', endpoint_order=['factual', 'current', 'deferred'],
+        trunk_frozen=True, candidate_ranking_updated=False, source_intervention_values_updated=False,
+        proposal_gain_margin=recipe.get('gain_margin', 0.), calibrated_exercise_margin=0.,
+        decision_rule='current success exceeds both factual and deferred success',
+        current_public_states_and_proposal_only=True, future_states_used=False, predecessor_sha256=source,
+        continuation_policy_identity=data['continuation_policy_identity'],
+        continuation_policy_sha256=data['continuation_policy_sha256'],
+        collection_context=copy.deepcopy(data['collection_context']), history=history, validation_diagnostics=diagnostics)
+    if output is not None:
+        torch.save(result, output)
+    return result
 
 
 def paired_outcome_conditional_loss(rescue_logit, harm_logit, joint_target):
@@ -672,8 +1222,11 @@ def complete_validation_catalog(validation, original):
     return dict(validation, roots=merged, catalog_complete=True)
 
 
-def measured_pairs(datasets, layouts, fixed_horizon=False, all_action_pairs=False):
+def measured_pairs(datasets, layouts, fixed_horizon=False, all_action_pairs=False,
+                   local_graph_pairs=False):
     """Preserve complete paired terminal observations, including unchanged outcomes."""
+    if all_action_pairs and local_graph_pairs:
+        raise ValueError('Choose all comparisons or the single-vessel intervention graph.')
     layouts = set(map(tuple, layouts))
     packed = {k: [] for k in ('context', 'controls', 'programs', 'timing', 'reference_programs',
         'reference_timing', 'target', 'reference_target', 'physical', 'reference_physical', 'mask',
@@ -692,8 +1245,15 @@ def measured_pairs(datasets, layouts, fixed_horizon=False, all_action_pairs=Fals
                 raise ValueError('Root inclusion weights must be finite and positive.')
             if tuple(root['options'][0]) != (0, 0, 0):
                 raise ValueError('The measured zero intervention must be the first option.')
-            comparisons = [(a, b) for a in range(1, len(root['options']))
-                           for b in (range(a) if all_action_pairs else (0,))]
+            if local_graph_pairs:
+                from local_intervention_value import local_edges
+                comparisons = [(b, a) for a, b in local_edges(root['options'], n)]
+                supported = {index for edge in comparisons for index in edge}
+                if supported != set(range(len(root['options']))):
+                    raise ValueError('Every observed plan needs a measured single-vessel comparison.')
+            else:
+                comparisons = [(a, b) for a in range(1, len(root['options']))
+                               for b in (range(a) if all_action_pairs else (0,))]
             for a, reference_action in comparisons:
                 futures = list(range(len(root['futures'])))
                 if any((b, f) not in root['outcomes'] for b in (reference_action, a) for f in futures):
@@ -884,7 +1444,7 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
                   response_difference_weight=.1, learning_rate=3e-4, members=1,
                   value_form='potential', complete_catalog=True, factual_banks=(),
                   all_action_pairs=False, select_by_validation=False, root_balanced=False,
-                  factual_value_weight=1., physical_horizon=None):
+                  factual_value_weight=1., physical_horizon=None, local_graph_pairs=False):
     """Fit matched architectures and update budgets; reserve validation layouts."""
     if value_form not in ('potential', 'physical_bottleneck', 'planned_successor', 'constrained_planned', 'local_quadratic', 'event_time', 'paired_outcome', 'paired_subject_outcome'):
         raise ValueError('Unknown successor value representation.')
@@ -896,21 +1456,27 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
                'paired_outcome': PairedOutcomeSuccessorNetwork,
                'paired_subject_outcome': SubjectOutcomeSuccessorNetwork}[value_form]
     conditional_outcomes = value_form in ('paired_outcome', 'paired_subject_outcome')
-    if conditional_outcomes and all_action_pairs:
+    if conditional_outcomes and (all_action_pairs or local_graph_pairs):
         raise ValueError('Conditional outcome learning uses the common factual reference.')
     train_layouts = split_model['successor_task_fit']['training_layouts']
     validation_layouts = split_model['successor_task_fit']['validation_layouts']
     execution = split_model['successor_task_value']
     relative_scale = execution.get('feedback_relative_scale')
+    if local_graph_pairs and (value_form != 'potential' or relative_scale is not None
+            or execution.get('isolate_factual_start', False)
+            or execution.get('feedback_relative_hold', False)
+            or execution.get('policy_reference') is not None
+            or execution.get('intervention_budget') != 1):
+        raise ValueError('Full-plan graph learning requires a fixed nonintervening continuation and absolute windows.')
     if relative_scale is None and value_form not in ('potential', 'physical_bottleneck', 'planned_successor', 'constrained_planned'):
         raise ValueError('Local response models require relative one-period interventions.')
     if not np.isfinite(factual_value_weight) or factual_value_weight < 0.:
         raise ValueError('The factual calibration weight must be finite and nonnegative.')
     if physical_horizon is not None and (type(physical_horizon) is not int or
-            not 1 <= physical_horizon <= 20 or not conditional_outcomes):
+            not 1 <= physical_horizon <= 20 or not (conditional_outcomes or local_graph_pairs)):
         raise ValueError('An explicit outcome-response horizon must use one to twenty common physical ticks.')
     if factual_banks and not conditional_outcomes and (relative_scale is not None
-            or value_form not in ('planned_successor', 'constrained_planned')):
+            or value_form not in ('potential', 'planned_successor', 'constrained_planned')):
         raise ValueError('M1 factual trajectories belong to the M1-continuation planned successor fit.')
     if complete_catalog:
         validation = complete_validation_catalog(validation, datasets[0])
@@ -925,7 +1491,8 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
     fixed_inference_width = next(iter(execution_widths))
     fixed_horizon = (physical_horizon if physical_horizon is not None else
         value_form in ('planned_successor', 'constrained_planned') and relative_scale is None)
-    data, roots = measured_pairs(datasets, train_layouts, fixed_horizon, all_action_pairs)
+    data, roots = measured_pairs(datasets, train_layouts, fixed_horizon, all_action_pairs,
+                                local_graph_pairs)
     sampling_weights = None
     if root_balanced:
         from collections import Counter
@@ -935,7 +1502,7 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
     if not bool((population_weights == 1.).all()):
         sampling_weights = population_weights if sampling_weights is None else sampling_weights*population_weights
     factual_values = (measured_factual_values(factual_banks, train_layouts)
-                      if factual_banks and conditional_outcomes else None)
+                      if factual_banks and (conditional_outcomes or value_form == 'potential') else None)
     successor_states = (measured_successors(datasets, train_layouts, factual_banks, fixed_horizon)
                         if value_form in ('physical_bottleneck', 'planned_successor', 'constrained_planned') else None)
     n = data['controls'].shape[1]
@@ -1048,14 +1615,16 @@ def fit_successor(datasets, validation, split_model, *, paired, seed=43, updates
             fixed_inference_width=fixed_inference_width,
             population_weight_range=[float(population_weights.min()), float(population_weights.max())],
             validation_catalog_complete=complete_catalog,
-            all_action_pairs=all_action_pairs, selected_updates=selected_updates,
+            all_action_pairs=all_action_pairs, local_graph_pairs=local_graph_pairs,
+            selected_updates=selected_updates,
             checkpoint_selection='validation_layout_mean_gain' if select_by_validation else 'final_update',
             elapsed_seconds=time.monotonic()-started, response_scale=scale,
             parameter_count=sum(p.numel() for p in networks[0].parameters()),
             continuation_context=copy.deepcopy(datasets[0].get('continuation_context'))))
 
 
-def make_checkpoint(result, base_path, options, *, gain_margin=.02, runtime_sources=None):
+def make_checkpoint(result, base_path, options, *, gain_margin=.02, runtime_sources=None,
+                    connected_plan_span=None):
     networks = result['networks']; first = networks[0]
     base_path = Path(base_path).resolve()
     checkpoint = dict(format='paired-successor-v1', base_policy=str(base_path),
@@ -1077,6 +1646,14 @@ def make_checkpoint(result, base_path, options, *, gain_margin=.02, runtime_sour
         successor_task_fit=result['fit'], validation_diagnostics=result['diagnostics'],
         runtime_sources=runtime_sources or {}, completed=True)
     checkpoint['successor_task_value'].update(result.get('execution', {}))
+    if connected_plan_span is not None:
+        recipe = checkpoint['successor_task_value']
+        if (type(first) is not PairedSuccessorNetwork or first.feedback_relative_scale is not None
+                or list(map(tuple, options)) != connected_fleet_catalog(first.defenders, connected_plan_span)
+                or recipe.get('isolate_factual_start') or recipe.get('feedback_relative_hold')
+                or recipe.get('intervention_budget') != 1):
+            raise ValueError('Export the exact absolute connected catalog and its measured execution rule.')
+        recipe.update(kind='connected_plan_successor_return', connected_plan_span=connected_plan_span)
     return checkpoint
 
 
@@ -1114,13 +1691,16 @@ def install_runtime():
     class PairedSuccessorDecision(PlainReturnDecision):
         network_type = PairedSuccessorNetwork
 
+    class ConnectedPlanSuccessorDecision(ConnectedPlanCatalogMixin, PlainReturnDecision):
+        network_type = PairedSuccessorNetwork
+
     class LocalQuadraticSuccessorDecision(PlainReturnDecision):
         network_type = LocalQuadraticSuccessorNetwork
 
     class PairedOutcomeSuccessorDecision(PlainReturnDecision):
         network_type = PairedOutcomeSuccessorNetwork
 
-    class SubjectOutcomeSuccessorDecision(PlainReturnDecision):
+    class SubjectOutcomeSuccessorDecision(DeferredFleetDecisionMixin, PlainReturnDecision):
         network_type = SubjectOutcomeSuccessorNetwork
 
     class PhysicalBottleneckSuccessorDecision(PlainReturnDecision):
@@ -1261,7 +1841,8 @@ def install_runtime():
             raise ValueError('The fixed mechanism-one policy changed after training.')
         actor = copy.deepcopy(original(str(base), base.stat().st_mtime_ns, ablation))
         recipe = dict(checkpoint['successor_task_value']); kind = recipe.pop('kind')
-        factory = (OnPolicyGateDecision if kind == 'on_policy_gate' else
+        factory = (ConnectedPlanSuccessorDecision if kind == 'connected_plan_successor_return' else
+                   OnPolicyGateDecision if kind == 'on_policy_gate' else
                    SubjectOutcomeSuccessorDecision if kind == 'subject_outcome_successor_return' else
                    PairedOutcomeSuccessorDecision if kind == 'paired_outcome_successor_return' else
                    ConsensusSuccessorDecision if kind == 'consensus_successor_return'

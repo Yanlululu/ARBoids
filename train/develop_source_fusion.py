@@ -2207,15 +2207,36 @@ def target_feedback_network(width,absolute_frame,representation='pooled_residual
 class PublicTargetFeedback(nn.Module):
     """Advance the public target response separately inside every fleet forecast."""
     def __init__(self,width=48,states=(),absolute_frame=True,control_step=.2,scenario_mode='mean',
-                 kinematic_weight=0.,representation='pooled_residual'):
+                 kinematic_weight=0.,representation='pooled_residual',scenario_groups=None,
+                 scenario_weights=None):
         super().__init__()
         if not states or not np.isclose(control_step,.2):
             raise ValueError('Target feedback needs fitted members at the source control interval.')
-        if scenario_mode not in ('mean','members'):
-            raise ValueError('Target feedback must use its mean response or complete member trajectories.')
+        if scenario_mode not in ('mean','members','groups'):
+            raise ValueError('Target feedback must use mean, member or grouped complete trajectories.')
+        if scenario_mode=='groups':
+            groups=tuple(tuple(group) for group in (scenario_groups or ()))
+            indices=[index for group in groups for index in group]
+            if (not groups or any(not group for group in groups)
+                    or any(not isinstance(index,int) or isinstance(index,bool) for index in indices)
+                    or sorted(indices)!=list(range(len(states)))):
+                raise ValueError('Target scenario groups must partition all fitted members exactly once.')
+        else:
+            if scenario_groups is not None:
+                raise ValueError('Target scenario groups require grouped complete trajectories.')
+            groups=None
+        count=len(groups) if groups is not None else (len(states) if scenario_mode=='members' else 1)
+        if scenario_weights is not None:
+            weights=np.asarray(scenario_weights,dtype=float)
+            if (weights.shape!=(count,) or not np.isfinite(weights).all()
+                    or (weights<=0.).any() or not np.isclose(weights.sum(),1.)):
+                raise ValueError('Target scenario weights must be finite probabilities for every trajectory.')
+            scenario_weights=tuple(float(weight) for weight in weights)
         if not np.isfinite(kinematic_weight) or not 0. <= kinematic_weight <= 1.:
             raise ValueError('The public kinematic scenario needs a finite weight between zero and one.')
         self.scenario_mode=scenario_mode
+        self.scenario_groups=groups
+        self.scenario_weights=scenario_weights
         self.kinematic_weight=float(kinematic_weight)
         self.representation=representation
         self.control_step=float(control_step);self.absolute_frame=bool(absolute_frame)
@@ -2226,7 +2247,9 @@ class PublicTargetFeedback(nn.Module):
         nodes,global_state,target,velocity,axis=PublicTargetMotion.encode_state(
             motion,boids,target,velocity,self.absolute_frame)
         horizon=target.new_full((len(target),),self.control_step)
-        networks=self.models if component is None else (self.models[component],)
+        if component is None:networks=self.models
+        elif isinstance(component,int):networks=(self.models[component],)
+        else:networks=tuple(self.models[index] for index in component)
         predictions=[network(nodes,global_state,horizon) for network in networks]
         displacement=torch.stack([value[0] for value in predictions]).mean(0)
         delta_velocity=torch.stack([value[1] for value in predictions]).mean(0)
@@ -2236,13 +2259,23 @@ class PublicTargetFeedback(nn.Module):
         return target+self.control_step*velocity+world(displacement),velocity+world(delta_velocity)
 
     def component(self,index):
-        if not isinstance(index,int) or not 0<=index<len(self.models):
-            raise ValueError('A target trajectory component must identify a fitted member.')
+        indices=(index,) if isinstance(index,int) else tuple(index)
+        if (not indices or any(not isinstance(value,int) or isinstance(value,bool)
+                or not 0<=value<len(self.models) for value in indices)):
+            raise ValueError('A target trajectory component must identify fitted members.')
         parent=self
         class Component:
             def predict_state(self,motion,boids,target,velocity):
-                return parent.predict_state(motion,boids,target,velocity,component=index)
+                return parent.predict_state(motion,boids,target,velocity,component=indices)
         return Component()
+
+    def trajectory_components(self):
+        """Preserve each expert's autoregressive state throughout its fleet future."""
+        if self.scenario_mode=='groups':
+            return tuple(self.component(group) for group in self.scenario_groups)
+        if self.scenario_mode=='members':
+            return tuple(self.component(index) for index in range(len(self.models)))
+        return (self,)
 
     def kinematic_component(self):
         """Retain measured target momentum as a separate complete future.

@@ -5141,7 +5141,8 @@ class FeedbackFleetPolicy(nn.Module):
     scorer on the reference-change slice of the common forecast library.
     """
     def __init__(self, width=48, analytic_temperature=2., state=None, candidate_contrast=False,
-                 sampling_temperature=1., representation='candidate_graph'):
+                 sampling_temperature=1., representation='candidate_graph', scenario_evaluation=False,
+                 scenario_regret_weight=0.):
         super().__init__()
         if width < 8 or not isfinite(analytic_temperature) or analytic_temperature <= 0:
             raise ValueError('The fleet policy needs a positive width and analytic temperature.')
@@ -5150,6 +5151,13 @@ class FeedbackFleetPolicy(nn.Module):
             raise ValueError('Fleet exploration requires a positive finite sampling temperature.')
         self.sampling_temperature=float(sampling_temperature)
         self.candidate_contrast=bool(candidate_contrast)
+        if not isinstance(scenario_evaluation,bool):
+            raise ValueError('Separate scenario evaluation must be an explicit Boolean.')
+        self.scenario_evaluation=scenario_evaluation
+        if (not isfinite(scenario_regret_weight) or not 0.<=scenario_regret_weight<=1.
+                or scenario_regret_weight and not scenario_evaluation):
+            raise ValueError('Scenario regret requires complete futures and a weight between zero and one.')
+        self.scenario_regret_weight=float(scenario_regret_weight)
         if representation not in ('candidate_graph','candidate_attention'):
             raise ValueError('Unknown complete-candidate representation.')
         if representation=='candidate_attention' and width%4:
@@ -5170,6 +5178,7 @@ class FeedbackFleetPolicy(nn.Module):
         self.critic=nn.Sequential(nn.Linear(2*width,width),nn.SiLU(),nn.Linear(width,1))
         nn.init.zeros_(self.actor.weight);nn.init.zeros_(self.actor.bias)
         self.sample=False;self.collect=False;self.last_decision=None
+        self.collection_dtype=torch.float16
         if state is not None:self.load_state_dict(state)
 
     @staticmethod
@@ -5196,7 +5205,37 @@ class FeedbackFleetPolicy(nn.Module):
         return torch.cat((shared,plans,mean.flatten(-2),spread,distance,
             global_state[:,None,None].expand(-1,count,n,-1)),-1)
 
+    @classmethod
+    def scenario_features(cls,packet,source,preferred,plans,paths,futures,weights,order,target,costs):
+        """Keep each complete future intact through the nonlinear fleet scorer."""
+        b,count,scenarios,n=paths.shape[:4]
+        if costs.shape!=(b,count,scenarios) or weights.shape!=(scenarios,):
+            raise ValueError('Each complete future needs its matching fleet cost and probability.')
+        pieces=[cls.features(packet,source,preferred,plans,paths[:,:,index:index+1],
+            futures[:,:,index:index+1],weights.new_ones(1),order,target) for index in range(scenarios)]
+        cost=costs[...,None,None].expand(-1,-1,-1,n,1)
+        mass=weights[None,None,:,None,None].expand(b,count,-1,n,1)
+        return torch.cat((torch.stack(pieces,2),cost,mass),-1)
+
     def forward(self,features,costs):
+        if features.ndim==5:
+            if not self.scenario_evaluation or features.shape[-1]!=39 or not features.shape[2]:
+                raise ValueError('Scenario scoring needs complete public features, costs and probabilities.')
+            logits=[];values=[];scenario_logits=[]
+            for index in range(features.shape[2]):
+                logit,value=self(features[:,:,index,:,:37],features[:,:,index,0,37])
+                scenario_logits.append(logit)
+                logits.append(logit*features[:,:,index,0,38])
+                values.append(value*features[:,0,index,0,38])
+            if self.scenario_regret_weight:
+                scores=torch.stack(scenario_logits,-1)
+                probabilities=features[:,:,:,0,38]
+                regret=scores.amax(1,keepdim=True)-scores
+                expected=(regret*probabilities).sum(-1)
+                worst=regret.masked_fill(probabilities<=0.,-torch.inf).amax(-1)
+                weight=self.scenario_regret_weight
+                return -((1.-weight)*expected+weight*worst),torch.stack(values).sum(0)
+            return torch.stack(logits).sum(0),torch.stack(values).sum(0)
         b,count,n,_=features.shape
         x=features.reshape(b*count,n,-1)
         if self.representation=='candidate_graph':
@@ -5258,7 +5297,7 @@ class FeedbackFleetPolicy(nn.Module):
         index=(distribution.sample() if self.sample else logits.argmax(-1) if selection=='joint' else
             select_feedback_fleet_plan(-logits,library,reference_start,selection))
         if self.collect:
-            self.last_decision=dict(features=features.detach().to('cpu',torch.float16),
+            self.last_decision=dict(features=features.detach().to('cpu',self.collection_dtype),
                 costs=costs.detach().cpu(),index=index.detach().cpu(),
                 logp=distribution.log_prob(index).detach().cpu(),value=value.detach().cpu())
         return (library[torch.arange(len(library),device=library.device),index]
@@ -5572,16 +5611,20 @@ def _refine_actuator_interactions(actor,packet,source_action,preferred_action,*,
                 if target_response is not None and getattr(target_response,'scenario_mode','mean')=='members'
                 else (target_response,))
             if target_response is not None:
+                if hasattr(target_response,'trajectory_components'):
+                    response_components=target_response.trajectory_components()
                 scenarios=len(response_components)
-                weights=source.new_full((scenarios,),1./scenarios)
+                probabilities=getattr(target_response,'scenario_weights',None)
+                weights=(source.new_full((scenarios,),1./scenarios) if probabilities is None
+                    else source.new_tensor(probabilities))
                 kinematic_weight=getattr(target_response,'kinematic_weight',0.)
                 if kinematic_weight:
                     # Preserve distinct fleet responses instead of averaging
                     # incompatible target accelerations before simulation.
                     learned=(response_components if kinematic_weight<1. else ())
                     response_components=(*learned,target_response.kinematic_component())
-                    weights=source.new_tensor([(1.-kinematic_weight)/scenarios]*len(learned)
-                        +[kinematic_weight])
+                    weights=torch.cat((weights[:len(learned)]*(1.-kinematic_weight),
+                        source.new_tensor([kinematic_weight])))
                     scenarios=len(response_components)
             def forecast(choices):
                 count=choices.shape[1]
@@ -5615,10 +5658,19 @@ def _refine_actuator_interactions(actor,packet,source_action,preferred_action,*,
                     ((plans-preferred[:,None])/preference_width).square().mean(-1).reshape(b*count,n,1),
                     actor.distance_risk,weights=weights,interception_weight=target_envelope_weight,
                     control_stride=max(1,round(.2/dt)))
-                costs=task_stopped_fleet_cost(factors,torch.zeros((b*count,1,n),
-                    dtype=torch.long,device=source.device),risk_weight,escape_weight).reshape(b,count)
-                features=(learner.features(packet,source,preferred,plans,paths,plan_futures,weights,order,target)
-                    if learner is not None else None)
+                if learner is not None and learner.scenario_evaluation:
+                    scenario_costs=task_stopped_fleet_cost(factors['scenario_factors'],
+                        torch.zeros((b*count*scenarios,1,n),dtype=torch.long,device=source.device),
+                        risk_weight,escape_weight).reshape(b,count,scenarios)
+                    mass=factors['scenario_weights']
+                    costs=(scenario_costs*mass[None,None]).sum(-1)
+                    features=learner.scenario_features(packet,source,preferred,plans,paths,
+                        plan_futures,mass,order,target,scenario_costs)
+                else:
+                    costs=task_stopped_fleet_cost(factors,torch.zeros((b*count,1,n),
+                        dtype=torch.long,device=source.device),risk_weight,escape_weight).reshape(b,count)
+                    features=(learner.features(packet,source,preferred,plans,paths,plan_futures,weights,order,target)
+                        if learner is not None else None)
                 return costs,features
             scores,features=forecast(library)
             extra_search=independent_feedback_proposal or nominal_feedback_proposals or feedback_refinement_rounds

@@ -210,8 +210,13 @@ def batched_credit_rows(policy,tasks,batch_size=32,device='cuda:0',keep_steps=Fa
     initialize();torch.backends.cuda.matmul.allow_tf32=False
     if (not isinstance(fixed_inference_width,int) or isinstance(fixed_inference_width,bool)
             or fixed_inference_width<0 or fixed_inference_width and
-            (sample_policy or collect_fleet or root_selector is not None)):
-        raise ValueError('Fixed inference is available for deterministic execution without stateful proposal collection.')
+            sample_policy):
+        raise ValueError('Fixed inference does not support source-policy sampling.')
+    if (root_selector is not None and
+            getattr(root_selector, 'fixed_inference_width', 0) != fixed_inference_width):
+        raise ValueError('Factual inference and proposal selection must use the same fixed width.')
+    if collect_fleet and fixed_inference_width and batch_size>fixed_inference_width:
+        raise ValueError('Fixed fleet collection requires the episode batch to fit in one inference chunk.')
     def infer(function,packet,*arguments):
         return fixed_batch_inference(function,packet,*arguments,width=fixed_inference_width)
     actor=(d.joint_load(str(policy),Path(policy).stat().st_mtime_ns) if actor_override is None else actor_override).to(device)
@@ -625,7 +630,8 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
                               candidate_contrast=False,sampling_temperature=1.,
                               training_agilities=(2.,2.5),training_task_base=4166500000,
                               representation='candidate_graph',credit_target='discounted_task',
-                              anchor_kl_weight=0.):
+                              anchor_kl_weight=0.,fixed_inference_width=0,scenario_evaluation=False,
+                              scenario_regret_weight=0.):
     """Optimize candidate selection on actual complete source episodes.
 
     SAC, Boids, dynamics and the task reward stay frozen. Each action is one
@@ -639,6 +645,9 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
         raise ValueError('Unknown fleet learning target.')
     if not np.isfinite(anchor_kl_weight) or anchor_kl_weight<0.:
         raise ValueError('The fixed-predecessor trust penalty must be nonnegative.')
+    if (not isinstance(fixed_inference_width,int) or isinstance(fixed_inference_width,bool)
+            or fixed_inference_width<0 or fixed_inference_width and batch_size>fixed_inference_width):
+        raise ValueError('Fixed fleet learning requires one inference chunk per episode batch.')
     training_agilities=tuple(map(float,training_agilities))
     if (not training_agilities or len(set(training_agilities))!=len(training_agilities)
             or not np.isfinite(training_agilities).all() or min(training_agilities)<=0.
@@ -659,6 +668,12 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
         objective='on-policy clipped joint-fleet task-return policy gradient with a learned state baseline',
         candidate_budget='same 81 balanced fleet plans plus every single-vessel reference change',
         source_policies_frozen=True,training_task_base=training_task_base,training_defenders=6)
+    if fixed_inference_width:
+        specification.update(fixed_inference_width=fixed_inference_width,collected_feature_dtype='float32')
+    if scenario_evaluation:
+        specification['scenario_evaluation']=True
+    if scenario_regret_weight:
+        specification['scenario_regret_weight']=scenario_regret_weight
     if training_agilities!=(2.,2.5):
         specification['training_agilities']=training_agilities
     if representation!='candidate_graph':
@@ -699,7 +714,8 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
     actor=copy.deepcopy(d.joint_load(str(predecessor),predecessor.stat().st_mtime_ns)).to(device)
     learner=FeedbackFleetPolicy(width,analytic_temperature,
         (model.get('feedback_fleet_policy') or {}).get('state'),candidate_contrast,
-        sampling_temperature,representation).to(device)
+        sampling_temperature,representation,scenario_evaluation,scenario_regret_weight).to(device)
+    if fixed_inference_width:learner.collection_dtype=torch.float32
     reference_actor=None
     if credit_target=='paired_terminal_success':
         reference_actor=copy.deepcopy(d.joint_load(str(predecessor),predecessor.stat().st_mtime_ns)).to(device)
@@ -715,6 +731,9 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
         anchor_recipe=source.get('feedback_fleet_policy') or {}
         if not anchor_recipe.get('state'):
             raise ValueError('The trust penalty needs a previously learned candidate policy.')
+        if (anchor_recipe.get('scenario_evaluation',False)!=scenario_evaluation
+                or anchor_recipe.get('scenario_regret_weight',0.)!=scenario_regret_weight):
+            raise ValueError('The trust reference must use the same complete-scenario representation.')
         anchor=FeedbackFleetPolicy(**anchor_recipe).to(device).eval().requires_grad_(False)
     actor.feedback_fleet_policy=learner
     optimizer=torch.optim.Adam(learner.parameters(),lr=learning_rate)
@@ -731,9 +750,10 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
             tuple((6,agility) for agility in training_agilities))][:episodes_per_iteration]
         with torch.no_grad():
             reference_rows=(batched_credit_rows(predecessor,tasks,batch_size=batch_size,device=device,
-                actor_override=reference_actor) if reference_actor is not None else None)
+                actor_override=reference_actor,fixed_inference_width=fixed_inference_width)
+                if reference_actor is not None else None)
             rollouts=batched_credit_rows(predecessor,tasks,batch_size=batch_size,device=device,
-                actor_override=actor,collect_fleet=True)
+                actor_override=actor,collect_fleet=True,fixed_inference_width=fixed_inference_width)
         if reference_rows is not None:
             if len(reference_rows)!=len(rollouts):
                 raise ValueError('Every sampled fleet trajectory needs its actual matched predecessor episode.')
@@ -759,7 +779,7 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
                     choices=torch.stack([record['index'] for record in selected]).to(device)
                     previous=torch.stack([record['logp'] for record in selected]).to(device)
                     logits,values=learner(features,costs)
-                    distribution=learner.policy_distribution(logits,selection,features.shape[2],
+                    distribution=learner.policy_distribution(logits,selection,features.shape[-2],
                         temperature=learner.sampling_temperature)
                     log_ratio=distribution.log_prob(choices)-previous
                     ratio=log_ratio.exp();advantage=advantages[indices]
@@ -772,7 +792,7 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
                         with torch.no_grad():
                             anchor_logits,_=anchor(features,costs)
                             anchor_distribution=anchor.policy_distribution(anchor_logits,selection,
-                                features.shape[2],temperature=learner.sampling_temperature)
+                                features.shape[-2],temperature=learner.sampling_temperature)
                         loss=loss+anchor_kl_weight*fleet_anchor_kl(anchor_distribution,distribution).mean()
                     if not bool(torch.isfinite(loss)):
                         raise FloatingPointError('Fleet learning produced a nonfinite objective before an update.')
@@ -800,6 +820,8 @@ def fit_feedback_fleet_policy(predecessor,output,*,seed=42,iterations=24,episode
         model['feedback_fleet_policy']=dict(width=width,analytic_temperature=analytic_temperature,
             state={key:value.detach().cpu().clone() for key,value in learner.state_dict().items()})
         if candidate_contrast:model['feedback_fleet_policy']['candidate_contrast']=True
+        if scenario_evaluation:model['feedback_fleet_policy']['scenario_evaluation']=True
+        if scenario_regret_weight:model['feedback_fleet_policy']['scenario_regret_weight']=scenario_regret_weight
         if representation!='candidate_graph':
             model['feedback_fleet_policy']['representation']=representation
         if sampling_temperature!=1.:

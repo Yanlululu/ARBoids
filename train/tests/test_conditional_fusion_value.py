@@ -8,6 +8,75 @@ from conditional_fusion_value import (
 
 
 class ConditionalFusionValueTests(unittest.TestCase):
+    def test_connected_fleet_values_use_local_edges_and_preserve_full_plans(self):
+        import copy
+        import numpy as np
+        from paired_successor_value import (connected_fleet_catalog, ConnectedPlanCatalogMixin,
+            PairedSuccessorNetwork, measured_pairs, fit_successor)
+        from plain_return import PlainReturnDecision
+        options = [(0, 0, 0), (1, 0, 20), (11, 0, 20), (19, 0, 20),
+                   (111, 0, 20), (1, 5, 20), (11, 5, 20)]
+        root = dict(scene=(11, 3, 2.), prefix_future=71, root_steps=0,
+            context=np.zeros(29, np.float32), effect_controls=np.ones((3, 6), np.float32),
+            order=[0, 1, 2], options=options, futures=[91, 92],
+            outcomes={(q, f):dict(success=float((q+f) % 2), outcome=1 if (q+f) % 2 else 2,
+                duration=20.) for q in range(len(options)) for f in range(2)})
+        valid = copy.deepcopy(root); valid['scene'] = (12, 3, 2.)
+        data = dict(completed=True, roots=[root, valid])
+        packed, _ = measured_pairs([data], [root['scene']], local_graph_pairs=True)
+        self.assertEqual(len(packed['target']), 6)
+        self.assertTrue(bool(((packed['programs'] != packed['reference_programs']).sum(-1) == 1).all()))
+        nonfactual = packed['reference_programs'].any(-1)
+        torch.testing.assert_close(packed['timing'][nonfactual], packed['reference_timing'][nonfactual])
+        self.assertTrue(bool((packed['programs'].count_nonzero(-1) == 3).any()))
+        with self.assertRaisesRegex(ValueError, 'Choose all'):
+            measured_pairs([data], [root['scene']], all_action_pairs=True, local_graph_pairs=True)
+        bank = dict(completed=True, records=[dict(scene=row['scene'], future=101+index,
+            contexts=row['context'][None], controls=row['effect_controls'][None],
+            orders=np.array(row['order'])[None], values=np.array([index], np.float32))
+            for index, row in enumerate((root, valid))])
+        split = dict(successor_task_fit=dict(training_layouts=[root['scene']],
+            validation_layouts=[valid['scene']]), successor_task_value=dict(
+            feedback_relative_scale=None, feedback_relative_hold=False,
+            isolate_factual_start=False, intervention_budget=1))
+        fitted = fit_successor([data], data, split, paired=True, updates=2, members=1,
+            width=8, batch_size=4, complete_catalog=False, local_graph_pairs=True,
+            physical_horizon=20, physical_weight=0., response_difference_weight=0., factual_banks=[bank])
+        self.assertEqual(fitted['fit']['measured_factual_state_labels'], 1)
+        self.assertTrue(fitted['fit']['local_graph_pairs'])
+        class ConnectedDecision(ConnectedPlanCatalogMixin, PlainReturnDecision):
+            network_type = PairedSuccessorNetwork
+        network = fitted['networks'][0]
+        policy = ConnectedDecision(defenders=3, width=8, state=network.state_dict(),
+            options=connected_fleet_catalog(3), action_encoding='physical_delta',
+            identity_conditioned=True, feedback_relative_scale=None, intervention_budget=1).eval()
+        frozen = {key:value.clone() for key, value in policy.network.state_dict().items()}
+        for n in (3, 6, 8, 3):
+            values = policy.catalog_estimates(torch.zeros(2, 9*n+5), torch.ones(2, n, 6))[1]
+            self.assertEqual(policy.options.tolist(), [list(option) for option in connected_fleet_catalog(n)])
+            self.assertEqual(values.shape, (2, len(policy.options)))
+            self.assertTrue(bool(torch.isfinite(values).all()))
+            self.assertTrue(bool(((policy.programs > 0).sum(-1) == n).any()))
+        for key, value in policy.network.state_dict().items():
+            torch.testing.assert_close(value, frozen[key], atol=0., rtol=0.)
+        repeated = ConnectedDecision(defenders=3, width=8, state=network.state_dict(),
+            options=connected_fleet_catalog(3), action_encoding='physical_delta',
+            identity_conditioned=True, feedback_relative_scale=None, intervention_budget=0,
+            repeated_greedy=True).eval()
+        context, controls = torch.zeros(2, 32), torch.ones(2, 3, 6)
+        torch.testing.assert_close(repeated.catalog_estimates(context, controls)[1],
+            policy.catalog_estimates(context, controls)[1], atol=0., rtol=0.)
+        packet = dict(node=torch.zeros(2, 3, 16), _conditional_count=torch.tensor([[0], [4]]))
+        packet['node'][:, 0, 15] = 20./400.
+        self.assertEqual(policy.eligible(packet).tolist(), [True, False])
+        self.assertEqual(repeated.eligible(packet).tolist(), [True, True])
+        packet['node'][:, 0, 15] = 21./400.
+        self.assertFalse(bool(repeated.eligible(packet).any()))
+        with self.assertRaisesRegex(ValueError, 'explicit execution rule'):
+            ConnectedDecision(defenders=3, width=8, state=network.state_dict(),
+                options=connected_fleet_catalog(3), action_encoding='physical_delta',
+                identity_conditioned=True, feedback_relative_scale=None, intervention_budget=0)
+
     def test_factual_calibration_preserves_trajectory_mass_and_validation_split(self):
         import numpy as np
         from paired_successor_value import measured_factual_values, measured_pairs, fit_successor, physical_response
@@ -99,6 +168,35 @@ class ConditionalFusionValueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'single changed vessel'):
             net(context,controls,torch.ones_like(programs),timing)
 
+    def test_subject_successor_transfers_frozen_weights_and_all_program_windows(self):
+        from paired_successor_value import SubjectOutcomeSuccessorNetwork
+        from plain_return import PlainReturnDecision
+        class SubjectDecision(PlainReturnDecision):
+            network_type = SubjectOutcomeSuccessorNetwork
+        torch.manual_seed(413)
+        network = SubjectOutcomeSuccessorNetwork(6, width=8).eval()
+        state = {key: value.detach().clone() for key, value in network.state_dict().items()}
+        options = [(0, 0, 0)]+sorted((digit*10**boat, 0, span)
+            for boat in range(6) for digit in (1, 2, 3, 4, 6, 7, 8, 9) for span in (5, 20))
+        policy = SubjectDecision(defenders=6, options=options, state=state, width=8,
+            ensemble_states=(state,), identity_conditioned=True,
+            action_encoding='physical_delta', feedback_relative_scale=.25,
+            feedback_relative_hold=True, isolate_factual_start=True, intervention_budget=1).eval()
+        context = torch.randn(2, 59); controls = torch.randn(2, 6, 6)
+        with torch.no_grad():
+            original = policy.catalog_estimates(context, controls)[1]
+            for n in (3, 4, 5, 7, 8):
+                public = torch.randn(2, 9*n+5); commands = torch.randn(2, n, 6)
+                _, values = policy.catalog_estimates(public, commands)
+                self.assertEqual(values.shape, (2, 1+16*n))
+                self.assertEqual(set(map(tuple, policy.options[1:, 1:].tolist())), {(0, 5), (0, 20)})
+                self.assertTrue(bool(torch.isfinite(values).all()))
+                self.assertTrue(bool(((values >= 0.) & (values <= 1.)).all()))
+                for key, value in policy.network.state_dict().items():
+                    torch.testing.assert_close(value, state[key], rtol=0., atol=0.)
+            torch.testing.assert_close(policy.catalog_estimates(context, controls)[1], original,
+                                       rtol=0., atol=0.)
+
     def test_terminal_fleet_credit_preserves_late_success_and_failure(self):
         from run_remote_evidence import fleet_return_targets, fleet_anchor_kl
         def episode(success, count):
@@ -132,6 +230,197 @@ class ConditionalFusionValueTests(unittest.TestCase):
         value.sum().backward()
         self.assertTrue(bool(torch.isfinite(logits.grad).all()))
         torch.testing.assert_close(fleet_anchor_kl(reference,reference),torch.zeros(1))
+
+    def test_fleet_deferred_values_preserve_frozen_trunk_and_matched_training(self):
+        import copy
+        import numpy as np
+        from paired_successor_value import (SubjectOutcomeSuccessorNetwork, FleetContinuationNetwork,
+            FleetDeferredValue, DeferredFleetDecisionMixin, fit_fleet_deferred_value)
+        from local_intervention_value import intervention_policy_identity, observed_wait_examples
+        from plain_return import PlainReturnDecision
+        from conditional_fusion_value import append_vessel_identity
+        torch.manual_seed(613)
+        source = 'a'*64; continuation = 'b'*64; n = 3
+        net = SubjectOutcomeSuccessorNetwork(n, width=8).eval()
+        state = copy.deepcopy(net.state_dict())
+        options = [(0, 0, 0)]+sorted((digit*10**boat, 0, span) for boat in range(n)
+            for digit in (1, 2, 3, 4, 6, 7, 8, 9) for span in (5, 20))
+        recipe = dict(kind='subject_outcome_successor_return', defenders=n, width=8, state=state,
+            ensemble_states=[state], options=options, identity_conditioned=True, decision_period=5,
+            action_encoding='physical_delta', feedback_relative_scale=.25, feedback_relative_hold=True,
+            isolate_factual_start=True, intervention_budget=1, gain_margin=.02)
+        layouts = [(100+i, n, 2.) for i in range(4)]
+        model = dict(base_sha256=source, successor_task_value=recipe,
+            successor_task_fit=dict(paired=True, training_layouts=layouts, validation_layouts=[(999,n,2.)]))
+        data = dict(kind='actual_wait_continuation_pairs', completed=True, predecessor_sha256=source,
+            continuation_policy_sha256=continuation, continuation_policy_identity=intervention_policy_identity(model),
+            measured_terminal_observations=16, collection_context=dict(strict_single_vessel_per_intervention=True,
+                maximum_interventions=1, defer_ticks=5, value_target='success', source_m1_sha256=source,
+                continuation_policy_sha256=continuation, root_states=4), roots=[])
+        for index, scene in enumerate(layouts):
+            context = np.full(8*n+5, index/20., np.float32); context[-1] = index*5/400
+            root = dict(scene=scene, context=context, effect_controls=np.full((n,6), .2, np.float32),
+                order=np.array([2,0,1]), root_steps=5*index, futures=[117,219], future_weights=[1.,3.],
+                maximum_wait_prefix_state_error=0., outcomes={})
+            for q in (0,1):
+                for future in (0,1):
+                    success = float(q == future)
+                    root['outcomes'][q,future] = dict(success=success, normalized_return=success,
+                        remaining_ticks=20, duration=.2*(5*index+20), intervention_count=q,
+                        interventions=[dict(subjects=[1],time=.2*(5*index+5))] if q else [])
+            data['roots'].append(root)
+        context = append_vessel_identity(torch.tensor(np.stack([root['context'] for root in data['roots']])),
+            torch.tensor(np.stack([root['order'] for root in data['roots']])))
+        controls = torch.tensor(np.stack([root['effect_controls'] for root in data['roots']]))
+        initialized = FleetContinuationNetwork(n,width=8).initialize_from_intervention(state).eval()
+        with torch.no_grad():
+            factual = net.task_value(net.encode(context,controls,torch.zeros(4,n,dtype=torch.long),
+                                               torch.zeros(4,2,dtype=torch.long))[1]).squeeze(-1)
+            logits = initialized(context,controls)
+        torch.testing.assert_close(logits[:,0],factual,rtol=0.,atol=0.)
+        torch.testing.assert_close(logits[:,0],logits[:,1],rtol=0.,atol=0.)
+        outcomes = []
+        for paired in (True,False):
+            matched = copy.deepcopy(model); matched['successor_task_fit']['paired'] = paired
+            result = fit_fleet_deferred_value(matched,data,validation_layouts=[layouts[-1]],
+                updates=3,batch_size=8,validation_period=1,seed=23)
+            outcomes.append(result)
+            self.assertNotIn('wait_value',matched['successor_task_value'])
+            for key,value in result['successor_task_value']['state'].items():
+                torch.testing.assert_close(value,state[key],rtol=0.,atol=0.)
+            for member in result['successor_task_value']['wait_value']['states']:
+                for key,value in member.items():
+                    if not key.startswith('task_value.'):
+                        torch.testing.assert_close(value,state[key],rtol=0.,atol=0.)
+            self.assertEqual(result['observed_wait_fit']['training_pairs'],6)
+            self.assertEqual(result['observed_wait_fit']['validation_pairs'],2)
+            self.assertEqual(result['observed_wait_fit']['training_target_sha256'],
+                observed_wait_examples(data,identity_conditioned=True,value_target='success')['target_sha256'])
+        for key in ('training_draw_sha256','training_observation_sha256','training_target_sha256'):
+            self.assertEqual(outcomes[0]['observed_wait_fit'][key],outcomes[1]['observed_wait_fit'][key])
+        self.assertEqual(outcomes[1]['observed_wait_fit']['difference_weight'],0.)
+        class SubjectDecision(DeferredFleetDecisionMixin,PlainReturnDecision):
+            network_type = SubjectOutcomeSuccessorNetwork
+        deploy = copy.deepcopy(outcomes[0]['successor_task_value']); deploy.pop('kind')
+        policy = SubjectDecision(**deploy).eval()
+        with torch.no_grad():
+            original = policy.wait_value(context,controls)
+            for fleet in (6,8,3):
+                policy.configure_fleet(fleet)
+                public = torch.randn(2,9*fleet+5); command = torch.randn(2,fleet,6)
+                value = policy.wait_value(public,command)
+                self.assertEqual(tuple(value.shape),(2,))
+                self.assertTrue(bool(torch.isfinite(value).all()))
+                self.assertTrue(bool((value.abs() <= 1.).all()))
+                self.assertEqual(len(policy.options),1+16*fleet)
+            torch.testing.assert_close(policy.wait_value(context,controls),original,rtol=0.,atol=0.)
+        modified = copy.deepcopy(model); modified['successor_task_value']['gain_margin'] += .01
+        with self.assertRaisesRegex(ValueError,'this frozen intervention policy'):
+            fit_fleet_deferred_value(modified,data,validation_layouts=[layouts[-1]],updates=1)
+        with self.assertRaisesRegex(ValueError,'intervention training layouts'):
+            fit_fleet_deferred_value(model,data,validation_layouts=[(999,n,2.)],updates=1)
+
+        from paired_successor_value import FleetExerciseNetwork, fit_fleet_exercise_value
+        from local_intervention_value import observed_exercise_examples
+        triplets = copy.deepcopy(data)
+        triplets.update(kind='actual_exercise_continuation_triplets',
+            measured_terminal_observations=24,newly_measured_terminal_observations=8)
+        triplets['collection_context']['current_proposal_computed_before_future'] = True
+        for root in triplets['roots']:
+            root.update(proposal_option=np.array([1,0,5]),proposal_accepted=True,current_outcomes={})
+            for future in (0,1):
+                root['current_outcomes'][future] = dict(success=1.,normalized_return=1.,
+                    remaining_ticks=20,duration=.2*(root['root_steps']+20),intervention_count=1,
+                    interventions=[dict(subjects=[0],time=.2*root['root_steps'])])
+        exercise_examples = observed_exercise_examples(triplets)
+        self.assertEqual(tuple(exercise_examples['returns'].shape),(8,3))
+        initialized_exercise = FleetExerciseNetwork(n,width=8).initialize_from_intervention(state).eval()
+        programs = torch.zeros(4,n,dtype=torch.long); programs[:,0] = 1
+        timing = torch.tensor([[0,5]]*4)
+        with torch.no_grad():
+            parent = net(context,controls,programs,timing)
+            endpoints = initialized_exercise(context,controls,programs,timing)
+        torch.testing.assert_close(endpoints[:,1],parent,rtol=0.,atol=0.)
+        torch.testing.assert_close(endpoints[:,0],endpoints[:,2],rtol=0.,atol=0.)
+        coupled = FleetExerciseNetwork(n,width=8,joint_outcomes=True).initialize_from_intervention(state).eval()
+        with torch.no_grad():
+            embedding,base = coupled.public_embedding(context,controls,programs,timing)
+            joint = coupled.joint_logits(embedding,base).softmax(-1)
+            coupled_endpoints = coupled(context,controls,programs,timing).sigmoid()
+        torch.testing.assert_close(joint.sum(-1),torch.ones(4),rtol=1e-6,atol=1e-6)
+        torch.testing.assert_close(coupled_endpoints,endpoints.sigmoid(),rtol=1e-6,atol=1e-6)
+        torch.testing.assert_close(coupled_endpoints[:,1]-coupled_endpoints[:,0],
+            joint[:,2]+joint[:,3]-joint[:,4]-joint[:,5],rtol=1e-6,atol=1e-6)
+        coupled_models = []
+        for paired in (True,False):
+            matched = copy.deepcopy(model);matched['successor_task_fit']['paired'] = paired
+            fitted = fit_fleet_exercise_value(matched,triplets,validation_layouts=[layouts[-1]],
+                updates=3,batch_size=8,validation_period=1,seed=23,calibration_width=8,joint_outcomes=True)
+            coupled_models.append(fitted)
+            self.assertEqual(fitted['observed_exercise_fit']['joint_likelihood_supervision'],paired)
+            for member in fitted['successor_task_value']['exercise_value']['states']:
+                for key,value in member.items():
+                    if not key.startswith('calibration.'):
+                        torch.testing.assert_close(value,state[key],rtol=0.,atol=0.)
+            deployed = copy.deepcopy(fitted['successor_task_value']);deployed.pop('kind')
+            loaded = SubjectDecision(**deployed).eval()
+            self.assertTrue(loaded.exercise_value.heads[0].joint_outcomes)
+            for fleet in (3,6,8):
+                loaded.configure_fleet(fleet)
+                public = torch.randn(2,9*fleet+5);command = torch.randn(2,fleet,6)
+                with torch.no_grad():
+                    ranking,values = loaded.catalog_estimates(public,command)
+                self.assertTrue(bool(torch.isfinite(values).all()))
+                self.assertEqual(tuple(ranking.shape),(2,1+16*fleet))
+        for key in ('training_draw_sha256','training_observation_sha256','training_target_sha256'):
+            self.assertEqual(coupled_models[0]['observed_exercise_fit'][key],
+                             coupled_models[1]['observed_exercise_fit'][key])
+        exercised = []
+        for paired in (True,False):
+            matched = copy.deepcopy(model); matched['successor_task_fit']['paired'] = paired
+            fitted = fit_fleet_exercise_value(matched,triplets,validation_layouts=[layouts[-1]],
+                updates=3,batch_size=8,validation_period=1,seed=23,calibration_width=8)
+            exercised.append(fitted)
+            self.assertNotIn('exercise_value',matched['successor_task_value'])
+            for member in fitted['successor_task_value']['exercise_value']['states']:
+                for key,value in member.items():
+                    if not key.startswith('calibration.'):
+                        torch.testing.assert_close(value,state[key],rtol=0.,atol=0.)
+        for key in ('training_draw_sha256','training_observation_sha256','training_target_sha256'):
+            self.assertEqual(exercised[0]['observed_exercise_fit'][key],exercised[1]['observed_exercise_fit'][key])
+        self.assertEqual(exercised[1]['observed_exercise_fit']['difference_weight'],0.)
+        deploy = copy.deepcopy(exercised[0]['successor_task_value']); deploy.pop('kind')
+        exercise_policy = SubjectDecision(**deploy).eval()
+        self.assertEqual(exercise_policy.gain_margin,0.)
+        self.assertEqual(exercise_policy.proposal_gain_margin,.02)
+        with torch.no_grad():
+            original_exercise = exercise_policy.exercise_value(context,controls,programs,timing)
+            for fleet in (6,8,3):
+                exercise_policy.configure_fleet(fleet)
+                public = torch.randn(2,9*fleet+5); command = torch.randn(2,fleet,6)
+                ranking,values = exercise_policy.catalog_estimates(public,command)
+                parent_ranking,parent_values = PlainReturnDecision.catalog_estimates(exercise_policy,public,command)
+                proposal = parent_ranking.argmax(-1)
+                self.assertTrue(bool(((ranking.argmax(-1)==0)|(ranking.argmax(-1)==proposal)).all()))
+                self.assertTrue(bool(torch.isfinite(values).all()))
+                self.assertEqual(len(exercise_policy.options),1+16*fleet)
+            torch.testing.assert_close(exercise_policy.exercise_value(context,controls,programs,timing),
+                original_exercise,rtol=0.,atol=0.)
+        from unittest.mock import patch
+        class FixedEndpoints(torch.nn.Module):
+            def forward(self,context,controls,programs,timing):
+                return context.new_tensor([[.3,.61,.6],[.3,.59,.6]])
+        original_readout = exercise_policy.exercise_value
+        exercise_policy.exercise_value = FixedEndpoints()
+        parent_values = torch.full((2,len(exercise_policy.options)),.3); parent_values[:,1] = .4
+        with patch.object(PlainReturnDecision,'catalog_estimates',return_value=(parent_values,parent_values)):
+            ranking,_ = exercise_policy.catalog_estimates(context[:2],controls[:2])
+            self.assertEqual(ranking.argmax(-1).tolist(),[1,0])
+        exercise_policy.exercise_value = original_readout
+        damaged = copy.deepcopy(triplets)
+        damaged['roots'][0]['current_outcomes'][0]['interventions'][0]['time'] = 1.
+        with self.assertRaisesRegex(ValueError,'intervention clock'):
+            observed_exercise_examples(damaged)
 
     def test_stratified_future_sampling_preserves_population_and_matched_learning(self):
         import numpy as np
@@ -418,6 +707,28 @@ class ConditionalFusionValueTests(unittest.TestCase):
                 expected,rtol=0.,atol=0.)
         self.assertFalse(torch.equal(numerical_kernel(packet,offsets)[0],whole[0]))
 
+    def test_fixed_fleet_collection_keeps_action_rows_and_exact_logp(self):
+        from run_remote_evidence import fixed_batch_inference
+        from conditional_fusion_value import FeedbackFleetPolicy,feedback_fleet_library
+        torch.manual_seed(321)
+        policy=FeedbackFleetPolicy(width=8,candidate_contrast=True).eval()
+        torch.nn.init.normal_(policy.actor.weight,std=.1)
+        policy.sample=policy.collect=True;policy.collection_dtype=torch.float32
+        for size in (3,1):
+            library,start=feedback_fleet_library(torch.rand(size,3,9))
+            features=torch.randn(size,library.shape[1],3,37)
+            costs=torch.rand(size,library.shape[1])*3.
+            actual=fixed_batch_inference(lambda packet,cost,plans:
+                policy.choose(packet['x'],cost,plans,start,'joint'),
+                dict(x=features),costs,library,width=8)
+            record=policy.last_decision
+            self.assertEqual(record['features'].dtype,torch.float32)
+            torch.testing.assert_close(record['features'][:size],features,rtol=0,atol=0)
+            torch.testing.assert_close(actual,library[torch.arange(size),record['index'][:size]])
+            logits,_=policy(record['features'],record['costs'])
+            probability=policy.policy_distribution(logits,'joint',3,start,policy.sampling_temperature)
+            torch.testing.assert_close(record['logp'],probability.log_prob(record['index']),rtol=0,atol=0)
+
     def test_fleet_attention_learns_whole_plan_values_and_transfers_parameters(self):
         import numpy as np
         from local_intervention_value import fit_success_intervention_pair
@@ -491,7 +802,7 @@ class ConditionalFusionValueTests(unittest.TestCase):
         from plain_return import PlainReturnNetwork, PlainReturnDecision, recurrent_single_vessel_specification
         catalog_for = lambda n: [(0, 0, 0)]+sorted((digit*10**boat, 0, span)
             for boat in range(n) for digit in (1, 2, 3, 4, 6, 7, 8, 9) for span in (5, 20, 40))
-        for representation in ('fleet_attention', 'fleet_quadratic'):
+        for representation in ('fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic'):
             settings = dict(action_encoding='physical_delta', feedback_relative_scale=.25,
                             state_baseline=True, representation=representation)
             net = PlainReturnNetwork(2, 8, **settings)
@@ -508,14 +819,29 @@ class ConditionalFusionValueTests(unittest.TestCase):
                 self.assertEqual(decision.intervention_budget, 1)
 
     def test_fleet_quadratic_response_retains_factual_anchor_and_matched_learning(self):
+        self._check_fleet_quadratic_response('fleet_quadratic', 40, 24855)
+
+    def test_graph_quadratic_response_uses_public_geometry_and_matched_learning(self):
+        from plain_return import PlainReturnNetwork
+        self._check_fleet_quadratic_response('fleet_graph_quadratic', 42, 23871)
+        rows = torch.randn(2, 6, 8)
+        original = PlainReturnNetwork.fleet_pair_features(rows)
+        shifted = rows.clone(); shifted[..., :4] += torch.tensor([.3, -.2, .1, .4])
+        torch.testing.assert_close(original, PlainReturnNetwork.fleet_pair_features(shifted))
+        permutation = torch.tensor([5, 2, 0, 4, 1, 3])
+        torch.testing.assert_close(original[:, permutation][:, :, permutation],
+            PlainReturnNetwork.fleet_pair_features(rows[:, permutation]))
+        self.assertEqual(tuple(original.shape), (2, 6, 6, 8))
+
+    def _check_fleet_quadratic_response(self, representation, width, parameters):
         import numpy as np
         from local_intervention_value import fit_success_intervention_pair
         from plain_return import PlainReturnNetwork, PlainReturnDecision, PairedReturnDecision
         settings = dict(identity_conditioned=True, action_encoding='physical_delta',
-                        feedback_relative_scale=.25, state_baseline=True, representation='fleet_quadratic')
+                        feedback_relative_scale=.25, state_baseline=True, representation=representation)
         torch.manual_seed(43)
-        net = PlainReturnNetwork(6, 40, **settings).eval()
-        self.assertEqual(sum(p.numel() for p in net.parameters()), 24855)
+        net = PlainReturnNetwork(6, width, **settings).eval()
+        self.assertEqual(sum(p.numel() for p in net.parameters()), parameters)
         context = torch.randn(2, 59); controls = torch.randn(2, 6, 6)
         programs = torch.tensor([[0]*6, [5, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 9]])
         timing = torch.tensor([[0, 0], [0, 20], [0, 5], [0, 40]])
@@ -557,7 +883,7 @@ class ConditionalFusionValueTests(unittest.TestCase):
             validation_data=dict(data, roots=roots[2:]), updates=4, ensemble_size=2,
             architecture='mlp', parameter_budget=2500, conditional_objective='shared_potential', device='cpu',
             network_options=dict(action_encoding='physical_delta', state_baseline=True,
-                representation='fleet_quadratic', additional_candidate_options=catalog_for(2)))
+                representation=representation, additional_candidate_options=catalog_for(2)))
         for key in ('training_observation_sha256', 'training_target_sha256', 'trainable_parameters',
                     'member_initialization_parameter_sha256', 'member_updates', 'representation'):
             self.assertEqual(paired['successor_task_fit'][key], ordinary['successor_task_fit'][key])
@@ -592,6 +918,44 @@ class ConditionalFusionValueTests(unittest.TestCase):
         self.assertTrue(any(p.grad is not None and bool(p.grad.any()) for p in attention.attention.parameters()))
         with self.assertRaisesRegex(ValueError,'divisible by four'):
             FeedbackFleetPolicy(width=15,representation='candidate_attention')
+
+    def test_complete_scenario_scores_average_after_nonlinear_fleet_evaluation(self):
+        from conditional_fusion_value import FeedbackFleetPolicy
+        torch.manual_seed(741)
+        ordinary=FeedbackFleetPolicy(width=8,candidate_contrast=True).eval()
+        torch.nn.init.normal_(ordinary.actor.weight,std=.1)
+        policy=FeedbackFleetPolicy(width=8,candidate_contrast=True,
+            scenario_evaluation=True,state=ordinary.state_dict()).eval()
+        features=torch.randn(2,100,2,3,37);costs=torch.rand(2,100,2)*3.
+        weights=torch.tensor([.3,.7])
+        packed=torch.cat((features,costs[...,None,None].expand(-1,-1,-1,3,1),
+            weights[None,None,:,None,None].expand(2,100,-1,3,1)),-1)
+        first=ordinary(features[:,:,0],costs[:,:,0]);second=ordinary(features[:,:,1],costs[:,:,1])
+        logits,values=policy(packed,(costs*weights).sum(-1))
+        torch.testing.assert_close(logits,.3*first[0]+.7*second[0],rtol=0.,atol=0.)
+        torch.testing.assert_close(values,.3*first[1]+.7*second[1],rtol=0.,atol=0.)
+        self.assertEqual(sum(p.numel() for p in policy.parameters()),sum(p.numel() for p in ordinary.parameters()))
+        singleton=packed[:,:,:1].clone();singleton[...,38]=1.
+        for actual,expected in zip(policy(singleton,costs[:,:,0]),first):
+            torch.testing.assert_close(actual,expected,rtol=0.,atol=0.)
+        (-logits.log_softmax(-1)[:,0].mean()+values.square().mean()).backward()
+        self.assertTrue(bool(policy.message[0].weight.grad.abs().sum()>0.))
+        with self.assertRaisesRegex(ValueError,'Scenario scoring'):
+            ordinary(packed,(costs*weights).sum(-1))
+        robust=FeedbackFleetPolicy(width=8,candidate_contrast=True,scenario_evaluation=True,
+            scenario_regret_weight=.5,state=ordinary.state_dict()).eval()
+        robust_logits,robust_values=robust(packed,(costs*weights).sum(-1))
+        scores=torch.stack((first[0],second[0]),-1)
+        regret=scores.amax(1,keepdim=True)-scores
+        expected=-.5*((regret*weights).sum(-1)+regret.amax(-1))
+        torch.testing.assert_close(robust_logits,expected,rtol=1e-6,atol=1e-6)
+        torch.testing.assert_close(robust_values,values,rtol=0.,atol=0.)
+        ignored=packed.clone();ignored[:,:,0,:,38]=1.;ignored[:,:,1,:,38]=0.
+        ignored_logits,_=robust(ignored,costs[:,:,0])
+        torch.testing.assert_close(ignored_logits,first[0]-first[0].amax(-1,keepdim=True),rtol=0.,atol=0.)
+        self.assertEqual(sum(p.numel() for p in robust.parameters()),sum(p.numel() for p in ordinary.parameters()))
+        with self.assertRaisesRegex(ValueError,'Scenario regret'):
+            FeedbackFleetPolicy(width=8,scenario_regret_weight=.5)
 
     def test_state_baseline_separates_null_actions_and_matches_paired_capacity(self):
         import numpy as np
@@ -3667,6 +4031,70 @@ class SharedTemporalProgramTests(unittest.TestCase):
 
 
 class PhysicalVesselIdentityTests(unittest.TestCase):
+    def test_fixed_proposal_roots_preserve_native_choices_across_shrinking_batches(self):
+        import numpy as np
+        from unittest.mock import patch
+        from local_intervention_value import FactualProposalRootSelector
+        from plain_return import PlainReturnNetwork, PlainReturnDecision
+        options = [(0, 0, 0)]+sorted((digit*10**boat, 0, span)
+            for boat in range(2) for digit in (1, 2, 3, 4, 6, 7, 8, 9) for span in (5, 20))
+        network_options = dict(identity_conditioned=True, action_encoding='physical_delta',
+            feedback_relative_scale=.25, state_baseline=True, representation='fleet_attention')
+        net = PlainReturnNetwork(2, 4, **network_options)
+        learners = [PlainReturnDecision(2, 4, net.state_dict(), options,
+            intervention_budget=1, gain_margin=.02, isolate_factual_start=True,
+            feedback_relative_hold=True, **network_options) for _ in range(2)]
+        selector = FactualProposalRootSelector(learners, ['a'*64, 'b'*64], fixed_inference_width=4)
+        packet = dict(node=torch.zeros(9, 2, 16), row=torch.arange(9.)[:, None])
+        widths = []
+        class Actor:
+            successor_task_value = None
+            def __call__(self, batch, **kwargs):
+                widths.append(len(batch['row']))
+                action = (batch['row']/100.+len(batch['row'])*1.e-4)[:, None].expand(-1, 2, 3).clone()
+                return action, None
+        actor = Actor()
+        def context(batch, *args):
+            x = torch.zeros(len(batch['row']), 21); x[:, 0] = batch['row'][:, 0]
+            return x, torch.tensor([[1, 0]]).expand(len(x), -1)
+        def controls(actor, batch, action):
+            return torch.cat((action[..., :2], torch.zeros_like(action[..., :2]), action[..., :2]), -1)
+        def estimates(divisor, column):
+            def score(x, u):
+                values = torch.full((len(x), len(options)), .49)
+                values[:, 0] = .5
+                values[:, column] = torch.where(x[:, 0].long() % divisor == 0, .55, .49)
+                return values, values
+            return score
+        with patch('conditional_fusion_value.intervention_task_context', side_effect=context), \
+                patch('conditional_fusion_value.paired_effect_controls', side_effect=controls), \
+                patch.object(learners[0], 'catalog_estimates', side_effect=estimates(2, 1)), \
+                patch.object(learners[1], 'catalog_estimates', side_effect=estimates(3, 2)):
+            whole = selector(packet, actor)
+            observed = {key:value.copy() for key, value in selector.last_observations.items()}
+            self.assertEqual(whole.tolist(), [True, False, True, True, True, False, True, False, True])
+            permutation = torch.tensor([8, 2, 5, 0, 7, 4, 1, 6, 3])
+            outputs = []; parts = {key:[] for key in observed}
+            for indices in (permutation[:2], permutation[2:7], permutation[7:]):
+                outputs.append(selector({key:value[indices] for key, value in packet.items()}, actor))
+                for key in parts:
+                    parts[key].append(selector.last_observations[key].copy())
+            torch.testing.assert_close(torch.cat(outputs)[permutation.argsort()], whole, rtol=0., atol=0.)
+            for key in parts:
+                np.testing.assert_array_equal(np.concatenate(parts[key])[permutation.argsort()], observed[key])
+            self.assertEqual(selector.specification['fixed_inference_width'], 4)
+            self.assertEqual(set(widths), {4})
+            self.assertEqual(observed['options'][0].tolist(), [list(options[1]), list(options[2])])
+            np.testing.assert_array_equal(observed['controls'][:, :, :2],
+                (packet['row'].numpy()/100.+.0004)[:, None].repeat(2, axis=1).repeat(2, axis=2))
+        self.assertNotIn('_plain_return_controls', packet)
+        torch.testing.assert_close(packet['node'], torch.zeros_like(packet['node']))
+        for width in (-1, True, 1.5):
+            with self.assertRaisesRegex(ValueError, 'nonnegative integer'):
+                FactualProposalRootSelector(learners, ['a'*64, 'b'*64], fixed_inference_width=width)
+        with self.assertRaisesRegex(ValueError, 'fixed-width'):
+            FactualProposalRootSelector(learners, ['a'*64, 'b'*64])
+
     def test_proposal_roots_use_both_native_decisions_and_preserve_factual_actions(self):
         import copy
         import numpy as np
@@ -4971,6 +5399,130 @@ class FactualCrossfitTests(unittest.TestCase):
             LocalDifferenceDecision(**logit_recipe)
 
 
+
+    def test_factual_pretraining_freezes_shared_state_and_matches_actual_budgets(self):
+        import copy
+        import numpy as np
+        from local_intervention_value import fit_success_intervention_pair
+        from plain_return import PlainReturnNetwork, fit_plain_return
+        controls = np.tile(np.array([.8, .3, -.4, .6, .1, -.2], np.float32), (2, 1))
+        options = [(0, 0, 0), (1, 0, 5), (9, 0, 5), (10, 0, 5), (90, 0, 5)]
+        roots = []; records = []
+        for index in range(6):
+            context = np.full(21, .02*index, np.float32); context[[4, 12]] = 1.
+            scene = (1900+index, 2, 2.)
+            roots.append(dict(context=context, effect_controls=controls.copy(), futures=[1, 2], scene=scene,
+                options=options, feedback_relative_hold=True, feedback_relative_scale=.25,
+                outcomes={(q, f): dict(success=float((index+q+f) % 3 != 0),
+                duration=.2*(40+q+f)) for q in range(len(options)) for f in range(2)}))
+            records.append(dict(scene=scene, contexts=np.stack((context, context+.01)),
+                controls=np.stack((controls, controls)), orders=np.array([[0, 1], [0, 1]]),
+                values=np.full(2, float(index % 2)), remaining=np.array([40., 20.])))
+        data = dict(model={}, roots=roots[:4], predecessor_sha256='frozen-factual', simulation_steps=40,
+                    isolate_factual_start=True, feedback_relative_hold=True, feedback_relative_scale=.25)
+        validation = dict(data, roots=roots[4:])
+        bank = dict(records=records[:4], predecessor_sha256='frozen-factual', trajectories=4, simulation_steps=160)
+        settings = dict(factual_bank=bank, updates=12, ensemble_size=2, seed=27, device='cpu',
+            architecture='mlp', parameter_budget=2000, conditional_objective='paired_catalog_contrast',
+            network_options=dict(action_encoding='physical_delta', state_baseline=True,
+                representation='fleet_quadratic', factual_pretraining_updates=2, snapshot_updates=(1, 2, 6)))
+        paired, ordinary = fit_success_intervention_pair(data, None, None, validation_data=validation, **settings)
+        for model in (paired, ordinary):
+            fit = model['successor_task_fit']; snapshots = model['learning_snapshots']
+            self.assertEqual(fit['member_updates'], [6, 6])
+            self.assertEqual(fit['member_factual_pretraining_updates'], [2, 2])
+            self.assertEqual(fit['total_factual_pretraining_updates'], 4)
+            self.assertEqual(fit['factual_pretraining_observations'], 16)
+            self.assertEqual(fit['updates'], 12)
+            self.assertEqual(fit['effect_updates'], 4)
+            self.assertTrue(fit['factual_encoder_frozen_after_pretraining'])
+            self.assertEqual(fit['member_factual_pretrained_state_sha256'], fit['member_factual_frozen_state_sha256'])
+            self.assertLess(fit['effect_trainable_parameters'], fit['trainable_parameters']//2)
+            for before, after in zip([snapshots['states'][2], *snapshots['ensemble_states'][2]],
+                                     [snapshots['states'][6], *snapshots['ensemble_states'][6]]):
+                fixed = [key for key in before if not key.startswith('layers.')]
+                for key in fixed:
+                    torch.testing.assert_close(before[key], after[key], rtol=0., atol=0.)
+                self.assertTrue(any(not torch.equal(before[key], after[key]) for key in before if key.startswith('layers.')))
+            self.assertTrue(any(not torch.equal(snapshots['states'][1][key], snapshots['states'][2][key])
+                                for key in snapshots['states'][1] if not key.startswith('layers.')))
+            recipe = model['successor_task_value']
+            torch.manual_seed(27)
+            initial = PlainReturnNetwork(2, recipe['width'], action_encoding='physical_delta',
+                feedback_relative_scale=.25, state_baseline=True, representation='fleet_quadratic')
+            for key, value in initial.state_dict().items():
+                if key.startswith('layers.'):
+                    torch.testing.assert_close(value, snapshots['states'][2][key], rtol=0., atol=0.)
+        for step in (1, 2):
+            for left, right in zip([paired['learning_snapshots']['states'][step],
+                                    *paired['learning_snapshots']['ensemble_states'][step]],
+                                   [ordinary['learning_snapshots']['states'][step],
+                                    *ordinary['learning_snapshots']['ensemble_states'][step]]):
+                for key in left:
+                    torch.testing.assert_close(left[key], right[key], rtol=0., atol=0.)
+        changed = copy.deepcopy(data)
+        for root in changed['roots']:
+            for (option, future), outcome in root['outcomes'].items():
+                if option:
+                    outcome['success'] = 1.-outcome['success']
+        dense = dict(factual_bank=bank, updates=6, parameter_budget=2000, seed=27, device='cpu',
+            action_encoding='physical_delta', state_baseline=True, representation='fleet_quadratic',
+            factual_pretraining_updates=2, snapshot_updates=(2,))
+        relabelled = fit_plain_return(changed, None, **dense)
+        for key, value in ordinary['learning_snapshots']['states'][2].items():
+            torch.testing.assert_close(value, relabelled['learning_snapshots']['states'][2][key], rtol=0., atol=0.)
+        plain = dict(dense, updates=2, snapshot_updates=())
+        plain.pop('factual_pretraining_updates')
+        default = fit_plain_return(data, None, **plain)
+        explicit = fit_plain_return(data, None, **plain, factual_pretraining_updates=0)
+        for key, value in default['successor_task_value']['state'].items():
+            torch.testing.assert_close(value, explicit['successor_task_value']['state'][key], rtol=0., atol=0.)
+        with self.assertRaisesRegex(ValueError, 'actual optimizer budget'):
+            fit_plain_return(data, None, **plain, factual_pretraining_updates=2)
+
+    def test_common_future_catalog_contrast_matches_all_pairs_without_padding_mass(self):
+        from plain_return import common_future_contrast_loss
+        estimates = torch.tensor([[.1, .4, .7], [.2, .8, 99.]], requires_grad=True)
+        targets = torch.tensor([[0., 1., 1.], [1., 0., -19.]])
+        mask = torch.tensor([[True, True, True], [True, True, False]])
+        expected = []
+        for prediction, truth, valid in zip(estimates, targets, mask):
+            error = (prediction-truth)[valid]
+            expected.append((error[:, None]-error[None]).square().mean())
+        actual = common_future_contrast_loss(estimates, targets, mask)
+        torch.testing.assert_close(actual, torch.stack(expected).mean())
+        torch.testing.assert_close(actual, common_future_contrast_loss(
+            estimates+torch.tensor([[.35], [-.25]]), targets, mask))
+        order = torch.tensor([2, 0, 1])
+        torch.testing.assert_close(actual, common_future_contrast_loss(
+            estimates[:, order], targets[:, order], mask[:, order]))
+        actual.backward()
+        self.assertEqual(float(estimates.grad[1, 2]), 0.)
+        torch.testing.assert_close(estimates.grad.sum(-1), torch.zeros(2), atol=1e-7, rtol=0.)
+
+    def test_catalog_contrasts_change_one_vessel_at_the_same_clock(self):
+        from itertools import combinations
+        from plain_return import single_vessel_contrast_groups
+        options = [(0, 0, 0), (1, 0, 5), (2, 0, 5), (10, 0, 5), (20, 0, 5),
+                   (11, 0, 5), (12, 0, 5), (1, 0, 20), (2, 0, 20), (11, 5, 5)]
+        rows = [(root, *option, 0.) for root in range(2) for future in range(2) for option in options]
+        identities = [(root, future) for root in range(2) for future in range(2) for _ in options]
+        groups = single_vessel_contrast_groups(rows, identities, 2)
+        actual = [tuple(sorted(pair)) for group in groups for pair in combinations(group.tolist(), 2)]
+        expected = set()
+        for left, right in combinations(range(len(rows)), 2):
+            a, b = rows[left], rows[right]
+            changed = sum((a[1]//power) % 10 != (b[1]//power) % 10 for power in (1, 10))
+            if identities[left] == identities[right] and a[2:4] == b[2:4] and a[3] > 0 and changed == 1:
+                expected.add((left, right))
+        self.assertEqual(len(actual), len(set(actual)))
+        self.assertEqual(set(actual), expected)
+        self.assertNotIn((1, 3), expected)
+        self.assertNotIn((1, 7), expected)
+        self.assertIn((5, 6), expected)
+        self.assertEqual(single_vessel_contrast_groups([rows[i] for i in (0, 1, 3)],
+                                                     [identities[i] for i in (0, 1, 3)], 2), [])
+
     def test_success_pair_matches_coverage_and_audits_uncorrected_unseen_layouts(self):
         import copy
         import numpy as np
@@ -5279,20 +5831,47 @@ class FactualCrossfitTests(unittest.TestCase):
             self.assertIsNone(model['successor_task_fit']['raw_validation_diagnostics'])
             self.assertFalse(model['successor_task_fit']['validation_evaluated'])
             self.assertEqual(model['successor_task_fit']['member_training_roots'], [4])
-        for objective in ('shared_potential', 'paired_ordering'):
-            potential, matched = fit_success_intervention_pair(dict(data, isolate_factual_start=True), None, None,
-                validation_data=dict(validation, isolate_factual_start=True), factual_bank=bank,
+        contrast_training, contrast_validation = copy.deepcopy(data), copy.deepcopy(validation)
+        for cohort in (contrast_training, contrast_validation):
+            for root in cohort['roots']:
+                q = len(root['options'])
+                root['options'].append((2, 0, 5))
+                for future in range(len(root['futures'])):
+                    root['outcomes'][q, future] = dict(success=float(future == 0), duration=.2*(40+q+future))
+            cohort['measured_terminal_observations'] = sum(len(root['outcomes']) for root in cohort['roots'])
+        ordinary_reference = None
+        for objective in ('shared_potential', 'paired_ordering', 'paired_catalog_contrast'):
+            potential, matched = fit_success_intervention_pair(dict(contrast_training, isolate_factual_start=True), None, None,
+                validation_data=dict(contrast_validation, isolate_factual_start=True), factual_bank=bank,
                 updates=4, ensemble_size=2, width=4, seed=27, architecture='mlp', device='cpu',
                 network_options=dict(action_encoding='physical_delta'), conditional_objective=objective)
             for key in ('training_observation_sha256', 'training_target_sha256', 'member_updates', 'trainable_parameters'):
                 self.assertEqual(potential['successor_task_fit'][key], matched['successor_task_fit'][key])
             self.assertFalse(potential['successor_task_fit']['separate_factual_objective'])
+            ordinary_states = [matched['successor_task_value']['state'],
+                               *matched['successor_task_value']['ensemble_states']]
+            if ordinary_reference is None:
+                ordinary_reference = ordinary_states
+            else:
+                for actual_state, reference_state in zip(ordinary_states, ordinary_reference):
+                    for name, value in actual_state.items():
+                        torch.testing.assert_close(value, reference_state[name], rtol=0., atol=0.)
+            if objective == 'paired_catalog_contrast':
+                fit = potential['successor_task_fit']
+                self.assertEqual(fit['paired_catalog_groups'], 8)
+                self.assertEqual(fit['paired_catalog_minibatch_groups'], 8)
+                self.assertGreater(fit['paired_catalog_sampling_mass'], 0.)
+                self.assertLess(fit['paired_catalog_sampling_mass'], 1.)
+                self.assertEqual(len(set(fit['member_paired_catalog_draw_sha256'])), 2)
+                self.assertIn('same-clock single-vessel common-future contrasts', fit['objective'])
+                self.assertEqual(fit['paired_catalog_grouping'], 'root, future, clock, subject, unchanged peer plans')
+                self.assertEqual(matched['successor_task_fit']['paired_catalog_groups'], 0)
             self.assertNotEqual(potential['successor_task_fit']['raw_validation_diagnostics']['evaluated_parameter_sha256'],
                                 matched['successor_task_fit']['raw_validation_diagnostics']['evaluated_parameter_sha256'])
             recipe = dict(potential['successor_task_value']); recipe.pop('kind')
             learner = PairedReturnDecision(**recipe)
             selected = []
-            for root in validation['roots']:
+            for root in contrast_validation['roots']:
                 context = torch.from_numpy(root['context'][None]); commands = torch.from_numpy(root['effect_controls'][None])
                 values = learner.catalog_estimates(context, commands)[1]
                 self.assertTrue(bool(((values >= 0.) & (values <= 1.)).all()))
@@ -5313,6 +5892,44 @@ class FactualCrossfitTests(unittest.TestCase):
 
 
 class PublicTargetAccelerationTests(unittest.TestCase):
+    def test_grouped_response_preserves_distinct_expert_futures(self):
+        from develop_source_fusion import PublicTargetAcceleration,PublicTargetFeedback
+        torch.manual_seed(321)
+        states=[]
+        for _ in range(4):
+            network=PublicTargetAcceleration(8,True)
+            torch.nn.init.normal_(network.readout[-1].weight,std=.08)
+            states.append(network.state_dict())
+        settings=dict(width=8,representation='interaction_acceleration')
+        predictor=PublicTargetFeedback(**settings,states=states,scenario_mode='groups',
+            scenario_groups=((0,1),(2,3)),scenario_weights=(.3,.7))
+        components=predictor.trajectory_components()
+        self.assertEqual(len(components),2)
+        self.assertEqual(predictor.scenario_weights,(.3,.7))
+        motion=torch.randn(2,6,6);boids=torch.randn(2,6,2).tanh()
+        target=torch.tensor([[30.,10.],[-20.,15.]])
+        velocity=torch.tensor([[.5,.4],[2.,-.4]])
+        final=[]
+        for index,component in enumerate(components):
+            expert=PublicTargetFeedback(**settings,states=states[2*index:2*index+2])
+            actual_position=expected_position=target
+            actual_velocity=expected_velocity=velocity
+            for _ in range(5):
+                actual_position,actual_velocity=component.predict_state(
+                    motion,boids,actual_position,actual_velocity)
+                expected_position,expected_velocity=expert.predict_state(
+                    motion,boids,expected_position,expected_velocity)
+                torch.testing.assert_close(actual_position,expected_position,rtol=0,atol=0)
+                torch.testing.assert_close(actual_velocity,expected_velocity,rtol=0,atol=0)
+            final.append(actual_position)
+        self.assertFalse(torch.allclose(*final))
+        with self.assertRaisesRegex(ValueError,'partition'):
+            PublicTargetFeedback(**settings,states=states,scenario_mode='groups',
+                scenario_groups=((0,1),(1,2,3)))
+        with self.assertRaisesRegex(ValueError,'probabilities'):
+            PublicTargetFeedback(**settings,states=states,scenario_mode='groups',
+                scenario_groups=((0,1),(2,3)),scenario_weights=(.2,.2))
+
     def test_public_response_preserves_vessel_permutations_and_fleet_sizes(self):
         from develop_source_fusion import PublicTargetAcceleration,PublicTargetFeedback
         torch.manual_seed(319)

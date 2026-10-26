@@ -1843,6 +1843,19 @@ def fit_factual_wait_opportunity(model, factual_bank, output, *, updates=3000, w
     return result
 
 
+def intervention_value_contract(model):
+    """Read the factual source and terminal objective from either saved format."""
+    fit=model['successor_task_fit'];recipe=model['successor_task_value']
+    source=fit.get('predecessor_sha256',model.get('base_sha256'))
+    target=fit.get('value_target')
+    if target is None and recipe.get('kind') in (
+            'paired_outcome_successor_return','subject_outcome_successor_return'):
+        target='success'
+    if not source or target not in ('success','discounted_return'):
+        raise ValueError('The intervention checkpoint must identify its factual source and terminal objective.')
+    return source,target
+
+
 def intervention_policy_identity(model):
     """Fingerprint the frozen decision rule, including its catalog and thresholds."""
     digest = hashlib.sha256()
@@ -1861,13 +1874,14 @@ def intervention_policy_identity(model):
         else:
             digest.update(repr(value.item() if isinstance(value, np.generic) else value).encode())
         digest.update(b'\x00')
-    fit = model['successor_task_fit']
-    visit((fit['predecessor_sha256'], fit['value_target'], model['successor_task_value']))
+    source,target=intervention_value_contract(model)
+    visit((source,target,model['successor_task_value']))
     return digest.hexdigest()
 
 
 def collect_observed_wait_pairs(predecessor, continuation, factual_bank, output=None, *,
-        repetitions=4, seed=43, batch_size=16, device='cpu', collection_context=None):
+        repetitions=4, seed=43, batch_size=16, device='cpu', collection_context=None,
+        fixed_inference_width=0):
     """Execute factual and five-tick-deferred policies on the same real futures."""
     import conditional_fusion_value as c
     import develop_source_fusion as d
@@ -1879,10 +1893,14 @@ def collect_observed_wait_pairs(predecessor, continuation, factual_bank, output=
     policy_digest = hashlib.sha256(continuation.read_bytes()).hexdigest()
     model = torch.load(continuation, map_location='cpu', weights_only=False)
     recipe = model['successor_task_value']; fit = model['successor_task_fit']
-    if (repetitions < 1 or batch_size < 1 or fit['predecessor_sha256'] != source_digest
+    fitted_source,value_target=intervention_value_contract(model)
+    if (not isinstance(fixed_inference_width,int) or isinstance(fixed_inference_width,bool)
+            or fixed_inference_width<0):
+        raise ValueError('Measured waiting needs a nonnegative integer inference width.')
+    if (repetitions < 1 or batch_size < 1 or fitted_source != source_digest
             or factual_bank['predecessor_sha256'] != source_digest
             or recipe.get('wait_value') is not None or recipe.get('intervention_budget') != 1
-            or recipe.get('decision_period', 5) != 5 or fit.get('value_target') != 'success'):
+            or recipe.get('decision_period', 5) != 5 or value_target != 'success'):
         raise ValueError('Measured success waiting needs a frozen success policy and its actual factual snapshots.')
     records = factual_bank['records']
     if not records or not all(record.get('root_snapshot') is not None for record in records):
@@ -1900,21 +1918,27 @@ def collect_observed_wait_pairs(predecessor, continuation, factual_bank, output=
         continuation_policy_sha256=policy_digest, root_states=len(records), seed=seed,
         common_futures_per_root=repetitions, future_outcomes_used_to_select_states_or_continuations=False,
         current_policy_measured=True, inference_device=device, inference_batch=batch_size)
+    if fixed_inference_width:
+        result['collection_context']['fixed_inference_width']=fixed_inference_width
+    def root_state(packet):
+        action=actor(packet,deterministic=True,gate_only=True)[0][...,:3]
+        context,order=c.intervention_task_context(packet,True,True)
+        return action,context,order,c.paired_effect_controls(actor,packet,action)
     roots_per_batch = max(1, batch_size//repetitions)
     for begin in range(0, len(records), roots_per_batch):
         jobs = []; tasks = []; batch_roots = []
         for record in records[begin:begin+roots_per_batch]:
-            actor.cpu()
+            actor.to(device if fixed_inference_width else 'cpu')
             snapshot = record['root_snapshot']; scene = tuple(record['scene'])
             tick = int(snapshot['root_steps'])
             if snapshot['predecessor_sha256'] != source_digest or tick % 5:
                 raise ValueError('Deferred measurements require this predecessor at an eligible decision clock.')
             env = copy.deepcopy(snapshot['environment']); obs = snapshot['observation'].copy()
-            packet = d.mechanism_tensor(d.joint_packet(env, obs))
+            packet = d.mechanism_tensor(d.joint_packet(env, obs),device if fixed_inference_width else 'cpu')
             with torch.no_grad():
-                action = actor(packet, deterministic=True, gate_only=True)[0][0, :, :3].cpu()
-                context, order = c.intervention_task_context(packet, True, True)
-                control = c.paired_effect_controls(actor, packet, action[None])
+                action,context,order,control=r.fixed_batch_inference(
+                    root_state,packet,width=fixed_inference_width)
+                action=action[0].cpu()
             futures = [int(np.random.SeedSequence([seed, int(scene[0]), tick, repeat, 923617]).generate_state(1)[0])
                        for repeat in range(repetitions)]
             root = dict(scene=scene, prefix_future=record['future'], root_steps=tick,
@@ -1929,9 +1953,9 @@ def collect_observed_wait_pairs(predecessor, continuation, factual_bank, output=
         # The explicit factual first action suppresses the root decision. The
         # same public five-tick eligibility clock next permits the frozen M2.
         factual = r.batched_credit_rows(predecessor, tasks, batch_size=batch_size, device=device,
-            keep_steps=True, initial_jobs=jobs)
+            keep_steps=True, initial_jobs=jobs,fixed_inference_width=fixed_inference_width)
         deferred = r.batched_credit_rows(continuation, tasks, batch_size=batch_size, device=device,
-            keep_steps=True, initial_jobs=jobs)
+            keep_steps=True, initial_jobs=jobs,fixed_inference_width=fixed_inference_width)
         for index, (left, right) in enumerate(zip(factual, deferred)):
             root = batch_roots[index//repetitions]; future = index % repetitions
             if (len(left['steps'][:5]) != len(right['steps'][:5])
@@ -1941,6 +1965,8 @@ def collect_observed_wait_pairs(predecessor, continuation, factual_bank, output=
                 error = max(float(np.max(np.abs(a['action']-b['action']))),
                             float(np.max(np.abs(a['packet']['node']-b['packet']['node']))))
                 root['maximum_wait_prefix_state_error'] = max(root['maximum_wait_prefix_state_error'], error)
+            if fixed_inference_width and root['maximum_wait_prefix_state_error']>=2e-5:
+                raise ValueError('Fixed-width factual and deferred policies changed their common waiting prefix.')
             for q, measured in enumerate((left, right)):
                 row = measured['row']; result['simulation_steps'] += row['physical_steps']
                 root['outcomes'][q, future] = dict(success=float(row['success']),
@@ -1960,6 +1986,116 @@ def collect_observed_wait_pairs(predecessor, continuation, factual_bank, output=
     observed_wait_examples(result, value_target='success')
     if output is not None:
         torch.save(result, output)
+    return result
+
+
+def collect_observed_exercise_triplets(continuation, factual_bank, waiting, output=None, *,
+        batch_size=64, device='cpu', fixed_inference_width=0, collection_context=None):
+    """Add actual immediate-policy outcomes to already measured waiting pairs.
+
+    The current proposal is computed before drawing the common future. All
+    three endpoints share the saved factual root, future, and frozen policy.
+    Waiting and factual outcomes are reused exactly, never predicted.
+    """
+    import conditional_fusion_value as c
+    import develop_source_fusion as d
+    import run_remote_evidence as r
+    observed_wait_examples(waiting, identity_conditioned=True, value_target='success')
+    continuation = Path(continuation)
+    digest = hashlib.sha256(continuation.read_bytes()).hexdigest()
+    model = torch.load(continuation, map_location='cpu', weights_only=False)
+    if (output is not None and Path(output).exists() or batch_size < 1
+            or digest != waiting['continuation_policy_sha256']
+            or intervention_policy_identity(model) != waiting['continuation_policy_identity']
+            or not factual_bank.get('completed')
+            or factual_bank['predecessor_sha256'] != waiting['predecessor_sha256']
+            or fixed_inference_width != waiting['collection_context'].get('fixed_inference_width', 0)):
+        raise ValueError('Immediate measurements require the exact frozen policy, roots and inference width.')
+    records = {(tuple(row['scene']), row['root_snapshot']['root_steps'], row['future']): row
+               for row in factual_bank['records'] if row.get('root_snapshot') is not None}
+    result = dict(kind='actual_exercise_continuation_triplets',
+        predecessor_sha256=waiting['predecessor_sha256'], continuation_policy_sha256=digest,
+        continuation_policy_identity=waiting['continuation_policy_identity'], roots=[],
+        measured_terminal_observations=0, newly_measured_terminal_observations=0,
+        simulation_steps=0, completed=False,
+        collection_context=dict(waiting['collection_context'], **dict(collection_context or {})))
+    result['collection_context'].update(endpoint_order=['factual', 'current', 'deferred'],
+        reused_factual_and_deferred_outcomes=True, current_proposal_computed_before_future=True,
+        current_policy_measured=True)
+    r.SOURCE = d.SOURCE; r.initialize_source_branches(str(d.SOURCE))
+    actor = d.joint_load(str(continuation), continuation.stat().st_mtime_ns).to(device)
+    learner = actor.successor_task_value; learner.record_decisions = True
+    def current_decision(packet):
+        factual_action = actor(packet, deterministic=True, gate_only=True)[0][..., :3]
+        context, order = c.intervention_task_context(packet, True, True)
+        controls = c.paired_effect_controls(actor, packet, factual_action)
+        action = actor(packet, deterministic=True)[0]
+        if action.shape[-1] == 3:
+            one = torch.ones_like(action[..., :1]); free = -one
+            action = torch.cat((action, free, one, 2*free, torch.zeros_like(action[..., :2]),
+                one, free.expand(-1, -1, 2), free.expand(-1, -1, 2), free), -1)
+        return action, context, order, controls.gather(1, order[..., None].expand(-1, -1, 6))
+    repetitions = max(len(row['futures']) for row in waiting['roots'])
+    roots_per_batch = max(1, batch_size//repetitions)
+    for begin in range(0, len(waiting['roots']), roots_per_batch):
+        jobs = []; tasks = []; roots = []; ownership = []
+        for previous in waiting['roots'][begin:begin+roots_per_batch]:
+            key = (tuple(previous['scene']), previous['root_steps'], previous['prefix_future'])
+            if key not in records:
+                raise ValueError('An immediate-policy endpoint lost its original factual snapshot.')
+            snapshot = records[key]['root_snapshot']
+            environment = copy.deepcopy(snapshot['environment'])
+            observation = snapshot['observation'].copy()
+            packet = d.mechanism_tensor(d.joint_packet(environment, observation), device)
+            with torch.no_grad():
+                action, context, order, controls = r.fixed_batch_inference(current_decision,
+                    packet, width=fixed_inference_width)
+                action = action[0].cpu().numpy()
+            if (not np.array_equal(order[0].cpu().numpy(), previous['order'])
+                    or not np.allclose(context[0].cpu().numpy(), previous['context'], atol=1e-6, rtol=0.)
+                    or not np.allclose(controls[0].cpu().numpy(), previous['effect_controls'], atol=1e-6, rtol=0.)):
+                raise ValueError('Current and waiting measurements changed their factual public inputs.')
+            decision = learner.last_decision
+            if decision is None:
+                raise ValueError('An immediate endpoint must start on an eligible public decision clock.')
+            root = copy.deepcopy(previous)
+            root['proposal_option'] = decision['option'][0].numpy().copy()
+            root['proposal_accepted'] = bool(decision['accepted'][0])
+            root['proposal_predicted_gain'] = float(decision['candidate_gain'][0])
+            root['current_outcomes'] = {}
+            roots.append(root)
+            for future_index, future in enumerate(root['futures']):
+                jobs.append(dict(environment=environment, observation=observation,
+                    random_state=snapshot['random_state'], action=action.copy(),
+                    isolate_factual_start=True))
+                tasks.append((key[0], future)); ownership.append((len(roots)-1, future_index))
+        measured = r.batched_credit_rows(continuation, tasks, batch_size=batch_size,
+            device=device, initial_jobs=jobs, fixed_inference_width=fixed_inference_width)
+        for row, (root_index, future_index) in zip(measured, ownership):
+            root = roots[root_index]; events = row['interventions']
+            if (len(events) > 1 or any(len(event['subjects']) != 1 for event in events)
+                    or root['proposal_accepted'] and (len(events) != 1
+                        or abs(events[0]['time']-.2*root['root_steps']) > 1e-4)
+                    or not root['proposal_accepted'] and any(
+                        event['time'] < .2*(root['root_steps']+5)-1e-4 for event in events)):
+                raise ValueError('Measured current execution disagrees with its recorded single-vessel proposal.')
+            root['current_outcomes'][future_index] = dict(success=float(row['success']),
+                remaining_ticks=int(row['physical_steps']), duration=float(row['duration']),
+                normalized_return=float(row['success']), intervention_count=len(events), interventions=events)
+            result['simulation_steps'] += row['physical_steps']
+        result['roots'].extend(roots)
+        count = sum(len(row['futures']) for row in result['roots'])
+        result['measured_terminal_observations'] = 3*count
+        result['newly_measured_terminal_observations'] = count
+        if output is not None:
+            r.atomic_save(result, output)
+        print(dict(phase='measured_current_exercise', roots=len(result['roots']),
+            total_roots=len(waiting['roots']), new_terminal_observations=count), flush=True)
+    if hashlib.sha256(continuation.read_bytes()).hexdigest() != digest:
+        raise ValueError('The intervention policy changed during current-exercise measurement.')
+    result['completed'] = True
+    if output is not None:
+        r.atomic_save(result, output)
     return result
 
 
@@ -2060,6 +2196,53 @@ def observed_wait_examples(data, factual_bank=None, *, identity_conditioned=Fals
     return dict(features=features, pair_roots=pair_roots, returns=returns,
         probabilities=probabilities, factual_features=factual_features, factual_returns=factual_returns,
         value_target=value_target, observation_sha256=observation_digest.hexdigest(), target_sha256=target_digest)
+
+
+def observed_exercise_examples(data):
+    """Validate three observed endpoints and retain only current public inputs."""
+    if (data.get('kind') != 'actual_exercise_continuation_triplets' or not data.get('completed')
+            or not data.get('collection_context', {}).get('current_proposal_computed_before_future')):
+        raise ValueError('Exercise learning requires complete, measured current and deferred policies.')
+    count = sum(len(root['futures']) for root in data['roots'])
+    if (data.get('measured_terminal_observations') != 3*count
+            or data.get('newly_measured_terminal_observations') != count):
+        raise ValueError('Exercise triples require one actual current outcome for each existing common future.')
+    waiting = dict(data, kind='actual_wait_continuation_pairs', measured_terminal_observations=2*count)
+    result = observed_wait_examples(waiting, identity_conditioned=True, value_target='success')
+    current = []; options = []; accepted = []
+    for root in data['roots']:
+        option = np.asarray(root.get('proposal_option'), np.int64)
+        n = len(root['effect_controls'])
+        if (option.shape != (3,) or option[0] < 0 or option[0] >= 10**n or option[1] != 0
+                or option[0] == 0 and option[2] != 0
+                or option[0] != 0 and option[2] not in (5, 20)
+                or sum((option[0]//10**i)%10 != 0 for i in range(n)) > 1
+                or any((option[0]//10**i)%10 == 5 for i in range(n))):
+            raise ValueError('Current exercise requires one recorded native single-vessel proposal.')
+        if set(root['current_outcomes']) != set(range(len(root['futures']))):
+            raise ValueError('A current-policy endpoint is missing its common future.')
+        accepted.append(bool(root['proposal_accepted']))
+        options.append(option if root['proposal_accepted'] else np.zeros(3, np.int64))
+        for index in range(len(root['futures'])):
+            observed = root['current_outcomes'][index]; events = observed.get('interventions', [])
+            value = float(observed['success'])
+            if (value not in (0., 1.) or observed.get('normalized_return') != value
+                    or observed['intervention_count'] != len(events) or len(events) > 1
+                    or any(len(event['subjects']) != 1 for event in events)
+                    or abs(observed['duration']/.2-root['root_steps']-observed['remaining_ticks']) > 1e-3
+                    or root['proposal_accepted'] and (not option[0] or len(events) != 1
+                        or abs(events[0]['time']-.2*root['root_steps']) > 1e-4)
+                    or not root['proposal_accepted'] and any(
+                        event['time'] < .2*(root['root_steps']+5)-1e-4 for event in events)):
+                raise ValueError('The current endpoint disagrees with its measured terminal or intervention clock.')
+            current.append(value)
+    targets = np.column_stack((result['returns'][:, 0], np.asarray(current, np.float32),
+                               result['returns'][:, 1])).astype(np.float32)
+    options = np.asarray(options, np.int64)
+    result.update(returns=targets, proposal_options=options, proposal_accepted=np.asarray(accepted),
+        observation_sha256=hashlib.sha256(result['observation_sha256'].encode()+options.tobytes()
+            +np.asarray(accepted).tobytes()).hexdigest(), target_sha256=hashlib.sha256(targets.tobytes()).hexdigest())
+    return result
 
 
 @torch.enable_grad()
@@ -4261,7 +4444,7 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
     for state in states:
         if dense:
             from plain_return import PlainReturnNetwork, PairedReturnNetwork
-            factory = (PairedReturnNetwork if paired and recipe.get('conditional_objective') not in ('shared_potential', 'paired_ordering')
+            factory = (PairedReturnNetwork if paired and recipe.get('conditional_objective') not in ('shared_potential', 'paired_ordering', 'paired_catalog_contrast')
                        else PlainReturnNetwork)
             net = factory(recipe['defenders'], recipe['width'], recipe.get('identity_conditioned', False),
                 action_encoding=recipe.get('action_encoding', 'categorical'),
@@ -4316,7 +4499,7 @@ def raw_paired_value_diagnostics(model, data, *, require_unseen_layouts=False, d
         estimates = []
         for net in models:
             raw = net(contexts[root_id], controls[root_id], programs, part[:, 2:])
-            if paired and not (dense and recipe.get('conditional_objective') in ('shared_potential', 'paired_ordering')):
+            if paired and not (dense and recipe.get('conditional_objective') in ('shared_potential', 'paired_ordering', 'paired_catalog_contrast')):
                 if dense:
                     factual = None
                     if recipe.get('conditional_objective', 'marginal_events') in ('factual_strata', 'joint_likelihood'):
@@ -4389,14 +4572,14 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         raise ValueError('Choose an interaction or dense ensemble per arm.')
     if onpolicy_bank is not None and architecture != 'mlp':
         raise ValueError('Observed recurrent action supervision requires the matched dense learners.')
-    if conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood', 'paired_ordering'):
+    if conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood', 'paired_ordering', 'paired_catalog_contrast'):
         raise ValueError('Unknown paired success conditional objective.')
     if conditional_objective == 'event_hierarchy' and architecture != 'mlp':
         raise ValueError('Change-direction learning requires the common dense architecture.')
-    if conditional_objective in ('shared_potential', 'paired_ordering') and architecture != 'mlp':
+    if conditional_objective in ('shared_potential', 'paired_ordering', 'paired_catalog_contrast') and architecture != 'mlp':
         raise ValueError('The matched shared-potential experiment requires the common dense architecture.')
     if data.get('policy_neighborhood', False) and (architecture != 'mlp'
-            or conditional_objective not in ('shared_potential', 'paired_ordering')):
+            or conditional_objective not in ('shared_potential', 'paired_ordering', 'paired_catalog_contrast')):
         raise ValueError('Policy-local paired comparisons require complete-plan scalar dense values.')
     if conditional_objective == 'joint_likelihood' and architecture != 'mlp':
         raise ValueError('The joint outcome likelihood requires the common dense architecture.')
@@ -4440,6 +4623,8 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         raise ValueError('Peer decision ablations require the matched scalar learners.')
     if 'future_weighted_sampling' in options and architecture != 'mlp':
         raise ValueError('Future population correction requires the matched dense learners.')
+    if 'factual_pretraining_updates' in options and architecture != 'mlp':
+        raise ValueError('Frozen factual representations require the matched dense learners.')
     allowed = {'peer_conditioned', 'context_conditioned', 'motion_basis', 'finite_motion_basis',
         'dual_motion_basis', 'identity_conditioned', 'response_conditioned_value', 'physics_residual_response',
         'shared_factual_response', 'response_supervision_weight', 'response_supervision_architecture',
@@ -4449,7 +4634,7 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
         'conservative_catalog_temperature', 'conservative_catalog_samples', 'conservative_catalog_roots',
         'unique_factual_supervision', 'root_sampling_weights', 'factual_sampling_weights', 'onpolicy_bank_weight',
         'continuation_bootstrap', 'continuation_bootstrap_weight', 'state_baseline', 'representation',
-        'peer_decision_conditioned', 'future_weighted_sampling'}
+        'peer_decision_conditioned', 'future_weighted_sampling', 'factual_pretraining_updates'}
     if set(options)-allowed:
         raise ValueError('Matched success settings cannot override targets, coverage, calibration or optimizer budgets.')
     common = dict(updates=updates, ensemble_size=ensemble_size, seed=seed, device=device,
@@ -4502,7 +4687,7 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
                          'conservative_catalog_samples', 'conservative_catalog_roots', 'unique_factual_supervision',
                          'root_sampling_weights', 'factual_sampling_weights', 'onpolicy_bank_weight',
                          'continuation_bootstrap', 'continuation_bootstrap_weight', 'state_baseline', 'representation',
-                         'peer_decision_conditioned', 'future_weighted_sampling'}
+                         'peer_decision_conditioned', 'future_weighted_sampling', 'factual_pretraining_updates'}
         if set(options)-dense_options:
             raise ValueError('Dense success learning uses public state/action inputs without response auxiliary heads.')
         settings = dict(factual_bank=factual_bank, onpolicy_bank=onpolicy_bank, updates=updates//ensemble_size,
@@ -4550,6 +4735,12 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
                 member_factual_trajectories=[0 if factual_bank is None else len(factual_bank['records'])]*ensemble_size,
                 member_onpolicy_action_trajectories=[0 if onpolicy_bank is None else len(onpolicy_bank['records'])]*ensemble_size,
                 member_onpolicy_action_draw_sha256=[member['onpolicy_action_draw_sha256'] for member in member_fits],
+                member_paired_catalog_draw_sha256=[member['paired_catalog_draw_sha256'] for member in member_fits],
+                member_factual_pretraining_updates=[member['factual_pretraining_updates'] for member in member_fits],
+                total_factual_pretraining_updates=sum(member['factual_pretraining_updates'] for member in member_fits),
+                member_factual_pretraining_draw_sha256=[member['factual_pretraining_draw_sha256'] for member in member_fits],
+                member_factual_pretrained_state_sha256=[member['factual_pretrained_state_sha256'] for member in member_fits],
+                member_factual_frozen_state_sha256=[member['factual_frozen_state_sha256'] for member in member_fits],
                 updates=updates, total_parameter_updates=updates,
                 member_updates=[updates//ensemble_size]*ensemble_size,
                 ensemble_members=ensemble_size, member_seeds=[seed+997*member for member in range(ensemble_size)],
@@ -4573,7 +4764,10 @@ def fit_success_intervention_pair(data, paired_output, ordinary_output, *, valid
                           'onpolicy_action_reconstruction_policy_sha256', 'measured_terminal_target_sha256',
                           'continuation_bootstrap', 'continuation_bootstrap_weight', 'state_baseline', 'representation',
                           'peer_decision_conditioned', 'future_weighted_sampling',
-                          'future_sampling_weight_sha256', 'paired_row_sampling_probability_sha256')
+                          'future_sampling_weight_sha256', 'paired_row_sampling_probability_sha256',
+                          'member_factual_pretraining_updates', 'total_factual_pretraining_updates',
+                          'member_factual_pretraining_draw_sha256', 'member_factual_pretrained_state_sha256',
+                          'member_factual_frozen_state_sha256')
     if any(paired['successor_task_fit'][key] != ordinary['successor_task_fit'][key] for key in matched_fields):
         raise RuntimeError('Matched success training produced unequal data coverage or optimizer budgets.')
     for model in (paired, ordinary):
@@ -5328,8 +5522,12 @@ def factual_trajectory_states(task):
 
 class FactualProposalRootSelector:
     """Find the first native intervention proposal without applying it to the facts."""
-    def __init__(self, learners, model_sha256, *, trigger_estimators=None):
-        from plain_return import PlainReturnDecision
+    def __init__(self, learners, model_sha256, *, trigger_estimators=None, fixed_inference_width=0):
+        from plain_return import PlainReturnDecision, standalone_single_vessel_windows
+        if (not isinstance(fixed_inference_width, int) or isinstance(fixed_inference_width, bool)
+                or fixed_inference_width < 0):
+            raise ValueError('Proposal inference needs a nonnegative integer fixed width.')
+        self.fixed_inference_width = fixed_inference_width
         self.learners = list(learners)
         hashes = list(model_sha256)
         if (not self.learners or len(hashes) != len(self.learners) or
@@ -5344,9 +5542,16 @@ class FactualProposalRootSelector:
         for learner in self.learners:
             if (not isinstance(learner, (LocalDifferenceDecision, PlainJointReturnDecision, PlainReturnDecision)) or
                     learner.intervention_budget != 1 or learner.decision_period != 5 or
-                    not learner.isolate_factual_start or getattr(learner, 'feedback_relative_hold', False) or
+                    not learner.isolate_factual_start or
                     getattr(learner, 'fleet_transfer', None) is not None):
                 raise ValueError('Proposal roots require the matched native single-vessel decision rules.')
+            if getattr(learner, 'feedback_relative_hold', False):
+                if not isinstance(learner, PlainReturnDecision) or not fixed_inference_width:
+                    raise ValueError('Relative proposal roots require a native fixed-width single-vessel critic.')
+                standalone_single_vessel_windows(learner)
+            if (getattr(learner, 'feedback_relative_scale', None) !=
+                    getattr(self.learners[0], 'feedback_relative_scale', None)):
+                raise ValueError('Proposal estimators must share their physical intervention scale.')
             if not torch.equal(learner.options.cpu(), self.learners[0].options.cpu()):
                 raise ValueError('The proposal estimators must share the complete candidate catalog.')
             learner.eval()
@@ -5358,10 +5563,27 @@ class FactualProposalRootSelector:
             common_for_all_estimators=True)
         if set(triggers) != set(range(len(self.learners))):
             self.specification['trigger_estimators'] = sorted(triggers)
+        if fixed_inference_width:
+            self.specification['fixed_inference_width'] = fixed_inference_width
         self.last_observations = None
 
     @torch.no_grad()
     def __call__(self, packet, actor):
+        if not self.fixed_inference_width:
+            return self._observe(packet, actor)
+        from run_remote_evidence import fixed_batch_inference
+        keys = ('context', 'controls', 'order', 'options')
+        def observe(batch):
+            accepted = self._observe(batch, actor)
+            return (accepted, *(torch.as_tensor(self.last_observations[key], device=accepted.device)
+                                for key in keys))
+        accepted, *observed = fixed_batch_inference(observe, packet, width=self.fixed_inference_width)
+        self.last_observations = {key:value.detach().cpu().numpy().copy()
+                                  for key, value in zip(keys, observed)}
+        return accepted
+
+    @torch.no_grad()
+    def _observe(self, packet, actor):
         from conditional_fusion_value import (intervention_task_context, paired_effect_controls,
                                                append_vessel_identity)
         from plain_return import PlainReturnDecision
@@ -5533,8 +5755,11 @@ def collect_onpolicy_factual_roots(policy, tasks, output, *, root_sample_seed,
     if period < 1 or inference_batch < 1 or int(root_sample_seed) < 0:
         raise ValueError('Factual root sampling needs a positive period and batch, and a nonnegative seed.')
     if (not isinstance(fixed_inference_width,int) or isinstance(fixed_inference_width,bool)
-            or fixed_inference_width<0 or fixed_inference_width and root_selector is not None):
-        raise ValueError('Fixed factual inference requires a nonnegative integer width and uniform root selection.')
+            or fixed_inference_width<0):
+        raise ValueError('Fixed factual inference requires a nonnegative integer width.')
+    if (root_selector is not None and
+            getattr(root_selector, 'fixed_inference_width', 0) != fixed_inference_width):
+        raise ValueError('Factual inference and proposal selection must use the same fixed width.')
     if root_selector is not None and (period != 5 or
             not isinstance(root_selector, FactualProposalRootSelector)):
         raise ValueError('Directed factual roots require a native proposal selector at the deployed decision period.')

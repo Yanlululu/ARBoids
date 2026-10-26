@@ -188,9 +188,9 @@ class PlainReturnNetwork(nn.Module):
         super().__init__()
         if action_encoding not in ('categorical', 'physical_delta'):
             raise ValueError('Unknown dense intervention action representation.')
-        if representation not in ('dense', 'fleet_attention', 'fleet_quadratic'):
+        if representation not in ('dense', 'fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic'):
             raise ValueError('Unknown intervention state/action representation.')
-        if representation in ('fleet_attention', 'fleet_quadratic') and (not state_baseline or width % 4):
+        if representation in ('fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic') and (not state_baseline or representation != 'fleet_graph_quadratic' and width % 4):
             raise ValueError('Fleet attention requires a state baseline and a width divisible by four.')
         self.representation = representation
         self.defenders = defenders
@@ -209,14 +209,20 @@ class PlainReturnNetwork(nn.Module):
         self.feedback_relative_scale = feedback_relative_scale
         self.state_size = (14 + identity_conditioned) * defenders + 5
         self.action_size = 10*defenders+2 if action_encoding == 'categorical' else 5*defenders+4
-        if representation in ('fleet_attention', 'fleet_quadratic'):
+        if representation in ('fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic'):
             # All vessels share the same state/action maps. The pooled output
             # is a value of the complete program, without additive boat values.
             self.state_embed = nn.Sequential(nn.Linear(14+identity_conditioned, width), nn.SiLU(),
                 nn.Linear(width, width), nn.SiLU())
-            self.state_attention = nn.TransformerEncoderLayer(width, 4, 2*width, dropout=0.,
-                activation='gelu', batch_first=True, norm_first=True)
-            if representation == 'fleet_quadratic':
+            if representation == 'fleet_graph_quadratic':
+                self.state_message = nn.Sequential(nn.Linear(2*width+8, width), nn.SiLU(),
+                    nn.Linear(width, width), nn.SiLU())
+                self.state_update = nn.Sequential(nn.Linear(2*width, width), nn.SiLU(), nn.Linear(width, width))
+                self.state_norm = nn.LayerNorm(width)
+            else:
+                self.state_attention = nn.TransformerEncoderLayer(width, 4, 2*width, dropout=0.,
+                    activation='gelu', batch_first=True, norm_first=True)
+            if representation in ('fleet_quadratic', 'fleet_graph_quadratic'):
                 self.baseline = nn.Sequential(nn.Linear(2*width+6, width), nn.ReLU(), nn.Linear(width, 1))
                 self.layers = nn.Sequential(nn.Linear(3*width+10, width), nn.SiLU(), nn.Linear(width, 14))
                 # Conditional coefficients see the whole fleet and duration.
@@ -250,7 +256,7 @@ class PlainReturnNetwork(nn.Module):
             flat = features.reshape(-1, features.shape[-1])
             value = self.subject_conditioned_values(flat[:, :self.state_size], flat[:, self.state_size:])
             return value.reshape(*shape, 1)
-        if self.representation in ('fleet_attention', 'fleet_quadratic'):
+        if self.representation in ('fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic'):
             shape = features.shape[:-1]
             flat = features.reshape(-1, features.shape[-1])
             state, shared, baseline = self.encode_fleet_state(flat[:, :self.state_size])
@@ -279,8 +285,8 @@ class PlainReturnNetwork(nn.Module):
         if baseline is None:
             public_state = torch.cat((state[:, :context_size], torch.zeros_like(state[:, context_size:])), -1)
             baseline = (self.encode_fleet_state(public_state)[2]
-                        if self.representation in ('fleet_attention', 'fleet_quadratic') else self.baseline(public_state))
-        if self.representation in ('fleet_attention', 'fleet_quadratic'):
+                        if self.representation in ('fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic') else self.baseline(public_state))
+        if self.representation in ('fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic'):
             encoded, shared, _ = self.encode_fleet_state(subject_state)
             return self.fleet_action_value(encoded, shared, baseline, actions)
         residual = self.layers(torch.cat((subject_state, actions), -1))
@@ -289,11 +295,23 @@ class PlainReturnNetwork(nn.Module):
     def configure_fleet(self, defenders):
         if defenders == self.defenders:
             return
-        if self.representation not in ('fleet_attention', 'fleet_quadratic') or not isinstance(defenders, int) or defenders < 1:
+        if self.representation not in ('fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic') or not isinstance(defenders, int) or defenders < 1:
             raise ValueError('The plain MLP and deployed fleet must have the same size; fleet attention can transfer.')
         self.defenders = defenders
         self.state_size = (14+self.identity_conditioned)*defenders+5
         self.action_size = 5*defenders+4
+
+    @staticmethod
+    def fleet_pair_features(rows):
+        displacement = rows[:, :, None, :2]-rows[:, None, :, :2]
+        velocity = rows[:, :, None, 2:4]-rows[:, None, :, 2:4]
+        separation = displacement.norm(dim=-1, keepdim=True)
+        radial_speed = (displacement*velocity).sum(-1, keepdim=True)/separation.clamp_min(1e-6)
+        heading = F.normalize(rows[..., 4:6], dim=-1)
+        cosine = (heading[:, :, None]*heading[:, None]).sum(-1, keepdim=True)
+        sine = (heading[:, :, None, 0]*heading[:, None, :, 1]
+                -heading[:, :, None, 1]*heading[:, None, :, 0])[..., None]
+        return torch.cat((displacement, velocity, 3.*separation, radial_speed, cosine, sine), -1)
 
     def encode_fleet_state(self, state):
         n = self.defenders
@@ -302,7 +320,19 @@ class PlainReturnNetwork(nn.Module):
         if self.identity_conditioned:
             local.append(state[:, 8*n:9*n, None])
         local.append(state[:, context_size:].reshape(-1, n, 6))
-        encoded = self.state_attention(self.state_embed(torch.cat(local, -1)))
+        encoded = self.state_embed(torch.cat(local, -1))
+        if self.representation == 'fleet_graph_quadratic':
+            # Explicit public relative motion lets sparse task outcomes train
+            # fleet interactions without inferring pair geometry from scratch.
+            geometry = self.fleet_pair_features(local[0])
+            off_diagonal = (~torch.eye(n, dtype=torch.bool, device=state.device))[None, :, :, None]
+            for _ in range(2):
+                pairs = torch.cat((encoded[:, :, None].expand(-1, -1, n, -1),
+                    encoded[:, None].expand(-1, n, -1, -1), geometry), -1)
+                messages = (self.state_message(pairs)*off_diagonal).sum(2)/max(n-1, 1)
+                encoded = self.state_norm(encoded+self.state_update(torch.cat((encoded, messages), -1)))
+        else:
+            encoded = self.state_attention(encoded)
         shared = torch.cat((state[:, context_size-5:context_size],
                             state.new_full((len(state), 1), n/6.)), -1)
         baseline = self.baseline(torch.cat((encoded.mean(1), encoded.amax(1), shared), -1))
@@ -310,7 +340,7 @@ class PlainReturnNetwork(nn.Module):
 
     def fleet_action_value(self, state, shared, baseline, actions):
         local = actions[:, :5*self.defenders].reshape(-1, self.defenders, 5)
-        if self.representation == 'fleet_quadratic':
+        if self.representation in ('fleet_quadratic', 'fleet_graph_quadratic'):
             offsets = local[..., 1:]
             basis = torch.cat((offsets, offsets[..., self.quadratic_rows]*
                                offsets[..., self.quadratic_columns]), -1)
@@ -364,7 +394,7 @@ class PlainReturnNetwork(nn.Module):
             state = torch.cat((context, controls.flatten(1)), -1)
             public_state = torch.cat((context, torch.zeros_like(controls.flatten(1))), -1)
             baseline = (self.encode_fleet_state(public_state)[2]
-                        if self.representation in ('fleet_attention', 'fleet_quadratic') else self.baseline(public_state))
+                        if self.representation in ('fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic') else self.baseline(public_state))
             output = []
             for start in range(0, len(programs), chunk_size):
                 actions = self.action_features(programs[None, start:start+chunk_size],
@@ -375,7 +405,7 @@ class PlainReturnNetwork(nn.Module):
                     baseline[:, None].expand(-1, count, -1).flatten(0, 1))
                 output.append(value.reshape(len(context), count))
             return torch.cat(output, 1)
-        if self.representation in ('fleet_attention', 'fleet_quadratic'):
+        if self.representation in ('fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic'):
             state, shared, baseline = self.encode_fleet_state(torch.cat((context, controls.flatten(1)), -1))
             output = []
             for start in range(0, len(programs), chunk_size):
@@ -543,7 +573,7 @@ class PlainReturnDecision(nn.Module):
                 self.policy_reference = reference
         elif self.policy_neighborhood:
             raise ValueError('A local policy neighborhood cannot omit its frozen reference.')
-        if representation in ('fleet_attention', 'fleet_quadratic'):
+        if representation in ('fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic'):
             self.program_windows = standalone_single_vessel_windows(self)
         if decision_rule == 'subject_counterfactual':
             recurrent_single_vessel_specification(self)
@@ -584,9 +614,13 @@ class PlainReturnDecision(nn.Module):
     def configure_fleet(self, defenders):
         if defenders == self.network.defenders:
             return
+        windows = getattr(self, 'program_windows', None)
+        if windows is None:
+            windows = standalone_single_vessel_windows(self)
         self.network.configure_fleet(defenders)
         for member in self.ensemble:
             member.configure_fleet(defenders)
+        self.program_windows = windows
         options = [(0, 0, 0)]+sorted((digit*10**boat, delay, span)
             for boat in range(defenders) for digit in (1, 2, 3, 4, 6, 7, 8, 9)
             for delay, span in self.program_windows)
@@ -774,10 +808,10 @@ class PairedReturnDecision(PlainReturnDecision):
                  conditional_objective='marginal_events', **kwargs):
         if learning_objective != 'conditional':
             raise ValueError('Paired dense returns require the conditional learning objective.')
-        if conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood', 'paired_ordering'):
+        if conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood', 'paired_ordering', 'paired_catalog_contrast'):
             raise ValueError('Unknown paired dense conditional objective.')
         self.conditional_objective = conditional_objective
-        if conditional_objective in ('shared_potential', 'paired_ordering'):
+        if conditional_objective in ('shared_potential', 'paired_ordering', 'paired_catalog_contrast'):
             self.network_type = PlainReturnNetwork
         elif kwargs.get('policy_neighborhood', False):
             raise ValueError('Local neighborhoods require complete-plan scalar values.')
@@ -792,7 +826,7 @@ class PairedReturnDecision(PlainReturnDecision):
         indices = self.neighborhood_indices(context, controls)
         for member in [self.network, *self.ensemble]:
             raw = self.network_catalog(member, context, controls, indices)
-            if self.conditional_objective in ('shared_potential', 'paired_ordering'):
+            if self.conditional_objective in ('shared_potential', 'paired_ordering', 'paired_catalog_contrast'):
                 estimates.append(raw.sigmoid())
                 continue
             factual = raw[:, :1, 0].sigmoid()
@@ -845,6 +879,36 @@ def crossfit_continuation_targets(data, bootstrap):
         shared_optimizer_updates=sum(fit['updates'] for fit in fits.values()))
 
 
+def single_vessel_contrast_groups(rows, common_future_ids, defenders):
+    """Group measured plans that differ in one vessel at the same clock."""
+    grouped = {}
+    powers = [10**boat for boat in range(defenders)]
+    for index, (row, identity) in enumerate(zip(rows, common_future_ids, strict=True)):
+        root, program, delay, span, _ = row
+        if root != identity[0]:
+            raise ValueError('Common-future labels must refer to their recorded root.')
+        if span <= 0:
+            continue
+        for boat, power in enumerate(powers):
+            peers = program-((program//power) % 10)*power
+            key = (*identity, delay, span, boat, peers)
+            grouped.setdefault(key, []).append(index)
+    return [np.asarray(indices, np.int64) for indices in grouped.values() if len(indices) > 1]
+
+
+def common_future_contrast_loss(estimates, targets, mask):
+    """Mean squared contrasts within each valid local intervention group.
+
+    Centering the error is exactly half the mean over ordered action pairs,
+    so a common factual-outcome offset cannot dominate the action contrasts.
+    Padding has no statistical mass.
+    """
+    count = mask.sum(-1).clamp_min(1)
+    error = (estimates-targets)*mask
+    centered = (error-error.sum(-1, keepdim=True)/count[:, None])*mask
+    return 2.*(centered.square().sum(-1)/count).mean()
+
+
 def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, updates=24000,
                      parameter_budget=145731, seed=42, device='cuda:0',
                      expected_observation_sha256=None, factual_bank_weight=1.,
@@ -859,7 +923,8 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
                      conservative_catalog_roots=4, unique_factual_supervision=False,
                      root_sampling_weights=None, factual_sampling_weights=None, onpolicy_bank_weight=1.,
                      continuation_bootstrap=None, continuation_bootstrap_weight=.5, state_baseline=False,
-                     representation='dense', peer_decision_conditioned=True, future_weighted_sampling=False):
+                     representation='dense', peer_decision_conditioned=True, future_weighted_sampling=False,
+                     factual_pretraining_updates=0):
     """Fit only absolute outcomes, independently of conditional-learning code.
 
     The default pools all observed state/action returns and samples them
@@ -900,14 +965,14 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
         raise ValueError('Unique factual supervision must be explicitly enabled or disabled.')
     if unique_factual_supervision and conditional and conditional_objective != 'joint_likelihood':
         raise ValueError('Unique factual supervision requires the joint outcome likelihood.')
-    if (conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood', 'paired_ordering')
-            or conditional_objective in ('factual_strata', 'joint_likelihood', 'paired_ordering') and (not conditional or value_target != 'success')):
+    if (conditional_objective not in ('marginal_events', 'event_hierarchy', 'factual_strata', 'shared_potential', 'joint_likelihood', 'paired_ordering', 'paired_catalog_contrast')
+            or conditional_objective in ('factual_strata', 'joint_likelihood', 'paired_ordering', 'paired_catalog_contrast') and (not conditional or value_target != 'success')):
         raise ValueError('Factual-stratum dense learning requires paired binary success outcomes.')
     if conditional_objective == 'event_hierarchy' and (not conditional or value_target != 'success'):
         raise ValueError('Change-direction learning requires paired binary success outcomes.')
     if conditional_objective == 'joint_likelihood' and paired_difference_weight != 1.:
         raise ValueError('A joint outcome likelihood requires unit weight for its conditional factor.')
-    shared_potential = conditional and conditional_objective in ('shared_potential', 'paired_ordering')
+    shared_potential = conditional and conditional_objective in ('shared_potential', 'paired_ordering', 'paired_catalog_contrast')
     bootstrap_targets = bootstrap_metadata = None
     if continuation_bootstrap is not None:
         if (value_target != 'success' or not uniform_sampling or factual_bank is not None
@@ -950,6 +1015,16 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
         raise ValueError('The fixed return-gain margin must lie between zero and one.')
     if updates <= 0:
         raise ValueError('Plain return fitting requires a positive optimizer budget.')
+    if (type(factual_pretraining_updates) is not int or
+            not 0 <= factual_pretraining_updates < updates):
+        raise ValueError('Factual pretraining must fit inside the actual optimizer budget.')
+    if factual_pretraining_updates and (
+            representation not in ('fleet_quadratic', 'fleet_graph_quadratic')
+            or not state_baseline or not peer_decision_conditioned or not uniform_sampling
+            or value_target != 'success' or initial_model is not None
+            or conditional and not shared_potential or policy_neighborhood
+            or continuation_bootstrap is not None or conservative_catalog_weight or onpolicy_bank is not None):
+        raise ValueError('Frozen factual representations require fresh standalone scalar quadratic success learning.')
     snapshot_updates = tuple(sorted(set(map(int, snapshot_updates))))
     if any(step <= 0 or step > updates for step in snapshot_updates):
         raise ValueError('Learning snapshots must lie within the actual optimizer budget.')
@@ -999,6 +1074,7 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
     if feedback_relative_hold:
         digest.update(repr(('feedback_relative_hold', float(feedback_relative_scale))).encode())
     rows, weights, factual_targets, measured_targets = [], [], [], []
+    common_future_ids = []
     for root_id, root in enumerate(roots):
         if value_target == 'discounted_return':
             from local_intervention_value import measured_root_values
@@ -1017,6 +1093,8 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
                 estimate = bootstrap_targets[tuple(root['scene'])][q, future]
                 label = (1.-continuation_bootstrap_weight)*label+continuation_bootstrap_weight*estimate
             rows.append((root_id, *root['options'][q], label))
+            if conditional and conditional_objective == 'paired_catalog_contrast':
+                common_future_ids.append((root_id, future))
             weights.append(future_weights[future])
             if conditional:
                 if (0, future) not in root['outcomes']:
@@ -1141,9 +1219,9 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
     output_width = 3 if conditional and not shared_potential else 1
     if state_baseline and (action_encoding != 'physical_delta' or output_width != 1):
         raise ValueError('A separate state baseline requires scalar physical-action values.')
-    if representation not in ('dense', 'fleet_attention', 'fleet_quadratic'):
+    if representation not in ('dense', 'fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic'):
         raise ValueError('Unknown intervention state/action representation.')
-    if representation in ('fleet_attention', 'fleet_quadratic') and (not state_baseline or not feedback_relative_hold
+    if representation in ('fleet_attention', 'fleet_quadratic', 'fleet_graph_quadratic') and (not state_baseline or not feedback_relative_hold
             or policy_neighborhood):
         raise ValueError('Shared fleet fitting requires standalone relative interventions with a state baseline.')
     count = lambda width: (2*width*width + (input_size+3+output_width)*width + output_width
@@ -1152,6 +1230,8 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
         count = lambda width: 21*width*width+(80+identity_conditioned)*width+98
     elif representation == 'fleet_quadratic':
         count = lambda width: 14*width*width+(60+identity_conditioned)*width+15
+    elif representation == 'fleet_graph_quadratic':
+        count = lambda width: 12*width*width+(63+identity_conditioned)*width+15
     width = min(range(8, 2049, 4 if representation in ('fleet_attention', 'fleet_quadratic') else 1),
                 key=lambda value: abs(count(value)-parameter_budget))
     torch.manual_seed(seed)
@@ -1187,7 +1267,8 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
         previous_fit = initial_model['successor_task_fit']
         initialization_updates = previous_fit.get('total_parameter_updates', previous_fit['updates'])
     optimizer = torch.optim.AdamW(net.parameters(), lr=learning_rate, weight_decay=.005)
-    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, updates, eta_min=learning_rate/10.)
+    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, factual_pretraining_updates or updates, eta_min=learning_rate/10.)
     snapshots = {}
     pooled_features = pooled_target = None
     pooled_probability = None
@@ -1209,6 +1290,25 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
             # change only the distribution within each measured population.
             paired_mass = np.ones(len(rows)) if row_probability is None else row_probability*len(rows)
             pooled_probability = np.concatenate((paired_mass, factual_mass))/len(pooled_target)
+    pretraining_ids = pretraining_probability = None
+    pretraining_draws = hashlib.sha256()
+    pretrained_state_sha256 = None
+    def factual_state_digest():
+        digest = hashlib.sha256()
+        for name, value in sorted(net.state_dict().items()):
+            if not name.startswith('layers.'):
+                digest.update(name.encode())
+                digest.update(value.detach().cpu().numpy().tobytes())
+        return digest.hexdigest()
+    if factual_pretraining_updates:
+        measured_factual = np.flatnonzero((rows[:, 1:4] == 0).all(-1))
+        pretraining_ids = np.r_[measured_factual, np.arange(len(rows), len(pooled_target))]
+        if not len(pretraining_ids):
+            raise ValueError('Factual pretraining requires actual zero-action outcomes.')
+        mass = (np.ones(len(pretraining_ids)) if pooled_probability is None
+                else pooled_probability[pretraining_ids])
+        pretraining_probability = mass/mass.sum()
+        pretraining_rng = np.random.default_rng(np.random.SeedSequence([seed, 840016]))
     pooled_reference = paired_factual_target = paired_active = None
     paired_target_sha256 = None
     if conditional:
@@ -1257,6 +1357,37 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
         # remove repetitions caused by unequal candidate coverage per future.
         factual_reference_probability = np.r_[probability*len(rows), factual_mass]/len(pooled_target)
         factual_reference_rng = np.random.default_rng(np.random.SeedSequence([seed, 840014]))
+    contrast_groups = contrast_mask = contrast_probability = None
+    contrast_sampling_mass = 0.
+    contrast_draws = hashlib.sha256()
+    contrast_target_sha256 = contrast_sampling_sha256 = None
+    if conditional and conditional_objective == 'paired_catalog_contrast':
+        # Keep future, clock and every other vessel's plan fixed. Outcome
+        # pairing never turns cross-vessel or cross-duration changes into a
+        # local intervention edge; factual references retain absolute labels.
+        groups = single_vessel_contrast_groups(rows, common_future_ids, defenders)
+        if not groups:
+            raise ValueError('Catalog contrasts need a measured single-vessel edge at the same clock.')
+        sizes = np.asarray([len(indices) for indices in groups], np.int64)
+        padded = np.zeros((len(groups), int(sizes.max())), np.int64)
+        valid = np.arange(padded.shape[1])[None] < sizes[:, None]
+        for index, indices in enumerate(groups):
+            padded[index, :len(indices)] = indices
+        masses = (np.full(len(pooled_target), 1./len(pooled_target))
+                  if pooled_probability is None else pooled_probability)
+        membership = np.zeros(len(rows), np.int64)
+        for indices in groups:
+            membership[indices] += 1
+        group_mass = np.asarray([(masses[indices]/membership[indices]).sum() for indices in groups])
+        contrast_sampling_mass = float(group_mass.sum())
+        contrast_probability = group_mass/contrast_sampling_mass
+        contrast_groups = torch.as_tensor(padded, device=device)
+        contrast_mask = torch.as_tensor(valid, device=device)
+        contrast_rng = np.random.default_rng(np.random.SeedSequence([seed, 840015]))
+        contrast_target_sha256 = hashlib.sha256(
+            np.asarray(common_future_ids, np.int64).tobytes()+padded.tobytes()+valid.tobytes()+
+            pooled_target[:len(rows)].detach().cpu().numpy().tobytes()).hexdigest()
+        contrast_sampling_sha256 = hashlib.sha256(contrast_probability.tobytes()).hexdigest()
     catalog_draws = hashlib.sha256()
     onpolicy_draws = hashlib.sha256()
     if onpolicy is not None:
@@ -1274,26 +1405,51 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
             list(map(len, observed)), device=device)[:, None]
     with torch.enable_grad():
         for step in range(updates):
-            if uniform_sampling:
+            if factual_pretraining_updates and step == factual_pretraining_updates:
+                pretrained_state_sha256 = factual_state_digest()
+                for name, parameter in net.named_parameters():
+                    parameter.requires_grad_(name.startswith('layers.'))
+                optimizer = torch.optim.AdamW(net.layers.parameters(), lr=learning_rate, weight_decay=.005)
+                schedule = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, updates-factual_pretraining_updates, eta_min=learning_rate/10.)
+            if step < factual_pretraining_updates:
+                selected = pretraining_rng.choice(pretraining_ids, size=192, p=pretraining_probability)
+                pretraining_draws.update(selected.astype(np.int64).tobytes())
+                selected = torch.as_tensor(selected, device=device)
+                # Only measured factual outcomes train the state encoder.
+                # The action response head is absent from this computation.
+                logits = net.encode_fleet_state(pooled_features[selected, :net.state_size])[2][:, 0]
+                loss = F.binary_cross_entropy_with_logits(logits, pooled_target[selected])
+            elif uniform_sampling:
                 index = torch.as_tensor(draw(len(pooled_target), 192, pooled_probability), device=device)
                 raw = net.forward_features(pooled_features[index])
                 if shared_potential:
                     # Both values come from exactly the ordinary scalar network.
                     # Only the common-future difference adds supervision; the
                     # absolute labels keep precisely their ordinary pooled mass.
-                    factual_logits = net.forward_features(pooled_reference[index])[:, 0]
-                    gain = raw[:, 0].sigmoid()-factual_logits.sigmoid()
-                    difference = pooled_target[index]-paired_factual_target[index]
                     loss = F.binary_cross_entropy_with_logits(raw[:, 0], pooled_target[index])
-                    if conditional_objective == 'paired_ordering':
-                        # Concordant pairs still supply their absolute labels.
-                        # Only discordant common futures identify a direction;
-                        # their auxiliary loss is not an effect probability.
-                        contrast = raw[:, 0]-factual_logits
-                        pair_error = F.softplus(-difference*contrast)*difference.abs()
+                    if conditional_objective == 'paired_catalog_contrast':
+                        selected = contrast_rng.choice(len(contrast_groups), size=8, p=contrast_probability)
+                        contrast_draws.update(selected.astype(np.int64).tobytes())
+                        chosen = torch.as_tensor(selected, device=device)
+                        group_indices = contrast_groups[chosen]
+                        predictions = net.forward_features(pooled_features[group_indices.flatten()])[:, 0]
+                        predictions = predictions.sigmoid().reshape_as(group_indices)
+                        loss += paired_difference_weight*contrast_sampling_mass*common_future_contrast_loss(
+                            predictions, pooled_target[group_indices], contrast_mask[chosen])
                     else:
-                        pair_error = (gain-difference).square()
-                    loss += paired_difference_weight*(pair_error*paired_active[index]).mean()
+                        factual_logits = net.forward_features(pooled_reference[index])[:, 0]
+                        gain = raw[:, 0].sigmoid()-factual_logits.sigmoid()
+                        difference = pooled_target[index]-paired_factual_target[index]
+                        if conditional_objective == 'paired_ordering':
+                            # Concordant pairs still supply their absolute labels.
+                            # Only discordant common futures identify a direction;
+                            # their auxiliary loss is not an effect probability.
+                            contrast = raw[:, 0]-factual_logits
+                            pair_error = F.softplus(-difference*contrast)*difference.abs()
+                        else:
+                            pair_error = (gain-difference).square()
+                        loss += paired_difference_weight*(pair_error*paired_active[index]).mean()
                 elif conditional:
                     from local_intervention_value import paired_difference_loss
                     factual_logits = net.forward_features(pooled_reference[index])[:, 0]
@@ -1411,6 +1567,8 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
             if (step+1) % 1000 == 0 or step+1 == updates:
                 print(dict(phase='paired_dense_return_fit' if conditional else 'plain_return_fit', update=step+1, updates=updates,
                            parameters=count(width), loss=float(loss.detach())), flush=True)
+    if factual_pretraining_updates and factual_state_digest() != pretrained_state_sha256:
+        raise RuntimeError('Intervention fitting changed the frozen factual representation.')
     model = copy.deepcopy(data['model'])
     model['successor_task_value'] = dict(kind='paired_mlp_return' if conditional else 'plain_mlp_return', defenders=defenders, width=width,
         identity_conditioned=identity_conditioned, action_encoding=action_encoding, velocity_reference=velocity_reference,
@@ -1445,6 +1603,8 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
                    if conditional and conditional_objective == 'event_hierarchy' else
                    'absolute-outcome cross entropy plus discordant common-future logit ordering of one shared task potential'
                    if conditional and conditional_objective == 'paired_ordering' else
+                   'absolute-outcome cross entropy plus same-clock single-vessel common-future contrasts of one shared task potential'
+                   if conditional and conditional_objective == 'paired_catalog_contrast' else
                    'absolute-outcome cross entropy plus squared same-future differences of one shared task potential'
                    if shared_potential else
                    'absolute success and same-future rescue/harm likelihood conditional on factual outcomes'
@@ -1463,7 +1623,9 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
         isolate_factual_start=isolate_factual_start,
         comparison_reference=('actual frozen-policy option at each root' if policy_neighborhood else 'zero intervention'),
         feedback_relative_hold=feedback_relative_hold, feedback_relative_scale=feedback_relative_scale,
-        architecture=('fleet-conditioned quadratic local response in feedback offsets and clipped physical command changes; shared state baseline'
+        architecture=('public relative-motion message passing with fleet-conditioned quadratic action response and shared state baseline'
+                      if representation == 'fleet_graph_quadratic' else
+                      'fleet-conditioned quadratic local response in feedback offsets and clipped physical command changes; shared state baseline'
                       if representation == 'fleet_quadratic' else
                       'shared per-vessel state and physical-action attention; whole-plan pooled state baseline and gated residual'
                       if representation == 'fleet_attention' else
@@ -1479,12 +1641,24 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
                                  if action_encoding == 'physical_delta' else None),
         trainable_parameters=count(width), reference_parameter_budget=parameter_budget,
         updates=updates, member_updates=[updates], seed=seed, roots=len(roots),
+        factual_pretraining_updates=factual_pretraining_updates,
+        member_factual_pretraining_updates=[factual_pretraining_updates],
+        total_factual_pretraining_updates=factual_pretraining_updates,
+        effect_updates=updates-factual_pretraining_updates,
+        factual_pretraining_observations=0 if pretraining_ids is None else len(pretraining_ids),
+        factual_pretraining_draw_sha256=None if pretraining_ids is None else pretraining_draws.hexdigest(),
+        factual_pretrained_state_sha256=pretrained_state_sha256,
+        factual_frozen_state_sha256=None if pretraining_ids is None else factual_state_digest(),
+        factual_encoder_frozen_after_pretraining=bool(factual_pretraining_updates),
+        effect_trainable_parameters=(sum(parameter.numel() for parameter in net.layers.parameters())
+                                     if factual_pretraining_updates else count(width)),
         initialization_parameter_sha256=initialization_sha256,
         initialization_updates=initialization_updates,
         total_parameter_updates=initialization_updates+updates,
         initialization_observation_sha256=(None if initial_model is None else
             initial_model['successor_task_fit']['training_observation_sha256']),
-        learning_rate_schedule=f'cosine {learning_rate:g} to {learning_rate/10.:g}',
+        learning_rate_schedule=(f'cosine {learning_rate:g} to {learning_rate/10.:g}'+
+            (f'; reset after {factual_pretraining_updates} factual updates and freeze encoder' if factual_pretraining_updates else '')),
         unique_terminal_observations=data.get('measured_terminal_observations', len(rows)),
         supervised_node_labels=len(rows)+factual_labels+onpolicy_labels, additional_factual_state_labels=factual_labels,
         additional_onpolicy_action_labels=onpolicy_labels,
@@ -1512,6 +1686,13 @@ def fit_plain_return(data, output, *, factual_bank=None, onpolicy_bank=None, upd
         paired_local_observations=int((codes > 0).sum()) if conditional else 0,
         factual_comparisons=int((codes > 0).sum()) if conditional else 0,
         paired_difference_weight=float(paired_difference_weight), paired_training_target_sha256=paired_target_sha256,
+        paired_catalog_groups=0 if contrast_groups is None else len(contrast_groups),
+        paired_catalog_minibatch_groups=0 if contrast_groups is None else 8,
+        paired_catalog_sampling_mass=contrast_sampling_mass,
+        paired_catalog_grouping=None if contrast_groups is None else 'root, future, clock, subject, unchanged peer plans',
+        paired_catalog_target_sha256=contrast_target_sha256,
+        paired_catalog_sampling_sha256=contrast_sampling_sha256,
+        paired_catalog_draw_sha256=None if contrast_groups is None else contrast_draws.hexdigest(),
         paired_event_difference=conditional and conditional_objective in ('marginal_events', 'event_hierarchy'),
         conditional_objective=conditional_objective if conditional else None, future_public_states_used=False,
         common_motion_response_features=False,
