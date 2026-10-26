@@ -18,7 +18,6 @@ import sys
 import time
 
 import numpy as np
-import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = Path('train/experiments/author-source-fusion-20261011')
@@ -55,7 +54,7 @@ def plain(value):
         return plain(value.tolist())
     if isinstance(value, np.generic):
         return value.item()
-    if isinstance(value, torch.Tensor):
+    if isinstance(value, getattr(sys.modules.get('torch'), 'Tensor', ())):
         return {'tensor_shape': list(value.shape), 'dtype': str(value.dtype)}
     if isinstance(value, Path):
         return value.as_posix()
@@ -72,6 +71,7 @@ def save_json(path, value):
 
 
 def read_pth(path):
+    import torch
     return torch.load(path, map_location='cpu', weights_only=False)
 
 
@@ -210,6 +210,7 @@ records=[]
 for path in sorted(base.rglob('*')):
  if not path.is_file() or path.name.endswith('.partial'):continue
  rel=path.relative_to(base).as_posix()
+ if any(part.endswith('-root-work') for part in path.relative_to(base).parts):continue
  if rel.startswith('vrx/') and not rel.startswith('vrx/paired/'):continue
  if path.suffix not in ('.pth','.json','.npz','.png','.sdf'):continue
  if 'fitting' in path.name:continue
@@ -377,13 +378,16 @@ def paired_statistics(a, b, strata, repeated=False):
     return result
 
 
-def holm_adjust(rows, key):
+def holm_adjust(rows, key, family_size=None):
     eligible = sorted((row for row in rows if key in row), key=lambda row: row[key])
+    family_size = len(eligible) if family_size is None else family_size
+    if family_size < len(eligible):
+        raise ValueError('A planned comparison family cannot omit available comparisons.')
     previous = 0.
     for rank, row in enumerate(eligible):
-        previous = max(previous, min(1., (len(eligible)-rank)*row[key]))
+        previous = max(previous, min(1., (family_size-rank)*row[key]))
         row[key+'_holm'] = previous
-        row['multiplicity_family_size'] = len(eligible)
+        row['multiplicity_family_size'] = family_size
 
 
 def collect_traces():
@@ -561,6 +565,38 @@ def build_independent():
                     fit = model['successor_task_fit']
                     if not record.get('completed') or record['inherited_value_weights'] or record['heldout_used_for_training']:
                         raise ValueError('The independent estimator was not freshly fitted without heldout outcomes.')
+                    dispatch = record.get('collection_dispatch')
+                    if dispatch:
+                        proof_path = root/'verification/root-dispatch-replay.pth'
+                        proof = read_pth(proof_path)
+                        if (digest(proof_path) != dispatch['audit_sha256'] or not proof['completed']
+                                or proof['manifest_sha256'] != manifest_sha
+                                or proof['dispatcher_sha256'] != dispatch['dispatcher_sha256']
+                                or any(row['mismatches'] for row in proof['roots'])):
+                            raise ValueError('Parallel root collection lacks its exact frozen-sampler replay.')
+                        groups = dispatch.get('native_future_groups')
+                        if groups:
+                            group_proof_path = root/'verification/future-group-replay.pth'
+                            group_proof = read_pth(group_proof_path)
+                            if (digest(group_proof_path) != groups['audit_sha256']
+                                    or not group_proof['completed']
+                                    or group_proof['manifest_sha256'] != manifest_sha
+                                    or group_proof['runtime_sha256'] != manifest['runtime_sha256']
+                                    or group_proof['dispatcher_sha256'] != groups['dispatcher_sha256']
+                                    or group_proof['legacy_dispatcher_sha256'] != dispatch['dispatcher_sha256']
+                                    or hashlib.sha256(group_proof['dispatcher_source'].encode()).hexdigest()
+                                        != groups['dispatcher_sha256']
+                                    or {row['workers'] for row in group_proof['roots']} != {2, 4}
+                                    or any(row['mismatches'] for row in group_proof['roots'])):
+                                raise ValueError('Native future groups lack their exact frozen-sampler replay.')
+                            for root_execution in groups['roots']:
+                                for continuation in root_execution['continuations']:
+                                    if (continuation['dispatcher_sha256'] != groups['dispatcher_sha256']
+                                            or continuation['workers'] not in (1, 2, 3, 4)
+                                            or continuation['retained_observations'] < 0
+                                            or continuation['inference_batch'] != 32
+                                            or continuation['inference_device'] != 'cpu'):
+                                        raise ValueError('A future-group continuation changed its numerical path.')
                     if fit['updates'] != 24000 or len(model['successor_task_value']['states']) != 3:
                         raise ValueError('The independently fitted estimator has a different training budget.')
                     model_records.append(dict(seed=seed, method=label, policy_sha256=identity,
@@ -636,7 +672,7 @@ def build_independent():
                        **paired_statistics(left, right, strata, repeated))
             effects.append(row); selected.append(row)
         holm_adjust(selected, 'seed_sign_flip_p_two_sided' if category == 'independent-pipeline'
-                    else 'mcnemar_exact_p_two_sided')
+                    else 'mcnemar_exact_p_two_sided', family_size=len(comparisons))
         four = [populations.get((category, label), {}) for label in ('F11', 'F10', 'F01', 'F00')]
         seeds = list(SEEDS) if category == 'independent-pipeline' else [None]
         if all(all(s in values for s in seeds) for values in four):
@@ -689,7 +725,7 @@ def build_independent():
             value += '（重复未齐）'
         lines.append(f"| {row['category']} | {row['method']} | {value} | {row['training_repetitions']} |")
     lines += ['', '表中标准差按训练种子计算。区间同时重采样训练种子和按灵活度分层的共同任务；成对比较保留同一任务列，未把 5×400 次评价当成 2000 个独立训练样本。固定节点的区间与 McNemar 检验仅对该固定模型成立。',
-        '七项固定机制比较使用 Holm 校正；五种子比较使用训练种子层面的符号翻转检验，并报告跨种子与任务的自助区间。五个种子下双侧符号翻转检验的最小非零 p 值为 0.0625。',
+        '固定节点七项比较、五种子十三项比较分别使用 Holm 校正，未完成的计划比较仍计入比较族。五种子比较使用训练种子层面的符号翻转检验，并报告跨种子与任务的自助区间；五个种子下双侧检验的最小非零 p 值为 0.0625。',
         'M2 与普通回报替代项使用相同实测数据、网络规模和 24,000 次更新。相对外部基线，新增有限干预采样的计算成本单独列出，不声称总训练计算量相等。',
         '训练复现：F01 与 F11 的原始三成员参数均逐项完全复现，最大绝对差为 0；这验证了训练计算分支，不将恢复的代码冒称完整历史工程的原始字节快照。', '']
     lines += ['| 比较对象 | 配对比较 | 增益（百分点） | 95% 区间 | 救回 / 损害 | 校正后 p |',
@@ -1009,10 +1045,13 @@ def build_diagnostics(root, manifest):
         if selection['manifest_sha256'] != digest(root/'manifest.pth'):
             raise ValueError('Illustrative cases have another test population.')
         traces_complete = True
+        example_metrics = []
         for example in selection['examples']:
             index = example['task_index']
             if index is None:
+                example_metrics.append(dict(example))
                 continue
+            paired_traces = {}
             for label in (example['candidate'], example['reference']):
                 path = root/'traces'/f'{label}-task{index:03d}.pth'
                 if not path.exists():
@@ -1023,7 +1062,21 @@ def build_diagnostics(root, manifest):
                 if (not trace['completed'] or not trace['exact_endpoint_replay'] or trace['row'] != expected
                         or trace['policy_sha256'] != manifest['models'][label]['sha256']):
                     raise ValueError('An illustrative trajectory changed the actual saved endpoint.')
-        save_csv('trajectory_examples.csv', selection['examples'])
+                paired_traces[label] = trace
+            metrics = dict(example)
+            if len(paired_traces) == 2:
+                candidate, reference = (paired_traces[example[key]] for key in ('candidate','reference'))
+                n = min(len(candidate['trajectory']['commands']), len(reference['trajectory']['commands']))
+                difference = np.max(np.abs(candidate['trajectory']['commands'][:n]-reference['trajectory']['commands'][:n]),axis=(1,2))
+                first = np.flatnonzero(difference > 1e-8)
+                metrics['first_command_difference_seconds'] = float(candidate['trajectory']['time'][first[0]]) if len(first) else None
+                for label, trace in (('candidate',candidate),('reference',reference)):
+                    metrics[label+'_minimum_defender_distance_metres'] = float(trace['trajectory']['minimum_defender_distance'].min())
+                    metrics[label+'_minimum_attacker_distance_metres'] = float(trace['trajectory']['minimum_attacker_distance'].min())
+                    metrics[label+'_terminal_time_seconds'] = trace['row']['duration']
+                    metrics[label+'_outcome'] = trace['row']['outcome']
+            example_metrics.append(metrics)
+        save_csv('trajectory_examples.csv', example_metrics)
     else:
         pending.append('trajectory selection')
     status = dict(completed=not pending, pending=pending,
@@ -1044,12 +1097,14 @@ def build_diagnostics(root, manifest):
         common_learned_opponent=analysis['learned_opponent'],
         cross_fleet_policy=analysis['cross_fleet_policy'], baseline_seed_selection=analysis['baseline_seed_selection']))
     reductions = [row['cost_reduction'] for row in m1_rows]
+    mean_reduction_text = f'平均降低 {statistics.mean(reductions):.4f} 个目标单位。' if reductions else ''
     lines = ['', '## 机制、适用范围与 VRX', '',
         f'独立机制状态：{mechanism_complete}/80；每个状态使用 8 个共同的新未来扰动，测量有限干预后回到同一前驱策略的任务结局。候选是两种估计器前三名与实际选择的并集，后悔值仅相对这一实测子集。',
         'M1 同状态对照记录共同候选与风险矩阵下的单船成本、成对风险和联合目标。M2 记录预测排序、实际选中干预的实测收益及损害；这些诊断不参与拟合。',
+        'M1 的冻结目标为单艇偏好成本之和加 32 倍成对风险之和。独立选择器根据其他艇的边缘候选概率逐艇决策；联合选择器搜索完整艇队配置，并按实际组合的成对风险修正选择。两者使用相同候选和预测，因此直接对照检验的是协调选择的作用。',
         f"M1 联合选择在 {sum(v>1e-8 for v in reductions)}/{len(reductions)} 个状态下降低目标成本，"
         f"{sum(abs(v)<=1e-8 for v in reductions)} 个持平，{sum(v < -1e-8 for v in reductions)} 个升高；"
-        '这解释了联合目标的作用，任务成功收益由独立终点配对对照另行检验。', '',
+        f'{mean_reduction_text}任务成功收益由独立终点配对对照另行检验。', '',
         '| 前驱状态分布 | 估计器 / 比较 | 选中干预平均收益（百分点） | 95% 区间 | 非平局计划排序一致率（%） |',
         '|---|---|---:|---:|---:|']
     for row in mechanism_summary:
@@ -1059,7 +1114,16 @@ def build_diagnostics(root, manifest):
             +(f'{100*rank:.2f}' if rank is not None else '—')+' |')
     lines += ['', '单项估计器的收益相对同一事实延续；proposed-minus-ordinary 为两估计器选中干预之差。排序一致率先在各状态的实测候选非平局对上计算，再按状态平均。',
         f'适用范围：{scope_complete}/60 个配置已完成，其中 {unsupported} 个配置明确不受当前固定表示支持。F01、F11 的当前 M2 表示和 MAPPO 均固定为六艇，跨艇数结果不以零成功率代替“不支持”。',
-        '学习对手是另一开发防御器上训练并冻结的共同对手，所有方法面对同一对手；这里没有进行针对 r20 的对手适应训练。', '',
+        '下表为固定 r20 模型及预先指定的种子 42 基线；灵活度和艇数变化各使用 100 个共同任务，学习对手使用 200 个共同任务。', '',
+        '| 条件 | F00 | F10 | F01 | F11 | ARBoids | MAPPO |', '|---|---:|---:|---:|---:|---:|---:|']
+    for group in analysis['scope_tasks']:
+        values = {row['method']:row for row in scope_rows if row['group'] == group}
+        cells = []
+        for method in ('F00','F10','F01','F11','arboids','mappo'):
+            row = values.get(method)
+            cells.append('待完成' if row is None else '不支持' if not row['supported'] else f"{row['success_rate_percent']:.1f}%")
+        lines.append('| '+group+' | '+' | '.join(cells)+' |')
+    lines += ['', '学习对手是另一开发防御器上训练并冻结的共同对手，所有方法面对同一对手；这里没有进行针对 r20 的对手适应训练。', '',
         '| VRX 方法 | 有效试验 | 成功数 | 控制超时比例（%） | 推理 P95（ms） |', '|---|---:|---:|---:|---:|']
     for row in vrx_summary:
         lines.append(f"| {row['method']} | {row['trials']} | {row['success']} | {row['control_deadline_miss_percent']:.3f} | {1000*row['inference_p95_seconds']:.2f} |")
@@ -1268,6 +1332,22 @@ def independent_figures(root, summary, by_seed, effects, diagnostics):
             fig.suptitle(contrast_labels.get(contrast,contrast)+'; first rescue and first harm in frozen task order\n'
                 'Dark line: attacker; colors: defenders; open / cross: start; filled: final; shaded: target region',fontsize=9)
             finish(fig,'trajectory_'+contrast)
+
+        examples = [row for row in examples if row['contrast']=='M2_given_M1' and row['task_index'] is not None]
+        if len(examples) == 2:
+            fig, axes = plt.subplots(2,2,figsize=(9.4,6.2),layout='constrained')
+            for column, example in enumerate(examples):
+                for method in (example['candidate'],example['reference']):
+                    trace = read_pth(root/'traces'/f"{method}-task{example['task_index']:03d}.pth")['trajectory']
+                    for axis, measure in zip(axes[:,column],('minimum_defender_distance','minimum_attacker_distance')):
+                        axis.plot(trace['time'],trace[measure],color=colors[method],label=method,linewidth=1.5)
+                        axis.scatter(trace['time'][-1],trace[measure][-1],color=colors[method],s=18)
+                        axis.axhline(5.,color='#ac5449',linewidth=.6,linestyle=':')
+                        axis.set(xlabel='Time (s)',ylabel='Minimum pair distance (m)' if measure=='minimum_defender_distance' else 'Nearest attacker distance (m)')
+                axes[0,column].set_title(f"{example['direction'].capitalize()}: paired task {example['task_index']}")
+                axes[0,column].legend(frameon=False)
+            fig.suptitle('Exact F11 / F10 replay; dotted lines: original numerical collision / capture thresholds',fontsize=10)
+            finish(fig,'M2_rescue_and_harm_clearance')
 
     objectives = table('independent_training_objectives.csv')
     fitted = {(int(row['training_seed']), row['method']) for row in objectives}
@@ -1665,6 +1745,8 @@ for entry in manifest['files']:
  if path.stat().st_size!=entry['bytes'] or sha.hexdigest()!=entry['sha256'] or entry['sha256']!=checksums[entry['path']]:raise SystemExit('MISMATCH '+entry['path'])
 print('VERIFIED',len(manifest['files']),'files')
 print('Five-seed baselines complete:',manifest['status']['five_seed_baselines_complete'])
+print('All planned evidence complete:',manifest['status']['evidence_archive_complete'])
+print('Independent model endpoints:',manifest['status']['independent_evidence']['independent_model_endpoints_completed'])
 ''', encoding='utf-8')
     files = []
     for path in sorted(PACKAGE.rglob('*')):

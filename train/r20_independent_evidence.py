@@ -6,6 +6,7 @@ import ast
 import copy
 import csv
 import hashlib
+import inspect
 import json
 import multiprocessing as mp
 import os
@@ -377,7 +378,287 @@ def remapped_design(manifest, arm, seed):
     return blueprint
 
 
-def repeated_data(manifest, arm, seed, policy, workers, batch):
+def root_dispatch_identity():
+    source = inspect.getsource(measure_repeat_root)+inspect.getsource(collect_repeat_roots)
+    return hashlib.sha256(source.encode()).hexdigest()
+
+
+def measure_repeat_root(job):
+    """Run the unchanged frozen sampler on one independently seeded root."""
+    policy, root, path, identity, retained = job
+    path = Path(path)
+    budget = 400*(len(root['outcomes'])+1)+800
+    if path.exists():
+        initial = read(path)
+        if initial.get('root_dispatch_identity') != identity:
+            raise ValueError('A root checkpoint belongs to another frozen sampling task.')
+    else:
+        initial = dict(model=read(policy), roots=[], predecessor_sha256=identity['predecessor_sha256'],
+            simulation_steps=0, next_design_root=0, completed=False, training_data=str(path),
+            simulation_budget=budget, inherited_labels=False, root_dispatch_identity=identity)
+        if retained is not None:
+            initial['partial_root'] = dict(retained, design_root=0)
+        save(initial, path)
+    native_save = torch.save
+    def atomic_save(value, destination, *args, **kwargs):
+        destination = Path(destination)
+        temporary = destination.with_name(destination.name+'.partial')
+        native_save(value, temporary, *args, **kwargs)
+        temporary.replace(destination)
+    torch.save = atomic_save
+    try:
+        result = sys.modules['local_intervention_value'].recollect_local_design(
+            policy, dict(roots=[root]), path, simulation_budget=budget, workers=1,
+            inference_batch=32, inference_device='cpu')
+    finally:
+        torch.save = native_save
+    observed = sys.modules['local_intervention_value'].observed_programs(root)
+    if (not result['completed'] or result['next_design_root'] != 1 or len(result['roots']) != 1
+            or set(result['roots'][0]['outcomes']) != set(observed['outcomes'])):
+        raise ValueError('A dispatched root lacks its complete original observation design.')
+    return dict(index=identity['design_root'], observations=len(result['roots'][0]['outcomes']),
+                simulation_steps=result['simulation_steps'])
+
+
+def collect_repeat_roots(manifest, arm, seed, policy, blueprint, path, budget, workers):
+    """Parallelize whole roots while retaining original quartets and CPU batches."""
+    import fcntl
+    result = read(path)
+    if result['completed']:
+        return result
+    audit_path = OUTPUT/'verification/root-dispatch-replay.pth'
+    audit = read(audit_path)
+    dispatcher = root_dispatch_identity()
+    if (not audit['completed'] or audit['manifest_sha256'] != digest(MANIFEST)
+            or audit['dispatcher_sha256'] != dispatcher or len(audit['roots']) < 2
+            or any(row['mismatches'] for row in audit['roots'])):
+        raise ValueError('The independent-root dispatcher lacks an exact replay audit.')
+    if (result['predecessor_sha256'] != digest(policy) or result['simulation_budget'] != budget
+            or result.get('inference_batch') != 32 or result.get('inference_device') != 'cpu'
+            or len(result['roots']) != result['next_design_root']):
+        raise ValueError('The retained sampling checkpoint has another execution identity.')
+    first = result['next_design_root']
+    initial_sha = digest(path)
+    work = path.parent/(arm+'-root-work')
+    work.mkdir(exist_ok=True)
+    descriptor = os.open(work, os.O_RDONLY)
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    files, identities, jobs = {}, {}, []
+    try:
+        for index in range(first, len(blueprint['roots'])):
+            files[index] = work/f'root-{index:03d}.pth'
+            identities[index] = dict(manifest_sha256=digest(MANIFEST), training_seed=seed, arm=arm,
+                design_root=index, predecessor_sha256=result['predecessor_sha256'],
+                dispatcher_sha256=dispatcher, sampler_sha256=manifest['runtime_sha256']['local_intervention_value.py'],
+                inference_batch=32, inference_device='cpu', retained_checkpoint_sha256=initial_sha)
+            retained = result.get('partial_root') if index == first else None
+            jobs.append((str(policy), blueprint['roots'][index], str(files[index]), identities[index], retained))
+        pool = ProcessPoolExecutor(max_workers=workers)
+        try:
+            futures = [pool.submit(measure_repeat_root, job) for job in jobs]
+            finished = 0
+            for future in as_completed(futures):
+                row = future.result()
+                finished += 1
+                print(dict(phase='r20_independent_root_completed', seed=seed, arm=arm,
+                    root=row['index'], remaining_roots_completed=finished, remaining_roots=len(jobs),
+                    observations=row['observations'], simulation_steps=row['simulation_steps']), flush=True)
+        except BaseException:
+            for process in list(pool._processes.values()):
+                process.terminate()
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
+        else:
+            pool.shutdown(wait=True)
+        added_steps = 0
+        for index, path_root in files.items():
+            measured = read(path_root)
+            root = measured['roots'][0]
+            observed = sys.modules['local_intervention_value'].observed_programs(blueprint['roots'][index])
+            if (not measured['completed'] or measured['root_dispatch_identity'] != identities[index]
+                    or set(root['outcomes']) != set(observed['outcomes'])):
+                raise ValueError('A root changed before ordered assembly.')
+            result['roots'].append(dict(root, design_root=index))
+            added_steps += measured['simulation_steps']
+        result['simulation_steps'] += added_steps
+        if result['simulation_steps'] > budget:
+            raise ValueError('Root collection exceeded the original physical-step budget.')
+        result.update(completed=True, next_design_root=len(blueprint['roots']),
+            measured_terminal_observations=sum(len(root['outcomes']) for root in result['roots']),
+            root_dispatch=dict(kind='independent roots using the unchanged frozen sampler',
+                dispatcher_sha256=dispatcher, audit_sha256=digest(audit_path),
+                retained_checkpoint_sha256=initial_sha, retained_complete_roots=first,
+                retained_partial_observations=len(result.get('partial_root', {}).get('outcomes', {})),
+                additional_simulation_steps=added_steps, inference_batch=32, inference_device='cpu'))
+        result.pop('partial_root', None)
+        save(result, path)
+        verified = read(path)
+        if not verified['completed'] or verified['measured_terminal_observations'] != result['measured_terminal_observations']:
+            raise ValueError('The assembled root collection did not survive checkpoint readback.')
+        for path_root in files.values():
+            if not path_root.resolve().is_relative_to(OUTPUT.resolve()):
+                raise ValueError('A completed root work file is outside the experiment directory.')
+            path_root.unlink()
+        return result
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+        if work.exists() and not any(work.iterdir()):
+            work.rmdir()
+
+
+def future_group_dispatch_identity():
+    source = inspect.getsource(measure_repeat_root_groups)+inspect.getsource(collect_repeat_roots_groups)
+    return hashlib.sha256(source.encode()).hexdigest()
+
+
+def measure_repeat_root_groups(job):
+    """Use the frozen sampler's existing pool without changing its 32-row groups."""
+    original_job, group_workers = job
+    if group_workers not in (1, 2, 3, 4):
+        raise ValueError('A native sorting window contains at most four inference groups.')
+    policy, root, filename, identity, retained = original_job
+    path = Path(filename)
+    initial = read(path) if path.exists() else dict(
+        model=read(policy), roots=[], predecessor_sha256=identity['predecessor_sha256'],
+        simulation_steps=0, next_design_root=0, completed=False, training_data=str(path),
+        simulation_budget=400*(len(root['outcomes'])+1)+800,
+        inherited_labels=False, root_dispatch_identity=identity)
+    if initial['root_dispatch_identity'] != identity:
+        raise ValueError('A future-group checkpoint belongs to another root.')
+    if initial['completed']:
+        return measure_repeat_root(original_job)
+    if not path.exists() and retained is not None:
+        initial['partial_root'] = dict(retained, design_root=0)
+    record = dict(dispatcher_sha256=future_group_dispatch_identity(), workers=group_workers,
+        retained_observations=len(initial.get('partial_root', {}).get('outcomes', {})),
+        inference_batch=32, inference_device='cpu',
+        scheduling='unchanged frozen 128-row sorting windows and 32-row inference groups')
+    initial.setdefault('future_group_dispatch', []).append(record)
+    save(initial, path)
+    module = sys.modules['local_intervention_value']
+    native = module.recollect_local_design
+    def pooled(*args, **kwargs):
+        if kwargs['workers'] != 1 or kwargs['inference_batch'] != 32 or kwargs['inference_device'] != 'cpu':
+            raise ValueError('The future-group continuation changed the frozen numerical path.')
+        return native(*args, **dict(kwargs, workers=group_workers))
+    module.recollect_local_design = pooled
+    try:
+        return measure_repeat_root(original_job)
+    finally:
+        module.recollect_local_design = native
+
+
+def collect_repeat_roots_groups(manifest, arm, seed, policy, blueprint, path, budget, workers):
+    """Bound concurrent native groups by the assigned CPU budget, then use ordered assembly."""
+    import fcntl
+    import signal
+    result = read(path)
+    execution_path = path.parent/(arm+'-future-group-execution.pth')
+    if result['completed'] and not execution_path.exists():
+        return result
+    audit_path = OUTPUT/'verification/future-group-replay.pth'
+    audit = read(audit_path)
+    if (not audit['completed'] or audit['manifest_sha256'] != digest(MANIFEST)
+            or audit['runtime_sha256'] != manifest['runtime_sha256']
+            or audit['dispatcher_sha256'] != future_group_dispatch_identity()
+            or {row['workers'] for row in audit['roots']} != {2, 4}
+            or any(row['mismatches'] for row in audit['roots'])):
+        raise ValueError('Native future-group scheduling lacks its exact replay audit.')
+    if result['completed']:
+        execution_record = read(execution_path)
+        if (execution_record['manifest_sha256'] != digest(MANIFEST)
+                or execution_record['predecessor_sha256'] != digest(policy)
+                or execution_record['dispatcher_sha256'] != future_group_dispatch_identity()
+                or execution_record['audit_sha256'] != digest(audit_path)):
+            raise ValueError('Completed native future groups changed their execution provenance.')
+        result['root_dispatch']['native_future_groups'] = execution_record
+        save(result, path)
+        return result
+    if (workers < 1 or result['predecessor_sha256'] != digest(policy)
+            or result['simulation_budget'] != budget or result.get('inference_batch') != 32
+            or result.get('inference_device') != 'cpu'
+            or len(result['roots']) != result['next_design_root']):
+        raise ValueError('The retained sampling checkpoint has another execution identity.')
+    first = result['next_design_root']; initial_sha = digest(path)
+    work = path.parent/(arm+'-root-work'); work.mkdir(exist_ok=True)
+    descriptor = os.open(work, os.O_RDONLY)
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    pending, files, execution = [], {}, []
+    try:
+        for index in range(first, len(blueprint['roots'])):
+            filename = work/f'root-{index:03d}.pth'; files[index] = filename
+            identity = dict(manifest_sha256=digest(MANIFEST), training_seed=seed, arm=arm,
+                design_root=index, predecessor_sha256=result['predecessor_sha256'],
+                dispatcher_sha256=root_dispatch_identity(),
+                sampler_sha256=manifest['runtime_sha256']['local_intervention_value.py'],
+                inference_batch=32, inference_device='cpu', retained_checkpoint_sha256=initial_sha)
+            retained = result.get('partial_root') if index == first else None
+            measured = read(filename) if filename.exists() else None
+            if measured is not None and measured['root_dispatch_identity'] != identity:
+                raise ValueError('A retained work file changed its sampling identity.')
+            if measured is not None and measured['completed']:
+                continue
+            count = len((measured or {}).get('partial_root', retained or {}).get('outcomes', {}))
+            remaining = len(blueprint['roots'][index]['outcomes'])-count
+            pending.append((remaining, index,
+                (str(policy), blueprint['roots'][index], str(filename), identity, retained)))
+        pending.sort(key=lambda item: (-item[0], item[1]))
+        pool = ProcessPoolExecutor(max_workers=workers)
+        active = {}; available = workers
+        try:
+            while pending or active:
+                while pending and available:
+                    remaining, index, job = pending.pop(0)
+                    allocation = min(available, 4, max(1, (min(128, remaining)+31)//32))
+                    future = pool.submit(measure_repeat_root_groups, (job, allocation))
+                    active[future] = (allocation, index); available -= allocation
+                future = next(as_completed(active))
+                allocation, index = active.pop(future)
+                row = future.result(); available += allocation
+                print(dict(phase='r20_native_future_groups_completed', seed=seed, arm=arm,
+                    root=index, group_workers=allocation, observations=row['observations'],
+                    simulation_steps=row['simulation_steps'], cpu_budget=workers), flush=True)
+        except BaseException:
+            descendants = []
+            queue = [(process.pid, os.getpid()) for process in pool._processes.values()]
+            while queue:
+                pid, parent = queue.pop(0); descendants.append((pid, parent))
+                children = Path(f'/proc/{pid}/task/{pid}/children')
+                if children.exists():
+                    queue.extend((int(child), pid) for child in children.read_text().split())
+            for pid, parent in reversed(descendants):
+                try:
+                    status = Path(f'/proc/{pid}/status').read_text()
+                    actual_parent = int(next(line.split()[1] for line in status.splitlines()
+                                             if line.startswith('PPid:')))
+                    if actual_parent == parent:
+                        os.kill(pid, signal.SIGTERM)
+                except (FileNotFoundError, ProcessLookupError):
+                    pass
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
+        else:
+            pool.shutdown(wait=True)
+        for index, filename in files.items():
+            records = read(filename).get('future_group_dispatch', [])
+            if records:
+                execution.append(dict(root=index, continuations=records))
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN); os.close(descriptor)
+    execution_record = dict(
+        dispatcher_sha256=future_group_dispatch_identity(), audit_sha256=digest(audit_path),
+        manifest_sha256=digest(MANIFEST), predecessor_sha256=digest(policy),
+        cpu_budget=workers, roots=execution,
+        change_scope='existing frozen pool scheduling only; unchanged groups, observations and learning recipe')
+    save(execution_record, execution_path)
+    result = collect_repeat_roots(manifest, arm, seed, policy, blueprint, path, budget, workers)
+    result['root_dispatch']['native_future_groups'] = execution_record
+    save(result, path)
+    return result
+
+
+def repeated_data(manifest, arm, seed, policy, workers, batch, parallel_roots=False, future_groups=False):
     l = sys.modules['local_intervention_value']
     directory = OUTPUT/f'seed{seed}'
     bank_path = directory/(arm+'-factual.pth')
@@ -392,8 +673,14 @@ def repeated_data(manifest, arm, seed, policy, workers, batch):
     observations = sum(len(root['outcomes']) for root in blueprint['roots'])
     budget = 400*(observations+len(blueprint['roots']))+800
     path = directory/(arm+'-paired-data.pth')
-    data = l.recollect_local_design(policy, blueprint, path, simulation_budget=budget,
-        workers=workers, inference_batch=batch, inference_device='cpu')
+    if parallel_roots:
+        if batch != 32 or not path.exists():
+            raise ValueError('Independent-root continuation requires an existing CPU batch-32 checkpoint.')
+        collector = collect_repeat_roots_groups if future_groups else collect_repeat_roots
+        data = collector(manifest, arm, seed, policy, blueprint, path, budget, workers)
+    else:
+        data = l.recollect_local_design(policy, blueprint, path, simulation_budget=budget,
+            workers=workers, inference_batch=batch, inference_device='cpu')
     if (not data['completed'] or data['next_design_root'] != len(blueprint['roots'])
             or data['measured_terminal_observations'] != observations):
         raise ValueError('The independent acquisition design was not completely remeasured.')
@@ -471,7 +758,8 @@ def fit_repeat(manifest, arm, seed, data, bank):
             model['successor_task_value']['inference_device'] = 'cuda:0'
         model['r20_replication'] = dict(completed=True, training_seed=seed,
             manifest_sha256=digest(MANIFEST), inherited_labels=False, inherited_value_weights=False,
-            heldout_used_for_training=False, value_initialization='fresh', objective_history=history)
+            heldout_used_for_training=False, value_initialization='fresh', objective_history=history,
+            collection_dispatch=data.get('root_dispatch'))
         save(model, path)
         temporary.unlink()
         paths[label] = path
@@ -483,14 +771,15 @@ def fit_repeat(manifest, arm, seed, data, bank):
     return paths
 
 
-def repeat(manifest, seeds, workers, batch):
+def repeat(manifest, seeds, workers, batch, parallel_roots=False, future_groups=False):
     verification = OUTPUT/'verification/training-replay.pth'
     for seed in seeds:
         sources = source_models(manifest, seed)
         paths = dict(sources)
         for arm, predecessor in (('F01', 'F00'), ('F11', 'F10')):
             resource_wait()
-            data, bank = repeated_data(manifest, arm, seed, sources[predecessor], workers, batch)
+            data, bank = repeated_data(manifest, arm, seed, sources[predecessor], workers, batch,
+                                       parallel_roots, future_groups)
             while not verification.exists():
                 print(dict(phase='waiting_for_frozen_training_replay', seed=seed), flush=True)
                 time.sleep(30)
@@ -627,8 +916,12 @@ def main():
                                              'seed-test', 'baseline-test'))
     parser.add_argument('--workers', type=int, default=2)
     parser.add_argument('--batch', type=int, default=32)
+    parser.add_argument('--parallel-roots', action='store_true')
+    parser.add_argument('--future-groups', action='store_true')
     parser.add_argument('--seeds', type=int, nargs='+', default=list(SEEDS))
     args = parser.parse_args()
+    if args.future_groups and not args.parallel_roots:
+        parser.error('--future-groups requires --parallel-roots')
     manifest = read(MANIFEST)
     runtime(manifest)
     resource_wait()
@@ -648,7 +941,7 @@ def main():
     elif args.operation == 'baseline-test':
         baseline_test(manifest, args.workers)
     else:
-        repeat(manifest, args.seeds, args.workers, args.batch)
+        repeat(manifest, args.seeds, args.workers, args.batch, args.parallel_roots, args.future_groups)
 
 
 if __name__ == '__main__':
