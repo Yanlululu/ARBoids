@@ -162,7 +162,7 @@ def runtime(manifest):
         module.__file__ = str(ROOT / 'train' / filename)
         sys.modules[name] = module
         exec(compile(source, module.__file__, 'exec'), module.__dict__)
-    mp.set_start_method('fork', force=True)
+    mp.set_start_method('fork' if 'fork' in mp.get_all_start_methods() else 'spawn', force=True)
     r = sys.modules['run_remote_evidence']
     r.initialize()
     return r.d, sys.modules['local_intervention_value'], sys.modules['mechanism_controls'], r

@@ -574,24 +574,28 @@ def build_independent():
                                 or proof['dispatcher_sha256'] != dispatch['dispatcher_sha256']
                                 or any(row['mismatches'] for row in proof['roots'])):
                             raise ValueError('Parallel root collection lacks its exact frozen-sampler replay.')
-                        groups = dispatch.get('native_future_groups')
-                        if groups:
+                        native_groups = dispatch.get('native_future_groups')
+                        if native_groups:
                             group_proof_path = root/'verification/future-group-replay.pth'
                             group_proof = read_pth(group_proof_path)
-                            if (digest(group_proof_path) != groups['audit_sha256']
+                            if (digest(group_proof_path) != native_groups['audit_sha256']
                                     or not group_proof['completed']
                                     or group_proof['manifest_sha256'] != manifest_sha
                                     or group_proof['runtime_sha256'] != manifest['runtime_sha256']
-                                    or group_proof['dispatcher_sha256'] != groups['dispatcher_sha256']
+                                    or group_proof['dispatcher_sha256'] != native_groups['dispatcher_sha256']
                                     or group_proof['legacy_dispatcher_sha256'] != dispatch['dispatcher_sha256']
+                                    or native_groups['manifest_sha256'] != manifest_sha
+                                    or native_groups['predecessor_sha256'] != fit['predecessor_sha256']
                                     or hashlib.sha256(group_proof['dispatcher_source'].encode()).hexdigest()
-                                        != groups['dispatcher_sha256']
+                                        != native_groups['dispatcher_sha256']
                                     or {row['workers'] for row in group_proof['roots']} != {2, 4}
-                                    or any(row['mismatches'] for row in group_proof['roots'])):
+                                    or any(row['mismatches'] for row in group_proof['roots'])
+                                    or not group_proof.get('scheduler_replay', {}).get('completed')
+                                    or group_proof['scheduler_replay']['mismatches']):
                                 raise ValueError('Native future groups lack their exact frozen-sampler replay.')
-                            for root_execution in groups['roots']:
+                            for root_execution in native_groups['roots']:
                                 for continuation in root_execution['continuations']:
-                                    if (continuation['dispatcher_sha256'] != groups['dispatcher_sha256']
+                                    if (continuation['dispatcher_sha256'] != native_groups['dispatcher_sha256']
                                             or continuation['workers'] not in (1, 2, 3, 4)
                                             or continuation['retained_observations'] < 0
                                             or continuation['inference_batch'] != 32
