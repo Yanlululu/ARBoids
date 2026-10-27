@@ -28,6 +28,7 @@ AUTHOR = vrx_source().controller
 MODELS = vrx_source().models
 METHOD = 'original'
 JOINT_CHECKPOINT = None
+CIV_CHECKPOINT = None
 ACTIVE_ARGS = None
 CBF_PROVENANCE = None
 
@@ -70,6 +71,9 @@ class SourceTrial(runner.Trial):
         if METHOD == 'joint':
             from develop_source_fusion import JointMeasuredController
             self.rule = JointMeasuredController(JOINT_CHECKPOINT,args.checkpoint,inference_device=args.device)
+        elif METHOD == 'civ':
+            from civ_deployment import CIVMeasuredController
+            self.rule = CIVMeasuredController(CIV_CHECKPOINT,args.checkpoint,inference_device=args.device)
         elif METHOD == 'cbf':
             from cbf_source_baseline import CBFController, dependency_provenance
             self.rule = CBFController(args.num_robots-1)
@@ -85,7 +89,7 @@ class SourceTrial(runner.Trial):
         n = args.num_robots-1
         dummy_observation = np.zeros((n,14+2*n))
         dummy_boids = np.zeros((n,2))
-        if METHOD == 'joint':
+        if METHOD in ('joint','civ'):
             sample=np.zeros((n,6));sample[:,0]=np.arange(n)*20.
             target=np.array([120.,30.,np.pi,0.,0.,0.])
             boids,states=AUTHOR.Boids_navi_control(sample[:,:2],sample[:,3:5],sample[:,2],target[:2])
@@ -149,7 +153,7 @@ class SourceTrial(runner.Trial):
             actions[1:] = AUTHOR.RL_navi_control(self.actor, observations, boids, 'AdaRes', self.device)
             theta = np.full(self.num_robots-1, np.nan)
             info = {'warning': False}
-        elif METHOD == 'joint':
+        elif METHOD in ('joint','civ'):
             snapshot=np.column_stack((self.curr_pos,self.curr_phi,self.curr_vel,self.yaw_rates))
             command,info=self.rule.control(snapshot[1:],snapshot[0],observations,boids,elapsed,self.total_time)
             theta=info['physical_action'][:,2]
@@ -187,16 +191,19 @@ class SourceTrial(runner.Trial):
 
 
 def main():
-    global METHOD,JOINT_CHECKPOINT
+    global METHOD,JOINT_CHECKPOINT,CIV_CHECKPOINT
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument('--method', choices=(*METHODS,'joint'), default='original')
+    parser.add_argument('--method', choices=(*METHODS,'joint','civ'), default='original')
     parser.add_argument('--joint-checkpoint',type=Path)
+    parser.add_argument('--civ-checkpoint',type=Path)
     extra, remaining = parser.parse_known_args()
     METHOD = extra.method
     JOINT_CHECKPOINT = extra.joint_checkpoint
+    CIV_CHECKPOINT = extra.civ_checkpoint
     if METHOD=='joint' and JOINT_CHECKPOINT is None:parser.error('joint requires --joint-checkpoint')
+    if METHOD=='civ' and CIV_CHECKPOINT is None:parser.error('civ requires --civ-checkpoint')
     if '--duration' not in remaining:
-        remaining += ['--duration','100']
+        remaining += ['--duration','80' if METHOD=='civ' else '100']
     source = verify_source()
     code_files = [Path(__file__), Path(__file__).resolve().parents[1]/'train/gate_study_control.py',
                   Path(__file__).resolve().parents[1]/'train/source_arboids.py',
@@ -205,6 +212,9 @@ def main():
         code_files.extend(Path(__file__).resolve().parents[1]/'train'/name
             for name in ('develop_source_fusion.py','conditional_fusion_value.py',
                          'local_intervention_value.py','plain_return.py'))
+    if METHOD=='civ':
+        code_files.extend(Path(__file__).resolve().parents[1]/'train'/name
+            for name in ('civ_rl.py','civ_deployment.py','develop_source_fusion.py','conditional_fusion_value.py'))
     hashes = {p.name:sha256(p) for p in code_files}
     sys.argv = [sys.argv[0], *remaining]
     runner.Trial = SourceTrial
@@ -222,6 +232,11 @@ def main():
         if METHOD=='joint':
             result.update(joint_checkpoint=str(JOINT_CHECKPOINT),joint_checkpoint_sha256=sha256(JOINT_CHECKPOINT),
                 policy_scope='Frozen joint fusion and conditional task values; shared numerical/ROS command decoder',
+                inference_device=ACTIVE_ARGS.device,
+                velocity_model='Measured ground velocity, zero-current nominal prediction')
+        if METHOD=='civ':
+            result.update(civ_checkpoint=str(CIV_CHECKPOINT),civ_checkpoint_sha256=sha256(CIV_CHECKPOINT),
+                policy_scope='Unified CI candidates and CV value selection; shared paired/deployment executor',
                 inference_device=ACTIVE_ARGS.device,
                 velocity_model='Measured ground velocity, zero-current nominal prediction')
         if not unchanged:

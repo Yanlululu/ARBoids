@@ -5478,7 +5478,7 @@ def _refine_actuator_interactions(actor,packet,source_action,preferred_action,*,
                                  target_envelope_degrees=0.,target_envelope_weight=0.,
                                  task_feedback_prediction=False,independent_feedback_proposal=False,
                                  nominal_feedback_proposals=False,feedback_refinement_rounds=0,
-                                 return_coefficients=False):
+                                 return_coefficients=False,candidate_output=None):
     """Jointly reconcile task preferences with two-actuator candidate motion.
 
     The conditional value proposes a fusion preference. Candidate interaction
@@ -5487,6 +5487,13 @@ def _refine_actuator_interactions(actor,packet,source_action,preferred_action,*,
     combinations; subsequent coordinate minimization removes simple pruning
     errors. The independent selector receives exactly the same candidates.
     """
+    if candidate_output is not None:
+        if not isinstance(candidate_output,dict) or candidate_output:
+            raise ValueError('The joint candidate output must be an empty dictionary.')
+        if (selection not in ('joint','independent') or task_stopping or coupled_prediction
+                or coupled_recovery or capture_weight or joint_feedback_topk
+                or pareto_feedback_horizons or packet.get('_committed_actuator_preferences') is not None):
+            raise ValueError('Unified candidates require the uncommitted factorized CI planner.')
     if return_coefficients and not (task_stopping and task_feedback_prediction):
         raise ValueError('Exact fusion coefficients require the complete task-feedback planner.')
     if independent_feedback_proposal and not (task_stopping and task_feedback_prediction):
@@ -5895,7 +5902,7 @@ def _refine_actuator_interactions(actor,packet,source_action,preferred_action,*,
         gates=candidates.gather(2,choice[...,None,None].expand(-1,-1,1,2)).squeeze(2)
         return torch.cat((gates*source+(1.-gates)*rule,torch.ones_like(source_action[...,2:3])),-1)
     forecast_packet = dict(packet)
-    if capture_weight:
+    if capture_weight or candidate_output is not None:
         forecast_packet['_retain_candidate_paths'] = True
     risk=actor.candidate_risk(forecast_packet,source,pairwise=True,candidate_grid=candidates)
     reach = interception_cost(forecast_packet['_retained_candidate_paths']) if capture_weight else None
@@ -5938,6 +5945,8 @@ def _refine_actuator_interactions(actor,packet,source_action,preferred_action,*,
                 pursuit = next_pursuit.flatten(1).gather(1, index)
             ancestor=index//k
             plans=torch.cat((plans.gather(1,ancestor[...,None].expand(-1,-1,vessel)),(index%k)[...,None]),-1)
+        if candidate_output is not None:
+            candidate_output['beam_plans']=plans.clone()
         if refine_all_plans:
             # Joint fusion is nonconvex. Refining only the cheapest beam
             # endpoint discards the other coordination basins already found.
@@ -6022,6 +6031,12 @@ def _refine_actuator_interactions(actor,packet,source_action,preferred_action,*,
                 choices = refine_pair_blocks(
                     unary, risk, choices[:, None], risk_weight, pair_refinements)[:, 0]
     else:raise ValueError('Actuator candidate selection must be joint or independent.')
+    if candidate_output is not None:
+        candidate_output.update(candidates=candidates,unary=unary,pair_risk=risk,
+            order=order,reference=choices,
+            refined_plans=(plans if selection=='joint' else choices[:,None]),
+            prediction_paths=forecast_packet['_retained_candidate_paths'],
+            source=source,rule=rule)
     gates=candidates.gather(2,choices[...,None,None].expand(-1,-1,1,2)).squeeze(2)
     gates=gates.gather(1,order.argsort(-1)[...,None].expand_as(gates))
     command=gates*source+(1.-gates)*rule
