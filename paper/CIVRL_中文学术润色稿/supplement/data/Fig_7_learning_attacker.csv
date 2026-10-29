@@ -1,0 +1,10 @@
+﻿stage,cell,method,episodes,success,success_percent,wilson95_low,wilson95_high,capture,collision,attacker_win,physical_breach,timeout,mean_capture_seconds,adopted,uncertainty
+attacker-0,learning-attacker,CIV,64,55,85.9375,75.38371825842297,92.42142744396914,55,1,8,8,0,9.76363636363636,13,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+attacker-8000,learning-attacker,CIV,64,59,92.1875,82.9804626458371,96.61688230914496,59,1,4,4,0,10.016949152542368,13,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+attacker-16000,learning-attacker,CIV,64,55,85.9375,75.38371825842297,92.42142744396914,55,0,9,9,0,9.378181818181817,14,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+attacker-final,learning-attacker,CIV,64,59,92.1875,82.9804626458371,96.61688230914496,59,0,5,4,0,10.755932203389824,12,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+defender-updated,learning-attacker,CIV,64,59,92.1875,82.9804626458371,96.61688230914496,59,1,4,3,0,10.96949152542372,8,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+defender-retained,learning-attacker,CIV,64,60,93.75,85.00251490779132,97.54287986033819,60,0,4,3,0,10.936666666666659,1,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+original-apf-before,learning-attacker,CIV,64,63,98.4375,91.66589839990573,99.72364580766624,63,1,0,0,0,25.08571428571426,10,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+original-apf-after,learning-attacker,CIV,64,61,95.3125,87.10034625990632,98.3930983213707,61,0,3,0,0,25.409836065573746,15,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+original-apf-retained,learning-attacker,CIV,64,63,98.4375,91.66589839990573,99.72364580766624,63,0,1,0,0,25.66666666666665,2,"Wilson interval over tasks; one frozen training pipeline, not seed variability"

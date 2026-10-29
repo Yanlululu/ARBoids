@@ -1,0 +1,7 @@
+中文正文、公式、引文与插图位于同一目录。
+
+PDF为排版阅读稿。Word正文与公式均可编辑。Markdown与LaTeX保留完整文本和数学公式。结果数值以方括号空位标示，实验图4至图7保留空白图位。
+
+LaTeX使用XeLaTeX编译，所用字体为Noto Serif CJK SC、Noto Sans CJK SC和Liberation Serif。源文件不包含字体文件。
+
+figures目录包含任务场景、算法架构和配对机制插图。三幅插图均为方法示意，不含实验测量值。

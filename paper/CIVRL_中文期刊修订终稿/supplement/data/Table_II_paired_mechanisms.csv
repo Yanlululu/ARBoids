@@ -1,0 +1,8 @@
+﻿cell,comparison,episodes,success_A,success_B,rescues,harms,net_percentage_points,paired_bootstrap95_low,paired_bootstrap95_high,discordant_exact_p,collisions_A,collisions_B
+confirmation,CI joint vs independent,200,180,163,26,9,8.5,3.0,14.499999999999998,0.005988120567053557,5,10
+confirmation,CIV vs CI,200,180,180,4,4,0.0,-3.0,2.5,1.0,5,5
+confirmation,CIV vs ordinary value,200,180,179,4,3,0.5,-2.0,3.0,1.0,5,5
+selected-development,CI joint vs independent,100,91,82,14,5,9.0,1.0,17.0,0.063568115234375,3,4
+selected-development,CIV vs CI,100,95,91,4,0,4.0,1.0,8.0,0.125,3,3
+selected-development,CIV vs ordinary value,100,95,92,3,0,3.0,0.0,7.000000000000001,0.25,3,3
+all-new-strata,"CIV vs CI; all new tasks, descriptive",464,399,397,9,7,0.43103448275862066,-1.293103448275862,2.1551724137931036,0.803619384765625,14,15

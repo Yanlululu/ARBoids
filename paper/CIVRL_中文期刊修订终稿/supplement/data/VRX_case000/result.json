@@ -1,0 +1,166 @@
+{
+  "passed": true,
+  "seed": 182389231,
+  "setting": 1,
+  "agility": 2.0,
+  "controller": "AdaRes",
+  "num_robots": 7,
+  "duration_limit": 80.0,
+  "action_period": 0.2,
+  "termination_rule": "source",
+  "synchronize_feedback": false,
+  "message_delay_steps": 0,
+  "message_drop_probability": 0.0,
+  "communication_scope": "local per-directed-link delay/loss emulation, not a physical network",
+  "capture_radius": 5.5,
+  "target_radius": 15.0,
+  "collision_radius": 5.0,
+  "checkpoint": "/root/autodl-tmp/ARBoids/train/experiments/main-seed42-20260921/adares1.pth",
+  "thruster_mapping": "policy[0]->starboard; policy[1]->port (ENU yaw matching training)",
+  "checkpoint_sha256": "fe0c34101379582eac83ec6e89b4090d754308b604a97babf777f5b01d6c6ca2",
+  "initial_poses": "-532.3476248777532,312.9293365235293,-0.7658449014292829;-578.2685664978748,278.7254199346076,0.19719175478446638;-584.5241922499223,273.06387132627214,1.5844662379041075;-582.2198425197893,264.97028317807445,0.5945615592312048;-574.2063074117034,262.28559308053457,1.5693260726500982;-568.2293881512563,268.35435692895607,-0.13958481334975836;-570.2798582607346,276.45223383312685,1.4209181466849952",
+  "gazebo_partition": "arboids-320336-8310a7a8",
+  "outcome_code": 3,
+  "outcome": "defender_capture",
+  "success": true,
+  "simulation_seconds": 7.8500000000000005,
+  "defender_collision": false,
+  "attacker_max_displacement": 26.197548766149836,
+  "terminal_positions": [
+    [
+      26.451272365517866,
+      22.47282226735308
+    ],
+    [
+      13.332552122896459,
+      19.45905823727287
+    ],
+    [
+      4.44025174929493,
+      15.70808981989569
+    ],
+    [
+      2.500019155964196,
+      -3.6006659450777647
+    ],
+    [
+      7.895803597825648,
+      4.195078607341543
+    ],
+    [
+      24.335678094923537,
+      9.93570993359441
+    ],
+    [
+      21.238784612796508,
+      20.880370614043386
+    ]
+  ],
+  "terminal_yaw": [
+    -0.8872408696663953,
+    0.17283337686180064,
+    0.36133954916893435,
+    0.8163081481713925,
+    0.8860281719333777,
+    1.2910803775056734,
+    0.5777555392452408
+  ],
+  "wall_seconds": 44.308736234903336,
+  "control_steps": 40,
+  "frames": [
+    {
+      "file": "frame-000.png",
+      "simulation_seconds": 0.9500000000000002,
+      "gazebo_timestamp": 3.0
+    },
+    {
+      "file": "frame-001.png",
+      "simulation_seconds": 4.95,
+      "gazebo_timestamp": 7.0
+    },
+    {
+      "file": "frame-002.png",
+      "simulation_seconds": 6.95,
+      "gazebo_timestamp": 9.0
+    }
+  ],
+  "inference_seconds": {
+    "mean": 0.12658221151214094,
+    "median": 0.11315491236746311,
+    "p95": 0.18148598195984958,
+    "maximum": 0.32821505703032017
+  },
+  "control_seconds": {
+    "mean": 0.1283083031186834,
+    "median": 0.11483176331967115,
+    "p95": 0.1831152094528079,
+    "maximum": 0.3298877850174904
+  },
+  "feedback_skew_seconds": {
+    "mean": 0.0,
+    "median": 0.0,
+    "p95": 0.0,
+    "maximum": 0.0
+  },
+  "control_deadline_misses": 1,
+  "trajectory": "/root/autodl-tmp/ARBoids/train/experiments/author-source-fusion-20261011/unified-civ-development-20261027/paper-evidence-20261027/vrx-cuda/case000-CIV/trajectory.npz",
+  "method": "CIV",
+  "source": {
+    "repository": "https://github.com/taojy687/ARBoids",
+    "commit": "9eb6df464808af6b9729f39644b4d658e1695e2d",
+    "files": {
+      "LICENSE": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+      "train/envs/modules.py": "c947be812f9f952b71241f8b0538114ea92cdd5a4f86c72bb4161cebc94b92b2",
+      "train/envs/TADgame.py": "cbfb0d50082d428ac43d92718fb2bb182314bc04f584bbccd9aa58023b723807",
+      "train/policy/networks.py": "c3d7c11cdf5d780f42640645736c10717061910ee246e808753c7fedb5ca0e0d",
+      "train/policy/SAC.py": "2c799797ca5ac4ced9bca348153bbfee247251b432813d4ca1675fb1d242fa6c",
+      "vrx/tad_vrx_experiment.py": "3134413500e4d969e242cbbfad64074da522e1e9cb71e88faeb7883d8fcec0be",
+      "vrx/models.py": "abd004c7b5770ea343589c68676636ce29df4e5ba99d8bce7b0195a123cb4a08",
+      "vrx/utils.py": "c196466a2c1c2796939ebf691b4be896aabf3a9ee2ae125163b6f5cc6c64f753",
+      "train/configs/train.yaml": "ab17366095bb4db2d0dc774be28d8032056f783b62a07512c3e94ed0df2ad21b"
+    }
+  },
+  "source_unchanged": true,
+  "original_observation_padding": true,
+  "original_velocity_callback": true,
+  "common_settle_seconds": 2.0,
+  "policy_scope": "Frozen unified whole-plan executor with the same public measurements and source command decoder",
+  "external_baseline": null,
+  "inference_device": "cuda:0",
+  "velocity_model": "Measured ground velocity, zero-current nominal prediction",
+  "synchronized_model_start": true,
+  "startup_adapter_sha256": "a97c52743487a4fdba302815192c559037a5d9d660849ef5d5865ebce8f41912",
+  "shared_transport_sha256": "14296007a7396de6a4f3f14b376233858f2a2b42a306474e88fcc6de0f759b06",
+  "baseline_family": null,
+  "baseline_seed": null,
+  "policy": "/root/autodl-tmp/ARBoids/train/experiments/author-source-fusion-20261011/unified-civ-development-20261027/finalplan-optimization-1045/unified-selected-calibrated-eta0075-conditional.pth",
+  "policy_sha256": "a125a523b137f9a9cbad4e88f2bc2e05291ccdc7a12fa8af92e95db51d343461",
+  "frozen_runtime_sha256": {
+    "civ_rl.py": "8a662d5043251e5e93d7fbaa2d274e35d747604a27e58de9c6d0d77ca88716f8",
+    "conditional_fusion_value.py": "ed92c3d26ac6b10cabdaca533fbba7ded93012413ccda7e3e98e131a068545b0",
+    "develop_source_fusion.py": "e8f420ab7f5a6442a657a09b9c26fd90a6eacb9bf09974436f28256375567f86",
+    "envs/TADgame.py": "5381552392f2f0296a3a3cdb5db5b8f430e15ed31864286bc58b1ff307c39014",
+    "envs/modules.py": "9a1264136c32737e948de633826cb768751ab0d7e369c09c8dca82f750c7fc34",
+    "source_arboids.py": "ca6207792d14d6b42297b5248fdd7535e9ad8414aef37ef218365cb41dd13463",
+    "policy/networks.py": "bcdd1aa8d83823d7fd4a57701975510e8e73f5b6fa2b3f00007c47a65eb4eaa3",
+    "policy/SAC.py": "b41ec0f8082480d8276e00bddc07a5a9966f2058a01c0b141d26b0b76dec331f"
+  },
+  "deployment_adapter_sha256": "3b90d81721969e61420b59d52c09afb6198c5cc60d8ed79f49af533319e5df00",
+  "includes_mechanism_one": true,
+  "includes_mechanism_two": true,
+  "policy_process_transport": "local Unix socket; identical public measurements and command decoder",
+  "transport_file_sha256": {
+    "run_gate_contribution.py": "0fcac132442a0e9abbc906450ef5574608c1a2ccbd2a3ddc16d9d58f22cd5eba",
+    "gate_study_control.py": "4faf9f4059cb6e1c99568ef090aaa606e6b68d8133ce84eeadee78311deab703",
+    "source_arboids.py": "ca6207792d14d6b42297b5248fdd7535e9ad8414aef37ef218365cb41dd13463",
+    "cbf_source_baseline.py": "6a4797f7887a4cdef1595bfa5e4387de922bf55da289040890985ed3d70510d6",
+    "develop_source_fusion.py": "e8f420ab7f5a6442a657a09b9c26fd90a6eacb9bf09974436f28256375567f86",
+    "conditional_fusion_value.py": "ed92c3d26ac6b10cabdaca533fbba7ded93012413ccda7e3e98e131a068545b0",
+    "local_intervention_value.py": "0062b57bb9640c61e038901e37b394c9271f5cc780ac4b79d267c01b7494d34f",
+    "plain_return.py": "30e89a9c70cd51e990c81fe03ff1d07656a28673edbc5bd4c7ddb30de20361e0"
+  },
+  "algorithm": "CIV-RL-unified-v1",
+  "paper_design_sha256": "c1d84eee7c27e7d702289bd2ddfa8cb11c6cd440a291cbd3b0b6874a40c3e9d8",
+  "paired_scene_index": 0,
+  "command_returncode": 0
+}

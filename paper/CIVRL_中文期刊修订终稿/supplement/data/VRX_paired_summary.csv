@@ -1,0 +1,4 @@
+﻿method,trials,success,captures,collision
+CIV,12,12,12,0
+CI,12,12,12,0
+arboids,12,11,11,1

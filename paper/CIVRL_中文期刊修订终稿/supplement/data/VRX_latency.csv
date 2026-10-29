@@ -1,0 +1,4 @@
+﻿method,control_samples,mean_ms,p95_ms,maximum_ms,deadline_ms,deadline_misses,deadline_miss_percent,backend
+CIV,541,119.08568111515144,169.61288917809725,382.9033328220248,200,12,2.2181146025878005,CUDA; measured during shared server load
+CI,534,118.24828045345033,165.38887848146254,291.5929611772299,200,14,2.6217228464419478,CUDA; measured during shared server load
+arboids,468,3.5009525744164858,4.3681778479367495,19.849836826324463,200,0,0.0,CUDA; measured during shared server load

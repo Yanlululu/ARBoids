@@ -1,0 +1,5 @@
+﻿method,seed,training_defenders,environment_steps,checkpoint,sha256,source_commit,fresh_initialization
+arboids,42,6,1000000,train/experiments/author-source-fusion-20261011/independent-training/source-six-arboids-seed42-20261021/best-development.pth,278bd0e62ab0f757e5628e1f05335f605a196860d8f49d8c9aab62685fa75940,9eb6df464808af6b9729f39644b4d658e1695e2d,True
+rp,42,6,1000000,train/experiments/author-source-fusion-20261011/independent-training/source-six-rp-seed42-20261021/best-development.pth,9918bd920432b4579d68f734900f8de3927a9bfd69b1e474c5a345ab6df1a001,9eb6df464808af6b9729f39644b4d658e1695e2d,True
+sac,42,6,1000000,train/experiments/author-source-fusion-20261011/independent-training/source-six-sac-seed42-20261021/best-development.pth,b5b185c48b77f7c8c1fa28aca86607acc9b7b8df1771d175dded25c8d577fae1,9eb6df464808af6b9729f39644b4d658e1695e2d,True
+mappo,42,6,1000000,train/experiments/author-source-fusion-20261011/r20-six-baseline-comparison/mappo-seed42/best.pth,fb044c8f068ef5b393d09c8efb9be7e1bdf48637aa6b3186bf636ead0e11626f,,

@@ -1,0 +1,206 @@
+{
+  "source_sha256": "2baebd7473dd127440c428e9844c13279a1fe79379f63486c7757e7877637924",
+  "display_equations": 41,
+  "tables_unchanged": 6,
+  "references_unchanged": 28,
+  "pending_count": 37,
+  "source_chars": 35449,
+  "revised_chars": 37483,
+  "prose_forbidden_hits": {},
+  "changed_blocks": 107,
+  "source_paragraphs": 226,
+  "revised_paragraphs": 210,
+  "pdf_pages": 19,
+  "docx_pages": 21,
+  "docx_display_equations": 41,
+  "figures": 7,
+  "pdf_pending_marks": [
+    {
+      "page": 11,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 11,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 11,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 14,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 15,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 15,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 15,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 15,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 16,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    },
+    {
+      "page": 19,
+      "color": "0xc00000",
+      "text": "待补"
+    }
+  ],
+  "primary_source_pdf_sha256": "6de846ab595179c4c79d73fc094a774f4ebd891fca60ea552ccdc9c004cf88d4",
+  "primary_source_tex_sha256": "14f3952fe0955a073d6c425427904793bd6036955f01033ac4bc1d070c7e1058"
+}

@@ -1,0 +1,3 @@
+﻿stage,initial_tasks,actionable_roots,branches,simulated_steps,opponent_action_calls,training_roots,validation_roots,updates,selected_update,acceptance_margin,resume_sha256,new_attacker_roots,original_apf_task_prefix
+CV update 1,192,190,4180,148641,148641,148,42,3000,500,0.1,a125a523b137f9a9cbad4e88f2bc2e05291ccdc7a12fa8af92e95db51d343461,,
+CV + original-task replay,,,,,,302,80,3000,500,0.2,317bc3fce9b7b3bd8aa7bdd1857d41e418bc02f92a0aebaad2152385d2e89245,190,192

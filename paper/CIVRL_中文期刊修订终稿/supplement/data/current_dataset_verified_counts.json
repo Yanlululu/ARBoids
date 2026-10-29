@@ -1,0 +1,15 @@
+{
+  "data": {
+    "training": {
+      "roots": 772,
+      "futures": 1504,
+      "outcomes": 16544
+    },
+    "validation": {
+      "roots": 206,
+      "futures": 325,
+      "outcomes": 3575
+    }
+  },
+  "case000_min_sep": 7.151453263475735
+}

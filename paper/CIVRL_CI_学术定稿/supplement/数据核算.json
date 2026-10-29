@@ -1,0 +1,69 @@
+{
+  "main_checks": [
+    {
+      "method": "CIV",
+      "tasks": 200,
+      "verified": true
+    },
+    {
+      "method": "without-ci",
+      "tasks": 200,
+      "verified": true
+    },
+    {
+      "method": "CI",
+      "tasks": 200,
+      "verified": true
+    },
+    {
+      "method": "arboids",
+      "tasks": 200,
+      "verified": true
+    },
+    {
+      "method": "rp",
+      "tasks": 200,
+      "verified": true
+    },
+    {
+      "method": "sac",
+      "tasks": 200,
+      "verified": true
+    },
+    {
+      "method": "boids",
+      "tasks": 200,
+      "verified": true
+    },
+    {
+      "method": "mappo",
+      "tasks": 200,
+      "verified": true
+    }
+  ],
+  "paired_capture_CIV_minus_CI": {
+    "n": 176,
+    "mean_seconds": -0.826136363636368,
+    "ci95": [
+      -1.6443181818181882,
+      -0.10568181818181804
+    ]
+  },
+  "VRX": {
+    "CIV": {
+      "n": 12,
+      "success": 12,
+      "mean_capture_s": 8.883333333333333
+    },
+    "CI": {
+      "n": 12,
+      "success": 12,
+      "mean_capture_s": 8.799999999999999
+    },
+    "arboids": {
+      "n": 12,
+      "success": 11,
+      "mean_capture_s": 7.845454545454545
+    }
+  }
+}

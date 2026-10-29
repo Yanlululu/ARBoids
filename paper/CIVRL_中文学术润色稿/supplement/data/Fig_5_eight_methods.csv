@@ -1,0 +1,9 @@
+﻿cell,method,episodes,success,success_percent,wilson95_low,wilson95_high,capture,collision,attacker_win,physical_breach,timeout,mean_capture_seconds,adopted,uncertainty
+confirmation,CIV,200,180,90.0,85.05941875672825,93.43295513309042,180,5,15,0,0,24.015555555555537,38,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+confirmation,without-ci,200,130,65.0,58.163464336040086,71.27117587264192,130,68,2,0,0,18.781538461538435,2,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+confirmation,CI,200,180,90.0,85.05941875672825,93.43295513309042,180,5,15,0,0,24.838888888888874,0,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+confirmation,arboids,200,129,64.5,57.65211307549043,70.80137245956884,129,70,1,0,0,18.858914728682148,0,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+confirmation,rp,200,80,40.0,33.460578566807335,46.916327960737995,80,115,5,0,0,14.572499999999987,0,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+confirmation,sac,200,25,12.5,8.611974475712644,17.801425002582345,25,75,100,33,0,16.799999999999976,0,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+confirmation,boids,200,33,16.5,11.996855328217308,22.26578153905955,33,167,0,0,0,9.127272727272725,0,"Wilson interval over tasks; one frozen training pipeline, not seed variability"
+confirmation,mappo,200,24,12.0,8.197992706375512,17.234252098296743,15,73,103,84,9,14.813333333333329,0,"Wilson interval over tasks; one frozen training pipeline, not seed variability"

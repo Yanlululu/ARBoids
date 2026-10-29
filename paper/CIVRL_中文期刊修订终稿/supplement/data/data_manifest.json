@@ -1,0 +1,52 @@
+[
+  {
+    "file": "Fig_5_eight_methods.csv",
+    "sha256": "e42e8329c0da7af8d6f9ad22e6b76d27d036a733b84ef9b74755a4db6282db97",
+    "status": "原始当前记录保持不变"
+  },
+  {
+    "file": "Fig_5_learning.csv",
+    "sha256": "d2231cdcc3a56a20e3216dcc6247081cc4c6672d3a9bd31947815e9161e39a97",
+    "status": "原始当前记录保持不变"
+  },
+  {
+    "file": "Fig_6_robustness_and_fleet.csv",
+    "sha256": "cf69307b322d116e72f0eb6b1033afba83651733828c1c637446acc40ebe8b3e",
+    "status": "原始当前记录保持不变"
+  },
+  {
+    "file": "Fig_7_learning_attacker.csv",
+    "sha256": "bd18f61a5fe9b4d7d15e52a80c3e45608bff05cde6cd56ad2e02f0022beffb61",
+    "status": "原始当前记录保持不变"
+  },
+  {
+    "file": "Fig_7_defender_update.csv",
+    "sha256": "39d7a89e15da4ac056a494632209fec06f0c71dfbc0ae2f1ec76e438185d2394",
+    "status": "原始当前记录保持不变"
+  },
+  {
+    "file": "Table_II_paired_mechanisms.csv",
+    "sha256": "6de2a5f4c9323c5bb9c283931b61bbb9110d29e46e2a986891e916f84c0ccac6",
+    "status": "原始当前记录保持不变"
+  },
+  {
+    "file": "Table_S1_sensitivity.csv",
+    "sha256": "b35787270ddfc8f4bab782939b5163f7226a068f76aaf97536fb8087bced92f5",
+    "status": "原始当前记录保持不变"
+  },
+  {
+    "file": "VRX_paired_summary.csv",
+    "sha256": "00f96f04260c1e9cd970644b80bcdf4973624120cb8ad343041842ba5c6834fc",
+    "status": "原始当前记录保持不变"
+  },
+  {
+    "file": "VRX_latency.csv",
+    "sha256": "4af8d720991e3ff4756c91a33b6b14041fc5c868b2e76f7b3274f92377deedb5",
+    "status": "原始当前记录保持不变"
+  },
+  {
+    "file": "per_task_outcomes.csv",
+    "sha256": "6661694f865ebade9f9776555ee24bf50fbd66d6552c4adcef1d83656a7e029e",
+    "status": "原始当前记录保持不变"
+  }
+]
