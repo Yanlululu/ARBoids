@@ -11,8 +11,9 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 import control
+from inbox import Inbox, DesktopUnavailable, DeliveryUncertain
 
 from server import ProcessTree, Store, TERMINAL, alive, create_server, parse_progress, safe_file, spawn_options
 from sessions import CodexSessions
@@ -20,8 +21,99 @@ from sessions import CodexSessions
 
 class BridgeTests(unittest.TestCase):
     def test_health_connection_reset_during_service_restart_is_not_a_fatal_error(self):
-        with patch('control.urllib.request.urlopen',side_effect=ConnectionResetError('service is stopping')):
+        opener = Mock()
+        opener.open.side_effect = ConnectionResetError('service is stopping')
+        with patch('control.urllib.request.build_opener', return_value=opener):
             self.assertIsNone(control.health(8787))
+
+    @unittest.skipUnless(os.name == "nt", "Windows live proxy detection")
+    def test_live_proxy_wins_over_stale_shell_and_falls_back_to_direct(self):
+        with patch.dict(os.environ, {"CONTROL_PLANE_HTTP_PROXY": "http://127.0.0.1:10808"}, clear=True), \
+             patch("control.urllib.request.getproxies_registry", return_value={"https": "http://127.0.0.1:10793"}), \
+             patch("control.urllib.request.getproxies", return_value={}):
+            self.assertEqual(control.proxy_candidates(), ["http://127.0.0.1:10793", "http://127.0.0.1:10808", None])
+
+    def test_auto_route_falls_back_only_for_transport_failures(self):
+        with patch("control.proxy_candidates", return_value=["http://127.0.0.1:1", None]), \
+             patch("control.verify_tunnel_access", side_effect=[control.TunnelTransportError("offline"), {"cloud_access": "verified"}]):
+            selected, result = control.select_route("tunnel_test", {"CONTROL_PLANE_API_KEY": "test-key", "HTTPS_PROXY": "http://stale:1"})
+            self.assertNotIn("CONTROL_PLANE_HTTP_PROXY", selected)
+            self.assertNotIn("HTTPS_PROXY", selected)
+            self.assertIn("127.0.0.1", selected["NO_PROXY"])
+            self.assertEqual(result["cloud_access"], "verified")
+        with patch("control.proxy_candidates", return_value=["http://127.0.0.1:1", None]), \
+             patch("control.verify_tunnel_access", side_effect=RuntimeError("HTTP 401")) as check:
+            with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
+                control.select_route("tunnel_test", {})
+            self.assertEqual(check.call_count, 1)
+
+    def test_proxy_watcher_switches_route_only_after_cloud_verification(self):
+        state = dict(token="owner", proxy="http://old:1", preferred_proxy="http://old:1")
+        runtime = dict(process_running=True, tunnel_id="tunnel_test", process={"target_value": "http://127.0.0.1:8787/mcp"})
+        from contextlib import nullcontext
+        with patch("control.runtime_lock", side_effect=nullcontext), patch("control.read_watch", return_value=state), \
+             patch("control.runtime_status", return_value=runtime), patch("control.polling_healthy", return_value=True), \
+             patch("control.proxy_candidates", return_value=["http://new:2", None]), \
+             patch("control.select_route", return_value=({"CONTROL_PLANE_HTTP_PROXY": "http://new:2"}, {})), \
+             patch("control.attach_runtime") as reconnect, patch("control.write_watch") as write, \
+             patch("control.time.sleep", side_effect=StopIteration):
+            with self.assertRaises(StopIteration):
+                control.watch_tunnel(8787, "tunnel_test", "arboids", "owner")
+            self.assertEqual(reconnect.call_count, 1)
+            self.assertTrue(reconnect.call_args.kwargs["restart"])
+            self.assertEqual(write.call_args.args[0]["proxy"], "http://new:2")
+
+    def test_failed_new_proxy_leaves_existing_tunnel_running(self):
+        state = dict(token="owner", proxy="http://old:1", preferred_proxy="http://old:1")
+        runtime = dict(process_running=True, tunnel_id="tunnel_test", process={"target_value": "http://127.0.0.1:8787/mcp"})
+        from contextlib import nullcontext
+        with patch("control.runtime_lock", side_effect=nullcontext), patch("control.read_watch", return_value=state), \
+             patch("control.runtime_status", return_value=runtime), patch("control.polling_healthy", return_value=True), \
+             patch("control.proxy_candidates", return_value=["http://new:2", None]), \
+             patch("control.select_route", side_effect=control.TunnelTransportError("offline")), \
+             patch("control.attach_runtime") as reconnect, patch("control.write_watch"), \
+             patch("control.time.sleep", side_effect=StopIteration):
+            with self.assertRaises(StopIteration):
+                control.watch_tunnel(8787, "tunnel_test", "arboids", "owner")
+            reconnect.assert_not_called()
+
+    def test_watch_state_never_persists_runtime_key(self):
+        with patch("control.WATCH_STATE", self.root / "watch.json"), \
+             patch("control.proxy_candidates", return_value=[None]), patch("control.subprocess.Popen", return_value=Mock(pid=123)):
+            control.start_watcher(8787, "tunnel_test", "arboids", {"CONTROL_PLANE_API_KEY": "secret-test-value"})
+            self.assertNotIn("secret-test-value", (self.root / "watch.json").read_text())
+
+    def test_runtime_identity_mismatch_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "another tunnel"):
+            control.runtime_matches({"tunnel_id": "tunnel_other", "process": {"target_value": "http://127.0.0.1:8787/mcp"}}, "tunnel_test", 8787)
+        with self.assertRaisesRegex(RuntimeError, "MCP endpoint"):
+            control.runtime_matches({"tunnel_id": "tunnel_test", "process": {"target_value": "http://127.0.0.1:9999/mcp"}}, "tunnel_test", 8787)
+
+    def test_runtime_status_does_not_trigger_authenticated_remote_metadata_lookup(self):
+        environment = {"CONTROL_PLANE_API_KEY": "runtime-test-key", "OPENAI_API_KEY": "other-test-key", "OPENAI_ADMIN_KEY": "admin-test-key"}
+        with patch("control.subprocess.run", return_value=Mock(returncode=0, stdout='{"process_running":true}')) as run:
+            self.assertTrue(control.runtime_status("arboids", environment)["process_running"])
+            self.assertFalse({"CONTROL_PLANE_API_KEY", "OPENAI_API_KEY", "OPENAI_ADMIN_KEY"} & run.call_args.kwargs["env"].keys())
+            self.assertIn("CONTROL_PLANE_API_KEY", environment)
+
+    def test_runtime_management_uses_current_proxy_and_bypasses_local_mcp(self):
+        environment = control.management_environment({"CONTROL_PLANE_HTTP_PROXY": "http://127.0.0.1:10793", "HTTPS_PROXY": "http://stale:1"})
+        self.assertEqual(environment["HTTPS_PROXY"], "http://127.0.0.1:10793")
+        self.assertEqual(environment["HTTP_PROXY"], "http://127.0.0.1:10793")
+        self.assertEqual(environment["CONTROL_PLANE_HTTP_PROXY"], "http://127.0.0.1:10793")
+        self.assertIn("127.0.0.1", environment["NO_PROXY"])
+        self.assertNotIn("MCP_HTTP_PROXY", environment)
+
+    def test_watcher_does_not_recreate_a_stopped_or_removed_runtime(self):
+        from contextlib import nullcontext
+        for runtime in ({}, {"process_running": False, "tunnel_id": "tunnel_test", "process": {"target_value": "http://127.0.0.1:8787/mcp"}}):
+            state = dict(token="owner")
+            with patch("control.runtime_lock", side_effect=nullcontext), patch("control.read_watch", return_value=state), \
+                 patch("control.runtime_status", return_value=runtime), patch("control.attach_runtime") as reconnect, \
+                 patch("control.write_watch") as write:
+                control.watch_tunnel(8787, "tunnel_test", "arboids", "owner")
+                reconnect.assert_not_called()
+                self.assertEqual(write.call_args.args[0]["status"], "stopped")
 
     def test_system_proxy_is_scoped_to_the_control_plane(self):
         with patch.dict(os.environ, {}, clear=True), patch("control.urllib.request.getproxies", return_value={"https": "http://127.0.0.1:10808"}):
@@ -60,6 +152,101 @@ class BridgeTests(unittest.TestCase):
     def tearDown(self):
         self.store.close()
         self.temporary.cleanup()
+
+    def mailbox(self, sender=None):
+        self.store.set_context("messaging_policy", {"inbox_enabled": True, "session_delivery_enabled": True, "relay_thread_id": "bridge-chat"})
+        sessions = Mock()
+        def row(session_id):
+            if session_id != "session:target":
+                raise ValueError("Not an available ARBoids session")
+            return {"id": "target", "root": self.root}
+        sessions.row.side_effect = row
+        return Inbox(self.store, sessions, sender=sender)
+
+    def test_saved_plan_does_not_execute_and_duplicate_requests_preserve_one_record(self):
+        sender = AsyncMock()
+        inbox = self.mailbox(sender)
+        first = inbox.save("先审查现有证据，再给方案", "save-one")
+        self.assertEqual(first["status"], "stored")
+        self.assertEqual(inbox.save("先审查现有证据，再给方案", "save-one")["id"], first["id"])
+        self.assertEqual(len(inbox.list()["messages"]), 1)
+        sender.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "different message"):
+            inbox.save("changed plan", "save-one")
+
+    def test_duplicate_parallel_delivery_sends_only_once_to_the_exact_chat(self):
+        sender = AsyncMock(return_value={"accepted_by_desktop": True})
+        inbox = self.mailbox(sender)
+        saved = inbox.save("执行方案", "delivery-one", session_id="session:target", mode="deliver")
+        async def deliver_twice():
+            await asyncio.gather(inbox.deliver(saved["id"]), inbox.deliver(saved["id"]))
+        asyncio.run(deliver_twice())
+        self.assertEqual(sender.await_count, 1)
+        self.assertEqual(sender.call_args.args[2]["threadId"], "target")
+        self.assertEqual(inbox.get(saved["id"])["status"], "delivered")
+        self.assertEqual(inbox.get(saved["id"])["execution_status"], "inspect_target_session")
+
+    def test_uncertain_delivery_never_auto_retries_but_offline_keeps_the_plan(self):
+        sender = AsyncMock(side_effect=DeliveryUncertain("connection lost after sending"))
+        inbox = self.mailbox(sender)
+        saved = inbox.save("plan", "uncertain", session_id="session:target", mode="deliver")
+        asyncio.run(inbox.deliver(saved["id"]))
+        asyncio.run(inbox.deliver(saved["id"]))
+        self.assertEqual(sender.await_count, 1)
+        self.assertEqual(inbox.get(saved["id"])["status"], "delivery_uncertain")
+        sender.side_effect = DesktopUnavailable("desktop closed before send")
+        saved = inbox.save("plan", "offline", session_id="session:target", mode="deliver")
+        self.assertEqual(asyncio.run(inbox.deliver(saved["id"]))["status"], "stored")
+
+    def test_inbox_target_scope_and_live_policy_are_enforced(self):
+        inbox = self.mailbox(AsyncMock())
+        with self.assertRaisesRegex(ValueError, "ARBoids session"):
+            inbox.save("plan", "bad-target", session_id="session:unrelated")
+        saved = inbox.save("plan", "valid", session_id="session:target")
+        self.store.set_context("messaging_policy", {"inbox_enabled": True, "session_delivery_enabled": False})
+        with self.assertRaisesRegex(ValueError, "disabled"):
+            asyncio.run(inbox.deliver(saved["id"]))
+
+    def test_default_receiver_routes_bridge_and_empty_targets_without_replaying_old_requests(self):
+        sender = AsyncMock(return_value={"accepted_by_desktop": True})
+        inbox = self.mailbox(sender)
+        inbox.sessions.row.side_effect = lambda target: {"id": target.removeprefix("session:"), "root": self.root}
+        old = inbox.save("old plan", "old-request", session_id="session:bridge-chat", mode="deliver")
+        asyncio.run(inbox.deliver(old["id"]))
+        self.store.set_context("messaging_policy", dict(inbox.policy(), default_receiver_session_id="session:target"))
+        retried = inbox.save("old plan", "old-request", session_id="session:bridge-chat", mode="deliver")
+        asyncio.run(inbox.deliver(retried["id"]))
+        self.assertEqual(retried["target_session_id"], "session:bridge-chat")
+        self.assertEqual(sender.await_count, 1)
+        for requested in ("", "session:bridge-chat"):
+            saved = inbox.save("new plan", "new-" + requested, session_id=requested, mode="deliver")
+            self.assertEqual(saved["target_session_id"], "session:target")
+            asyncio.run(inbox.deliver(saved["id"]))
+            self.assertEqual(sender.call_args.args[2]["threadId"], "target")
+        explicit = inbox.save("other plan", "explicit", session_id="session:other", mode="deliver")
+        self.assertEqual(explicit["target_session_id"], "session:other")
+
+    def test_invalid_default_receiver_is_rejected_without_falling_back_to_bridge(self):
+        inbox = self.mailbox(AsyncMock())
+        self.store.set_context("messaging_policy", dict(inbox.policy(), default_receiver_session_id="session:unrelated"))
+        with self.assertRaisesRegex(ValueError, "ARBoids session"):
+            inbox.save("plan", "invalid-default", session_id="session:bridge-chat", mode="deliver")
+        self.assertEqual(inbox.list()["messages"], [])
+
+    def test_inbox_mcp_tools_do_not_reenable_cancelled_job_execution(self):
+        self.mailbox()
+        async def inspect():
+            mcp = create_server(self.store)
+            tools = {tool.name: tool for tool in await mcp.list_tools()}
+            self.assertFalse(tools["save_plan"].annotations.readOnlyHint)
+            self.assertFalse(tools["send_message_to_codex"].annotations.readOnlyHint)
+            self.assertTrue(tools["list_inbox"].annotations.readOnlyHint)
+            self.assertNotIn("submit_codex_task", tools)
+            _, saved = await mcp.call_tool("save_plan", {"plan": "存储测试", "request_id": "via-mcp"})
+            self.assertEqual(saved["status"], "stored")
+            with self.store.connect() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM tasks").fetchone()[0], 0)
+        asyncio.run(inspect())
 
     def test_submission_retry_is_idempotent_and_conflicts_are_rejected(self):
         first, created = self.store.submit(self.payload, "one")

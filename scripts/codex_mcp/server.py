@@ -25,6 +25,7 @@ import uuid
 from typing import Any
 
 from sessions import CodexSessions, PREFIX as SESSION_PREFIX
+from inbox import Inbox
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -564,6 +565,8 @@ def create_server(store: Store, port: int = 8787, sessions: CodexSessions | None
     read = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
     write = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True)
     sessions = sessions or CodexSessions(store.root)
+    inbox = Inbox(store, sessions)
+    messaging = inbox.policy()
     policy = store.context().get("execution_policy", {"mode": "read_only", "remote_execution_enabled": False})
     read_only = policy.get("remote_execution_enabled") is not True
 
@@ -580,28 +583,67 @@ def create_server(store: Store, port: int = 8787, sessions: CodexSessions | None
     def project_root(task_id):
         return sessions.row(task_id)["root"] if task_id.startswith(SESSION_PREFIX) else store.root
 
-    mode_instructions = ("The user stopped Pro-managed execution. This MCP is read-only. Pro proposes plans and may inspect progress and results; the user starts execution manually in local Codex. Do not retry or recreate the cancelled task chain. "
+    mode_instructions = ("Generic Pro-managed execution is disabled. Pro may inspect progress and results. Do not retry or recreate the cancelled task chain. "
                          if read_only else "Direct and supervise local Codex work on ARBoids. Submit new work with a unique request_id and reuse it on retries. Work continues after calls return. ")
+    if messaging.get("inbox_enabled"):
+        mode_instructions += "Use save_plan to store a proposal in the local inbox without executing it. Use list_inbox/get_inbox_message to inspect receipts. "
+    if messaging.get("session_delivery_enabled"):
+        mode_instructions += "Only when the user chooses sending and processing, use send_message_to_codex with an explicit session: ID from list_tasks. This starts or queues a turn in that desktop chat. Reuse request_id on retries. Delivery is not completion; inspect the target session and its result files. "
+        mode_instructions += "Check get_project_context for session_routing. A configured default receiver replaces an empty target or the bridge chat ID; other explicit targets stay unchanged. Always follow the actual target_session_id in the receipt. "
     server = FastMCP("ARBoids Local Codex", host="127.0.0.1", port=port, stateless_http=True, json_response=True,
                      instructions=mode_instructions + "list_tasks includes existing local Codex sessions in this repository and its Git worktrees. Session task_ids start with session: and are read-only observations; their status refers to the latest Codex turn, not proof of experiment completion. Read actual result files using the session task_id to select its workspace. Read get_task_status, then use wait_for_task_update with its latest_event_sequence to follow progress. Inspect real metrics and artifacts before reporting success. Never claim completion while queued/running. An idle ChatGPT conversation does not receive automatic pushes; supervision requires tool calls.")
 
     @server.custom_route("/health", methods=["GET"])
     async def health(request):
-        return JSONResponse({"service": "arboids-local-codex", "version": "1.3.0", "project": str(store.root), "pid": os.getpid(),
-                             "execution_mode": "read_only" if read_only else "execution"})
+        return JSONResponse({"service": "arboids-local-codex", "version": "1.4.0", "project": str(store.root), "pid": os.getpid(),
+                             "execution_mode": "read_and_message" if messaging.get("inbox_enabled") and read_only else "read_only" if read_only else "execution",
+                             "inbox_enabled": inbox.policy().get("inbox_enabled", False),
+                             "session_delivery_enabled": inbox.policy().get("session_delivery_enabled", False)})
 
     @server.tool(annotations=read)
     def get_project_context() -> dict[str, Any]:
         """Use this first to identify the ARBoids project, execution boundaries, and available experiment entry points."""
-        return {"project": str(store.root), "executor": "manually started local Codex" if read_only else "signed-in Codex CLI", "sandbox": "read-only MCP" if read_only else "workspace-write",
-                "concurrency": 0 if read_only else 1, "experiments": ["train/configs/smoke.yaml", "train/configs/paper-parameters-smoke.yaml", "train/configs/adversarial-smoke.yaml"],
+        return {"project": str(store.root),
+                "executor": "existing desktop Codex chats via explicit messages" if inbox.policy().get("session_delivery_enabled") else "manually started local Codex" if read_only else "signed-in Codex CLI",
+                "sandbox": "target chat retains its own permissions" if inbox.policy().get("session_delivery_enabled") else "read-only MCP" if read_only else "workspace-write",
+                "concurrency": 0 if read_only else 1, "concurrency_scope": "legacy managed-job queue; desktop chats retain their own scheduling",
+                "experiments": ["train/configs/smoke.yaml", "train/configs/paper-parameters-smoke.yaml", "train/configs/adversarial-smoke.yaml"],
                 "progress": "Call get_task_status to see Codex activity, heartbeat, training steps and evaluation metrics.",
-                "existing_sessions": "list_tasks also discovers non-archived local Codex sessions in this repository and registered Git worktrees. Use their session: task_id with status, event, file and artifact tools. No messages or control commands are sent to those sessions.",
+                "existing_sessions": "list_tasks discovers non-archived local Codex sessions in this repository and registered Git worktrees. Use their session: task_id for status, events, files and artifacts. Explicit message delivery is controlled separately by messaging_policy.",
                 "workspaces": [str(path) for path in sessions.roots()],
                 "execution_repair": store.context().get("execution_repair"),
                 "execution_policy": store.context().get("execution_policy", policy),
-                "instructions": ("Pro provides plans and may read progress and results. It cannot submit, retry, run or cancel tasks. Actual execution is initiated manually in local Codex."
+                "messaging_policy": {key: value for key, value in inbox.policy().items() if key != "relay_thread_id"},
+                "session_routing": {"default_receiver_session_id": inbox.policy().get("default_receiver_session_id"),
+                                    "default_receiver_title": inbox.policy().get("default_receiver_title"),
+                                    "rule": "Empty targets and the bridge chat ID use the configured receiver. Other explicit session IDs remain unchanged. Routing never depends on the foreground window."},
+                "inbox": {"save": "save_plan stores only; it does not start Codex.", "deliver": "send_message_to_codex sends to an explicitly selected existing chat.",
+                          "local_read_command": f"& '{sys.executable}' -X utf8 '{HERE / 'server.py'}' inbox"},
+                "instructions": ("Generic submit/retry/run/cancel tools remain disabled. Use the inbox or explicit desktop delivery only when enabled by messaging_policy."
                                  if read_only else "Tasks can edit ARBoids files and run experiments. Model calls use the existing Codex sign-in. This server has no public listener.")}
+
+    if messaging.get("inbox_enabled"):
+        @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+        def save_plan(plan: str, request_id: str, title: str = "Pro plan", session_id: str = "") -> dict[str, Any]:
+            """Save Pro's proposal in the local inbox WITHOUT executing or messaging Codex. A local user can later read and execute it. Optional session_id targets an existing ARBoids chat. Reuse request_id on retries."""
+            return inbox.save(plan, request_id, title, session_id)
+
+        @server.tool(annotations=read)
+        def list_inbox(limit: int = 20) -> dict[str, Any]:
+            """List locally saved plans and delivery receipts. Stored means waiting for a local user; delivered means accepted by the desktop, not work completed."""
+            return inbox.list(limit)
+
+        @server.tool(annotations=read)
+        def get_inbox_message(message_id: str) -> dict[str, Any]:
+            """Read a saved plan and its delivery receipt. Poll get_task_status on target_session_id for actual Codex progress."""
+            return inbox.get(message_id)
+
+    if messaging.get("session_delivery_enabled"):
+        @server.tool(annotations=write)
+        async def send_message_to_codex(session_id: str, message: str, request_id: str, title: str = "Pro plan") -> dict[str, Any]:
+            """Only when the user explicitly chooses sending and processing: save and deliver a message to an existing ARBoids desktop Codex chat. It can start work there. Use a session: ID from list_tasks or the default receiver in get_project_context; an empty target or the bridge chat ID uses that default. Follow the actual target_session_id in the receipt. Reuse request_id on retries. No new chat is created. delivery_uncertain must be inspected, never resubmitted under a new ID."""
+            saved = inbox.save(message, request_id, title, session_id, mode="deliver")
+            return await inbox.deliver(saved["id"])
 
     def submit(payload: dict, request_id: str) -> dict:
         require_remote_execution()
@@ -773,8 +815,22 @@ def main():
     serve.add_argument("--transport", choices=["streamable-http", "stdio"], default="streamable-http")
     for name in ("worker", "experiment", "status"):
         commands.add_parser(name).add_argument("task_id")
+    mailbox = commands.add_parser("inbox", help="Read saved Pro plans without executing them.")
+    mailbox.add_argument("--message-id")
+    mailbox.add_argument("--limit", type=int, default=20)
+    deliver = commands.add_parser("deliver", help="Deliver one saved plan to an existing desktop Codex chat.")
+    deliver.add_argument("message_id")
+    deliver.add_argument("--session-id", required=True)
     args = parser.parse_args()
     store = Store(args.db, args.root)
+    if args.command in {"inbox", "deliver"}:
+        mailbox = Inbox(store, CodexSessions(store.root))
+        if args.command == "deliver":
+            result = asyncio.run(mailbox.deliver(args.message_id, args.session_id))
+        else:
+            result = mailbox.get(args.message_id) if args.message_id else mailbox.list(args.limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     if args.command == "worker":
         return run_worker(store, args.task_id)
     if args.command == "experiment":
@@ -784,9 +840,10 @@ def main():
         return 0
     with store.connect() as db:
         queued = db.execute("SELECT id,worker_pid FROM tasks WHERE status='queued'").fetchall()
-    for row in queued:
-        if not alive(row["worker_pid"]):
-            launch_worker(store, row["id"])
+    if store.context().get("execution_policy", {}).get("remote_execution_enabled") is True:
+        for row in queued:
+            if not alive(row["worker_pid"]):
+                launch_worker(store, row["id"])
     create_server(store, args.port).run(transport=args.transport)
     return 0
 
