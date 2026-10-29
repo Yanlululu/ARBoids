@@ -181,7 +181,6 @@ class SourceTrial(runner.Trial):
             PhysicalThrust=physical.flatten().copy(), GateTheta=theta.copy(),
             SimulationStamp=float(np.min(self.last_stamp)),
             GateWarning=bool(info['warning']),
-            ConditionalInterventions=int(info.get('conditional_interventions',0)),
             CBFViolation=float(info.get('cbf_constraint_violation',0.)),
             CBFSaturation=float(info.get('cbf_control_saturation',0.)),
             ControlWallSeconds=time.monotonic()-started, PolicyWallSeconds=inference_seconds,
@@ -205,7 +204,7 @@ def main():
                   Path(__file__).resolve().parents[1]/'train/cbf_source_baseline.py']
     if METHOD=='joint':
         code_files.extend(Path(__file__).resolve().parents[1]/'train'/name
-            for name in ('joint_fusion.py','actuator_fusion.py','mechanism_controls.py'))
+            for name in ('joint_fusion.py','actuator_fusion.py','fusion_prediction.py','mechanism_controls.py'))
     hashes = {p.name:sha256(p) for p in code_files}
     sys.argv = [sys.argv[0], *remaining]
     runner.Trial = SourceTrial

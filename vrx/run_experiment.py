@@ -54,10 +54,7 @@ class Trial(ExperimentManager):
             self.image_subscription = self.node.create_subscription(
                 Image, '/arboids/overview/image', self.on_image, qos_profile_sensor_data)
         self.actor = None
-        if args.controller == 'IACRRL':
-            from interaction_controller import InteractionController
-            self.actor = InteractionController(args.checkpoint, self.device, args.num_robots - 1)
-        elif args.controller == 'MAPPO':
+        if args.controller == 'MAPPO':
             from mappo_controller import MAPPOController
             self.actor = MAPPOController(args.checkpoint, self.device,
                 getattr(args, 'message_delay_steps', 0), getattr(args, 'message_drop_probability', 0.), args.seed+12345)
@@ -145,7 +142,7 @@ class Trial(ExperimentManager):
                                       self.curr_phi[0], *limits)
         boids, states = Boids_navi_control(self.curr_pos[1:], self.curr_vel[1:],
                                           self.curr_phi[1:], self.curr_pos[0])
-        synchronized = self.args.controller in ('MAPPO', 'IACRRL') or getattr(self.args, 'synchronize_feedback', False)
+        synchronized = self.args.controller == 'MAPPO' or getattr(self.args, 'synchronize_feedback', False)
         if synchronized:
             from mappo_controller import synchronize_kinematics
             snapshot, stamp, feedback_skew = synchronize_kinematics(
@@ -153,7 +150,7 @@ class Trial(ExperimentManager):
             positions, yaws, velocities = snapshot[:, :2], snapshot[:, 2], snapshot[:, 3:5]
             boids, states = Boids_navi_control(positions[1:], velocities[1:], yaws[1:], positions[0])
             observation = self.get_observations(positions[1:], yaws[1:], positions[0], velocities[0], states, boids)
-        if self.args.controller in ('MAPPO', 'IACRRL'):
+        if self.args.controller == 'MAPPO':
             inference_started = time.monotonic()
             actions[1:] = self.actor.control(observation, snapshot[1:], boids, stamp)
             inference_seconds = time.monotonic() - inference_started
@@ -188,8 +185,6 @@ class Trial(ExperimentManager):
             'PolicyWallSeconds': inference_seconds,
             'FeedbackSkewSeconds': feedback_skew,
         })
-        if self.args.controller == 'IACRRL':
-            self.rows[-1]['AdapterGate'] = self.actor.last_action[:, 2].copy()
 
 
 def stop_process(process):
@@ -261,7 +256,7 @@ def prepare_world(world, origin, output, capture_frames, assets_dir=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', '--modelname', dest='checkpoint')
-    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids', 'MAPPO', 'IACRRL'], default='AdaRes')
+    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids', 'MAPPO'], default='AdaRes')
     parser.add_argument('--setting', type=int, choices=[0, 1], default=1)
     parser.add_argument('--num-robots', '--num_robots', dest='num_robots', type=int, default=4)
     parser.add_argument('--agility', type=float, default=2.25)
@@ -284,7 +279,7 @@ def main():
     parser.add_argument('--save_traj', action='store_true', help='Accepted for compatibility; trajectories are always saved')
     parser.add_argument('--save_file', type=Path, default=None)
     args = parser.parse_args()
-    if args.controller in ('MAPPO', 'IACRRL') and args.termination_rule != 'paper':
+    if args.controller == 'MAPPO' and args.termination_rule != 'paper':
         parser.error('This checkpoint uses --termination-rule paper.')
     if args.num_robots < 3 or min(args.duration, args.action_period, args.agility) <= 0:
         parser.error('Use at least three robots and positive duration, action period and agility')
@@ -306,7 +301,7 @@ def main():
               'agility': args.agility, 'controller': args.controller, 'num_robots': args.num_robots,
               'duration_limit': args.duration, 'action_period': args.action_period,
               'termination_rule': args.termination_rule,
-              'synchronize_feedback': bool(args.synchronize_feedback or args.controller in ('MAPPO', 'IACRRL')),
+              'synchronize_feedback': bool(args.synchronize_feedback or args.controller == 'MAPPO'),
               'message_delay_steps': args.message_delay_steps,
               'message_drop_probability': args.message_drop_probability,
               'communication_scope': 'local per-directed-link delay/loss emulation, not a physical network',

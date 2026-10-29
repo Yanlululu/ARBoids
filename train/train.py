@@ -41,15 +41,13 @@ def evaluate(agent,
 
 def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
 
-    if getattr(cfg, 'algorithm', None) == 'interaction-aware-sac':
-        from train_interaction import run_training
-        from utils.config import _namespace_to_dict
-        return run_training(_namespace_to_dict(cfg), exp, device)
-
-    if getattr(cfg, 'algorithm', None) == 'predictive-mappo':
+    algorithm = getattr(cfg, 'algorithm', None)
+    if algorithm == 'predictive-mappo':
         from train_mappo import run_training
         from utils.config import _namespace_to_dict
         return run_training(_namespace_to_dict(cfg), exp, device)
+    if algorithm not in (None, 'sac'):
+        raise ValueError(f'Unsupported training algorithm: {algorithm}')
 
     defender_num = cfg.agent.defender_num
     adaptive = cfg.agent.adaptive

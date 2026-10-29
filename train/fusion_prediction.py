@@ -469,3 +469,100 @@ def fit_target_feedback_rollout_model(data,output,*,initial_model=None,updates=6
     atomic_save(model,output)
     del predictor
     return model
+
+
+@torch.enable_grad()
+def fit_target_motion(predecessor,data,output,*,references=(),updates=6000,seed=42,
+                      absolute_frame=False,balanced_feedback=False,device='cpu'):
+    """Fit the retained finite-horizon M1 predictor from factual trajectories."""
+    from types import SimpleNamespace
+    if not isinstance(updates,int) or isinstance(updates,bool) or updates<1:
+        raise ValueError('Motion fitting requires a positive update budget.')
+    args=SimpleNamespace(start=Path(predecessor),data=Path(data),output=Path(output),
+        references=tuple(map(Path,references)),updates=updates,seed=seed,
+        absolute_frame=absolute_frame,balanced_feedback=balanced_feedback)
+    d.joint_load(args.start)
+    identity=hashlib.sha256(args.start.read_bytes()).hexdigest()
+    if args.start.resolve()==args.output.resolve():
+        raise ValueError('Keep the predictor predecessor separate from its fitted checkpoint.')
+    torch.set_num_threads(1);torch.manual_seed(args.seed)
+    rng=np.random.default_rng(args.seed)
+    datasets=[torch.load(p,map_location='cpu',weights_only=False) for p in [args.data,*(args.references or [])]]
+    rows=[];factual_steps=0
+    absolute_frame=getattr(args,'absolute_frame',False)
+    balanced_feedback=getattr(args,'balanced_feedback',False)
+    for data in datasets:
+        if not data.get('completed',True) or data.get('predecessor_sha256',identity)!=identity:
+            raise ValueError('Target-motion fitting requires completed factual data from this predecessor.')
+        for rollout in data['rollouts']:
+            steps=rollout['steps']
+            if len(steps)<2:continue
+            packet={key:torch.tensor(np.stack([s['packet'][key] for s in steps])) for key in ('motion','node')}
+            nodes,state,position,velocity,axis=d.PublicTargetMotion.encode(packet,absolute_frame)
+            clock=.2*np.cumsum([0,*[s['physical_steps'] for s in steps[:-1]]])
+            factual_steps+=sum(s['physical_steps'] for s in steps)
+            for horizon in (.2,.4,.8,1.6,3.2):
+                future=np.searchsorted(clock,clock+horizon-1e-6)
+                current=np.flatnonzero(future<len(steps));future=future[current]
+                if not len(current):continue
+                elapsed=torch.tensor(clock[future]-clock[current],dtype=torch.float32)
+                def rotate(vector):
+                    basis=axis[current]
+                    return torch.stack(((vector*basis).sum(-1),basis[:,0]*vector[:,1]-basis[:,1]*vector[:,0]),-1)
+                displacement=rotate(position[future]-position[current]-elapsed[:,None]*velocity[current])
+                acceleration=rotate(velocity[future]-velocity[current])
+                rows.append((nodes[current],state[current],elapsed,displacement,acceleration,
+                    torch.full((len(current),),int(rollout['row']['seed'])%5==0,dtype=torch.bool)))
+    if not rows:raise ValueError('Target-motion fitting needs public factual trajectory transitions.')
+    if len({row[0].shape[1] for row in rows})!=1:
+        raise ValueError('Fit each dense motion dataset at one fleet size; the fitted predictor supports either size.')
+    arrays=[torch.cat([row[i] for row in rows]) for i in range(6)]
+    if not arrays[-1].any() or arrays[-1].all():raise ValueError('Both training and held-out layout groups are required.')
+    nodes,state,elapsed,displacement,velocity,heldout=[a.to(device) for a in arrays]
+    train=torch.nonzero(~heldout).squeeze(-1);validation=torch.nonzero(heldout).squeeze(-1)
+    predictor=d.PublicTargetMotion(absolute_frame=absolute_frame).to(device)
+    optimizer=torch.optim.AdamW(predictor.parameters(),lr=8e-4,weight_decay=.001)
+    best=float('inf');best_state=None;history=[]
+    slow=train[state[train,1:3].norm(dim=-1)<.1]
+    for step in range(args.updates):
+        ids=train[torch.as_tensor(rng.integers(len(train),size=256),device=device)]
+        if balanced_feedback and len(slow):
+            ids[:64]=slow[torch.as_tensor(rng.integers(len(slow),size=64),device=device)]
+        dp,dv=predictor(nodes[ids],state[ids],elapsed[ids])
+        scale=elapsed[ids,None] if balanced_feedback else 1.
+        loss=((dp-displacement[ids])/scale).square().mean()+(.75 if balanced_feedback else .15)*(dv-velocity[ids]).square().mean()
+        optimizer.zero_grad(set_to_none=True);loss.backward();nn.utils.clip_grad_norm_(predictor.parameters(),5.);optimizer.step()
+        if (step+1)%200==0 or step+1==args.updates:
+            with torch.no_grad():
+                errors=[]
+                for ids in validation.split(1024):
+                    dp,dv=predictor(nodes[ids],state[ids],elapsed[ids])
+                    error=(dp-displacement[ids]).square().sum(-1)
+                    if balanced_feedback:error=error/elapsed[ids].square()+.75*(dv-velocity[ids]).square().sum(-1)
+                    errors.append(error)
+                score=float(torch.cat(errors).mean())
+            if score<best:
+                best=score;best_state={k:v.detach().cpu().clone() for k,v in predictor.state_dict().items()}
+            history.append(dict(updates=step+1,heldout_position_mse=score))
+    predictor.load_state_dict(best_state);predictor.eval();metrics={}
+    with torch.no_grad():
+        for horizon in (.2,.4,.8,1.6,3.2):
+            ids=torch.nonzero(heldout&((elapsed-horizon).abs()<.05)).squeeze(-1)
+            if not len(ids):
+                metrics[str(horizon)]=dict(samples=0)
+                continue
+            estimated=torch.cat([predictor(nodes[i],state[i],elapsed[i])[0] for i in ids.split(1024)])
+            linear=displacement[ids].norm(dim=-1);learned=(estimated-displacement[ids]).norm(dim=-1)
+            metrics[str(horizon)]=dict(samples=len(ids),linear_mean_m=float(linear.mean()),
+                learned_mean_m=float(learned.mean()),linear_p90_m=float(linear.quantile(.9)),
+                learned_p90_m=float(learned.quantile(.9)))
+    model=torch.load(args.start,map_location='cpu',weights_only=False)
+    model['target_motion']=dict(state=best_state,width=48,heldout_forecast=metrics,
+        absolute_frame=absolute_frame,balanced_feedback=balanced_feedback,
+        factual_training_steps=factual_steps,updates=args.updates,seed=args.seed,
+        training_data=[str(args.data),*[str(p) for p in (args.references or [])]],
+        validation='layout seed modulo five; all noise repeats of a layout remain in one group')
+    model['target_motion'].update(history=history,training_samples=len(train),validation_samples=len(validation),predecessor_sha256=identity)
+    atomic_save(model,args.output)
+    print(dict(phase='public_target_motion_fit',metrics=metrics),flush=True)
+    return model

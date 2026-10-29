@@ -293,7 +293,6 @@ class JointFusionActor(nn.Module):
         self.actuator_fusion_refinement=dict(risk_weight=risk_prior, preference_width=.4, beam_width=128,
             selection='joint', source_preference=True, prior_map='bounded_logit')
         self.base=numerical_source().ActorAdap(6,8,3,512)
-        self.requires_grad_(False)
 
     @torch.no_grad()
     def forward(self, packet, latent=None, deterministic=True, gate_only=False):
@@ -614,6 +613,8 @@ def joint_load(path, revision=None, *, source=None, device='cpu'):
         if not isinstance(settings, dict):
             raise ValueError('Actuator selection settings must be a dictionary.')
         settings = dict(settings)
+        if settings.pop('candidate_output', None) is not None or settings.get('return_coefficients', False):
+            raise ValueError('Checkpoint control must return physical commands, not diagnostic candidate data.')
         # This historical flag had no effect in a model without interventions.
         settings.pop('commit_interventions', None)
         if not settings.get('source_preference', False):
@@ -649,6 +650,10 @@ def joint_load(path, revision=None, *, source=None, device='cpu'):
     if not base:
         raise ValueError('The M1 checkpoint is missing its source actor parameters.')
     actor.base.load_state_dict(base, strict=True)
+    # Keep the historical linear-kernel dispatch, which also depends on
+    # requires_grad under no_grad. Control never records source gradients,
+    # and fleet training optimizes only its separate candidate scorer.
+    actor.base.requires_grad_(not data.get('frozen_proposal', False))
     actor.actuator_fusion_refinement = settings
     for key in ('prediction_relaxation', 'prediction_iterations', 'current_marginal_prediction',
                 'prediction_discount', 'prediction_discount_start', 'terminal_prediction',
@@ -681,7 +686,7 @@ def joint_load(path, revision=None, *, source=None, device='cpu'):
     actor.proposal_initialization_sha256 = data.get('proposal_initialization_sha256')
     actor.training_gamma = 1. if data.get('success_objective',False) else .995
     actor.training_step_cost = 0. if data.get('success_objective',False) else .001
-    return actor.to(device).requires_grad_(False).eval()
+    return actor.to(device).eval()
 
 
 class JointMeasuredController:
@@ -776,6 +781,30 @@ def main():
     create.add_argument('--preference-width',type=float,default=.4)
     create.add_argument('--horizon',type=float,default=3.2)
     create.add_argument('--clearance',type=float,default=7.)
+    create.add_argument('--task-feedback',action='store_true',help='Use complete feedback forecasts for fleet-policy training.')
+    train = sub.add_parser('train',help='Learn M1 whole-fleet selection from complete on-policy episodes.')
+    train.add_argument('--checkpoint',type=Path,required=True)
+    train.add_argument('--output',type=Path,required=True)
+    train.add_argument('--iterations',type=int,default=24)
+    train.add_argument('--episodes-per-iteration',type=int,default=8)
+    train.add_argument('--defenders',type=int,default=6)
+    train.add_argument('--batch-size',type=int,default=1)
+    train.add_argument('--device',default='cpu')
+    train.add_argument('--seed',type=int,default=42)
+    collect = sub.add_parser('collect',help='Collect factual M1 trajectories and public prediction roots.')
+    collect.add_argument('--checkpoint',type=Path,required=True)
+    collect.add_argument('--tasks',type=Path,required=True)
+    collect.add_argument('--output',type=Path,required=True)
+    collect.add_argument('--batch-size',type=int,default=1)
+    collect.add_argument('--device',default='cpu')
+    collect.add_argument('--seed',type=int,default=42)
+    motion = sub.add_parser('fit-motion',help='Fit public target forecasts on factual M1 trajectories.')
+    motion.add_argument('--checkpoint',type=Path,required=True)
+    motion.add_argument('--data',type=Path,required=True)
+    motion.add_argument('--output',type=Path,required=True)
+    motion.add_argument('--updates',type=int,default=6000)
+    motion.add_argument('--device',default='cpu')
+    motion.add_argument('--seed',type=int,default=42)
     evaluate = sub.add_parser('evaluate',help='Evaluate M1 on paired layout/future seeds.')
     evaluate.add_argument('--checkpoint',type=Path,required=True)
     evaluate.add_argument('--tasks',type=Path,help='JSON array of [[layout_seed, defenders, agility], future_seed].')
@@ -793,13 +822,31 @@ def main():
         actor.base.load_state_dict(torch.load(args.source,map_location='cpu',weights_only=True),strict=True)
         settings = dict(actor.actuator_fusion_refinement,selection=args.selection,
             risk_weight=args.risk_weight,preference_width=args.preference_width)
+        if args.task_feedback:
+            settings.update(task_stopping=True,task_feedback_prediction=True,synchronized_prediction=True)
+            if args.selection=='independent':
+                settings['selection']='single_reference'
         record = dict(format='joint-actuator-fusion-v1',actor=actor.state_dict(),
             source_commit=SOURCE_COMMIT,source_sha256=hashlib.sha256(args.source.read_bytes()).hexdigest(),
             risk_horizon=args.horizon,risk_clearance=args.clearance,risk_feedback=True,
             actuator_fusion_refinement=settings,environment_protocol='source')
         atomic_save(record,args.output)
         print(args.output.resolve())
-    else:
+    elif args.command == 'train':
+        from fusion_training import fit_feedback_fleet_policy
+        fit_feedback_fleet_policy(args.checkpoint,args.output,seed=args.seed,iterations=args.iterations,
+            episodes_per_iteration=args.episodes_per_iteration,batch_size=args.batch_size,
+            device=args.device,training_defenders=args.defenders)
+    elif args.command == 'collect':
+        from fusion_training import collect_factual_data
+        tasks=json.loads(args.tasks.read_text(encoding='utf-8'))
+        collect_factual_data(args.checkpoint,tasks,args.output,seed=args.seed,
+            batch_size=args.batch_size,device=args.device)
+    elif args.command == 'fit-motion':
+        from fusion_prediction import fit_target_motion
+        fit_target_motion(args.checkpoint,args.data,args.output,updates=args.updates,
+            seed=args.seed,device=args.device)
+    elif args.command == 'evaluate':
         if args.episodes < 1 or args.defenders < 2:
             parser.error('Evaluation needs positive episodes and at least two defenders.')
         tasks = (json.loads(args.tasks.read_text(encoding='utf-8')) if args.tasks else

@@ -4,6 +4,40 @@ import torch
 
 
 class ActuatorFusionTests(unittest.TestCase):
+    def test_terminal_fleet_credit_preserves_late_success_and_failure(self):
+        from fusion_training import fleet_return_targets, fleet_anchor_kl
+        def episode(success, count):
+            return dict(row=dict(success=success), fleet_steps=[dict(value=0., discount=.5,
+                reward=float(success) if step==count-1 else 0., done=step==count-1)
+                for step in range(count)])
+        observations=[episode(True,1),episode(True,4),episode(False,2)]
+        records,advantages,targets=fleet_return_targets(observations,'terminal_success')
+        self.assertEqual(len(records),7)
+        self.assertEqual(targets,[1.]*5+[0.]*2)
+        self.assertEqual(advantages,[.5]*5+[-.5]*2)
+        _,discounted,_=fleet_return_targets(observations)
+        self.assertLess(discounted[1],discounted[0])
+        with self.assertRaisesRegex(ValueError,'terminal outcomes'):
+            fleet_return_targets([episode(.5,1)],'terminal_success')
+        paired=[dict(episode(success,2),factual_success=factual)
+                for success,factual in ((1,1),(0,0),(1,0),(0,1))]
+        _,paired_advantages,paired_targets=fleet_return_targets(paired,'paired_terminal_success')
+        self.assertEqual(paired_targets,[0.,0.,0.,0.,1.,1.,-1.,-1.])
+        self.assertEqual(paired_advantages,paired_targets)
+        paired[2]['fleet_steps'][0]['value']=.25
+        _,paired_advantages,_=fleet_return_targets(paired,'paired_terminal_success')
+        self.assertEqual(paired_advantages[4],.75)
+        with self.assertRaisesRegex(ValueError,'measured fixed-predecessor'):
+            fleet_return_targets([episode(1,1)],'paired_terminal_success')
+        reference=torch.distributions.Categorical(logits=torch.tensor([[0.,-90.]]))
+        logits=torch.tensor([[0.,-180.]],requires_grad=True)
+        current=torch.distributions.Categorical(logits=logits)
+        value=fleet_anchor_kl(reference,current)
+        self.assertTrue(bool(torch.isfinite(value).all()))
+        value.sum().backward()
+        self.assertTrue(bool(torch.isfinite(logits.grad).all()))
+        torch.testing.assert_close(fleet_anchor_kl(reference,reference),torch.zeros(1))
+
     def test_fixed_inference_preserves_rows_when_pair_groups_shrink_and_reorder(self):
         from fusion_prediction import fixed_batch_inference
         packet={'x':torch.arange(21,dtype=torch.float32).reshape(7,3)}
@@ -594,6 +628,28 @@ class JointFusionRuntimeTests(unittest.TestCase):
             atomic_save(dict(self.record,**{field:{'state':torch.ones(1)}}),path)
             with self.assertRaisesRegex(ValueError,'Mechanism two'):
                 joint_load(path)
+
+    def test_reload_preserves_source_inference_and_gradient_mode(self):
+        from pathlib import Path
+        import numpy as np
+        from joint_fusion import JointFusionActor, joint_load, atomic_save, numerical_source, joint_packet, mechanism_tensor
+        path=Path(self.directory.name)/'roundtrip.pth'
+        for frozen in (False,True):
+            actor=JointFusionActor(risk_horizon=.4).eval()
+            actor.load_state_dict(self.record['actor'])
+            actor.base.requires_grad_(not frozen)
+            atomic_save(dict(self.record,frozen_proposal=frozen),path)
+            restored=joint_load(path)
+            self.assertTrue(all(p.requires_grad == (not frozen) for p in restored.base.parameters()))
+            for n in (3,6):
+                np.random.seed(59)
+                env=numerical_source().TADEnv(n)
+                obs,_=env.reset(agility=2.,noisy_agility=False)
+                packet=mechanism_tensor(joint_packet(env,obs))
+                expected=actor.control(packet)
+                actual=restored.control(packet)
+                self.assertFalse(actual.requires_grad)
+                torch.testing.assert_close(actual,expected,atol=0.,rtol=0.)
 
     def test_loader_rejects_invalid_selector_and_recursive_forecast_settings(self):
         from pathlib import Path

@@ -165,13 +165,18 @@ class PaperProtocolTests(unittest.TestCase):
         self.assertEqual(noise.call_count, 2)
         self.assertTrue(all(call.args[1] is cfg.training for call in noise.call_args_list))
 
-    def test_generic_training_entry_forwards_seed_to_interaction_training(self):
-        arguments = [str(ROOT/'train/train.py'), '--config', str(ROOT/'train/configs/interaction-aware-sac.yaml'),
+    def test_generic_training_entry_forwards_seed_to_mappo_training(self):
+        arguments = [str(ROOT/'train/train.py'), '--config', str(ROOT/'train/configs/mappo-prediction.yaml'),
                      '--seed', '101', '--device', 'cpu']
         with patch.object(sys, 'argv', arguments), patch('utils.manager.ExperimentManager'), \
-                patch('utils.manager.set_seed'), patch('train_interaction.run_training') as train:
+                patch('utils.manager.set_seed'), patch('train_mappo.run_training') as train:
             runpy.run_path(arguments[0], run_name='__main__')
         self.assertEqual(train.call_args.args[0]['training']['seed'], 101)
+
+    def test_retired_training_algorithm_cannot_fall_back_to_source_training(self):
+        module = importlib.import_module('train')
+        with self.assertRaisesRegex(ValueError, 'Unsupported training algorithm'):
+            module.main(SimpleNamespace(algorithm='interaction-aware-sac'), None)
 
     def test_residual_configuration_selects_the_same_training_and_evaluation_control(self):
         for residual, adaptive, expected in ((False, False, 'RL'), (False, True, 'RL'),
