@@ -238,7 +238,9 @@ def ensemble_values(networks,features,kind):
     for network in networks:
         raw=network(features)
         if kind=='conditional':
-            if getattr(network,'paired_event_value',False):
+            if getattr(network,'paired_value_output',False):
+                value=raw[...,0].sigmoid();gain=value-value[:,:1]
+            elif getattr(network,'paired_event_value',False):
                 events=torch.cat((torch.zeros_like(raw[...,:1]),raw[...,1:]),-1).softmax(-1)
                 gain=events[...,1]-events[...,2]
             else:
@@ -413,8 +415,10 @@ def runtime_identity():
     return {name:hashlib.sha256((base/name).read_bytes()).hexdigest() for name in files}
 
 
-def run_episodes(controller,tasks,*,batch_size=64,initial_jobs=None,collect_roots=False,progress=False):
+def run_episodes(controller,tasks,*,batch_size=64,initial_jobs=None,collect_roots=False,progress=False,stop_at_root=False):
     """Complete closed-loop tasks; no terminal labels enter a controller."""
+    if stop_at_root and (not collect_roots or initial_jobs is not None):
+        raise ValueError('Prefix acquisition requires fresh tasks and root collection.')
     from envs.TADgame import TADEnv
     device=next(controller.source.parameters()).device
     executor=CIVExecutor(controller);results=[];saved_random=np.random.get_state()
@@ -445,6 +449,14 @@ def run_episodes(controller,tasks,*,batch_size=64,initial_jobs=None,collect_root
                         if job['state'].step==controller.config.decision_step:
                             job['root']=dict(environment=copy.deepcopy(job['env']),observation=job['obs'].copy(),
                                 random_state=job['rng'],step=job['state'].step,scene=current[i]['scene'])
+                    if stop_at_root:
+                        for i in active:
+                            job=jobs[i]
+                            if job['root'] is not None:
+                                job['result']=dict(scene=current[i]['scene'],future=current[i].get('future'),
+                                    root=job['root'],simulation_steps=job['simulation_steps'],prefix_only=True)
+                        active=[i for i in active if jobs[i]['root'] is None]
+                        if not active:break
                 packets=[d.joint_packet(jobs[i]['env'],jobs[i]['obs']) for i in active]
                 packet=d.mechanism_stack(packets,str(device))
                 commands,decisions=executor.actions(packet,[jobs[i]['state'] for i in active])
@@ -469,6 +481,6 @@ def run_episodes(controller,tasks,*,batch_size=64,initial_jobs=None,collect_root
                 active=following
             results.extend(job['result'] for job in jobs)
             if progress:print(json.dumps(dict(completed=len(results),total=len(tasks),
-                successes=sum(row['success'] for row in results))),flush=True)
+                successes=sum(row.get('success',0) for row in results))),flush=True)
     finally:np.random.set_state(saved_random)
     return results

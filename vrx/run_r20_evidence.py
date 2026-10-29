@@ -19,7 +19,19 @@ sys.path.insert(0, str(ROOT/'train'))
 import r20_independent_evidence as evidence
 
 
-def load_controller(label, baseline_seed, manifest, inference_device):
+def load_controller(label, baseline_seed, manifest, inference_device, civ_checkpoint=None):
+    if civ_checkpoint is not None:
+        if label not in ('CIV', 'CI'):
+            raise ValueError('A unified checkpoint requires the CIV or CI variant.')
+        from civ_deployment import CIVMeasuredController
+        from dataclasses import replace
+        controller=CIVMeasuredController(civ_checkpoint,inference_device=inference_device)
+        if label=='CI':
+            import civ_rl as c
+            reference=c.CIVController(controller.controller.source,controller.controller.config)
+            controller=CIVMeasuredController(civ_checkpoint,controller=reference)
+        source_checkpoint=str(ROOT/'train/experiments/main-seed42-20260921/adares1.pth')
+        return controller,Path(civ_checkpoint),None,source_checkpoint
     d, _, controls, _ = evidence.runtime(manifest)
     evidence.baseline_runtime()
     original_controller = d.JointMeasuredController
@@ -103,7 +115,7 @@ def load_controller(label, baseline_seed, manifest, inference_device):
 
 def policy_server(extra, manifest):
     controller, path, family, source = load_controller(extra.variant, extra.baseline_seed,
-                                                       manifest, extra.inference_device)
+                                                       manifest, extra.inference_device,extra.civ_checkpoint)
     with Listener(extra.policy_server, family='AF_UNIX') as listener:
         with listener.accept() as connection:
             connection.send(dict(policy=str(path) if path else None, family=family, source=source))
@@ -135,6 +147,7 @@ def main():
     parser.add_argument('--baseline-seed', type=int, default=42)
     parser.add_argument('--policy-server')
     parser.add_argument('--inference-device', default='cuda:0')
+    parser.add_argument('--civ-checkpoint')
     extra, remaining = parser.parse_known_args()
     manifest = evidence.read(evidence.MANIFEST)
     if extra.policy_server:
@@ -152,6 +165,7 @@ def main():
         command = [str(ROOT/'.venv/bin/python'), '-X', 'utf8', '-u', __file__,
             '--variant', label, '--baseline-seed', str(extra.baseline_seed),
             '--policy-server', socket, '--inference-device', extra.inference_device]
+        if extra.civ_checkpoint:command.extend(('--civ-checkpoint',extra.civ_checkpoint))
         process = subprocess.Popen(command, env=env)
         connection = None
         try:
@@ -224,6 +238,13 @@ def run_trial(extra, remaining, manifest, synchronized, policy_path, baseline_fa
             policy_scope=('Original baseline with its own frozen actor and command decoder'
                           if baseline_family else 'Indexed frozen r20 model; inference device adaptation only'))
         result['transport_file_sha256'] = result.pop('study_code')
+        if extra.civ_checkpoint:
+            import civ_rl as c
+            result.update(algorithm='CIV-RL-unified-v1',includes_mechanism_one=True,
+                includes_mechanism_two=label=='CIV',frozen_runtime_sha256=c.runtime_identity(),
+                policy_scope='Frozen unified whole-plan executor with the same public measurements and source command decoder')
+            result.pop('r20_manifest_sha256',None)
+            result.pop('baseline_runtime_sha256',None)
         result.pop('joint_checkpoint', None)
         result.pop('joint_checkpoint_sha256', None)
         path.write_text(json.dumps(result, indent=2)+'\n', encoding='utf8')

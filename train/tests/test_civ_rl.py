@@ -179,4 +179,59 @@ class CIVTests(unittest.TestCase):
             self.assertEqual(float(raw.grad[:,2].abs().sum()),0.)
 
 
+class PairedJointObjectiveTests(unittest.TestCase):
+    def test_population_optimum_preserves_true_gain(self):
+        from civ_generalization import loss_function
+        # One state: 5 rescues, 2 harms, 85 joint successes, 8 joint failures.
+        # At its true probabilities the population gradient must vanish even
+        # with gain and candidate-contrast regression enabled.
+        with torch.enable_grad():
+            target=torch.tensor([[0.,1.]]*5+[[1.,0.]]*2+[[1.,1.]]*85+[[0.,0.]]*8)[:,None]
+            probability=torch.tensor([[[.87,.5,.5],[.5,5/13,2/87]]],dtype=torch.float64)
+            raw=torch.logit(probability).requires_grad_()
+            loss=loss_function(raw.expand(100,-1,-1),target.double(),torch.ones(100,1,dtype=torch.bool),
+                torch.ones(100,2,dtype=torch.bool),torch.ones(100,dtype=torch.float64),
+                'conditional',2.,.5,'paired_joint')
+            loss.backward()
+            torch.testing.assert_close(raw.grad,torch.zeros_like(raw),rtol=0.,atol=1e-10)
+            gain=(1-probability[0,0,0])*probability[0,1,1]-probability[0,0,0]*probability[0,1,2]
+            self.assertAlmostEqual(float(gain),.03,places=12)
+
+    def test_padding_cannot_change_joint_objective(self):
+        from civ_generalization import loss_function
+        with torch.enable_grad():
+            raw=torch.zeros(2,3,3,requires_grad=True)
+            target=torch.tensor([[[0.,1.,0.],[1.,0.,1.]],[[1.,0.,1.],[0.,1.,0.]]])
+            fm=torch.tensor([[True,False],[True,True]])
+            valid=torch.tensor([[True,True,False],[True,True,False]])
+            def objective(labels):return loss_function(raw,labels,fm,valid,torch.ones(2),'conditional',2.,.5,'paired_joint')
+            expected=objective(target)
+            altered=target.clone();altered[0,1]=torch.tensor([1.,1.,1.]);altered[:,:,2]=1-altered[:,:,2]
+            torch.testing.assert_close(expected,objective(altered),rtol=0.,atol=0.)
+            expected.backward()
+            self.assertEqual(float(raw.grad[:,2].abs().sum()),0.)
+
+
+class RelativeFeedbackTests(unittest.TestCase):
+    def test_unchanged_vessels_keep_live_feedback_and_window_returns_to_ci(self):
+        from civ_rl_experiment import RelativeFeedbackState
+        reference=np.array([[.2,.4],[.6,.8]],np.float32)
+        candidate=np.array([[.2,.4],[.9,.3]],np.float32)
+        live=np.array([[.7,.1],[.4,.9]],np.float32)
+        state=RelativeFeedbackState(step=20,reference_gates=reference)
+        state.commit(1,candidate,2,1)
+        np.testing.assert_array_equal(state.coefficients(live),live)
+        state.step=21
+        np.testing.assert_allclose(state.coefficients(live),[[.7,.1],[.7,.4]],rtol=0.,atol=1e-7)
+        np.testing.assert_array_equal(state.coefficients(live)[0],live[0])
+        state.step=23
+        np.testing.assert_array_equal(state.coefficients(live),live)
+
+    def test_relative_coefficients_respect_fusion_bounds(self):
+        from civ_rl_experiment import RelativeFeedbackState
+        state=RelativeFeedbackState(reference_gates=np.array([[.1,.9]],np.float32))
+        state.commit(1,np.array([[.9,.1]],np.float32),1,0)
+        np.testing.assert_array_equal(state.coefficients(np.array([[.8,.2]],np.float32)),[[1.,0.]])
+
+
 if __name__=='__main__':unittest.main()

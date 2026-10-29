@@ -35,9 +35,17 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--seed',type=int,required=True);p.add_argument('--tasks',type=int,default=160)
     p.add_argument('--workers',type=int,default=6);p.add_argument('--output-directory',required=True)
+    p.add_argument('--tasks-file');p.add_argument('--prefix',default='hour-baseline')
+    p.add_argument('--native',action='store_true')
     args=p.parse_args();initialize_baselines()
     base=Path(__file__).resolve().parent/'experiments/author-source-fusion-20261011'
-    output=Path(args.output_directory);tasks=make_tasks(args.seed,args.tasks,6)
+    output=Path(args.output_directory);output.mkdir(parents=True,exist_ok=True)
+    tasks=make_tasks(args.seed,args.tasks,6)
+    task_source=None
+    if args.tasks_file:
+        task_path=Path(args.tasks_file)
+        task_record=torch.load(task_path,map_location='cpu',weights_only=False)
+        tasks=task_record['tasks'];task_source=dict(path=str(task_path),sha256=hashlib.sha256(task_path.read_bytes()).hexdigest())
     jobs=[];metadata={}
     for family in ('arboids','rp','sac','boids','mappo'):
         identity=location=None;training=None
@@ -60,11 +68,12 @@ def main():
         for job,result in zip(jobs,pool.map(episode,jobs,chunksize=4)):
             family=job[0];rows[family].append(result)
             if len(rows[family])==len(tasks):
-                record=dict(completed=True,role='Fixed development comparison of completed original baselines',
+                record=dict(completed=True,role='Common-task comparison of completed original baselines',task_source=task_source,
                     method=family,tasks=tasks,rows=rows[family],**metadata[family],
                     success=sum(x['success'] for x in rows[family]),collision=sum(x['collision'] for x in rows[family]))
-                path=output/f'hour-baseline-{family}-fixed{args.tasks}.json'
-                path.write_text(json.dumps(record,indent=2),encoding='utf-8')
+                path=output/f'{args.prefix}-{family}-fixed{len(tasks)}'
+                if args.native:torch.save(record,path.with_suffix('.pth'))
+                else:path.with_suffix('.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
                 print(json.dumps(dict(completed=family,success=record['success'],collision=record['collision'])),flush=True)
 
 

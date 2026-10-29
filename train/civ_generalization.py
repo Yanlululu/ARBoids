@@ -126,7 +126,7 @@ class StandardizedRelationalValueNetwork(RelationalValueNetwork):
 
 def loss_function(raw,targets,future_mask,valid,importance,kind,gain_weight,rank_weight,
                   loss_mode='softplus'):
-    if loss_mode not in ('softplus','paired_margin','paired_events'):
+    if loss_mode not in ('softplus','paired_margin','paired_events','paired_calibrated','paired_value','paired_unbiased','paired_decision','paired_consistent','paired_precision','paired_joint'):
         raise ValueError('Unknown conditional ranking objective.')
     weights=valid.to(raw.dtype)*importance[:,None]
     fm=future_mask.to(raw.dtype)
@@ -142,9 +142,39 @@ def loss_function(raw,targets,future_mask,valid,importance,kind,gain_weight,rank
     harm=(fm[:,:,None]*y0*(1-targets)).sum(1)/one.clamp_min(1.)
     baseline=(F.binary_cross_entropy_with_logits(raw[:,0,0],mean[:,0],reduction='none')*importance).mean()
     rw=weights*zero/count;hw=weights*one/count
+    if loss_mode=='paired_joint':
+        # The observed joint-outcome likelihood preserves the factual event
+        # frequencies. Outcome-dependent weights would change this estimand.
+        active=weights.clone();active[:,0]=0.
+        likelihood=(F.binary_cross_entropy_with_logits(raw[...,1],rescue,reduction='none')*zero/count
+            +F.binary_cross_entropy_with_logits(raw[...,2],harm,reduction='none')*one/count)
+        loss=baseline+(likelihood*active).sum()/active.sum().clamp_min(1.)
+        p0=raw[:,0:1,0].sigmoid().detach()
+        gain=(1-p0)*raw[...,1].sigmoid()-p0*raw[...,2].sigmoid()
+        gain=torch.cat((torch.zeros_like(gain[:,:1]),gain[:,1:]),-1)
+        change=mean-mean[:,:1]
+        loss=loss+gain_weight*((gain-change).square()*active).sum()/active.sum().clamp_min(1.)
+        if rank_weight:
+            # Fit every signed contrast, including zero and negative effects.
+            # Selecting only observed winners or weighting by their observed
+            # variance would couple the regression weights to label noise.
+            pairs=valid[:,:,None]&valid[:,None,:]
+            pairs=pairs&torch.triu(torch.ones_like(pairs),1)
+            pair_weights=pairs*importance[:,None,None]
+            error=(gain[:,:,None]-gain[:,None,:])-(change[:,:,None]-change[:,None,:])
+            loss=loss+rank_weight*(error.square()*pair_weights).sum()/pair_weights.sum().clamp_min(1.)
+        return loss
     loss=baseline+.5*(F.binary_cross_entropy_with_logits(raw[...,1],rescue,reduction='none')*rw).sum()/rw.sum().clamp_min(1.)
     loss=loss+.5*(F.binary_cross_entropy_with_logits(raw[...,2],harm,reduction='none')*hw).sum()/hw.sum().clamp_min(1.)
-    p0=raw[:,0:1,0].sigmoid();gain=(1-p0)*raw[...,1].sigmoid()-p0*raw[...,2].sigmoid()
+    p0=raw[:,0:1,0].sigmoid()
+    # Preserve the factual likelihood target when fitting candidate gain:
+    # candidate ranking must not directly retarget the factual probability head.
+    if loss_mode in ('paired_calibrated','paired_unbiased','paired_decision','paired_consistent','paired_precision'):p0=p0.detach()
+    gain=(1-p0)*raw[...,1].sigmoid()-p0*raw[...,2].sigmoid()
+    if loss_mode=='paired_value':
+        # Learn the complete candidate value through its paired difference;
+        # the other heads retain conditional rescue and harm supervision.
+        gain=raw[...,0].sigmoid()-p0
     if loss_mode=='paired_events':
         # P(rescue)-P(harm) is the same paired conditional gain as
         # (1-p0)*r-p0*h. Direct event likelihood avoids multiplying two
@@ -161,9 +191,32 @@ def loss_function(raw,targets,future_mask,valid,importance,kind,gain_weight,rank
         # just as it does in ensemble_values and the deployment selector.
         gain=torch.cat((torch.zeros_like(gain[:,:1]),gain[:,1:]),-1)
     change=mean-mean[:,:1];active=weights.clone();active[:,0]=0.
-    emphasis=active*(1+3*change.abs())
+    # Outcome-dependent weights change the target conditional mean. These
+    # variants retain the importance-corrected paired expectation itself.
+    emphasis=active if loss_mode in ('paired_unbiased','paired_decision') else active*(1+3*change.abs())
     loss=loss+gain_weight*((gain-change).square()*emphasis).sum()/emphasis.sum().clamp_min(1.)
-    if rank_weight:
+    if loss_mode=='paired_consistent':
+        # Candidate success and its conditional decomposition must describe
+        # the same long-term value, in addition to the paired difference.
+        candidate=(p0+gain).clamp(1e-6,1.-1e-6)
+        value_likelihood=F.binary_cross_entropy(candidate,mean,reduction='none')
+        loss=loss+(value_likelihood*active).sum()/active.sum().clamp_min(1.)
+    if rank_weight and loss_mode=='paired_precision':
+        # Common futures identify the variance of each candidate contrast.
+        # Independent terminal marginals do not retain this covariance.
+        paired=targets[:,:,:,None]-targets[:,:,None,:]
+        contrast=(paired*fm[:,:,None,None]).sum(1)/count[:,:,None]
+        variance=((paired-contrast[:,None]).square()*fm[:,:,None,None]).sum(1)/count[:,:,None]
+        precision=(variance/count[:,:,None]+.1).reciprocal().clamp_max(10.)
+        upper=torch.triu(torch.ones_like(contrast,dtype=torch.bool),1)
+        pair_weights=precision*upper*valid[:,:,None]*valid[:,None,:]*importance[:,None,None]
+        error=F.smooth_l1_loss(gain[:,:,None]-gain[:,None,:],contrast,reduction='none',beta=.1)
+        loss=loss+rank_weight*(error*pair_weights).sum()/pair_weights.sum().clamp_min(1.)
+    elif rank_weight and loss_mode=='paired_decision':
+        distribution=(gain/.1).masked_fill(~valid,float('-inf')).softmax(-1)
+        regret=change.masked_fill(~valid,float('-inf')).amax(-1)-(distribution*change).sum(-1)
+        loss=loss+rank_weight*(regret*importance).sum()/importance.sum().clamp_min(1.)
+    elif rank_weight:
         differences=change[:,:,None]-change[:,None,:]
         pw=(differences>0)*differences.clamp_min(0)*valid[:,:,None]*valid[:,None,:]*importance[:,None,None]
         predicted_gap=gain[:,:,None]-gain[:,None,:]
@@ -175,6 +228,8 @@ def loss_function(raw,targets,future_mask,valid,importance,kind,gain_weight,rank
 
 def load(path,device='cuda:0'):
     record=torch.load(path,map_location='cpu',weights_only=False)
+    if record.get('execution_backend') and torch.device(device).type!=record['execution_backend']:
+        raise ValueError('This paired policy requires its recorded inference backend.')
     if record.get('value_architecture')!=ARCHITECTURE:raise ValueError('Unexpected value architecture.')
     source=Path(record['source_path'])
     if not source.exists():source=Path(__file__).resolve().parents[1]/record['source_relative_path']
@@ -187,6 +242,7 @@ def load(path,device='cuda:0'):
         network=network_type(record['width'],record['dropout'],record.get('encounter_features',False),
                              record.get('focus_changes',False)).to(device).eval()
         network.paired_event_value=record.get('paired_event_value',False)
+        network.paired_value_output=record.get('paired_value_output',False)
         network.load_state_dict(state);networks.append(network)
     return c.CIVController(c.load_source(source,device),config,networks,record['kind'])
 
@@ -241,13 +297,14 @@ def fit(args):
     if args.heads_only and restored is None:raise ValueError('Frozen representations require a pretrained checkpoint.')
     if args.independent_start and (restored is None or restored['kind']!='ordinary'):
         raise ValueError('An independence initialization requires a fitted ordinary-value checkpoint.')
-    if args.independent_start and args.loss_mode=='paired_events':
+    if args.independent_start and args.loss_mode in ('paired_events','paired_value'):
         raise ValueError('Ordinary-Q independence initialization requires the conditional probability parameterization.')
     for member in range(args.members):
         network_type=StandardizedRelationalValueNetwork if args.normalize else RelationalValueNetwork
         torch.manual_seed(args.seed+member)
         network=network_type(args.width,args.dropout,args.encounter_features,args.focus_changes).to(args.device)
         network.paired_event_value=args.kind=='conditional' and args.loss_mode=='paired_events'
+        network.paired_value_output=args.kind=='conditional' and args.loss_mode=='paired_value'
         if args.normalize:network.standardize_from(tf)
         if restored:network.load_state_dict(restored['networks'][member%len(restored['networks'])])
         if args.independent_start:
@@ -296,6 +353,7 @@ def fit(args):
                             encounter_features=args.encounter_features,
                             focus_changes=args.focus_changes,
                             paired_event_value=args.kind=='conditional' and args.loss_mode=='paired_events',
+                            paired_value_output=args.kind=='conditional' and args.loss_mode=='paired_value',
                             networks=[{k:v.detach().cpu() for k,v in network.state_dict().items()} for network in networks],
                             fit=dict(completed=True,search_completed=False,training_roots=len(training),validation_roots=len(validation),
                                 training_fleets=sorted({r['scene'][1] for r in training}),data_sources=manifests,member_seeds=[args.seed+i for i in range(args.members)],
@@ -340,7 +398,7 @@ def ensemble(args):
         if not record['fit'].get('search_completed'):raise ValueError('Finish each fit before pooling it.')
         for key in ('value_architecture','source_sha256','execution_identity','kind','width','dropout','normalize'):
             if record[key]!=reference[key]:raise ValueError('Ensemble members must share '+key)
-        for key in ('encounter_features','focus_changes','paired_event_value'):
+        for key in ('encounter_features','focus_changes','paired_event_value','paired_value_output'):
             if record.get(key,False)!=reference.get(key,False):raise ValueError('Ensemble representation changed.')
         for key in ('data_sources','training_scenes','validation_scenes','parameter_count','planned_updates'):
             if record['fit'][key]!=reference['fit'][key]:raise ValueError('Ensemble fits must share '+key)
@@ -354,6 +412,7 @@ def ensemble(args):
             network=network_type(reference['width'],reference['dropout'],reference.get('encounter_features',False),
                 reference.get('focus_changes',False)).to(args.device).eval()
             network.paired_event_value=reference.get('paired_event_value',False)
+            network.paired_value_output=reference.get('paired_value_output',False)
             network.load_state_dict(state);networks.append(network)
     expected={x['sha256'] for x in reference['fit']['data_sources']}
     if {digest(path) for path in args.data}!=expected:raise ValueError('Use the original replay banks for threshold selection.')
@@ -389,6 +448,212 @@ def ensemble(args):
     print(json.dumps(dict(completed=args.output,members=len(networks),selected=selected)),flush=True)
 
 
+def paired_search(args):
+    """Fifty matched optimization rounds with a pairing-information control."""
+    torch.set_num_threads(1);torch.backends.cuda.matmul.allow_tf32=False
+    bank_path=Path(args.data[0]);bank=torch.load(bank_path,map_location='cpu',weights_only=False)
+    if not bank['completed'] or bank.get('execution_backend')!='cuda':
+        raise ValueError('Completed paired CUDA acquisition is required.')
+    if args.fixed_split and not bank.get('terminal_labels_complete',False):
+        raise ValueError('The fixed hard-scene bank needs complete terminal labels.')
+    training=[];validation=[]
+    for root in bank['roots']:
+        item=dict(root,group='contrast50:ag'+str(root['scene'][2]))
+        is_validation=(root['split']=='validation' if args.fixed_split else
+            int(hashlib.sha256(str(tuple(root['scene'])).encode()).hexdigest()[:8],16)%5==0)
+        if not is_validation and args.training_scene_limit and root['split_order']>=args.training_scene_limit:continue
+        (validation if is_validation else training).append(item)
+    if args.training_scene_limit and len(training)!=args.training_scene_limit:
+        raise ValueError('The frozen training scene budget is incomplete.')
+    tf=tensor_features(training,args.device);vf=tensor_features(validation,args.device)
+    count=max(len(r['targets']) for r in training);options=len(training[0]['targets'][0])
+    targets=np.zeros((len(training),count,options),dtype=np.float32);mask=np.zeros((len(training),count),dtype=bool)
+    shuffled=targets.copy();shuffle_rng=np.random.default_rng(args.seed+7000)
+    changed=0
+    for i,root in enumerate(training):
+        n=len(root['targets']);targets[i,:n]=root['targets'].clip(min=0);mask[i,:n]=True
+        shuffled[i,:n]=targets[i,:n];start=0 if args.shuffle_all else root.get('old_future_count',n)
+        for option in range(1,options):
+            shuffled[i,start:n,option]=targets[i,shuffle_rng.permutation(np.arange(start,n)),option]
+        assert np.array_equal(shuffled[i,:n].sum(0),targets[i,:n].sum(0))
+        changed+=int(np.count_nonzero(shuffled[i,:n]!=targets[i,:n]))
+    target=torch.as_tensor(targets,device=args.device);permuted=torch.as_tensor(shuffled,device=args.device)
+    future_mask=torch.as_tensor(mask,device=args.device)
+    groups=[r['scene'][2] for r in training];counts={v:groups.count(v) for v in set(groups)}
+    probability=np.asarray([(3. if r.get('old_future_count',len(r['targets']))<len(r['targets']) else 1.)/counts[r['scene'][2]] for r in training])
+    probability/=probability.sum()
+    names=['conditional','ordinary','shuffled'];networks={};bases={};optimizers={}
+    for name in names:
+        path=args.control_model if name=='ordinary' else args.model
+        bases[name]=torch.load(path,map_location='cpu',weights_only=False)
+        controller=load(path,args.device);networks[name]=controller.networks
+        if args.fresh_start:
+            fresh=[];record=bases[name]
+            for member in range(len(networks[name])):
+                torch.manual_seed(args.seed+member)
+                network_type=StandardizedRelationalValueNetwork if record.get('normalize',False) else RelationalValueNetwork
+                net=network_type(record['width'],record['dropout'],record.get('encounter_features',False),record.get('focus_changes',False)).to(args.device)
+                if record.get('normalize',False):net.standardize_from(tf)
+                # Share seeded representations. Keep the ordinary readouts
+                # independently initialized so their symmetry is not forced.
+                # Conditional r=Q, h=1-Q starts from an independence prior.
+                if name!='ordinary':
+                  with torch.no_grad():
+                    head=net.readout[-1];weight=head.weight.mean(0,keepdim=True);bias=head.bias.mean().reshape(1)
+                    head.weight.copy_(weight.expand_as(head.weight));head.bias.copy_(bias.expand_as(head.bias))
+                    head.weight[2].neg_();head.bias[2].neg_()
+                net.paired_event_value=False;net.paired_value_output=False;fresh.append(net)
+            networks[name]=fresh;bases[name].update(paired_event_value=False,paired_value_output=False)
+        optimizers[name]=[torch.optim.AdamW(net.parameters(),lr=1e-4,weight_decay=1e-4) for net in controller.networks]
+        if args.fresh_start:optimizers[name]=[torch.optim.AdamW(net.parameters(),lr=args.learning_rate,weight_decay=args.weight_decay) for net in networks[name]]
+        del controller
+    members=len(networks['conditional'])
+    if any(len(networks[k])!=members for k in names):raise ValueError('Matched member counts required.')
+    torch.set_grad_enabled(True)
+    bootstrap=[np.random.default_rng(args.seed+m+10000).poisson(1,len(training)).astype(float) for m in range(members)]
+    rngs=[np.random.default_rng(args.seed+m) for m in range(members)]
+    best={name:None for name in names};histories={name:[] for name in names}
+    output=Path(args.output);stem=output.stem;start_time=time.monotonic()
+    schedule=[(.25,.1),(.5,.1),(.5,.25),(1.,.25),(2.,.25),(.5,.5),(1.,.5),(2.,.5),(.25,1.),(.5,1.)]
+    manifest=dict(path=str(bank_path.resolve()),sha256=digest(bank_path))
+    for round_index in range(1,args.rounds+1):
+        gain_weight,rank_weight=schedule[(round_index-1)%len(schedule)]
+        learning_rate=((args.learning_rate if round_index<=40 else args.learning_rate/3) if args.fresh_start else
+            (1e-4 if round_index<=10 else 5e-5 if round_index>40 else 1.5e-4))
+        for name in names:
+            for net,opt in zip(networks[name],optimizers[name]):
+                net.train()
+                for group in opt.param_groups:group['lr']=learning_rate
+        for update in range(args.round_updates):
+            for member in range(members):
+                ix_np=rngs[member].choice(len(training),args.batch_size,replace=True,p=probability)
+                ix=torch.as_tensor(ix_np,device=args.device)
+                features={key:value[ix] for key,value in tf.items()}
+                importance=torch.as_tensor(bootstrap[member][ix_np],dtype=torch.float32,device=args.device)
+                seed=args.seed+round_index*100000+update*10+member
+                for name in names:
+                    torch.manual_seed(seed)
+                    net=networks[name][member];opt=optimizers[name][member]
+                    raw=net(features)
+                    label=permuted[ix] if name=='shuffled' else target[ix]
+                    kind='ordinary' if name=='ordinary' else 'conditional'
+                    loss=loss_function(raw,label,future_mask[ix],features['valid'],importance,kind,gain_weight,rank_weight,args.paired_loss_mode)
+                    opt.zero_grad(set_to_none=True);loss.backward();torch.nn.utils.clip_grad_norm_(net.parameters(),5.);opt.step()
+        summary={}
+        for name in names:
+            for net in networks[name]:net.eval()
+            kind='ordinary' if name=='ordinary' else 'conditional'
+            with torch.no_grad():prediction=c.ensemble_values(networks[name],vf,kind)
+            candidates=[]
+            for margin in (0.,.02,.05,.075,.1,.15,.2,.3,.4):
+                result=score(networks[name],vf,validation,kind,margin,0.,prediction)
+                result['lower_gain']=(result['rescues']-result['harms']-.5*np.sqrt(result['rescues']+result['harms']))/result['total']
+                candidates.append(result)
+            selected=max(candidates,key=lambda r:(r['lower_gain'],r['gain'],-r['harms'],r['margin']))
+            selected.update(round=round_index,gain_weight=gain_weight,rank_weight=rank_weight,learning_rate=learning_rate)
+            histories[name].append(copy.deepcopy(selected));summary[name]={k:selected[k] for k in ['success','total','rescues','harms','margin']}
+            record=copy.deepcopy(bases[name]);config=replace(c.CIVConfig(**bank['config']),acceptance_margin=selected['margin'],uncertainty_penalty=0.)
+            record.update(config=asdict(config),execution_identity=config.identity(),execution_backend='cuda',
+                networks=[{key:value.detach().cpu() for key,value in net.state_dict().items()} for net in networks[name]])
+            record['fit'].update(completed=True,search_completed=False,updates=round_index*args.round_updates,completed_rounds=round_index,
+                planned_rounds=args.rounds,updates_per_round=args.round_updates,planned_updates=args.rounds*args.round_updates,
+                data_sources=[manifest],training_roots=len(training),validation_roots=len(validation),selected=copy.deepcopy(selected),
+                loss_mode='ordinary_terminal' if name=='ordinary' else args.paired_loss_mode,
+                gain_weight=gain_weight if name!='ordinary' else 0.,rank_weight=rank_weight if name!='ordinary' else 0.,
+                learning_rate=learning_rate,batch_size=args.batch_size,
+                training_scenes=sorted({tuple(r['scene']) for r in training}),validation_scenes=sorted({tuple(r['scene']) for r in validation}),
+                member_seeds=[args.seed+m for m in range(members)],fresh_start=args.fresh_start,
+                initialization='common seeded representations; ordinary independent readouts; conditional independence prior' if args.fresh_start else 'selected previous policy',
+                fixed_split=args.fixed_split,training_scene_limit=args.training_scene_limit,shuffle_all_futures=args.shuffle_all,
+                pairing_control=name=='shuffled',new_future_labels_permuted=changed if name=='shuffled' else 0,
+                candidate_marginals_preserved=True,base_policy=args.control_model if name=='ordinary' else args.model,
+                base_policy_sha256=digest(args.control_model if name=='ordinary' else args.model),
+                matched_draws_and_dropout=True,balance_agility=True,contrast_root_weight=3.,zero_uncertainty=True,
+                total_parameter_updates_at_checkpoint=round_index*args.round_updates*members,
+                planned_total_parameter_updates=args.rounds*args.round_updates*members,
+                total_additional_parameter_updates=round_index*args.round_updates*members,driver_sha256=DRIVER_SHA256,
+                cuda_version=torch.version.cuda,torch_version=torch.__version__,execution_backend='cuda')
+            stage=output.with_name(f'{stem}-{name}-round{round_index:02d}.pth');atomic_save(record,stage)
+            rank=(selected['lower_gain'],selected['gain'],-selected['harms'],-round_index)
+            if best[name] is None or rank>best[name]:
+                best[name]=rank;atomic_save(record,output.with_name(f'{stem}-{name}.pth'))
+        atomic_save(dict(completed=False,completed_rounds=round_index,planned_rounds=args.rounds,histories=histories,
+            pairing_permutations_changed_labels=changed,all_candidate_marginals_preserved=True,
+            new_data_source=manifest,seconds=time.monotonic()-start_time),output.with_name(f'{stem}-search.pth'))
+        print(json.dumps(dict(round=round_index,results=summary,seconds=time.monotonic()-start_time)),flush=True)
+    for name in names:
+        path=output.with_name(f'{stem}-{name}.pth');record=torch.load(path,weights_only=False)
+        record['fit'].update(search_completed=True,completed_rounds=args.rounds,completed_updates=args.rounds*args.round_updates,
+            validation_history=histories[name],completed_total_parameter_updates=args.rounds*args.round_updates*members)
+        atomic_save(record,path)
+    atomic_save(dict(completed=True,completed_rounds=args.rounds,planned_rounds=args.rounds,histories=histories,
+        pairing_permutations_changed_labels=changed,all_candidate_marginals_preserved=True,
+        new_data_source=manifest,seconds=time.monotonic()-start_time),output.with_name(f'{stem}-search.pth'))
+
+
+def calibrate(args):
+    """Fit bounded probability-head calibration on the existing validation split."""
+    torch.set_num_threads(1);torch.manual_seed(args.seed)
+    record=torch.load(args.model,map_location='cpu',weights_only=False)
+    if record.get('paired_event_value') or record.get('paired_value_output'):
+        raise ValueError('Head calibration requires the probability decomposition or ordinary value.')
+    scenes=set(map(tuple,record['fit']['validation_scenes']));roots=[]
+    for manifest in record['fit']['data_sources']:
+        if digest(manifest['path'])!=manifest['sha256']:raise ValueError('Calibration data identity changed.')
+        bank=torch.load(manifest['path'],map_location='cpu',weights_only=False)
+        roots.extend(dict(root,group=Path(manifest['path']).stem+':ag'+str(root['scene'][2]))
+                     for root in bank['roots'] if tuple(root['scene']) in scenes)
+    if len(roots)!=record['fit']['validation_roots']:raise ValueError('Calibration coverage changed.')
+    controller=load(args.model,args.device);features=tensor_features(roots,args.device)
+    with torch.no_grad():raw=torch.stack([network(features) for network in controller.networks])
+    torch.set_grad_enabled(True)
+    means=[];rescues=[];harms=[];zeros=[];ones=[]
+    for root in roots:
+        target=torch.as_tensor(root['targets'].clip(min=0),device=args.device)
+        y0=target[:,:1];zero=(1-y0).sum();one=y0.sum()
+        means.append(target.mean(0));zeros.append(zero/len(target));ones.append(one/len(target))
+        rescues.append(((1-y0)*target).sum(0)/zero.clamp_min(1.))
+        harms.append((y0*(1-target)).sum(0)/one.clamp_min(1.))
+    mean=torch.stack(means);rescue=torch.stack(rescues);harm=torch.stack(harms)
+    valid=features['valid'].float();rw=valid*torch.stack(zeros)[:,None];hw=valid*torch.stack(ones)[:,None]
+    log_temperature=nn.Parameter(torch.zeros(3,device=args.device));bias=nn.Parameter(torch.zeros(3,device=args.device))
+    optimizer=torch.optim.Adam([log_temperature,bias],lr=.02)
+    for _ in range(args.updates):
+        probability=(raw/log_temperature.exp()+bias).sigmoid().mean(0).clamp(1e-6,1-1e-6)
+        if record['kind']=='ordinary':
+            error=F.binary_cross_entropy(probability,mean[...,None].expand_as(probability),reduction='none').mean(-1)
+            loss=(error*valid).sum()/valid.sum().clamp_min(1.)
+        else:
+            loss=F.binary_cross_entropy(probability[:,0,0],mean[:,0])
+            loss=loss+.5*(F.binary_cross_entropy(probability[...,1],rescue,reduction='none')*rw).sum()/rw.sum().clamp_min(1.)
+            loss=loss+.5*(F.binary_cross_entropy(probability[...,2],harm,reduction='none')*hw).sum()/hw.sum().clamp_min(1.)
+        loss=loss+.01*(log_temperature.square().sum()+bias.square().sum())
+        optimizer.zero_grad();loss.backward();optimizer.step()
+        with torch.no_grad():log_temperature.clamp_(-np.log(2.),np.log(2.));bias.clamp_(-2.,2.)
+    temperature=log_temperature.detach().cpu().exp();shift=bias.detach().cpu()
+    for state in record['networks']:
+        state['readout.5.weight']/=temperature[:,None]
+        state['readout.5.bias']=state['readout.5.bias']/temperature+shift
+    record['fit']['probability_calibration']=dict(base_policy=str(args.model),base_sha256=digest(args.model),
+        steps=args.updates,temperature=temperature.tolist(),bias=shift.tolist(),prior_weight=.01,
+        scene_split='original validation scenes',roots=len(roots),frozen_representation=True,
+        folded_into_existing_head=True,validation_reused_for_calibration=True)
+    atomic_save(record,args.output)
+    controller=load(args.output,args.device)
+    with torch.no_grad():prediction=c.ensemble_values(controller.networks,features,record['kind'])
+    history=[]
+    for margin in (0.,.02,.05,.075,.1,.15,.2,.3,.4):
+        result=score(controller.networks,features,roots,record['kind'],margin,0.,prediction)
+        result['lower_gain']=(result['rescues']-result['harms']-.5*np.sqrt(result['rescues']+result['harms']))/result['total']
+        history.append(result)
+    selected=max(history,key=lambda r:(r['lower_gain'],r['gain'],-r['harms'],r['margin']))
+    config=replace(controller.config,acceptance_margin=selected['margin'],uncertainty_penalty=0.)
+    record.update(config=asdict(config),execution_identity=config.identity())
+    record['fit']['probability_calibration'].update(selected=selected,history=history)
+    atomic_save(record,args.output)
+    print(json.dumps(dict(completed=args.output,calibration=record['fit']['probability_calibration'])),flush=True)
+
+
 def evaluate(args):
     torch.set_num_threads(1);torch.backends.cuda.matmul.allow_tf32=False
     controller=load(args.model,args.device);tasks=make_tasks(args.seed,args.tasks,args.vessels,args.agilities)
@@ -402,7 +667,7 @@ def evaluate(args):
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('command',choices=['fit','evaluate','ensemble'])
+    p=argparse.ArgumentParser();p.add_argument('command',choices=['fit','evaluate','ensemble','calibrate','paired-search'])
     p.add_argument('--data',nargs='+');p.add_argument('--kind',choices=['conditional','ordinary']);p.add_argument('--model')
     p.add_argument('--models',nargs='+')
     p.add_argument('--output',required=True);p.add_argument('--seed',type=int,required=True);p.add_argument('--device',default='cuda:0')
@@ -417,12 +682,16 @@ def main():
     p.add_argument('--balance-agility',action='store_true')
     p.add_argument('--independent-start',action='store_true')
     p.add_argument('--heads-only',action='store_true')
-    p.add_argument('--loss-mode',choices=['softplus','paired_margin','paired_events'],default='softplus')
+    p.add_argument('--loss-mode',choices=['softplus','paired_margin','paired_events','paired_calibrated','paired_value','paired_unbiased','paired_decision','paired_consistent','paired_precision','paired_joint'],default='softplus')
+    p.add_argument('--paired-loss-mode',choices=['paired_precision','paired_joint'],default='paired_precision')
     p.add_argument('--zero-uncertainty',action='store_true')
     p.add_argument('--save-stages',action='store_true')
     p.add_argument('--encounter-features',action='store_true')
     p.add_argument('--focus-changes',action='store_true')
-    args=p.parse_args();{'fit':fit,'evaluate':evaluate,'ensemble':ensemble}[args.command](args)
+    p.add_argument('--control-model');p.add_argument('--rounds',type=int,default=50);p.add_argument('--round-updates',type=int,default=100)
+    p.add_argument('--fixed-split',action='store_true');p.add_argument('--training-scene-limit',type=int,default=0)
+    p.add_argument('--fresh-start',action='store_true');p.add_argument('--shuffle-all',action='store_true')
+    args=p.parse_args();{'fit':fit,'evaluate':evaluate,'ensemble':ensemble,'calibrate':calibrate,'paired-search':paired_search}[args.command](args)
 
 
 if __name__=='__main__':main()
