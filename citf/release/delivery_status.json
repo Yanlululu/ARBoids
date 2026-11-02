@@ -101,7 +101,7 @@
   "old_48_tasks": "archived and recomputed in evidence only, absent from main manuscript",
   "local_execution": {
     "branch": "codex/citf-independent-20261102",
-    "phase": "development preparation; waiting for local memory",
+    "phase": "P3 remote result-driven development",
     "runtime_revision": "CITF-execution-events-v4",
     "collection_schema": "citf-branch-events-v1",
     "P1": {
@@ -114,9 +114,9 @@
     "formal_evaluation": "pending",
     "VRX": "pending",
     "user_execution_order": "stable development gains first; complete independent training later on a remote server",
-    "development_matrix": "runs\\stable-development-20261102\\matrix.json",
-    "development_status": "runs\\stable-development-20261102\\matrix_status.json",
-    "manager_pid": 47312,
+    "development_matrix": "runs/result-driven-20261102/matrix.json",
+    "development_status": "runs/result-driven-20261102/matrix_status.json",
+    "manager_pid": 40024,
     "stable_gain_established": false,
     "P2_development_support": {
       "independent_selection_unit_tests": "passed",
@@ -129,6 +129,53 @@
       "formal_source_training": "pending",
       "MAPPO": "pending",
       "VRX": "pending"
+    },
+    "development_queue_status": "superseded_by_remote_campaign",
+    "results_driven_package_sha256": "f852ac3f7613401bcace504920641ac36210706c5f4a2ee0f57e8de564e6c16f",
+    "P3_development": {
+      "status": "diagnostic implementation ready; no performance experiment executed",
+      "entry": "code/experiments/branch_diagnosis.py",
+      "comparison": "same candidate pool: held thrust, deterministic observed-state feedback, real common-future branches",
+      "pool_candidates": 96,
+      "future_repetitions": 3,
+      "initial_geometry_families": 4,
+      "agilities": [
+        2.0,
+        2.5
+      ],
+      "root_times_seconds": [
+        0,
+        2,
+        4,
+        8,
+        12,
+        20
+      ],
+      "targeted_unit_tests_passed": 9,
+      "metric_aggregation_check": "passed",
+      "full_cli_diagnosis": "pending compute resources",
+      "development_gain_established": false,
+      "frozen_tests_opened": false
+    },
+    "development_resource_choice": "user selected local execution after RAM recovers to about 4 GiB",
+    "development_start_ram_gib": 4.25,
+    "remote_campaign": {
+      "root": "/root/autodl-tmp/citf-10h-20261102",
+      "deadline_utc": "2026-11-02T22:40:28Z",
+      "fixed_source_development": true,
+      "stable_gain_established": false,
+      "best_matched_physics_success": 239,
+      "validation_tasks": 256,
+      "formal_tests_opened": false,
+      "latest_stage": "dense behavior data complete; three-seed guarding, matched learning ablations, critical-state sampling, longer-interval data and guarding-margin comparisons",
+      "best_development_learning_success": 241,
+      "best_learning_variant": "direct stopped radial-guard prediction",
+      "latest_completed_learning_repetitions": [
+        240,
+        241
+      ],
+      "matched_physics_success": 239,
+      "candidate_context_attribution_established": false
     }
   },
   "artifact_format": {

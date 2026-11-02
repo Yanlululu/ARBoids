@@ -22,7 +22,7 @@ def load_behavior(path,source,world,device):
     model=Predictor(Config(**ck['config']));model.load_state_dict(ck['state']);return model.to(device).eval()
 
 
-def sample_root(world,source,plans,future_seeds,root_metadata,opponent=None):
+def sample_root(world,source,plans,future_seeds,root_metadata,opponent=None,stop_file=None):
     from .contracts import COLLECTION_SCHEMA,BRANCH_EVENT_FIELDS
     opponent=opponent or APFOpponent()
     f=factorize(world,source);b,g,R=inputs(world,f,plans)
@@ -39,6 +39,8 @@ def sample_root(world,source,plans,future_seeds,root_metadata,opponent=None):
     physics_steps=0
     for c in range(C):
         for r,seed in enumerate(future_seeds):
+            if stop_file and Path(stop_file).exists():
+                raise InterruptedError('Resource stop between real candidate branches')
             branch=world.clone();branch.rng=np.random.RandomState(int(seed))
             for q in range(T):
                 a,rule,_=source.commands(branch.env);force=(750*(g[c]*a+(1-g[c])*rule)+250).numpy()
@@ -127,7 +129,7 @@ def main():
                 item,meta,steps=sample_root(world,source,np.asarray(candidates),future,
                     dict(root_id=rid,layout_id=task['layout_id'],split=bank['role'],scene_seed=task['scene_seed'],root_step=step,
                          candidate_indices=[list(x) for x in candidates],behavior_identity=behavior,
-                         sampling_probability=min(args.max_per_layout,len(args.root_times))/len(args.root_times)),opponent=opponent)
+                         sampling_probability=min(args.max_per_layout,len(args.root_times))/len(args.root_times)),opponent=opponent,stop_file=args.stop_file)
                 items.append(item);roots.append(meta);cost+=steps;entry['collected_ticks'].append(step)
                 if args.max_roots and len(roots)>=args.max_roots:break
             force,_=policy.act(world);behavior_result=world.step(force,attacker_action=opponent.act(world));actual+=1;step+=1

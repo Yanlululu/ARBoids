@@ -23,7 +23,7 @@ def evaluate(model,data,batch_size=8,device='cpu',clearance=7.,weight=32.,loss_k
         rows=torch.arange(len(b['history']),device=device)
         choice=l['estimated_cost'].masked_fill(~b['candidate_valid'],torch.inf).argmin(-1)
         truth=l['empirical_cost'].masked_fill(~b['candidate_valid'],torch.inf)
-        vals={k:float(l[k]) for k in ('motion','nll','risk','rank')}
+        vals={k:float(l[k]) for k in ('motion','nll','risk','rank','context')}
         vals['regret']=float((truth[rows,choice]-truth.min(-1).values).mean())
         for k,v in vals.items():sums[k]=sums.get(k,0)+v*len(rows)
         d,pv=branch_minima(b['real_positions'],b['time_valid'],b['entity_valid'])
@@ -108,10 +108,11 @@ def main():
     ap.add_argument('--risk-loss-weight',type=float,default=.25)
     ap.add_argument('--rank-weight',type=float,default=.05)
     ap.add_argument('--temperature',type=float,default=8.)
+    ap.add_argument('--context-weight',type=float,default=0.)
     a=ap.parse_args();out=Path(a.out)
     if min(a.updates,a.batch_roots,a.validate_every,a.save_every)<1:raise ValueError('Invalid training counts')
-    losses={'distance_weight':a.distance_weight,'risk_weight':a.risk_loss_weight,'rank_weight':a.rank_weight,'temperature':a.temperature}
-    if not all(math.isfinite(x) for x in losses.values()) or min(a.distance_weight,a.risk_loss_weight,a.rank_weight)<0 or a.temperature<=0:raise ValueError('Invalid loss contract')
+    losses={'distance_weight':a.distance_weight,'risk_weight':a.risk_loss_weight,'rank_weight':a.rank_weight,'temperature':a.temperature,'context_weight':a.context_weight}
+    if not all(math.isfinite(x) for x in losses.values()) or min(a.distance_weight,a.risk_loss_weight,a.rank_weight,a.context_weight)<0 or a.temperature<=0:raise ValueError('Invalid loss contract')
     stages=snapshot_steps(a.snapshot_updates,a.updates)
     train,tm,tb=load_shards(a.train,'train');val,vm,vb=load_shards(a.validation,'validation');check_split_families([('train',tm),('validation',vm)])
     src={r['source_sha256'] for r in tm+vm};env={r['environment_sha256'] for r in tm+vm}
@@ -170,7 +171,7 @@ def main():
         if not torch.isfinite(loss['total']):raise FloatingPointError('Nonfinite objective')
         opt.zero_grad(set_to_none=True);loss['total'].backward();torch.nn.utils.clip_grad_norm_(model.parameters(),5);opt.step();sched.step()
         if step%100==0:
-            with (out/'learning.jsonl').open('a') as f:f.write(json.dumps(dict(update=step,**{k:float(loss[k].detach()) for k in ('total','motion','nll','risk','rank')}))+'\n')
+            with (out/'learning.jsonl').open('a') as f:f.write(json.dumps(dict(update=step,**{k:float(loss[k].detach()) for k in ('total','motion','nll','risk','rank','context')}))+'\n')
         if step%a.validate_every==0 or step==a.updates:validate(step)
         if step%a.save_every==0 or step%a.validate_every==0 or step==end or step in stages:save(step)
     (out/'status.json').write_text(json.dumps(dict(completed=end==a.updates,update=end,total_updates=a.updates,best=best,saved_stages=[x for x in stages if x<=end],loss_contract=losses,seconds_this_call=time.perf_counter()-start),indent=2))
