@@ -673,6 +673,88 @@ class JointFusionRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'source hash'):
             joint_load(self.checkpoint,source=source)
 
+    def test_loader_checks_embedded_source_weights_in_addition_to_metadata(self):
+        import hashlib
+        from pathlib import Path
+        from joint_fusion import joint_load, atomic_save, proposal_parameter_digest
+        folder=Path(self.directory.name)
+        source=folder/'verified-source.pth';checkpoint=folder/'source-integrity.pth'
+        base={key[5:]:value for key,value in self.record['actor'].items() if key.startswith('base.')}
+        atomic_save(base,source)
+        record=dict(self.record,source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+            proposal_initialization_sha256=proposal_parameter_digest(base))
+        atomic_save(record,checkpoint)
+        restored=joint_load(checkpoint,source=source)
+        for key,value in restored.base.state_dict().items():
+            torch.testing.assert_close(value,base[key],rtol=0.,atol=0.)
+        record['actor']={key:value.clone() for key,value in record['actor'].items()}
+        record['actor']['base.f1.weight'][0,0]+=1.
+        atomic_save(record,checkpoint)
+        with self.assertRaisesRegex(ValueError,'frozen source actor'):
+            joint_load(checkpoint)
+        # Legacy checkpoints lack the parameter digest; deployment must still
+        # compare their actual embedded source against the supplied checkpoint.
+        record.pop('proposal_initialization_sha256')
+        atomic_save(record,checkpoint)
+        with self.assertRaisesRegex(ValueError,'source checkpoint weights'):
+            joint_load(checkpoint,source=source)
+
+    def test_measured_controller_accepts_the_common_vrx_horizon(self):
+        import numpy as np
+        from joint_fusion import JointMeasuredController, joint_packet, mechanism_tensor, numerical_source
+        controller=JointMeasuredController(self.checkpoint)
+        np.random.seed(59)
+        env=numerical_source().TADEnv(3);obs,_=env.reset(agility=2.,noisy_agility=False)
+        env.Total_T=100.;env.Current_T=85.
+        defenders=np.asarray([[v.x,v.y,v.theta,*v.velocity] for v in env.defender_list])
+        a=env.attacker;attacker=np.asarray([a.x,a.y,a.theta,*a.velocity])
+        expected=controller.actor.control(mechanism_tensor(joint_packet(env,obs)))[0].numpy()
+        _,info=controller.control(defenders,attacker,obs,env.boids_actions,85.,100.)
+        np.testing.assert_array_equal(info['physical_action'],expected)
+        for elapsed,horizon in ((0.,0.),(0.,float('nan')),(-1.,100.)):
+            controller.reset()
+            with self.assertRaisesRegex(ValueError,'measured clock'):
+                controller.control(defenders,attacker,obs,env.boids_actions,elapsed,horizon)
+
+    def test_source_replacement_rejects_already_fitted_m1_components(self):
+        from mechanism_controls import independent_source_initialization
+        for field in ('feedback_fleet_policy','target_motion','target_feedback','fleet_learning'):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError,'fresh selector'):
+                independent_source_initialization(
+                    dict(self.record,**{field:{'state':torch.ones(1)}}),'unused-source',42)
+
+    def test_vrx_source_verification_accepts_a_complete_six_vessel_repeat(self):
+        import hashlib
+        from pathlib import Path
+        import yaml
+        from joint_fusion import atomic_save
+        from mechanism_controls import verify_source_trial_checkpoint
+        from source_arboids import SOURCE_ROOT, SOURCE_COMMIT, verify_source_config
+        folder=Path(self.directory.name)/'six-vessel-source';folder.mkdir()
+        config=yaml.safe_load((SOURCE_ROOT/'train/configs/train.yaml').read_text(encoding='utf-8'))
+        config['agent']['defender_num']=6
+        (folder/'config.yaml').write_text(yaml.safe_dump(config),encoding='utf-8')
+        base={key[5:]:value for key,value in self.record['actor'].items() if key.startswith('base.')}
+        for name in ('adares1.pth','best-development.pth'):
+            atomic_save(base,folder/name)
+        steps=config['training']['total_steps']
+        (folder/'metrics1.csv').write_text(f'step,def_sr,reward\n{steps},0.5,1.0\n',encoding='utf-8')
+        digest=lambda name:hashlib.sha256((folder/name).read_bytes()).hexdigest()
+        record=dict(seed=42,family='arboids',training_defenders=6,source_commit=SOURCE_COMMIT,
+            completed=True,fresh_initialization=True,training_steps=steps,
+            checkpoint_sha256=digest('adares1.pth'),selected_checkpoint_sha256=digest('best-development.pth'),
+            configuration_sha256=digest('config.yaml'),
+            development_selection=dict(step=steps,def_sr=.5,reward=1.))
+        atomic_save(record,folder/'source-repeat-result.pth')
+        with self.assertRaisesRegex(ValueError,'configuration differs'):
+            verify_source_config(folder/'config.yaml')
+        self.assertEqual(verify_source_trial_checkpoint(folder/'best-development.pth'),
+                         record['configuration_sha256'])
+        config['agent']['adaptive']=False
+        (folder/'config.yaml').write_text(yaml.safe_dump(config),encoding='utf-8')
+        with self.assertRaisesRegex(ValueError,'baseline configuration'):
+            verify_source_trial_checkpoint(folder/'best-development.pth')
+
     def test_worker_initialization_preserves_autograd(self):
         from joint_fusion import initialize
         for enabled in (True,False):

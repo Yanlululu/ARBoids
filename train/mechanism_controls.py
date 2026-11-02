@@ -357,6 +357,12 @@ def independent_source_initialization(template, source_run, seed, *, source_chec
     import joint_fusion as d
     from source_arboids import SourcePolicy, SOURCE_COMMIT
 
+    if (template.get('iteration', 0) != 0 or template.get('simulation_steps', 0) != 0
+            or d.retired_value_fields(template) or template.get('generic_fusion_adapter')
+            or template.get('fleet_learning')
+            or any(template.get(key) is not None for key in
+                   ('feedback_fleet_policy', 'target_motion', 'target_feedback'))):
+        raise ValueError('Replace the source only in a fresh selector, then recollect its own learning data.')
     source_run = Path(source_run)
     record = torch.load(source_run/'source-repeat-result.pth', map_location='cpu', weights_only=False)
     if source_checkpoint not in ('final', 'training_development'):
@@ -377,9 +383,6 @@ def independent_source_initialization(template, source_run, seed, *, source_chec
         metrics = list(csv.DictReader(stream))
     if not metrics or int(metrics[-1]['step']) < record['training_steps']:
         raise ValueError('Independent source training has not reached its recorded budget.')
-    if (template.get('iteration', 0) != 0 or template.get('simulation_steps', 0) != 0
-            or d.retired_value_fields(template) or template.get('generic_fusion_adapter')):
-        raise ValueError('Replace the source only in a fresh selector, then recollect its own learning data.')
     if selected:
         _, config = validate_author_source_repeat(source_run)
         weights = AuthorSourceRepeatPolicy(checkpoint, config).actor.state_dict()
@@ -515,6 +518,22 @@ def validate_author_source_repeat(directory):
             atol=1e-12, rtol=1e-12) for key in ('def_sr', 'reward'))):
         raise ValueError('The selected baseline is not the recorded training-development maximum.')
     return record, config
+
+
+def verify_source_trial_checkpoint(checkpoint):
+    """Accept the original recipe or a verified same-fleet ARBoids repeat."""
+    from source_arboids import verify_source_config
+    checkpoint = Path(checkpoint)
+    directory = checkpoint.parent
+    if not (directory/'source-repeat-result.pth').is_file():
+        return verify_source_config(directory/'config.yaml')
+    record, _ = validate_author_source_repeat(directory)
+    if record.get('family', 'arboids') != 'arboids':
+        raise ValueError('The AdaRes trial requires an ARBoids source checkpoint.')
+    identity = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    if identity not in (record['checkpoint_sha256'], record['selected_checkpoint_sha256']):
+        raise ValueError('The trial checkpoint is not a verified endpoint of the source repeat.')
+    return record['configuration_sha256']
 
 
 _AUTHOR_REPEAT_POLICIES = {}

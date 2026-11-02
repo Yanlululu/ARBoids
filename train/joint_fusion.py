@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import inspect
+import io
 import os
 from math import isfinite
 from pathlib import Path
@@ -601,10 +602,13 @@ def joint_load(path, revision=None, *, source=None, device='cpu'):
         raise ValueError('Mechanism ablation must contain Boolean removal flags.')
     if any(flag for index, flag in enumerate(flags) if index != 1):
         raise ValueError('This checkpoint removes M1; use the original source controller for that baseline.')
+    source_weights = None
     if source is not None:
-        identity = hashlib.sha256(Path(source).read_bytes()).hexdigest()
+        source_bytes = Path(source).read_bytes()
+        identity = hashlib.sha256(source_bytes).hexdigest()
         if data.get('source_sha256') != identity:
             raise ValueError('The deployment source does not match the checkpoint source hash.')
+        source_weights = torch.load(io.BytesIO(source_bytes), map_location='cpu', weights_only=True)
     settings = data.get('actuator_fusion_refinement')
     generic = data.get('generic_fusion_adapter')
     if (settings is None) == (generic is None):
@@ -650,6 +654,14 @@ def joint_load(path, revision=None, *, source=None, device='cpu'):
     if not base:
         raise ValueError('The M1 checkpoint is missing its source actor parameters.')
     actor.base.load_state_dict(base, strict=True)
+    initialization_digest = data.get('proposal_initialization_sha256')
+    if initialization_digest is not None and proposal_parameter_digest(base) != initialization_digest:
+        raise ValueError('The frozen source actor differs from its recorded initialization.')
+    if source_weights is not None and (not isinstance(source_weights, dict)
+            or base.keys() != source_weights.keys()
+            or any(not torch.is_tensor(source_weights[key])
+                   or not torch.equal(value, source_weights[key]) for key,value in base.items())):
+        raise ValueError('The frozen source actor differs from the supplied source checkpoint weights.')
     # Keep the historical linear-kernel dispatch, which also depends on
     # requires_grad under no_grad. Control never records source gradients,
     # and fleet training optimizes only its separate candidate scorer.
@@ -719,10 +731,9 @@ class JointMeasuredController:
             raise ValueError('Public observations do not match the numerical source policy.')
         if not all(np.isfinite(value).all() for value in (defenders,attacker,observations,boids)):
             raise ValueError('Control measurements must be finite.')
-        expected_time = 80. if self.actor.environment_protocol == 'source' else 60.
         if (not isfinite(elapsed) or elapsed < 0. or not isfinite(total_time)
-                or abs(total_time-expected_time) > 1e-6):
-            raise ValueError('The measured clock must use the numerical task horizon.')
+                or total_time <= 0.):
+            raise ValueError('The measured clock needs nonnegative elapsed time and a positive task horizon.')
         if self.last_elapsed is not None and elapsed <= self.last_elapsed:
             raise ValueError('Each control call needs a new measurement tick; reset between episodes.')
 
@@ -828,6 +839,7 @@ def main():
                 settings['selection']='single_reference'
         record = dict(format='joint-actuator-fusion-v1',actor=actor.state_dict(),
             source_commit=SOURCE_COMMIT,source_sha256=hashlib.sha256(args.source.read_bytes()).hexdigest(),
+            proposal_initialization_sha256=proposal_parameter_digest(actor.base.state_dict()),
             risk_horizon=args.horizon,risk_clearance=args.clearance,risk_feedback=True,
             actuator_fusion_refinement=settings,environment_protocol='source')
         atomic_save(record,args.output)

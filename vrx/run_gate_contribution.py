@@ -21,7 +21,8 @@ from tf2_msgs.msg import TFMessage
 from rclpy.qos import qos_profile_sensor_data
 
 import run_experiment as runner
-from source_arboids import vrx_source, verify_source, verify_source_config, sha256
+from source_arboids import vrx_source, verify_source, sha256
+from mechanism_controls import verify_source_trial_checkpoint
 from gate_study_control import GateController, METHODS
 
 AUTHOR = vrx_source().controller
@@ -44,7 +45,7 @@ class SourceTrial(runner.Trial):
             raise ValueError('Modified observation/message handling is not part of this source comparison.')
         if args.run_id is None:
             raise ValueError('Provide --run-id so source provenance is saved beside the exact trial.')
-        verify_source_config(Path(args.checkpoint).with_name('config.yaml'))
+        verify_source_trial_checkpoint(args.checkpoint)
         AUTHOR.ExperimentManager.__init__(self, args.num_robots, False, device=args.device)
         self.args = ACTIVE_ARGS = args
         self.total_time = args.duration
@@ -196,15 +197,16 @@ def main():
     METHOD = extra.method
     JOINT_CHECKPOINT = extra.joint_checkpoint
     if METHOD=='joint' and JOINT_CHECKPOINT is None:parser.error('joint requires --joint-checkpoint')
-    if '--duration' not in remaining:
-        remaining += ['--duration','80' if METHOD=='joint' else '100']
+    if not any(value == '--duration' or value.startswith('--duration=') for value in remaining):
+        remaining += ['--duration','100']
     source = verify_source()
     code_files = [Path(__file__), Path(__file__).resolve().parents[1]/'train/gate_study_control.py',
                   Path(__file__).resolve().parents[1]/'train/source_arboids.py',
+                  Path(__file__).resolve().parents[1]/'train/mechanism_controls.py',
                   Path(__file__).resolve().parents[1]/'train/cbf_source_baseline.py']
     if METHOD=='joint':
         code_files.extend(Path(__file__).resolve().parents[1]/'train'/name
-            for name in ('joint_fusion.py','actuator_fusion.py','fusion_prediction.py','mechanism_controls.py'))
+            for name in ('joint_fusion.py','actuator_fusion.py','fusion_prediction.py'))
     hashes = {p.name:sha256(p) for p in code_files}
     sys.argv = [sys.argv[0], *remaining]
     runner.Trial = SourceTrial
