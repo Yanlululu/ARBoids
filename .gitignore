@@ -49,6 +49,10 @@ experiments/
 
 /fromCHAT/
 
+# Retired local PCF-MBRL drafts.
+/paper/PCF-MBRL_中文方法稿_待补标注.pdf
+/paper/PCF-MBRL_按ARBoids组织的中文方法稿.md
+
 /vrx_ws/
 
 /vrx/results/
