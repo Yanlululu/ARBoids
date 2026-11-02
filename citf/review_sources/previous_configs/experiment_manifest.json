@@ -1,0 +1,74 @@
+{
+  "study": "CITF candidate-interaction Transformer fusion",
+  "task_scope": "CI-only current fusion; short-horizon geometry, no CV",
+  "method_frozen": false,
+  "environment": "user source80 with radial early failure; not paper-parameters-v1",
+  "primary_training_team_size": 6,
+  "agility_main": [
+    2.0,
+    2.5
+  ],
+  "formal_training_seeds": [
+    101,
+    102,
+    103,
+    104,
+    105
+  ],
+  "formal_tasks_per_agility_minimum": 100,
+  "main_methods": [
+    "CITF",
+    "original CI",
+    "matched fast-physics CI",
+    "ARBoids",
+    "RP",
+    "SAC",
+    "Boids",
+    "one qualified strong MARL"
+  ],
+  "main_ablations": [
+    "without-fleet-context",
+    "predictive_only"
+  ],
+  "data_protocol": {
+    "layout_split": true,
+    "nominal_dt": 0.2,
+    "integrator_dt": 0.05,
+    "prediction_steps": 16,
+    "history_steps": 8,
+    "candidate_count_start": 12,
+    "futures_start": 3,
+    "terminal_target": "stopped synchronous minimum through transition entering termination"
+  },
+  "primary_outcome": "defense success",
+  "secondary_outcomes": [
+    "capture",
+    "primary collision",
+    "independent physical collision",
+    "physical breach",
+    "radial-only failure",
+    "hold-to-time-limit",
+    "capped capture time"
+  ],
+  "generalization_team_sizes": [
+    3,
+    4,
+    5,
+    7,
+    8
+  ],
+  "agility_sweep": [
+    1.5,
+    1.75,
+    2.0,
+    2.25,
+    2.5,
+    2.75,
+    3.0
+  ],
+  "vrx_minimum_paired_tasks": 100,
+  "formal_results_complete": false,
+  "freeze_rule": "checkpoint+source+environment+tasks+runtime+selection registered before testing",
+  "fixed_effect_size_required": null,
+  "claim_scope": "research design, revised reference implementation, verified supplied development records"
+}

@@ -1,0 +1,49 @@
+# Experiment orchestration is source code, not generated experiment output.
+!/code/experiments/
+
+# Supplied immutable inputs required by verification and historical provenance.
+!/source_archive/train/experiments/
+!/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth
+!/evidence/uploaded_upgrade/models/
+/evidence/uploaded_upgrade/models/*
+!/evidence/uploaded_upgrade/models/fast_candidate_graph_62031_full/
+/evidence/uploaded_upgrade/models/fast_candidate_graph_62031_full/*
+!/evidence/uploaded_upgrade/models/fast_candidate_graph_62031_full/best.pt
+
+# Reproducible audit binaries, renderings, extracted text, and process state.
+/audit/**/*.pt
+/audit/**/*.pth
+/audit/**/*.npz
+/audit/**/*.png
+/audit/**/*.jsonl.gz
+/audit/*_help.txt
+/audit/current_verification_process.json
+/audit/current_independent_review/results/process.json
+/audit/current_independent_review/results/*_text.txt
+
+# Duplicate editorial input copies; retain their manifests and review diffs.
+/audit/current_independent_review/input_CODEX_TASK.md
+/audit/current_independent_review/input_manuscript.md
+/audit/narrative_revision/paper_before.md
+/audit/narrative_revision/plan_before.md
+
+# Manuscript TeX is generated from the retained Markdown and templates.
+/paper/CITF_中文独立论文_修订稿.tex
+
+# Keep bounded verification evidence and the development recipe, not live jobs.
+/runs/**
+!/runs/local-events-p1-20261102/
+!/runs/local-events-p1-20261102/**/
+!/runs/local-events-p1-20261102/**/*.json
+!/runs/local-events-p1-20261102/**/*.jsonl
+!/runs/local-events-p1-20261102/**/*.csv
+!/runs/local-events-p1-20261102/unit_tests.log
+!/runs/p2-evaluation-resume/
+!/runs/p2-evaluation-resume/**/
+!/runs/p2-evaluation-resume/**/*.json
+!/runs/p2-evaluation-resume/**/*.jsonl
+!/runs/stable-development-20261102/
+!/runs/stable-development-20261102/matrix.json
+
+# Preserve test transcripts that substantiate the supplied acceptance records.
+!/audit/**/unit_tests.log

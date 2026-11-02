@@ -1,0 +1,344 @@
+{
+  "method": "CITF",
+  "revision": "CITF-execution-closed-v3",
+  "scientific_status": "independent method manuscript and explicit execution specification; formal empirical results pending",
+  "method_frozen": false,
+  "primary_training_team_size": 6,
+  "source_protocol": {
+    "name": "citf-source80-v2",
+    "environment": "source",
+    "time_limit": 80.0,
+    "control_dt": 0.2,
+    "integration_dt": 0.05,
+    "target_radius": 15.0,
+    "capture_radius": 5.0,
+    "collision_radius": 5.0,
+    "risk_clearance": 7.0,
+    "radial_early_failure": true,
+    "prediction_steps": 16,
+    "history_steps": 8,
+    "risk_weight": 32.0,
+    "prior_scale": 0.4
+  },
+  "scope": {
+    "prediction": "short physical motion and stopped-interval geometry",
+    "decision": "current joint fusion configuration",
+    "forbidden": [
+      "CV",
+      "terminal-value prediction",
+      "long-horizon fusion plans",
+      "PCF-MBRL"
+    ]
+  },
+  "network": {
+    "variant": "candidate_graph",
+    "width": 56,
+    "heads": 4,
+    "history": 8,
+    "horizon": 16,
+    "dt": 0.2,
+    "clearance": 7.0,
+    "residual_scale": 9.0,
+    "fleet_candidate_context": true,
+    "revision": "CITF-stopped-direct-v2"
+  },
+  "parameter_count_reference": 151354,
+  "schema": "citf-stopped-aware-v2",
+  "history_features": [
+    "target_frame_x/60",
+    "target_frame_y/60",
+    "measured_vx/5",
+    "measured_vy/5",
+    "sin_yaw",
+    "cos_yaw",
+    "measured_yaw_rate",
+    "attacker_flag"
+  ],
+  "context_features": [
+    "remaining_seconds/time_limit",
+    "known_prediction_steps/prediction_steps"
+  ],
+  "training": {
+    "source_seeds": [
+      101,
+      102,
+      103,
+      104,
+      105
+    ],
+    "source_steps": 1000000,
+    "source_lr": 0.0001,
+    "source_batch": 4096,
+    "source_gamma": 0.99,
+    "source_tau": 0.005,
+    "source_curriculum_mean0": 2.0,
+    "source_curriculum_increment": 0.25,
+    "source_curriculum_period": 250000,
+    "source_curriculum_halfwidth": 0.25,
+    "predictor_seeds": [
+      1101,
+      1102,
+      1103,
+      1104,
+      1105
+    ],
+    "predictor_updates": 12000,
+    "batch_roots": 6,
+    "optimizer": "AdamW",
+    "lr": 0.0003,
+    "weight_decay": 0.0001,
+    "cosine_eta_min": 3e-05,
+    "gradient_clip": 5,
+    "validate_every": 200,
+    "save_every": 100,
+    "loss": {
+      "motion": 1.0,
+      "nll": 0.08,
+      "risk": 0.25,
+      "choice": 0.05,
+      "temperature": 8.0
+    },
+    "selection": "validation regret + 5 * normalized risk MSE; zero-update eligible; earliest tie",
+    "snapshot_updates": [
+      0,
+      400,
+      1200,
+      2400,
+      6000,
+      12000
+    ],
+    "snapshot_role": "current weights at update, immutable; separate from selected best.pt",
+    "loss_cli": {
+      "nll": "--distance-weight",
+      "risk": "--risk-loss-weight",
+      "choice": "--rank-weight",
+      "temperature": "--temperature"
+    }
+  },
+  "data": {
+    "round1_train_layouts": 1500,
+    "round2_train_layouts": 1500,
+    "validation_layouts": 300,
+    "predictive_holdout_layouts": 300,
+    "max_roots_per_layout": 4,
+    "root_times_s": [
+      0,
+      2,
+      4,
+      8,
+      12,
+      20,
+      30,
+      40,
+      60,
+      75,
+      79.8
+    ],
+    "candidates_per_root": 12,
+    "futures_per_candidate": 3,
+    "split_unit": "physical geometry family including all times/agilities/futures/behaviors",
+    "round2_behavior": "trained round1 CITF; identity recorded",
+    "candidate_initialization": "six nominal slots including source centre; six random slots; deduplicate"
+  },
+  "controller": {
+    "bank": 12,
+    "budget": 96,
+    "rounds": 1,
+    "nominal_beam_width": 128,
+    "risk": "expected",
+    "history_cache": true,
+    "initializer": "source_center_reserved_inside_bank-v1",
+    "unique_evaluations_upper_bound_at_primary_settings": 60,
+    "budget_semantics": "96 is a cap; log actual unique configurations; no forced redundant evaluations"
+  },
+  "main_methods": [
+    "CITF",
+    "CI-original",
+    "CI-physical",
+    "ARBoids",
+    "RP",
+    "SAC",
+    "Boids",
+    "MAPPO"
+  ],
+  "main_ablations": {
+    "no-context": "retrained without candidate cross-entity propagation; full history retained",
+    "predictive": "same network and all data; motion+nll only"
+  },
+  "mechanism_table": [
+    "same-structure other-candidate information replacement",
+    "common-reference one-pass independent selection",
+    "information-matched physical feedback predictor",
+    "GRU",
+    "action-conditioned Perceiver"
+  ],
+  "primary_evaluation": {
+    "full_independent_runs": 5,
+    "agilities": [
+      2.0,
+      2.5
+    ],
+    "geometric_layouts": 100,
+    "tasks_per_model": 200,
+    "paired_across_methods": true,
+    "bootstrap_unit": [
+      "training_run",
+      "geometry_family"
+    ],
+    "bootstrap_draws": 10000
+  },
+  "system_evaluation": {
+    "agility_levels": [
+      1.5,
+      1.75,
+      2.0,
+      2.25,
+      2.5,
+      2.75,
+      3.0
+    ],
+    "size_training": 6,
+    "size_test": [
+      3,
+      4,
+      5,
+      7,
+      8
+    ],
+    "layouts_per_condition": 100,
+    "freeze_all_parameters": true
+  },
+  "attacker": {
+    "algorithm": "SAC",
+    "seeds": [
+      301,
+      302,
+      303
+    ],
+    "reference_defender": "fixed development CI-original",
+    "observation": "target and nearest three sensed defenders",
+    "actor_widths": [
+      256,
+      256
+    ],
+    "gamma": 0.99,
+    "lr": 0.0003,
+    "batch": 256,
+    "tau": 0.005,
+    "stages": [
+      "fixed defender",
+      "attack250k",
+      "defender-predictor adaptation",
+      "attack250k",
+      "defender-predictor adaptation"
+    ],
+    "adaptation_max_branch_steps": 100000,
+    "adaptation_updates": 4000,
+    "APF_replay_fraction": 0.5,
+    "eval_layouts": 100,
+    "status": "frozen deterministic actor execution in behavior/branches/evaluation implemented and tested; SAC training pending",
+    "export_interface": "source-target-nearest3-raw8-v1 -> normalized two-channel deterministic mean",
+    "execution_spec": "opponent_spec.schema.json",
+    "reward": {
+      "radial_progress_scale": 0.016666666666666666,
+      "per_step": -0.01,
+      "outcome_terminal_bonus": {
+        "0": 0,
+        "1": 100,
+        "2": 0,
+        "3": -100,
+        "4": -100
+      },
+      "code1_definition": "physical breach OR radial early failure; add only once"
+    },
+    "mixing_unit": "actual branch transitions, equal APF/current learned-opponent shares",
+    "reference_update": "same registered common reference for attacker pool; cross-method adversaries are identical"
+  },
+  "vrx": {
+    "defenders": 6,
+    "agility": 2.5,
+    "paired_layouts": 100,
+    "methods": [
+      "CITF",
+      "CI-original",
+      "ARBoids"
+    ],
+    "run_selection": "before any numerical final_test/VRX: sort five final complete CITF validation successes ascending, then run index ascending; choose third; matched baseline run index",
+    "deadline_s": 0.2,
+    "late_control": "hold last legal command; discard stale-observation control; log actual simulator clock",
+    "status": "adapter and formal trials pending"
+  },
+  "paper": {
+    "chapters": 5,
+    "main_figures": 7,
+    "pending_results": "red 待补",
+    "historical_48_task_results": "development appendix only"
+  },
+  "implemented": [
+    "core stopped-distance model",
+    "known time context",
+    "physical layout registry",
+    "learned behavior collection",
+    "resume",
+    "complete runtime freeze",
+    "step trace",
+    "attacker action hook",
+    "source centre preserved within existing bank",
+    "four online risk-weight compatibility with immutable final identity",
+    "CLI loss coefficients",
+    "immutable stage snapshots with resume",
+    "validation-only stage evaluator",
+    "frozen external-opponent branches and behavior",
+    "specified attacker terminal reward"
+  ],
+  "codex_pending": [
+    "source retraining adapters",
+    "original baseline loaders",
+    "MAPPO trainer",
+    "matrix scheduler",
+    "independent-choice experiment",
+    "same-structure information diagnostic",
+    "attacker SAC trainer",
+    "VRX adapter",
+    "full statistics and figures"
+  ],
+  "sensitivity": {
+    "online_risk_weight": [
+      0,
+      8,
+      32,
+      64
+    ],
+    "training_choice_weight": [
+      0,
+      0.025,
+      0.05,
+      0.1
+    ],
+    "design": "one-factor at a time; development only; supplementary table S1",
+    "online_compatibility": "same predictor; only online risk_weight permitted; complete runtime identity freezes actual value",
+    "training_weights_must_reach_loss": true
+  },
+  "matched_architecture_widths": {
+    "candidate_graph": 56,
+    "transformer": 64,
+    "gru": 72,
+    "perceiver": 56
+  },
+  "matched_parameter_counts": {
+    "candidate_graph": 151354,
+    "transformer": 161250,
+    "gru": 149722,
+    "perceiver": 150282
+  },
+  "phases": {
+    "P0": "source and contract audit",
+    "P1": "bounded end-to-end verification",
+    "P2": "complete missing execution modules",
+    "P3": "development and fixed recipe",
+    "P4": "five independent full trainings and final freeze",
+    "P5": "main evidence",
+    "P6": "system evaluation",
+    "P7": "paper result closure"
+  }
+}

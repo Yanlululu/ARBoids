@@ -1,0 +1,191 @@
+{
+  "delivery": "CITF independent manuscript, implementation revision and complete Codex research handoff",
+  "method_revision": "CITF-stopped-direct-v2",
+  "paper_version": "independent narrative manuscript; formal empirical results pending",
+  "main_scope": "complete current joint fusion with candidate-conditioned Transformer, without unpublished CI as a prior published method",
+  "primary_defenders": 6,
+  "frozen_size_tests": [
+    3,
+    4,
+    5,
+    7,
+    8
+  ],
+  "reference_pdf": {
+    "name": "2026_ARBoids_Adaptive_Residual_Reinforcement_Learning_With_Boids_Model_for_Cooperative_Multi-USV_Target_Defense(3)(1).pdf",
+    "sha256": "d715660664f59cc9ed75d863a7efba8a27d7644cc334e973083989cf9a4a5c48",
+    "pages": 8,
+    "journal_pages": "3637–3644"
+  },
+  "implemented_corrections": [
+    "known remaining time and legal prediction interval",
+    "direct stopped-distance head independent of unobserved motion tail",
+    "symmetric pair readout",
+    "physical layout identity",
+    "whole-runtime freeze",
+    "learned-controller behavior collection",
+    "bitwise-equivalent resume",
+    "single-world step trace",
+    "attacker action hook",
+    "per-tick history cache",
+    "source center reserved within initial candidate budget with canonical duplicate handling",
+    "prediction contract separates allowed online risk weight from immutable physical/label semantics",
+    "loss weights routed through objective and resume identity",
+    "immutable current-stage snapshots and common validation evaluation",
+    "same deterministic frozen attacker in behavior, each branch and evaluation",
+    "explicit attacker terminal reward and no double counting",
+    "VRX median run selected by complete CITF validation score before final evaluation",
+    "single canonical P0-P7 phases across all specifications"
+  ],
+  "verification": {
+    "scope": "CPU bounded interface acceptance only; no formal algorithm-performance claim",
+    "unit_tests_passed": 68,
+    "continuous_predictor_updates": 4,
+    "resume_equivalence": {
+      "updates": 4,
+      "weights_bitwise_equal": true,
+      "scheduler_equal": true,
+      "best_selection_equal": true,
+      "sampler_rng_equal": true,
+      "stage_snapshots_equal": true
+    },
+    "train_root_count": 2,
+    "validation_root_count": 2,
+    "train_branch_steps": 242,
+    "validation_branch_steps": 240,
+    "external_actor_behavior_roots": 1,
+    "external_actor_behavior_branch_steps": 128,
+    "external_actor_is_trained_adversary": false,
+    "online_risk_weights_verified": [
+      0.0,
+      8.0,
+      32.0,
+      64.0
+    ],
+    "stage_snapshots_verified": [
+      0,
+      2,
+      4
+    ],
+    "independent_interface_tasks": 2,
+    "stage_validation_executions": 6,
+    "distinct_stage_validation_tasks": 2,
+    "formal_complete_independent_training_runs": 0,
+    "vrx_trials": 0,
+    "formal_performance_claim": false,
+    "records": "audit/execution_v3_complete/verification_status.json",
+    "runtime_code_hash_matches_recorded_run": true,
+    "runtime_code_sha256": "5055a483bec087b770c731152079bdcf1e5251a3d5c6de3f438a82ba3b10eeea",
+    "inherited_from_execution_v3": true,
+    "not_reexecuted_in_this_narrative_revision": true
+  },
+  "formal_results": {
+    "new_model_main_comparison": "待补",
+    "five_complete_independent_runs": "待补",
+    "main_ablations": "待补",
+    "mechanism_table": "待补",
+    "frozen_agility_and_size": "待补",
+    "learning_attacker_adaptation": "待补",
+    "vrx100": "待补"
+  },
+  "implementation_to_complete": [
+    "source and baseline independent training adapters",
+    "MAPPO trainer and registered author commit",
+    "whole-experiment scheduler and atomic evaluation resume",
+    "common-reference independent selection experiment",
+    "same-structure candidate-information diagnostic",
+    "actual SAC attacker training and exported trained actor",
+    "VRX real-clock/timing adapter",
+    "paired statistics and paper-result mapper"
+  ],
+  "old_48_tasks": "archived and recomputed in evidence only, absent from main manuscript",
+  "local_execution": {
+    "branch": "codex/citf-independent-20261102",
+    "phase": "development preparation; waiting for local memory",
+    "runtime_revision": "CITF-execution-events-v4",
+    "collection_schema": "citf-branch-events-v1",
+    "P1": {
+      "status": "completed",
+      "path": "runs/local-events-p1-20261102/verification_status.json",
+      "tests": 72,
+      "formal_training_runs": 0
+    },
+    "formal_training": "pending",
+    "formal_evaluation": "pending",
+    "VRX": "pending",
+    "user_execution_order": "stable development gains first; complete independent training later on a remote server",
+    "development_matrix": "runs\\stable-development-20261102\\matrix.json",
+    "development_status": "runs\\stable-development-20261102\\matrix_status.json",
+    "manager_pid": 47312,
+    "stable_gain_established": false,
+    "P2_development_support": {
+      "independent_selection_unit_tests": "passed",
+      "evaluation_transactions_unit_tests": "passed",
+      "real_evaluation_resume": {
+        "status": "completed",
+        "path": "runs/p2-evaluation-resume/summary.json",
+        "tasks": 2
+      },
+      "formal_source_training": "pending",
+      "MAPPO": "pending",
+      "VRX": "pending"
+    }
+  },
+  "artifact_format": {
+    "paper": "PDF+Markdown+LaTeX",
+    "figures": "three original vector TikZ PDFs with PNG previews",
+    "experiment_spec": "Markdown+machine-readable JSON",
+    "code": "Python research core+tests",
+    "paper_pages": 12
+  },
+  "publication_validation_claim": false,
+  "execution_revision": "CITF-execution-closed-v3",
+  "model_revision": "CITF-stopped-direct-v2",
+  "schema": "citf-stopped-aware-v2",
+  "new_execution_corrections": [
+    "source center reserved within initial candidate budget with canonical duplicate handling",
+    "prediction contract separates allowed online risk weight from immutable physical/label semantics",
+    "loss weights routed through objective and resume identity",
+    "immutable current-stage snapshots and common validation evaluation",
+    "same deterministic frozen attacker in behavior, each branch and evaluation",
+    "explicit attacker terminal reward and no double counting",
+    "VRX median run selected by complete CITF validation score before final evaluation",
+    "single canonical P0-P7 phases across all specifications"
+  ],
+  "document_revision": "CITF-independent-narrative-v4",
+  "narrative_revision_verification": {
+    "method_identity_checks_passed": 15,
+    "runtime_files_compared_unchanged": 20,
+    "source_archive_files_compared_unchanged": 7,
+    "evidence_files_compared_unchanged": 15,
+    "figure_files_compared_unchanged": 9,
+    "paper_render_checked": true,
+    "equation_numbering": false,
+    "reference_entries": 23,
+    "new_training_or_evaluation": false
+  },
+  "experiment_role_changes": {
+    "removed_from_published_main_table": [
+      "CI-original",
+      "CI-physical"
+    ],
+    "author_physical_control": "CITF-Phys; current no-model held-thrust nominal predictor, not legacy CI-original",
+    "shared_attacker_reference": "CITF-Phys",
+    "vrx_methods": [
+      "CITF",
+      "CITF-Phys",
+      "ARBoids"
+    ],
+    "historical_results_relabelled": false
+  },
+  "current_editorial_revision": "CITF-independent-narrative-v4-reviewed",
+  "current_independent_review": {
+    "unit_tests_rerun": 68,
+    "bounded_end_to_end_rerun": true,
+    "current_trace_gap": "branch termination categories not stored by sample_root; plan/CITF_短分支事件记录验收.md pending",
+    "core_code_modified": false,
+    "formal_full_trainings": 0,
+    "vrx_runs": 0,
+    "codex_dispatched": false
+  }
+}

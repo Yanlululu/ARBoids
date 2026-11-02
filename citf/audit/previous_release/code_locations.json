@@ -1,0 +1,166 @@
+{
+  "code/citf/tasks.py:main": [
+    8,
+    27
+  ],
+  "code/citf/collect.py:load_behavior": [
+    13,
+    21
+  ],
+  "code/citf/collect.py:sample_root": [
+    24,
+    47
+  ],
+  "code/citf/collect.py:main": [
+    50,
+    113
+  ],
+  "code/citf/train.py:atomic_save": [
+    14,
+    15
+  ],
+  "code/citf/train.py:evaluate": [
+    19,
+    35
+  ],
+  "code/citf/train.py:load_shards": [
+    38,
+    50
+  ],
+  "code/citf/train.py:main": [
+    53,
+    120
+  ],
+  "code/citf/evaluate.py:main": [
+    11,
+    70
+  ],
+  "code/citf/bridge.py:Source": [
+    16,
+    33
+  ],
+  "code/citf/bridge.py:World": [
+    35,
+    85
+  ],
+  "code/citf/bridge.py:factorize": [
+    88,
+    99
+  ],
+  "code/citf/bridge.py:inputs": [
+    102,
+    117
+  ],
+  "code/citf/bridge.py:Controller": [
+    119,
+    151
+  ],
+  "code/citf/losses.py:objective": [
+    7,
+    29
+  ],
+  "code/citf/freeze.py:main": [
+    6,
+    20
+  ],
+  "code/citf/contracts.py:canonical_hash": [
+    16,
+    18
+  ],
+  "code/citf/contracts.py:file_hash": [
+    21,
+    22
+  ],
+  "code/citf/contracts.py:tree_hash": [
+    25,
+    28
+  ],
+  "code/citf/contracts.py:Protocol": [
+    32,
+    61
+  ],
+  "code/citf/contracts.py:geometry_identity": [
+    64,
+    71
+  ],
+  "code/citf/contracts.py:verify_geometry": [
+    74,
+    78
+  ],
+  "code/citf/contracts.py:LayoutRegistry": [
+    81,
+    97
+  ],
+  "code/citf/contracts.py:validate_dataset": [
+    100,
+    132
+  ],
+  "code/citf/contracts.py:check_split_families": [
+    135,
+    142
+  ],
+  "code/citf/contracts.py:runtime_identity": [
+    145,
+    152
+  ],
+  "code/citf/contracts.py:verify_freeze": [
+    155,
+    164
+  ],
+  "code/citf/risk.py:rectified_gaussian_risk": [
+    8,
+    25
+  ],
+  "code/citf/risk.py:rectified_gaussian_nll": [
+    28,
+    34
+  ],
+  "code/citf/risk.py:pair_indices": [
+    37,
+    39
+  ],
+  "code/citf/risk.py:branch_minima": [
+    42,
+    59
+  ],
+  "code/citf/risk.py:bounded_mean": [
+    62,
+    64
+  ],
+  "code/citf/physics.py:step": [
+    8,
+    20
+  ],
+  "code/citf/physics.py:forecast": [
+    22,
+    25
+  ],
+  "code/citf/search.py:candidate_grid": [
+    8,
+    15
+  ],
+  "code/citf/search.py:nominal_score": [
+    18,
+    23
+  ],
+  "code/citf/search.py:nominal_beam": [
+    26,
+    36
+  ],
+  "code/citf/search.py:whole_configuration_search": [
+    39,
+    65
+  ],
+  "code/citf/model.py:Config": [
+    17,
+    31
+  ],
+  "code/citf/model.py:Attention": [
+    33,
+    57
+  ],
+  "code/citf/model.py:Predictor": [
+    59,
+    145
+  ]
+}

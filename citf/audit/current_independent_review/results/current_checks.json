@@ -1,0 +1,94 @@
+{
+  "file_manifest": {
+    "count": 326,
+    "mismatches": []
+  },
+  "roles": {
+    "standalone_CI_in_paper": 0,
+    "main_table_matches_registry": true,
+    "Phys_execution": "current Controller(model=None); held-thrust nominal forecast and matched candidate initialization/search",
+    "attacker_reference": "fixed development CITF-Phys as defined in this paper",
+    "vrx_methods": [
+      "CITF",
+      "CITF-Phys",
+      "ARBoids"
+    ]
+  },
+  "runtime_code_hash": "5055a483bec087b770c731152079bdcf1e5251a3d5c6de3f438a82ba3b10eeea",
+  "phys_definition_checks": [
+    {
+      "elapsed": 0.0,
+      "known_steps": 16,
+      "unique_configurations": 54,
+      "source_center_scored": true,
+      "max_scoring_difference": 8.370378623112629e-05,
+      "bounded_thrust": true
+    },
+    {
+      "elapsed": 79.8,
+      "known_steps": 1,
+      "unique_configurations": 49,
+      "source_center_scored": true,
+      "max_scoring_difference": 0.0,
+      "bounded_thrust": true
+    }
+  ],
+  "branch_event_recording": {
+    "constructed_probe": true,
+    "actual_steps": 1,
+    "time_valid": [
+      [
+        1
+      ]
+    ],
+    "observed_world_step_events": [
+      {
+        "outcome": 4,
+        "success": 1,
+        "capture": 0,
+        "collision": 0,
+        "physical_collision": 0,
+        "physical_breach": 0,
+        "source_failure": 0,
+        "radial_only_failure": 0,
+        "timeout": 1,
+        "duration": 80.0
+      }
+    ],
+    "returned_tensor_fields": [
+      "history",
+      "positions",
+      "history_valid",
+      "entity_valid",
+      "nominal",
+      "candidate",
+      "unary",
+      "candidate_valid",
+      "time_context",
+      "known_time_valid",
+      "real_positions",
+      "time_valid",
+      "executed_attacker_actions"
+    ],
+    "returned_metadata_fields": [
+      "root_id",
+      "layout_id",
+      "split",
+      "future_seeds",
+      "source_sha256",
+      "source_implementation_sha256",
+      "environment_sha256",
+      "capture_stage",
+      "elapsed_seconds",
+      "remaining_seconds",
+      "geometry_identity",
+      "geometry_family_id",
+      "sampling_probability",
+      "behavior_identity",
+      "opponent_identity",
+      "opponent_execution",
+      "stopping_target"
+    ],
+    "structured_terminal_event_saved": false
+  }
+}

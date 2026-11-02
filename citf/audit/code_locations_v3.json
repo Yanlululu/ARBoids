@@ -1,0 +1,348 @@
+{
+  "code/citf/contracts.py": [
+    {
+      "symbol": "canonical_hash",
+      "start_line": 17,
+      "end_line": 19
+    },
+    {
+      "symbol": "file_hash",
+      "start_line": 22,
+      "end_line": 23
+    },
+    {
+      "symbol": "tree_hash",
+      "start_line": 26,
+      "end_line": 29
+    },
+    {
+      "symbol": "Protocol",
+      "start_line": 33,
+      "end_line": 62
+    },
+    {
+      "symbol": "geometry_identity",
+      "start_line": 65,
+      "end_line": 72
+    },
+    {
+      "symbol": "verify_geometry",
+      "start_line": 75,
+      "end_line": 79
+    },
+    {
+      "symbol": "LayoutRegistry",
+      "start_line": 82,
+      "end_line": 98
+    },
+    {
+      "symbol": "validate_dataset",
+      "start_line": 101,
+      "end_line": 138
+    },
+    {
+      "symbol": "check_split_families",
+      "start_line": 141,
+      "end_line": 148
+    },
+    {
+      "symbol": "predictor_contract",
+      "start_line": 151,
+      "end_line": 158
+    },
+    {
+      "symbol": "validate_predictor_protocol",
+      "start_line": 161,
+      "end_line": 166
+    },
+    {
+      "symbol": "runtime_identity",
+      "start_line": 169,
+      "end_line": 179
+    },
+    {
+      "symbol": "verify_freeze",
+      "start_line": 182,
+      "end_line": 191
+    },
+    {
+      "symbol": "__post_init__",
+      "start_line": 48,
+      "end_line": 59
+    },
+    {
+      "symbol": "digest",
+      "start_line": 60,
+      "end_line": 60
+    },
+    {
+      "symbol": "known_steps",
+      "start_line": 61,
+      "end_line": 62
+    },
+    {
+      "symbol": "__init__",
+      "start_line": 86,
+      "end_line": 89
+    },
+    {
+      "symbol": "register",
+      "start_line": 90,
+      "end_line": 98
+    }
+  ],
+  "code/citf/search.py": [
+    {
+      "symbol": "candidate_grid",
+      "start_line": 8,
+      "end_line": 15
+    },
+    {
+      "symbol": "nominal_score",
+      "start_line": 18,
+      "end_line": 23
+    },
+    {
+      "symbol": "nominal_beam",
+      "start_line": 26,
+      "end_line": 36
+    },
+    {
+      "symbol": "whole_configuration_search",
+      "start_line": 39,
+      "end_line": 65
+    },
+    {
+      "symbol": "source_center_config",
+      "start_line": 68,
+      "end_line": 78
+    },
+    {
+      "symbol": "initialize_bank",
+      "start_line": 81,
+      "end_line": 90
+    },
+    {
+      "symbol": "score",
+      "start_line": 47,
+      "end_line": 54
+    }
+  ],
+  "code/citf/bridge.py": [
+    {
+      "symbol": "Source",
+      "start_line": 16,
+      "end_line": 33
+    },
+    {
+      "symbol": "World",
+      "start_line": 35,
+      "end_line": 85
+    },
+    {
+      "symbol": "factorize",
+      "start_line": 88,
+      "end_line": 99
+    },
+    {
+      "symbol": "inputs",
+      "start_line": 102,
+      "end_line": 117
+    },
+    {
+      "symbol": "Controller",
+      "start_line": 119,
+      "end_line": 152
+    },
+    {
+      "symbol": "__init__",
+      "start_line": 17,
+      "end_line": 28
+    },
+    {
+      "symbol": "commands",
+      "start_line": 30,
+      "end_line": 33
+    },
+    {
+      "symbol": "__init__",
+      "start_line": 36,
+      "end_line": 49
+    },
+    {
+      "symbol": "_call",
+      "start_line": 50,
+      "end_line": 53
+    },
+    {
+      "symbol": "state",
+      "start_line": 54,
+      "end_line": 54
+    },
+    {
+      "symbol": "reset",
+      "start_line": 55,
+      "end_line": 58
+    },
+    {
+      "symbol": "step",
+      "start_line": 59,
+      "end_line": 73
+    },
+    {
+      "symbol": "clone",
+      "start_line": 74,
+      "end_line": 74
+    },
+    {
+      "symbol": "observation",
+      "start_line": 75,
+      "end_line": 85
+    },
+    {
+      "symbol": "__init__",
+      "start_line": 120,
+      "end_line": 124
+    },
+    {
+      "symbol": "act",
+      "start_line": 126,
+      "end_line": 152
+    },
+    {
+      "symbol": "evaluate",
+      "start_line": 140,
+      "end_line": 145
+    }
+  ],
+  "code/citf/train.py": [
+    {
+      "symbol": "atomic_save",
+      "start_line": 14,
+      "end_line": 15
+    },
+    {
+      "symbol": "evaluate",
+      "start_line": 19,
+      "end_line": 35
+    },
+    {
+      "symbol": "load_shards",
+      "start_line": 38,
+      "end_line": 50
+    },
+    {
+      "symbol": "snapshot_steps",
+      "start_line": 53,
+      "end_line": 55
+    },
+    {
+      "symbol": "parameter_digest",
+      "start_line": 58,
+      "end_line": 63
+    },
+    {
+      "symbol": "preserve_snapshot",
+      "start_line": 66,
+      "end_line": 89
+    },
+    {
+      "symbol": "main",
+      "start_line": 92,
+      "end_line": 171
+    },
+    {
+      "symbol": "validate",
+      "start_line": 141,
+      "end_line": 148
+    },
+    {
+      "symbol": "save",
+      "start_line": 149,
+      "end_line": 156
+    }
+  ],
+  "code/citf/collect.py": [
+    {
+      "symbol": "load_behavior",
+      "start_line": 14,
+      "end_line": 22
+    },
+    {
+      "symbol": "sample_root",
+      "start_line": 25,
+      "end_line": 55
+    },
+    {
+      "symbol": "main",
+      "start_line": 58,
+      "end_line": 124
+    }
+  ],
+  "code/citf/opponents.py": [
+    {
+      "symbol": "attacker_observation",
+      "start_line": 19,
+      "end_line": 23
+    },
+    {
+      "symbol": "APFOpponent",
+      "start_line": 26,
+      "end_line": 32
+    },
+    {
+      "symbol": "TorchScriptOpponent",
+      "start_line": 35,
+      "end_line": 67
+    },
+    {
+      "symbol": "load_opponent",
+      "start_line": 70,
+      "end_line": 77
+    },
+    {
+      "symbol": "attacker_training_reward",
+      "start_line": 80,
+      "end_line": 92
+    },
+    {
+      "symbol": "__init__",
+      "start_line": 27,
+      "end_line": 30
+    },
+    {
+      "symbol": "act",
+      "start_line": 31,
+      "end_line": 32
+    },
+    {
+      "symbol": "__init__",
+      "start_line": 36,
+      "end_line": 56
+    },
+    {
+      "symbol": "_validate",
+      "start_line": 58,
+      "end_line": 62
+    },
+    {
+      "symbol": "act",
+      "start_line": 64,
+      "end_line": 67
+    }
+  ],
+  "code/citf/evaluate.py": [
+    {
+      "symbol": "main",
+      "start_line": 13,
+      "end_line": 82
+    }
+  ],
+  "code/citf/freeze.py": [
+    {
+      "symbol": "main",
+      "start_line": 6,
+      "end_line": 20
+    }
+  ]
+}

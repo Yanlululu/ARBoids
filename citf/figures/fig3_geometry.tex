@@ -1,0 +1,30 @@
+\documentclass[tikz,border=5pt]{standalone}
+\usepackage[UTF8,fontset=none]{ctex}\setCJKmainfont{Noto Serif CJK SC}
+\usepackage{amsmath,amssymb}\usetikzlibrary{arrows.meta,calc}
+\definecolor{ink}{RGB}{36,55,69}\definecolor{blue}{RGB}{48,109,139}\definecolor{gold}{RGB}{161,113,44}
+\begin{document}
+\begin{tikzpicture}[>=Stealth,text=ink,every node/.style={font=\footnotesize}]
+\draw[ink!30,rounded corners](-.5,-3.05)rectangle(6.7,3.5);
+\draw[ink!30,rounded corners](7.0,-3.05)rectangle(14.5,3.5);
+\node[font=\small\bfseries]at(3.1,3.15){六艇中的整队候选条件};
+\foreach \x/\y/\lab/\idx in {1.0/.3/i/1,5.0/.3/j/2,1.3/1.9/a/3,3.0/2.15/b/4,4.8/1.9/c/5,3.0/-1.25/d/6}{
+ \node[circle,draw=blue,fill=blue!9,minimum size=.6cm](\lab)at(\x,\y){$D_{\idx}$};
+}
+\draw[<->,blue,line width=1pt](i)--node[midway,below,fill=white,inner sep=2pt]{$\psi_{12}^{\theta}(\boldsymbol k)$}(j);
+\foreach \k in {a,b,c,d}{\draw[->,blue!45,densely dashed](\k)--(i);\draw[->,blue!45,densely dashed](\k)--(j);}
+\node[below left=2pt]at(i.south){$k_1$};\node[below right=2pt]at(j.south){$k_2$};
+\node[font=\footnotesize,align=center]at(3.1,-2.25){固定 $k_1,k_2$，其他队友候选\\$k_3,k_4,k_5,k_6$ 仍可改变该艇对评价};
+\node[font=\small\bfseries]at(10.75,3.15){已知时域与真实停止区间};
+\draw[->,ink] (7.7,1.65)--(13.95,1.65) node[right]{$q$};
+\foreach \x/\lab in {7.8/0,10.2/L,12.3/H_t,13.6/H}{\draw(\x,1.55)--(\x,1.75);\node[below]at(\x,1.52){$\lab$};}
+\draw[blue,line width=3pt](8.0,2.4)--(12.3,2.4);\node[above]at(10.2,2.45){在线已知合法预测区间};
+\draw[gold,line width=3pt](8.0,.65)--(10.2,.65);\node[below,align=center]at(9.1,.48){真实分支有效运动\\包含终止转移};
+\draw[ink!45,densely dashed,line width=1pt](10.2,.65)--(13.6,.65);
+\node[font=\scriptsize,align=center]at(12.25,.1){实际终止后\\不再生成监督标签};
+\draw[dashed,gold](10.2,1.65)--(10.2,.7);\draw[dashed,blue](12.3,2.35)--(12.3,1.75);
+\node[align=center,font=\small]at(10.75,-1.3){$D_{ij}^{\boldsymbol k,\xi}=\min\limits_{1\leq q\leq L^{\boldsymbol k,\xi}}d_{ij}(q)$\\[4pt]
+$\psi_{ij}^{\theta}=\mathbb E[(r_s-D_{ij})_+^2]$};
+\node[font=\scriptsize,align=center,text=ink!75]at(10.75,-2.4){$H_t$ 由当前剩余时间确定；$L$ 来自真实分支。\\模型仅使用当前可知条件预测停止距离分布。};
+\node[font=\scriptsize,text=ink!65]at(7,-3.45){候选配置与有效时间的变量关系};
+\end{tikzpicture}
+\end{document}

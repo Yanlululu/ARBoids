@@ -1,0 +1,17 @@
+{
+  "checks_passed": 15,
+  "checks_total": 15,
+  "errors": [],
+  "public_comparison": [
+    "CITF",
+    "ARBoids",
+    "RP",
+    "SAC",
+    "Boids",
+    "MAPPO"
+  ],
+  "author_control": "CITF-Phys",
+  "algorithm_code_changed": false,
+  "new_training_results": false,
+  "scope": "Document identity, experimental role and mathematical-format consistency only."
+}

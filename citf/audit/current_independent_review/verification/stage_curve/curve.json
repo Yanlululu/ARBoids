@@ -1,0 +1,52 @@
+{
+  "phase": "validation-stage-curve",
+  "rows": [
+    {
+      "update": 0,
+      "N": 2,
+      "success": 2,
+      "capture": 2,
+      "collision": 0,
+      "capped_capture_time": 21.599999999999955,
+      "checkpoint_sha256": "e21adb0cb24ec4bfb79d7274b96280fd79c6bd50a816c7532d48524199fec34f",
+      "tasks_sha256": "7e8c7d79581f21c91d2575c4036e678f093027373c1e4879c3eda786e356b173",
+      "result": "/mnt/data/current_citf_review/verification/stage_curve/update_000000/summary.json"
+    },
+    {
+      "update": 2,
+      "N": 2,
+      "success": 2,
+      "capture": 2,
+      "collision": 0,
+      "capped_capture_time": 21.599999999999955,
+      "checkpoint_sha256": "be7af461e9f9c2fe691ae7788767b7d571ab0a4f172bd7a60c92ef3a8242046e",
+      "tasks_sha256": "7e8c7d79581f21c91d2575c4036e678f093027373c1e4879c3eda786e356b173",
+      "result": "/mnt/data/current_citf_review/verification/stage_curve/update_000002/summary.json"
+    },
+    {
+      "update": 4,
+      "N": 2,
+      "success": 2,
+      "capture": 2,
+      "collision": 0,
+      "capped_capture_time": 21.599999999999955,
+      "checkpoint_sha256": "6fd6cd365663d7a718482a07f5ff3ceb7a4b02145358a941adf1a2835ed8eb0a",
+      "tasks_sha256": "7e8c7d79581f21c91d2575c4036e678f093027373c1e4879c3eda786e356b173",
+      "result": "/mnt/data/current_citf_review/verification/stage_curve/update_000004/summary.json"
+    }
+  ],
+  "arguments": {
+    "run": "/mnt/data/current_citf_review/verification/continuous",
+    "project": "/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive",
+    "source": "/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+    "tasks": "/mnt/data/current_citf_review/verification/validation_tasks.json",
+    "registry": "/mnt/data/current_citf_review/verification/layout_registry.json",
+    "out": "/mnt/data/current_citf_review/verification/stage_curve",
+    "device": "cpu",
+    "bank": 2,
+    "budget": 4,
+    "rounds": 0,
+    "risk_weight": 32.0,
+    "opponent_spec": null
+  }
+}

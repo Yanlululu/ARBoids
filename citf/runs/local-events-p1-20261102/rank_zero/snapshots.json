@@ -1,0 +1,29 @@
+{
+  "schema": "citf-training-stages-v1",
+  "entries": [
+    {
+      "update": 0,
+      "path": "snapshots\\update_000000.pt",
+      "checkpoint_sha256": "0a9cdba909cc8b20fe57a49c4473a3f8a28a42306b0b60dc5dab6a5d58682b8b",
+      "state_sha256": "436e2e4a348798ebcabf1dad9c5f1d5babaecdf00534bfffcf34d0d2f7f8cd6f",
+      "training_identity": "95e0bdfb9eb821f3431b16776aededc9555a943d0c5f6d3096363e0d8f33a8a0",
+      "selection_role": "current-weights-for-fixed-validation-learning-curve"
+    },
+    {
+      "update": 2,
+      "path": "snapshots\\update_000002.pt",
+      "checkpoint_sha256": "04b0fc2ba77040afa1172b6166cdadf78edb3e9fc1670060263f503d3fd56082",
+      "state_sha256": "de4e11e990bab765af9f652c690ac0463ac0e890d82bb0da10b245e2eb13c022",
+      "training_identity": "95e0bdfb9eb821f3431b16776aededc9555a943d0c5f6d3096363e0d8f33a8a0",
+      "selection_role": "current-weights-for-fixed-validation-learning-curve"
+    },
+    {
+      "update": 4,
+      "path": "snapshots\\update_000004.pt",
+      "checkpoint_sha256": "225625b5fa6c76647564409f4b9d657e7775228a21479ad09a59794ba2e0d706",
+      "state_sha256": "acac2c75b02fccda11b8eaa8aaea890f672ce5a41f5a23ab3c4110fd48082008",
+      "training_identity": "95e0bdfb9eb821f3431b16776aededc9555a943d0c5f6d3096363e0d8f33a8a0",
+      "selection_role": "current-weights-for-fixed-validation-learning-curve"
+    }
+  ]
+}

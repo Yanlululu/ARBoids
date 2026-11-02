@@ -1,0 +1,7 @@
+{
+  "execution_revision": "CITF-execution-closed-v3",
+  "current_code_sha256": "5055a483bec087b770c731152079bdcf1e5251a3d5c6de3f438a82ba3b10eeea",
+  "verified_run_code_sha256": "5055a483bec087b770c731152079bdcf1e5251a3d5c6de3f438a82ba3b10eeea",
+  "match": true,
+  "verified_run": "audit/execution_v3_complete/controller_check/summary.json"
+}

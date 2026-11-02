@@ -1,0 +1,33 @@
+{
+  "pages": 12,
+  "all_pages_rendered_and_reviewed": true,
+  "core_code_modified": false,
+  "protected_files": {
+    "code": {
+      "files": 20,
+      "unchanged": true
+    },
+    "source_archive": {
+      "files": 7,
+      "unchanged": true
+    },
+    "evidence": {
+      "files": 15,
+      "unchanged": true
+    },
+    "figures": {
+      "files": 9,
+      "unchanged": true
+    }
+  },
+  "formal_results_added": false,
+  "display_equations": 32,
+  "references": 23,
+  "pending_markers": 93,
+  "paper_identity_check_passed": 15,
+  "formal_trainings_performed": 0,
+  "vrx_runs_performed": 0,
+  "event_record_fix_implemented": false,
+  "event_record_fix_in_prompt": true,
+  "active_review_processes": false
+}

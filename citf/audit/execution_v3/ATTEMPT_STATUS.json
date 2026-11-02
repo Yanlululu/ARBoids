@@ -1,0 +1,6 @@
+{
+  "status": "interrupted_by_tool_timeout",
+  "role": "first bounded verification attempt; superseded by completed execution_v3_complete",
+  "formal_result": false,
+  "running": false
+}

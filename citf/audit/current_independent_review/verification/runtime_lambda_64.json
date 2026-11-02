@@ -1,0 +1,68 @@
+{
+  "revision": "CITF-execution-closed-v3",
+  "method": "CITF",
+  "schema": "citf-stopped-aware-v2",
+  "history_features": [
+    "target_frame_x/60",
+    "target_frame_y/60",
+    "measured_vx/5",
+    "measured_vy/5",
+    "sin_yaw",
+    "cos_yaw",
+    "measured_yaw_rate",
+    "attacker_flag"
+  ],
+  "context_features": [
+    "remaining_seconds/time_limit",
+    "known_prediction_steps/prediction_steps"
+  ],
+  "protocol": {
+    "name": "citf-source80-v2",
+    "environment": "source",
+    "time_limit": 80.0,
+    "control_dt": 0.2,
+    "integration_dt": 0.05,
+    "target_radius": 15.0,
+    "capture_radius": 5.0,
+    "collision_radius": 5.0,
+    "risk_clearance": 7.0,
+    "radial_early_failure": true,
+    "prediction_steps": 16,
+    "history_steps": 8,
+    "risk_weight": 64.0,
+    "prior_scale": 0.4
+  },
+  "source_sha256": "e206d56d2ee40420422326d79dd7a7f2c093de046b945100f8f99cc4c270a08a",
+  "checkpoint_sha256": "1e5aacdf4394d1419ccb8175ab0705c804d33a61c45a249379786d68716bfd59",
+  "project_code": {
+    "train/envs/TADgame.py": "5381552392f2f0296a3a3cdb5db5b8f430e15ed31864286bc58b1ff307c39014",
+    "train/envs/modules.py": "9a1264136c32737e948de633826cb768751ab0d7e369c09c8dca82f750c7fc34",
+    "train/policy/networks.py": "bcdd1aa8d83823d7fd4a57701975510e8e73f5b6fa2b3f00007c47a65eb4eaa3"
+  },
+  "runtime_code": "5055a483bec087b770c731152079bdcf1e5251a3d5c6de3f438a82ba3b10eeea",
+  "controller": {
+    "bank": 2,
+    "budget": 4,
+    "rounds": 0,
+    "risk": "expected",
+    "nominal_beam_width": 128,
+    "search": "whole_configuration_single_coordinate_neighbors",
+    "initializer": "source_center_reserved_inside_bank-v1",
+    "history_cache": true
+  },
+  "opponent": {
+    "kind": "apf",
+    "policy": "source-environment-APF",
+    "mode": "environment-feedback",
+    "observation": "source-target-nearest3-raw8-v1",
+    "future_information": false,
+    "identity_sha256": "f4b5915bf2766ab8fe42928b507a59e0de823f82c141fbb91dfe6e8a8b6142e3"
+  },
+  "software": {
+    "python": "3.13.5 (main, Jul 15 2026, 20:25:40) [GCC 14.2.0]",
+    "torch": "2.10.0+cpu",
+    "numpy": "2.3.5",
+    "scipy": "1.17.0"
+  },
+  "device": "cpu"
+}

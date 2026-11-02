@@ -1,0 +1,66 @@
+{
+  "roots": 2,
+  "geometry_families": 1,
+  "split_root_counts": {
+    "train": 0,
+    "validation": 2,
+    "test": 0
+  },
+  "tasks_sha256": "3dcbd27150a607b954840d84ca31c53cc0e067c2f0cc5b72935d9de904f09ed8",
+  "registry_sha256": "eaa99571dba6600ac1934dff421568a60a6b9bac5feb11789a6c331dea7e6b8d",
+  "source_sha256": "e206d56d2ee40420422326d79dd7a7f2c093de046b945100f8f99cc4c270a08a",
+  "environment_sha256": "4fe79a1e3cb32dc805d0cbdb0611f8a3e854e42aa4386f9acd765a523d7f31ef",
+  "branch_transitions": 240,
+  "behavior_transitions": 10,
+  "planned_roots": [
+    {
+      "layout_id": "n6_scene9622000",
+      "geometry_family_id": "6bf5fadff71c37883ea4021d3d4db4dc5d83aecce85f95968e1bf17e47db8127",
+      "requested_ticks": [
+        0,
+        10
+      ],
+      "collected_ticks": [
+        0,
+        10
+      ],
+      "unreached_ticks": [],
+      "reason": "root budget reached",
+      "task_terminated": false,
+      "actual_terminal_event": null,
+      "behavior_stop_time": 1.9999999999999998
+    }
+  ],
+  "opponent_identity": {
+    "kind": "apf",
+    "policy": "source-environment-APF",
+    "mode": "environment-feedback",
+    "observation": "source-target-nearest3-raw8-v1",
+    "future_information": false,
+    "identity_sha256": "f4b5915bf2766ab8fe42928b507a59e0de823f82c141fbb91dfe6e8a8b6142e3"
+  },
+  "collection_revision": "CITF-execution-events-v4",
+  "collection_code_sha256": "62f1027c0dd201935d4de36fb1aaf9e832ff7ab7dc131f53d5bbe2815697920a",
+  "seconds": 2.0146777000045404,
+  "arguments": {
+    "project": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+    "source": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive\\train\\experiments\\author-source-fusion-20261011\\two-hour-development-20261026\\best-m1-400.pth",
+    "tasks": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\local-events-p1-20261102\\validation_tasks.json",
+    "out": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\local-events-p1-20261102\\validation.pt",
+    "registry": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\local-events-p1-20261102\\layout_registry.json",
+    "device": "cpu",
+    "behavior_checkpoint": null,
+    "opponent_spec": null,
+    "behavior_bank": 12,
+    "behavior_budget": 96,
+    "behavior_rounds": 1,
+    "root_times": [
+      0.0,
+      2.0
+    ],
+    "candidates": 4,
+    "futures": 2,
+    "max_roots": 2,
+    "max_per_layout": 2
+  }
+}

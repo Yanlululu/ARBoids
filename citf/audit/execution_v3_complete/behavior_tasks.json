@@ -1,0 +1,31 @@
+{
+  "schema": "citf-task-bank-v2",
+  "role": "train",
+  "protocol": {
+    "name": "citf-source80-v2",
+    "environment": "source",
+    "time_limit": 80.0,
+    "control_dt": 0.2,
+    "integration_dt": 0.05,
+    "target_radius": 15.0,
+    "capture_radius": 5.0,
+    "collision_radius": 5.0,
+    "risk_clearance": 7.0,
+    "radial_early_failure": true,
+    "prediction_steps": 16,
+    "history_steps": 8,
+    "risk_weight": 32.0,
+    "prior_scale": 0.4
+  },
+  "tasks": [
+    {
+      "layout_id": "n6_scene9624000",
+      "geometry_family_id": "a25331f2602983f2b2c3a819703107867d8e704d5f8a6bd64af5ec3bb14ece7b",
+      "scene_seed": 9624000,
+      "future_seed": 19624000,
+      "defenders": 6,
+      "agility": 2.0,
+      "task_id": "041d18e629ff0eb1b5e45559"
+    }
+  ]
+}

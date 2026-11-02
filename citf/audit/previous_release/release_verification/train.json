@@ -1,0 +1,52 @@
+{
+  "roots": 2,
+  "geometry_families": 1,
+  "split_root_counts": {
+    "train": 2,
+    "validation": 0,
+    "test": 0
+  },
+  "tasks_sha256": "8c07f9f3340a5c0a96257d380306442b6828d2b5e97f63e508fd1f81cf0c256d",
+  "registry_sha256": "40eecac80b72087e1b9969f8957faa7e11b9f733e20647126dbaed921e1eb2ee",
+  "source_sha256": "e206d56d2ee40420422326d79dd7a7f2c093de046b945100f8f99cc4c270a08a",
+  "environment_sha256": "4fe79a1e3cb32dc805d0cbdb0611f8a3e854e42aa4386f9acd765a523d7f31ef",
+  "branch_transitions": 242,
+  "behavior_transitions": 10,
+  "planned_roots": [
+    {
+      "layout_id": "n6_scene9621000",
+      "geometry_family_id": "daabb042a8ac28a61377e37a117aa7533069714d32cebbbdac90ec4093e96699",
+      "requested_ticks": [
+        0,
+        10
+      ],
+      "collected_ticks": [
+        0,
+        10
+      ],
+      "unreached_ticks": [],
+      "reason": "root budget reached"
+    }
+  ],
+  "seconds": 2.0159648029998607,
+  "arguments": {
+    "project": "/mnt/data/CITF_最终修订交付/source_archive",
+    "source": "/mnt/data/CITF_最终修订交付/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+    "tasks": "/mnt/data/CITF_最终修订交付/audit/release_verification/train_tasks.json",
+    "out": "/mnt/data/CITF_最终修订交付/audit/release_verification/train.pt",
+    "registry": "/mnt/data/CITF_最终修订交付/audit/release_verification/layout_registry.json",
+    "device": "cpu",
+    "behavior_checkpoint": null,
+    "behavior_bank": 12,
+    "behavior_budget": 96,
+    "behavior_rounds": 1,
+    "root_times": [
+      0.0,
+      2.0
+    ],
+    "candidates": 4,
+    "futures": 2,
+    "max_roots": 2,
+    "max_per_layout": 2
+  }
+}

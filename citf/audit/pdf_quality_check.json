@@ -1,0 +1,13 @@
+{
+  "pages": 12,
+  "red_pending_count": 104,
+  "uncolored_pending": [],
+  "outside_page_text": [],
+  "missing_glyph_warning": false,
+  "numbered_equation_tags": false,
+  "mathematics": "native LaTeX, no numbered equations",
+  "formal_results_fabricated": false,
+  "known_minor_table_rounding_overfull_pt": 0.12544,
+  "visual_review": "all pages inspected through rendered contact sheets; figure, table, formula and bibliography pages checked at full resolution",
+  "no_font_files_distributed": true
+}

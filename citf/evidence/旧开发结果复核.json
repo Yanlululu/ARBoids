@@ -1,0 +1,42 @@
+{
+  "dev_original": {
+    "N": 48,
+    "success": 40,
+    "capture": 39,
+    "collision": 1,
+    "capped_capture_seconds": 34.02916666666664,
+    "input_sha256": "805114e5f62c29b2c9eb2e197d9c7e50aa2fbf2c4f3ffa3a8daef3a4becd5356"
+  },
+  "dev_fastv3_nominal": {
+    "N": 48,
+    "success": 41,
+    "capture": 41,
+    "collision": 1,
+    "capped_capture_seconds": 33.833333333333314,
+    "input_sha256": "fc49dbeceaf60068ed7662aba73535dcc6e621cf90dfa6a74637e05581056013"
+  },
+  "dev_fastv3_candidate_graph_62031": {
+    "N": 48,
+    "success": 46,
+    "capture": 46,
+    "collision": 0,
+    "capped_capture_seconds": 25.491666666666646,
+    "input_sha256": "168921ad286e3238ddad89c25d050a6628dc5b5451e4f3d8334105d57862d788"
+  },
+  "paired": {
+    "failure_to_success": 6,
+    "success_to_failure": 1,
+    "groups": {
+      "2.0": {
+        "N": 24,
+        "old_learned_success": 24,
+        "matched_physics_success": 19
+      },
+      "2.5": {
+        "N": 24,
+        "old_learned_success": 22,
+        "matched_physics_success": 22
+      }
+    }
+  }
+}

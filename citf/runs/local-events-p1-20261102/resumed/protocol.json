@@ -1,0 +1,104 @@
+{
+  "config": {
+    "variant": "candidate_graph",
+    "width": 56,
+    "heads": 4,
+    "history": 8,
+    "horizon": 16,
+    "dt": 0.2,
+    "clearance": 7.0,
+    "residual_scale": 9.0,
+    "fleet_candidate_context": true,
+    "revision": "CITF-stopped-direct-v2"
+  },
+  "arguments": {
+    "train": [
+      "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\local-events-p1-20261102\\train.pt"
+    ],
+    "validation": [
+      "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\local-events-p1-20261102\\validation.pt"
+    ],
+    "seed": 809,
+    "updates": 4,
+    "batch_roots": 2,
+    "validate_every": 2,
+    "save_every": 1,
+    "variant": "candidate_graph",
+    "width": 56,
+    "mode": "full",
+    "without_fleet_context": false,
+    "device": "cpu",
+    "lr": 0.0003,
+    "snapshot_updates": [
+      0,
+      2,
+      4
+    ],
+    "distance_weight": 0.08,
+    "risk_loss_weight": 0.25,
+    "rank_weight": 0.05,
+    "temperature": 8.0
+  },
+  "schema": "citf-stopped-aware-v2",
+  "history_features": [
+    "target_frame_x/60",
+    "target_frame_y/60",
+    "measured_vx/5",
+    "measured_vy/5",
+    "sin_yaw",
+    "cos_yaw",
+    "measured_yaw_rate",
+    "attacker_flag"
+  ],
+  "context_features": [
+    "remaining_seconds/time_limit",
+    "known_prediction_steps/prediction_steps"
+  ],
+  "source_sha256": "e206d56d2ee40420422326d79dd7a7f2c093de046b945100f8f99cc4c270a08a",
+  "source_implementation_sha256": "bcdd1aa8d83823d7fd4a57701975510e8e73f5b6fa2b3f00007c47a65eb4eaa3",
+  "environment_sha256": "4fe79a1e3cb32dc805d0cbdb0611f8a3e854e42aa4386f9acd765a523d7f31ef",
+  "physical_protocol": {
+    "name": "citf-source80-v2",
+    "environment": "source",
+    "time_limit": 80.0,
+    "control_dt": 0.2,
+    "integration_dt": 0.05,
+    "target_radius": 15.0,
+    "capture_radius": 5.0,
+    "collision_radius": 5.0,
+    "risk_clearance": 7.0,
+    "radial_early_failure": true,
+    "prediction_steps": 16,
+    "history_steps": 8,
+    "risk_weight": 32.0,
+    "prior_scale": 0.4
+  },
+  "opponent_identities": [
+    {
+      "kind": "apf",
+      "policy": "source-environment-APF",
+      "mode": "environment-feedback",
+      "observation": "source-target-nearest3-raw8-v1",
+      "future_information": false,
+      "identity_sha256": "f4b5915bf2766ab8fe42928b507a59e0de823f82c141fbb91dfe6e8a8b6142e3"
+    }
+  ],
+  "data_sha256": {
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\local-events-p1-20261102\\train.pt": "63e1817c74851516ba840c616ea2152fe0799de034412def929d2b7d776433fe",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\local-events-p1-20261102\\validation.pt": "b52d6ba27c37d2efb4dea1986f070d142a892a414c306fcd2d6058a8c843c95b"
+  },
+  "code_sha256": "62f1027c0dd201935d4de36fb1aaf9e832ff7ab7dc131f53d5bbe2815697920a",
+  "parameters": 151354,
+  "loss_contract": {
+    "distance_weight": 0.08,
+    "risk_weight": 0.25,
+    "rank_weight": 0.05,
+    "temperature": 8.0
+  },
+  "stage_updates": [
+    0,
+    2,
+    4
+  ],
+  "selection": "validation regret + 5 * normalized risk MSE, zero-update candidate included"
+}

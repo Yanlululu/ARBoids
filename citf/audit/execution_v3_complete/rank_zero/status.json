@@ -1,0 +1,32 @@
+{
+  "completed": true,
+  "update": 4,
+  "total_updates": 4,
+  "best": {
+    "update": 4,
+    "score": 0.16904155910015106,
+    "metrics": {
+      "motion": 0.5113630890846252,
+      "nll": 6.689741134643555,
+      "risk": 0.0007181018590927124,
+      "rank": 19.999025344848633,
+      "regret": 0.1654510498046875,
+      "distance_mae_early": 0.41418563842773437,
+      "distance_mae_complete": 0.3988041270862926,
+      "distance_count_early": 75,
+      "distance_count_complete": 165
+    }
+  },
+  "saved_stages": [
+    0,
+    2,
+    4
+  ],
+  "loss_contract": {
+    "distance_weight": 0.08,
+    "risk_weight": 0.25,
+    "rank_weight": 0.0,
+    "temperature": 8.0
+  },
+  "seconds_this_call": 0.20706219700002748
+}

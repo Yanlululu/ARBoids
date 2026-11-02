@@ -1,0 +1,4 @@
+﻿update,N,success,capture,collision,capped_capture_time,checkpoint_sha256,tasks_sha256,result
+0,2,2,2,0,21.599999999999955,49494fdb7a38b02b420628e4946a0a5fb8c0ee3f055c37d350e431ccec8ba62f,3dcbd27150a607b954840d84ca31c53cc0e067c2f0cc5b72935d9de904f09ed8,C:\Users\yanluyao\.codex\worktrees\21ae\ARBoids\citf\runs\local-events-p1-20261102\stage_curve\update_000000\summary.json
+2,2,2,2,0,21.599999999999955,506e9b723ef9f6709064d1d6fee630293a031279bfd640ed0d11e0f774aba702,3dcbd27150a607b954840d84ca31c53cc0e067c2f0cc5b72935d9de904f09ed8,C:\Users\yanluyao\.codex\worktrees\21ae\ARBoids\citf\runs\local-events-p1-20261102\stage_curve\update_000002\summary.json
+4,2,2,2,0,21.599999999999955,7b31ce86ea68adac2c6bd97eb7406f671f88ddba5061374f7797dcd8dd8f8b4b,3dcbd27150a607b954840d84ca31c53cc0e067c2f0cc5b72935d9de904f09ed8,C:\Users\yanluyao\.codex\worktrees\21ae\ARBoids\citf\runs\local-events-p1-20261102\stage_curve\update_000004\summary.json

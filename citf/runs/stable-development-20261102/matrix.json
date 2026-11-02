@@ -1,0 +1,555 @@
+{
+  "scope": "fixed-source development pilot; no formal training or final test",
+  "cwd": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code",
+  "source": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive\\train\\experiments\\author-source-fusion-20261011\\two-hour-development-20261026\\best-m1-400.pth",
+  "source_sha256": "e206d56d2ee40420422326d79dd7a7f2c093de046b945100f8f99cc4c270a08a",
+  "initial_train_layouts": 16,
+  "initial_validation_layouts": 8,
+  "closed_layouts": 16,
+  "closed_tasks": 32,
+  "next_decision": "Inspect paired gains and harms; expand this reusable pool and run all three predictor seeds before a stability claim. Full independent training remains remote and deferred.",
+  "code_sha256": {
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\bridge.py": "0e1843616e5a10c6b2e302bb72ea980554bf5572e936da058842c957fd363709",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\collect.py": "f954474a5f44f18c2bcb5e3074e9661750621f98137d1a569643e3fb6030ed8a",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\contracts.py": "0c3e64c7ae6dcaf9bd3d4f5d6404e153926f84e41e77c21101c3bf944a5f4570",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\evaluate.py": "2a94f6728d095560550e396bdd821c7f7f3b79d664b46a08c8be40c130354707",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\freeze.py": "4268fdff0056cfe87c10ae0954f9efa233c35d8f9cd1515949f25ff3400eba0d",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\losses.py": "e2d3b87b98ff1d917d5183e42a8866dabd8138988e21e239ab4ae5e3db66acb2",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\model.py": "5d6bcaa9634b44f5c6466ec1796c6d0821317946f110591ddea3a2e9b2a25790",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\opponents.py": "be1391db68e9a0358f5797d6d3e7367ecc405547a160aee300ffe825ff2ccf96",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\physics.py": "145530d85789804c7b3f7456842bd8354a7c7917c39615d049f92ce48ff22d5f",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\risk.py": "f6a0e8ed30ceb98f4d2e112b84fa79ef98800e4e435cde90649326feec5b2eb0",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\search.py": "95bc2ee75ce58790a24027588c5b9376d14e01f3b2cc6c12b3824f3059345867",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\tasks.py": "462c75fafa8e91dfcefb5b8830b0557e000b865206fc34be6578ce5b6d6aacf1",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\train.py": "36295604cd2fe364b721a9a19b1d01c911c0f45fcfb62f1a3af1ae7a91b8ecdf",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\citf\\__init__.py": "7e6123c2579ea732c4371acb5f31bab32c84ee6cd9475d5fb8aea6b65993f116",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\experiments\\independent_select.py": "6d474bccf1b2bd4b1d0b8dd942dcc88932a7601787efdfee00df10e4321428a3",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\experiments\\matrix.py": "4047264eaf8567233656af9cae3ab1f0c180bd480a0d98b8eb7a98c4d274412f",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\experiments\\__init__.py": "4d1d0497bf1d0738743f1c2747fc04244423ac034fb00c23790e642f8a334fdf",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\analysis\\paired_stats.py": "33fc849a86f849d9c5a5a9de714fd5305609da4c87ea5fcfaa423d361472a64b",
+    "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\code\\analysis\\__init__.py": "92fc5dc1ab284dcbf10da107d172ed14f0759117ba6e685f5bd31c64f6a6d6d4"
+  },
+  "jobs": [
+    {
+      "job_id": "allocate_train_pool",
+      "argv": [
+        "-m",
+        "citf.tasks",
+        "--project",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+        "--registry",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\layout_registry.json",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_pool.json",
+        "--role",
+        "train",
+        "--seed-start",
+        "9730000",
+        "--layouts",
+        "64"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_pool.json",
+          "equals": {
+            "role": "train"
+          }
+        }
+      ],
+      "depends_on": [],
+      "cooperative_stop": false
+    },
+    {
+      "job_id": "allocate_label_validation",
+      "argv": [
+        "-m",
+        "citf.tasks",
+        "--project",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+        "--registry",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\layout_registry.json",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\label_validation.json",
+        "--role",
+        "validation",
+        "--seed-start",
+        "9740000",
+        "--layouts",
+        "24"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\label_validation.json",
+          "equals": {
+            "role": "validation"
+          }
+        }
+      ],
+      "depends_on": [
+        "allocate_train_pool"
+      ],
+      "cooperative_stop": false
+    },
+    {
+      "job_id": "allocate_closed_pilot",
+      "argv": [
+        "-m",
+        "citf.tasks",
+        "--project",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+        "--registry",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\layout_registry.json",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\closed_pilot.json",
+        "--role",
+        "validation",
+        "--seed-start",
+        "9750000",
+        "--layouts",
+        "16",
+        "--cross-agilities"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\closed_pilot.json",
+          "equals": {
+            "role": "validation"
+          }
+        }
+      ],
+      "depends_on": [
+        "allocate_label_validation"
+      ],
+      "cooperative_stop": false
+    },
+    {
+      "job_id": "collect_train_000",
+      "argv": [
+        "-m",
+        "citf.collect",
+        "--project",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+        "--source",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive\\train\\experiments\\author-source-fusion-20261011\\two-hour-development-20261026\\best-m1-400.pth",
+        "--registry",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\layout_registry.json",
+        "--tasks",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_pool.json",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_000.pt",
+        "--device",
+        "cpu",
+        "--root-times",
+        "0",
+        "2",
+        "4",
+        "8",
+        "--max-per-layout",
+        "4",
+        "--candidates",
+        "12",
+        "--futures",
+        "3",
+        "--layout-start",
+        "0",
+        "--layout-count",
+        "4"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_000.pt"
+        },
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_000.json"
+        }
+      ],
+      "depends_on": [
+        "allocate_closed_pilot"
+      ],
+      "cooperative_stop": true
+    },
+    {
+      "job_id": "collect_train_004",
+      "argv": [
+        "-m",
+        "citf.collect",
+        "--project",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+        "--source",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive\\train\\experiments\\author-source-fusion-20261011\\two-hour-development-20261026\\best-m1-400.pth",
+        "--registry",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\layout_registry.json",
+        "--tasks",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_pool.json",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_004.pt",
+        "--device",
+        "cpu",
+        "--root-times",
+        "0",
+        "2",
+        "4",
+        "8",
+        "--max-per-layout",
+        "4",
+        "--candidates",
+        "12",
+        "--futures",
+        "3",
+        "--layout-start",
+        "4",
+        "--layout-count",
+        "4"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_004.pt"
+        },
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_004.json"
+        }
+      ],
+      "depends_on": [
+        "collect_train_000"
+      ],
+      "cooperative_stop": true
+    },
+    {
+      "job_id": "collect_train_008",
+      "argv": [
+        "-m",
+        "citf.collect",
+        "--project",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+        "--source",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive\\train\\experiments\\author-source-fusion-20261011\\two-hour-development-20261026\\best-m1-400.pth",
+        "--registry",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\layout_registry.json",
+        "--tasks",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_pool.json",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_008.pt",
+        "--device",
+        "cpu",
+        "--root-times",
+        "0",
+        "2",
+        "4",
+        "8",
+        "--max-per-layout",
+        "4",
+        "--candidates",
+        "12",
+        "--futures",
+        "3",
+        "--layout-start",
+        "8",
+        "--layout-count",
+        "4"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_008.pt"
+        },
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_008.json"
+        }
+      ],
+      "depends_on": [
+        "collect_train_004"
+      ],
+      "cooperative_stop": true
+    },
+    {
+      "job_id": "collect_train_012",
+      "argv": [
+        "-m",
+        "citf.collect",
+        "--project",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+        "--source",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive\\train\\experiments\\author-source-fusion-20261011\\two-hour-development-20261026\\best-m1-400.pth",
+        "--registry",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\layout_registry.json",
+        "--tasks",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_pool.json",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_012.pt",
+        "--device",
+        "cpu",
+        "--root-times",
+        "0",
+        "2",
+        "4",
+        "8",
+        "--max-per-layout",
+        "4",
+        "--candidates",
+        "12",
+        "--futures",
+        "3",
+        "--layout-start",
+        "12",
+        "--layout-count",
+        "4"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_012.pt"
+        },
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_012.json"
+        }
+      ],
+      "depends_on": [
+        "collect_train_008"
+      ],
+      "cooperative_stop": true
+    },
+    {
+      "job_id": "collect_validation_000",
+      "argv": [
+        "-m",
+        "citf.collect",
+        "--project",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+        "--source",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive\\train\\experiments\\author-source-fusion-20261011\\two-hour-development-20261026\\best-m1-400.pth",
+        "--registry",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\layout_registry.json",
+        "--tasks",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\label_validation.json",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\validation_000.pt",
+        "--device",
+        "cpu",
+        "--root-times",
+        "0",
+        "2",
+        "4",
+        "8",
+        "--max-per-layout",
+        "4",
+        "--candidates",
+        "12",
+        "--futures",
+        "3",
+        "--layout-start",
+        "0",
+        "--layout-count",
+        "4"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\validation_000.pt"
+        },
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\validation_000.json"
+        }
+      ],
+      "depends_on": [
+        "collect_train_012"
+      ],
+      "cooperative_stop": true
+    },
+    {
+      "job_id": "collect_validation_004",
+      "argv": [
+        "-m",
+        "citf.collect",
+        "--project",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+        "--source",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive\\train\\experiments\\author-source-fusion-20261011\\two-hour-development-20261026\\best-m1-400.pth",
+        "--registry",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\layout_registry.json",
+        "--tasks",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\label_validation.json",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\validation_004.pt",
+        "--device",
+        "cpu",
+        "--root-times",
+        "0",
+        "2",
+        "4",
+        "8",
+        "--max-per-layout",
+        "4",
+        "--candidates",
+        "12",
+        "--futures",
+        "3",
+        "--layout-start",
+        "4",
+        "--layout-count",
+        "4"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\validation_004.pt"
+        },
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\validation_004.json"
+        }
+      ],
+      "depends_on": [
+        "collect_validation_000"
+      ],
+      "cooperative_stop": true
+    },
+    {
+      "job_id": "fit_7101",
+      "argv": [
+        "-m",
+        "citf.train",
+        "--train",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_000.pt",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_004.pt",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_008.pt",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\train_012.pt",
+        "--validation",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\validation_000.pt",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\validation_004.pt",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\model_7101",
+        "--seed",
+        "7101",
+        "--updates",
+        "1200",
+        "--batch-roots",
+        "6",
+        "--validate-every",
+        "200",
+        "--save-every",
+        "100",
+        "--snapshot-updates",
+        "0",
+        "400",
+        "1200",
+        "--device",
+        "cpu"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\model_7101\\status.json",
+          "equals": {
+            "completed": true,
+            "update": 1200
+          }
+        },
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\model_7101\\best.pt"
+        },
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\model_7101\\last.pt"
+        }
+      ],
+      "depends_on": [
+        "collect_validation_004"
+      ],
+      "cooperative_stop": true,
+      "resume_marker": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\model_7101\\last.pt"
+    },
+    {
+      "job_id": "evaluate_CITF-Phys",
+      "argv": [
+        "-m",
+        "citf.evaluate",
+        "--project",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+        "--source",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive\\train\\experiments\\author-source-fusion-20261011\\two-hour-development-20261026\\best-m1-400.pth",
+        "--tasks",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\closed_pilot.json",
+        "--registry",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\layout_registry.json",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\eval_CITF-Phys",
+        "--device",
+        "cpu"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\eval_CITF-Phys\\summary.json",
+          "equals": {
+            "completed": true,
+            "N": 32
+          }
+        },
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\eval_CITF-Phys\\tasks.jsonl"
+        }
+      ],
+      "depends_on": [
+        "fit_7101"
+      ],
+      "cooperative_stop": true,
+      "resume_marker": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\eval_CITF-Phys\\evaluation.json"
+    },
+    {
+      "job_id": "evaluate_CITF",
+      "argv": [
+        "-m",
+        "citf.evaluate",
+        "--project",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive",
+        "--source",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\source_archive\\train\\experiments\\author-source-fusion-20261011\\two-hour-development-20261026\\best-m1-400.pth",
+        "--tasks",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\closed_pilot.json",
+        "--registry",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\layout_registry.json",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\eval_CITF",
+        "--device",
+        "cpu",
+        "--checkpoint",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\model_7101\\best.pt"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\eval_CITF\\summary.json",
+          "equals": {
+            "completed": true,
+            "N": 32
+          }
+        },
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\eval_CITF\\tasks.jsonl"
+        }
+      ],
+      "depends_on": [
+        "evaluate_CITF-Phys"
+      ],
+      "cooperative_stop": true,
+      "resume_marker": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\eval_CITF\\evaluation.json"
+    },
+    {
+      "job_id": "paired_pilot",
+      "argv": [
+        "-m",
+        "analysis.paired_stats",
+        "--left",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\eval_CITF",
+        "--right",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\eval_CITF-Phys",
+        "--out",
+        "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\paired_pilot.json"
+      ],
+      "outputs": [
+        {
+          "path": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\stable-development-20261102\\paired_pilot.json",
+          "equals": {
+            "runs": 1,
+            "families": 16
+          }
+        }
+      ],
+      "depends_on": [
+        "evaluate_CITF"
+      ],
+      "cooperative_stop": false
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CITF frozen opponent export v1",
+  "type": "object",
+  "required": [
+    "kind",
+    "checkpoint",
+    "checkpoint_sha256",
+    "observation",
+    "stateful",
+    "stochastic",
+    "training_identity"
+  ],
+  "properties": {
+    "kind": {
+      "const": "torchscript"
+    },
+    "checkpoint": {
+      "type": "string"
+    },
+    "checkpoint_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "observation": {
+      "const": "source-target-nearest3-raw8-v1"
+    },
+    "stateful": {
+      "const": false
+    },
+    "stochastic": {
+      "const": false
+    },
+    "training_identity": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false
+}

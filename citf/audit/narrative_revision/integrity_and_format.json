@@ -1,0 +1,25 @@
+{
+  "pdf_pages": 12,
+  "evidence_and_code": {
+    "runtime_code": {
+      "count": 20,
+      "changed": []
+    },
+    "source_archive": {
+      "count": 7,
+      "changed": []
+    },
+    "evidence": {
+      "count": 15,
+      "changed": []
+    },
+    "figures": {
+      "count": 9,
+      "changed": []
+    }
+  },
+  "new_formal_results": false,
+  "equations_numbered": false,
+  "reference_count": 23,
+  "visual_inspection": "Final 12-page manuscript; public-baseline table and author-control table inspected; existing figures preserved."
+}

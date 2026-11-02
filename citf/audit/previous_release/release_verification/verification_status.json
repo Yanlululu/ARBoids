@@ -1,0 +1,31 @@
+{
+  "scope": "real-environment interface acceptance only",
+  "revision": "CITF-stopped-direct-v2",
+  "unit_tests_passed": 48,
+  "training_root_count": 2,
+  "validation_root_count": 2,
+  "training_branch_transitions": 242,
+  "validation_branch_transitions": 245,
+  "learned_behavior_roots": 1,
+  "learned_behavior_branch_transitions": 128,
+  "continuous_predictor_updates": 4,
+  "resume_equivalence": {
+    "updates": 4,
+    "weights_bitwise_equal": true,
+    "scheduler_equal": true,
+    "best_selection_equal": true,
+    "sampler_rng_equal": true
+  },
+  "closed_loop_interface_tasks": 1,
+  "closed_loop_interface_outcome": {
+    "success": 0,
+    "capture": 0,
+    "collision": 1
+  },
+  "formal_independent_training_runs": 0,
+  "formal_performance_claim": false,
+  "vrx_trials": 0,
+  "local_codex_task_submitted": false,
+  "runtime_code_hash_matches_current": true,
+  "runtime_manifest": "audit/release_verification/runtime.json"
+}

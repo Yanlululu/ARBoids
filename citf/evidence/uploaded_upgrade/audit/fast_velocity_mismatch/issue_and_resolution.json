@@ -1,0 +1,28 @@
+{
+  "issue": "Our fast deployment adapter used archive lagged velocity whereas fast training used updated motion_state; reset-only test missed it",
+  "responsible": "new fast deployment adapter, not incorrectly attributed to supplied CI",
+  "effect": "all prior fast closed-loop results are superseded diagnostics; preserve but exclude from valid method ranking",
+  "fix": "overwrite only prediction packet.motion from measurable motion_state at every online step; preserve original source obs and weights",
+  "terminated": [
+    {
+      "pid": 1618,
+      "command": "/opt/pyvenv/bin/python -S /mnt/data/CIV_CI_Transformer_实证升级/src/bootstrap.py /mnt/data/CIV_CI_Transformer_实证升级/src/eval_fast_campaign.py"
+    },
+    {
+      "pid": 1725,
+      "command": "/opt/pyvenv/bin/python -S /mnt/data/CIV_CI_Transformer_实证升级/src/bootstrap.py /mnt/data/CIV_CI_Transformer_实证升级/src/final_test_campaign.py"
+    },
+    {
+      "pid": 1804,
+      "command": "/opt/pyvenv/bin/python -S /mnt/data/CIV_CI_Transformer_实证升级/src/bootstrap.py /mnt/data/CIV_CI_Transformer_实证升级/src/eval_fast.py --method fast_neural --checkpoint /mnt/data/CIV_CI_Transformer_实证升级/models/fast_candidate_graph_62032_full/best.pt --bank development --count 48 --expand 1 --width 24 --alpha 1 --output /mnt/data/CIV_CI_Transformer_实证升级/results/dev_fast_candidate_graph_62032.json"
+    },
+    {
+      "pid": 1811,
+      "command": "/opt/pyvenv/bin/python -S /mnt/data/CIV_CI_Transformer_实证升级/src/bootstrap.py /mnt/data/CIV_CI_Transformer_实证升级/src/eval_fast.py --method fast_neural --expand 1 --checkpoint /mnt/data/CIV_CI_Transformer_实证升级/models/fast_candidate_graph_62031_full/best.pt --bank test --count 128 --width 24 --alpha 1 --risk expected --output /mnt/data/CIV_CI_Transformer_实证升级/results/test_fast_graph_62031.json"
+    }
+  ],
+  "new_eval_sha256": "d778c413afcfe53f824acfc27b1f668fe2c6e851caf93af18ce6a64038fade7c",
+  "weights_retrained": false,
+  "reason": "training input definition was correct; deployment was corrected to match it",
+  "time": 1793474538.1881497
+}

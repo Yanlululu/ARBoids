@@ -1,0 +1,103 @@
+test_01_risk_integral (test_core.Core.test_01_risk_integral) ... ok
+test_02_risk_bounds_and_grad (test_core.Core.test_02_risk_bounds_and_grad) ... ok
+test_03_zero_variance (test_core.Core.test_03_zero_variance) ... ok
+test_04_likelihood_atom (test_core.Core.test_04_likelihood_atom) ... ok
+test_05_first_step_anchor (test_core.Core.test_05_first_step_anchor) ... ok
+test_06_zero_head_nominal (test_core.Core.test_06_zero_head_nominal) ... ok
+test_07_candidate_independence (test_core.Core.test_07_candidate_independence) ... ok
+test_08_entity_permutation (test_core.Core.test_08_entity_permutation) ... ok
+test_09_padded_entity (test_core.Core.test_09_padded_entity) ... ok
+test_10_variable_fleet (test_core.Core.test_10_variable_fleet) ... ok
+test_11_temporal_padding_finite (test_core.Core.test_11_temporal_padding_finite) ... ok
+test_12_minima_synchronous (test_core.Core.test_12_minima_synchronous) ... ok
+test_13_terminal_padding_ignored (test_core.Core.test_13_terminal_padding_ignored) ... ok
+test_14_terminal_reactivation_rejected (test_core.Core.test_14_terminal_reactivation_rejected) ... ok
+test_15_gradient_all_heads (test_core.Core.test_15_gradient_all_heads) ... ok
+test_16_no_terminal_supervision (test_core.Core.test_16_no_terminal_supervision) ... ok
+test_17_motion_ablation (test_core.Core.test_17_motion_ablation) ... ok
+test_18_label_no_grad (test_core.Core.test_18_label_no_grad) ... ok
+test_19_candidate_duplicates (test_core.Core.test_19_candidate_duplicates) ... ok
+test_20_score_no_double_count (test_core.Core.test_20_score_no_double_count) ... ok
+test_21_search_cache_budget (test_core.Core.test_21_search_cache_budget) ... ok
+test_22_small_beam_exact (test_core.Core.test_22_small_beam_exact) ... ok
+test_23_dataset_split_leak (test_core.Core.test_23_dataset_split_leak) ... ok
+test_24_dataset_valid (test_core.Core.test_24_dataset_valid) ... ok
+test_25_physics_parity (test_core.RealArchive.test_25_physics_parity) ... /mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/envs/modules.py:91: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  self.M_RB = np.matrix([[self.m,0.0,0.0],[0.0,self.m,0.0],[0.0,0.0,self.Izz]])
+/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/envs/modules.py:93: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  self.M_A = -1.0 * np.matrix([[self.xDotU,0.0,0.0],[0.0,self.yDotV,self.yDotR],
+/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/envs/modules.py:96: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  self.D = -1.0 * np.matrix([[self.xU,0.0,0.0],[0.0,self.yV,self.yR],
+/opt/pyvenv/lib/python3.13/site-packages/numpy/matrixlib/defmatrix.py:70: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  return matrix(data, dtype=dtype, copy=False)
+/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/envs/modules.py:119: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  R_wr = np.matrix([[np.cos(self.theta),-np.sin(self.theta)],[np.sin(self.theta),np.cos(self.theta)]])
+/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/envs/modules.py:120: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  t_wr = np.matrix([[self.x],[self.y]])
+/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/envs/modules.py:169: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  C_RB = np.matrix([[0.0,-self.m*r,0.0],[self.m*r,0.0,0.0],[0.0,0.0,0.0]])
+/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/envs/modules.py:170: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  C_A = np.matrix([[0.0,0.0,self.yDotV*v_r+self.yDotR*r],[0.0,0.0,-self.xDotU*u_r],
+/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/envs/modules.py:172: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  D_n = -1.0 * np.matrix([[self.xUU*np.abs(u_r),0.0,0.0],
+/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/envs/modules.py:191: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  tau_p = np.matrix([[F_x],[F_y],[M_n]])
+/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/envs/modules.py:194: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  V = np.matrix([[u,v,r]]).transpose()
+/mnt/data/current_citf_review/input/CITF_独立叙事修订交付/source_archive/train/envs/modules.py:195: PendingDeprecationWarning: the matrix subclass is not the recommended way to represent matrices or deal with linear algebra (see https://docs.scipy.org/doc/numpy/user/numpy-for-matlab-users.html). Please adjust your code to use regular ndarray.
+  V_r = np.matrix([[u_r,v_r,r]]).transpose()
+ok
+test_26_moving_measured_velocity (test_core.RealArchive.test_26_moving_measured_velocity) ... ok
+test_27_source_bounds_and_feedback (test_core.RealArchive.test_27_source_bounds_and_feedback) ... ok
+test_28_branch_rng_replay (test_core.RealArchive.test_28_branch_rng_replay) ... ok
+test_29_inputs_no_private_future (test_core.RealArchive.test_29_inputs_no_private_future) ... ok
+test_30_real_action_execution (test_core.RealArchive.test_30_real_action_execution) ... ok
+test_31_no_CV_checkpoint (test_core.RealArchive.test_31_no_CV_checkpoint) ... ok
+test_49_source_centre_in_actual_default_bank (test_execution.Execution.test_49_source_centre_in_actual_default_bank) ... ok
+test_50_reservation_does_not_add_bank_slots (test_execution.Execution.test_50_reservation_does_not_add_bank_slots) ... ok
+test_51_deduplicated_endpoint_centre_is_valid (test_execution.Execution.test_51_deduplicated_endpoint_centre_is_valid) ... ok
+test_52_tiny_budget_still_contains_centre (test_execution.Execution.test_52_tiny_budget_still_contains_centre) ... ok
+test_53_all_risk_weight_scan_values_load_same_predictor (test_execution.Execution.test_53_all_risk_weight_scan_values_load_same_predictor) ... ok
+test_54_predictor_physical_change_rejected (test_execution.Execution.test_54_predictor_physical_change_rejected) ... ok
+test_55_final_freeze_locks_changed_scoring_weight (test_execution.Execution.test_55_final_freeze_locks_changed_scoring_weight) ... ok
+test_56_stage_schedule_has_zero_intermediates_final (test_execution.Execution.test_56_stage_schedule_has_zero_intermediates_final) ... ok
+test_57_stage_snapshot_is_immutable (test_execution.Execution.test_57_stage_snapshot_is_immutable) ... ok
+test_58_stage_snapshot_corruption_detected (test_execution.Execution.test_58_stage_snapshot_corruption_detected) ... ok
+test_59_learned_opponent_observation_recomputed (test_execution.Execution.test_59_learned_opponent_observation_recomputed) ... /opt/pyvenv/lib/python3.13/site-packages/torch/jit/_trace.py:1000: DeprecationWarning: `torch.jit.trace` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+/opt/pyvenv/lib/python3.13/site-packages/torch/jit/_trace.py:1139: DeprecationWarning: `torch.jit.trace_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+/opt/pyvenv/lib/python3.13/site-packages/torch/jit/_serialization.py:176: DeprecationWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.
+  warnings.warn(
+ok
+test_60_learned_opponent_branches_do_not_fall_back_to_apf (test_execution.Execution.test_60_learned_opponent_branches_do_not_fall_back_to_apf) ... ok
+test_61_apf_default_matches_explicit_apf (test_execution.Execution.test_61_apf_default_matches_explicit_apf) ... ok
+test_62_wrong_opponent_checkpoint_hash_rejected (test_execution.Execution.test_62_wrong_opponent_checkpoint_hash_rejected) ... ok
+test_63_hidden_state_opponent_rejected (test_execution.Execution.test_63_hidden_state_opponent_rejected) ... ok
+test_64_wrong_opponent_observation_rejected (test_execution.Execution.test_64_wrong_opponent_observation_rejected) ... ok
+test_65_attacker_reward_has_unambiguous_terminal_rules (test_execution.Execution.test_65_attacker_reward_has_unambiguous_terminal_rules) ... ok
+test_66_radial_and_physical_flags_not_double_rewarded (test_execution.Execution.test_66_radial_and_physical_flags_not_double_rewarded) ... ok
+test_67_future_opponent_action_trace_is_not_model_input (test_execution.Execution.test_67_future_opponent_action_trace_is_not_model_input) ... ok
+test_68_runtime_identity_contains_opponent (test_execution.Execution.test_68_runtime_identity_contains_opponent) ... ok
+test_32_time_changes_input_and_legal_prefix (test_revision.Revision.test_32_time_changes_input_and_legal_prefix) ... ok
+test_33_real_timeout_label_matches_known_prefix (test_revision.Revision.test_33_real_timeout_label_matches_known_prefix) ... ok
+test_34_masked_nominal_tail_cannot_change_risk (test_revision.Revision.test_34_masked_nominal_tail_cannot_change_risk) ... ok
+test_35_distance_head_does_not_use_auxiliary_motion_tail (test_revision.Revision.test_35_distance_head_does_not_use_auxiliary_motion_tail) ... ok
+test_36_protocol_rejects_silent_changes (test_revision.Revision.test_36_protocol_rejects_silent_changes) ... ok
+test_37_effective_protocol (test_revision.Revision.test_37_effective_protocol) ... ok
+test_38_geometry_alias_cannot_cross_split (test_revision.Revision.test_38_geometry_alias_cannot_cross_split) ... ok
+test_39_geometry_fingerprint_integrity (test_revision.Revision.test_39_geometry_fingerprint_integrity) ... ok
+test_40_same_geometry_cross_agility (test_revision.Revision.test_40_same_geometry_cross_agility) ... ok
+test_41_cache_identical_and_state_specific (test_revision.Revision.test_41_cache_identical_and_state_specific) ... ok
+test_42_controller_history_encoded_once (test_revision.Revision.test_42_controller_history_encoded_once) ... ok
+test_43_step_trace_contains_controls_and_candidates (test_revision.Revision.test_43_step_trace_contains_controls_and_candidates) ... ok
+test_44_attacker_action_interface (test_revision.Revision.test_44_attacker_action_interface) ... ok
+test_45_full_freeze_rejects_control_change (test_revision.Revision.test_45_full_freeze_rejects_control_change) ... ok
+test_46_deterministic_mode_uses_actual_mean_distance (test_revision.Revision.test_46_deterministic_mode_uses_actual_mean_distance) ... ok
+test_47_stopped_trajectory_gradients_masked (test_revision.Revision.test_47_stopped_trajectory_gradients_masked) ... ok
+test_48_third_party_candidate_structural_probe (test_revision.Revision.test_48_third_party_candidate_structural_probe) ... ok
+
+----------------------------------------------------------------------
+Ran 68 tests in 2.249s
+
+OK

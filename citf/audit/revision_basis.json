@@ -1,0 +1,20 @@
+{
+  "basis_files": {
+    "prior_release_zip": {
+      "name": "CITF_独立论文与Codex_最终修订交付.zip",
+      "sha256": "ccdc059235c7b3450a9752de0720f9f233271427afcd34ab7e0aa13e7f6d31eb"
+    },
+    "formal_ARBoids_pdf": {
+      "name": "2026_ARBoids_Adaptive_Residual_Reinforcement_Learning_With_Boids_Model_for_Cooperative_Multi-USV_Target_Defense(3)(1).pdf",
+      "sha256": "d715660664f59cc9ed75d863a7efba8a27d7644cc334e973083989cf9a4a5c48",
+      "pages": 8,
+      "journal_pages": "3637–3644"
+    }
+  },
+  "latest_review": "user message including four implementation gaps and VRX/phase consistency",
+  "originals_modified": false,
+  "local_codex_task_sent": false,
+  "new_figures_generated": false,
+  "figure_source": "retained user-provided previous release TikZ figures",
+  "bibliography": "23 entries retained; 2026 DSTGT and MACT checked against primary publisher/author records; no full new 150-paper audit"
+}

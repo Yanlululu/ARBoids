@@ -1,0 +1,9 @@
+{
+  "kind": "torchscript",
+  "checkpoint": "opponent_interface_actor.pt",
+  "checkpoint_sha256": "2ae42d861a9b5199fd91996463de01a759b3486dcbf88d382000b3bfefa3b96f",
+  "observation": "source-target-nearest3-raw8-v1",
+  "stateful": false,
+  "stochastic": false,
+  "training_identity": "untrained-interface-test-only"
+}

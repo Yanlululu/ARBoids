@@ -1,0 +1,79 @@
+{
+  "document_revision": "CITF-independent-narrative-v4",
+  "basis": "User identifies CI as their earlier draft method. No CI public publication was supplied for this revision.",
+  "author_method": "CITF",
+  "roles": {
+    "proposed_method": [
+      "CITF"
+    ],
+    "published_baseline": [
+      "ARBoids",
+      "RP",
+      "SAC",
+      "Boids",
+      "MAPPO"
+    ],
+    "author_constructed_control": [
+      "CITF-Phys",
+      "CITF-no-context",
+      "CITF-predictive",
+      "CITF-independent",
+      "CITF-GRU",
+      "CITF-Perceiver",
+      "CITF-physical-feedback"
+    ],
+    "internal_development_reference": [
+      "CI-original"
+    ]
+  },
+  "paper_main_table": [
+    "CITF",
+    "ARBoids",
+    "RP",
+    "SAC",
+    "Boids",
+    "MAPPO"
+  ],
+  "definitions": {
+    "CITF-Phys": {
+      "role": "author_constructed_control",
+      "display_name": "CITF-Phys",
+      "execution": "current Controller(model=None); held-thrust nominal forecast and matched candidate initialization/search",
+      "legacy_engineering_alias": "CI-physical",
+      "not_equivalent_to": "CI-original",
+      "reuse_formal_scores": "only if complete runtime, data and effective protocol hashes match; archived CI-original never substituted"
+    },
+    "CI-original": {
+      "role": "internal_development_reference",
+      "display_name": "内部CI开发参考",
+      "paper_public_baseline": false,
+      "runtime": "unmodified legacy CI implementation; preserve original code/data/checkpoint identity"
+    },
+    "CITF-no-context": {
+      "role": "author_constructed_control",
+      "retrained": true
+    },
+    "CITF-predictive": {
+      "role": "author_constructed_control",
+      "retrained": true
+    },
+    "CITF-independent": {
+      "role": "author_constructed_control",
+      "definition": "common-reference one-pass local selection with the same learned scorer"
+    },
+    "CITF-GRU": {
+      "role": "author_constructed_control",
+      "definition": "matched GRU predictor in the current control pipeline"
+    },
+    "CITF-Perceiver": {
+      "role": "author_constructed_control",
+      "definition": "matched action-conditioned Perceiver predictor in the current control pipeline"
+    },
+    "CITF-physical-feedback": {
+      "role": "author_constructed_control",
+      "definition": "information-matched physical feedback model; distinguish from nominal held-thrust CITF-Phys"
+    }
+  },
+  "public_prior_status_rule": "If a public CI paper/preprint/report is later supplied, audit overlap and update citations and contribution attribution before submission; do not conceal it.",
+  "no_new_empirical_results": true
+}

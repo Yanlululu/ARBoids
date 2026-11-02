@@ -1,0 +1,19 @@
+{
+  "runtime_revision": "CITF-execution-closed-v3",
+  "model_revision": "CITF-stopped-direct-v2",
+  "schema": "citf-stopped-aware-v2",
+  "phases_consistent": true,
+  "primary_defenders": 6,
+  "formal_training_runs": 0,
+  "vrx_trials": 0,
+  "tests_passed": 68,
+  "core_code_matches_verified_run": true,
+  "paper_pages": 12,
+  "red_pending_markers": 104,
+  "unnumbered_formulas": true,
+  "original_inputs_untouched": true,
+  "local_codex_sent": false,
+  "stage_snapshots": "actual 0/2/4 verified; formal stage training pending",
+  "external_actor": "untrained deterministic fixture; trained SAC adversary pending",
+  "raw_status": "audit/execution_v3_complete/verification_status.json"
+}
