@@ -61,6 +61,7 @@ def main():
     ap.add_argument('--guard-margin', type=float)
     ap.add_argument('--guard-sigma-scale', type=float)
     ap.add_argument('--encounter-weight', type=float)
+    ap.add_argument('--nominal-slack', type=float)
     ap.add_argument('--workers', type=int, default=12)
     ap.add_argument('--shard-size', type=int, default=4)
     ap.add_argument('--deadline', default='2026-11-02T22:40:28+00:00')
@@ -102,6 +103,8 @@ def main():
             command += ['--guard-sigma-scale', str(a.guard_sigma_scale)]
         if a.encounter_weight is not None:
             command += ['--encounter-weight', str(a.encounter_weight)]
+        if a.nominal_slack is not None:
+            command += ['--nominal-slack', str(a.nominal_slack)]
         state['jobs'].append({'name': name, 'command': command, 'status': 'pending'})
     lock = threading.Lock()
     def save():

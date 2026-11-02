@@ -371,20 +371,97 @@ v2_guard_s7103已完成12000更新，选中3200步，标签分数.002080，256�
 长区间物理径向控制long_guard_phys_w64_g4为231/256（0碰撞、25径向失守），不能把延长预测区间本身认定有效。其目标与原强物理避碰是不同组合，后续学习版本须同该版本配对并仍对照原239。v3_long_matched采样继续。先推进成本更低的防护余量比较：原模型的连续物理量预测仍可用于不同在线余量，guard-margin=6、weight4、risk64的物理与完整7101/7102各启动1 worker（PID17260—17262）。当前网络、物理与任务身份分别保留。下一步拟追加margin12和更充分的联合搜索（bank24/budget192/rounds3），需要按实际腾出的远端CPU槽启动，而非同时超配。
 
 
-### 远端研发恢复点（UTC 2026-11-02 15:20附近）
+### 远端研发恢复点（UTC 2026-11-02 16:03附近）
 
-用户原话为“我把远端服务器打开了，请在10个小时内使用一切开发方法，不限制内部算法、参数和训练回合，持续迭代，不要铺开问题汇报和工程检查，不要停止在分析，不要做无关的测试，全速把结果做到最好，其它什么也不管”。本次持续执行尚未结束，最晚UTC22:40:28（北京时间11月3日06:40:28）。不要只因当前试验完成就结束，也不创建定时/周期自动化。最新AGENTS明确禁止额外工程测试/哈希核验，后续只做实际研究实现、训练、闭环比较和结果分析。项目计划仍以原始问题、最终有效算法与证据为准，不恢复CV，不把开发结果填成正式论文数值。
+**本次持续执行尚未结束。** 用户原话为“我把远端服务器打开了，请在10个小时内使用一切开发方法，不限制内部算法、参数和训练回合，持续迭代，不要铺开问题汇报和工程检查，不要停止在分析，不要做无关的测试，全速把结果做到最好，其它什么也不管”。起点UTC12:40:28，最晚UTC22:40:28（北京时间11月3日06:40:28），当前仍剩约6小时37分。不能因眼前试验结束就结束整个任务。不创建定时任务。新版AGENTS禁止额外工程测试、哈希检查；继续实际研究实现、训练、闭环比较，修复实际运行问题。当前日期跨到北京时间11月3日，不是用户停止指令。
 
-真实连接仍为`ssh -p 22476 root@connect.cqa1.seetacloud.com`，Python `/root/autodl-tmp/ARBoids/.venv/bin/python`，远端根`/root/autodl-tmp/citf-10h-20261102`。本地所有变更在当前分支codex/citf-independent-20261102、citf/code/experiments及既有任务/交付状态文件。源为root/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth。所有作业OMP/MKL/OPENBLAS_NUM_THREADS=1，20 CPU核配额，4090 24GiB，RAM预算90GiB。不要用本机约3—4GiB的限制约束远端，也不要把远端20核当作可以继续无限超配。长任务实际状态在runs/<version>各status.json和/或collection_status.json，闭环在runs/extended/<name>/status.json，完成合并summary.json与tasks.jsonl；未完成不报完整分母结果。
+原始问题仍是候选改变后全队及攻击艇的反馈机动影响联合融合决策；目标是有效控制算法与真实闭环证据。允许根据新证据实质调整预测、目标和训练，不恢复CV或终局价值/成功概率头，不把开发结果填成正式论文数据。先读本任务前部与完整方案，不能只追接最近参数。所有负结果、零更新模型、失败启动及部分运行保留。
 
-v2径向稀疏数据重复已经全完成：guard7101/7102/7103为240/241/239成功（256任务），同目标物理guard_direct_phys_w64_g4为239。相对这个匹配物理版，前两种子分别2救援1损害、2救援0损害。无上下文239，普通预测训练238。仅有微小正向信号，不能称稳定提升或完成机制归因。原更强物理基线phys_w64亦239，不能只用弱对照。接近攻击艇距离目标明确较差：短区间物理encounter权重1/4/16为226/219/211，两个学习encounter为195/196；保留结果，不继续把它作为主线。长区间（6.4秒）直接物理径向版本231/256、0碰撞25径向失守，单纯延长预测不是已验证改进。
+连接`ssh -p 22476 root@connect.cqa1.seetacloud.com`；Python `/root/autodl-tmp/ARBoids/.venv/bin/python`；远端根`/root/autodl-tmp/citf-10h-20261102`。代码在code，源在source_archive，固定权重source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth。20核CPU、90GiB内存预算、4090 24GiB；所有子进程OMP/MKL/OPENBLAS_NUM_THREADS=1。本地没有重训练。命令和PID在runs各版本launches.json；评价在runs/extended/<name>/status.json，完整完成后才有合并summary.json/tasks.jsonl。开发库固定为runs/extended/tasks.json（256任务），注册表同目录layout_registry.json。
 
-v3_dense七个12000更新训练已全完成，数据v0+v1+v2_dense，固定源、相同池：guard完整7101/7102/7103，guard_nocontext7101，guard_predictive7101，guard_priority7101/7102。标签选模分别10800/.04633、2400/.02984、3600/.04453、4800/.04343、4800/.02974、7200/.03799、6000/.02544。对应七个256闭环评价已启动，名字v3_<模型名>_w64_g4，各1 worker，PID17743—17749；最新约15/64片完成，尚不知完整表现。数据采样重点版仅用事前名义径向余量，不以成功标签挑状态；其参数、根概率和随机状态由原训练程序记录。源码experiments/priority_guard.py，模型仍GuardConfig，加载用experiments.guard_prediction。
+**当前最好完整结果：物理径向控制guard_phys_w64_g16_m6为245/256，0碰撞、11径向失守（95.70%）。** 风险权重64、径向权重16、余量6米；原强物理版本239。余量6/g4为242；余量6/g1为240。余量12/g4为235（1碰撞）；扩大搜索bank24/budget192/rounds3物理231、两个旧学习种子235/234，均不足以继续扩大搜索。新物理guard_phys_w64_g64_m6、g256_m6、g16_m4已启动单worker（PID23809—23811），等待实际结果。
 
-新候选交互监督experiments/interaction_guard.py已真正训练：在焦点艇自身候选相同的两完整配置间，监督真实停止前最大径向差G_i的变化；使用共同未来减弱共同噪声，按已知名义内侧防御艇相关性加权。仍是短期物理量，不是价值差。配方为原guard损失+0.25乘smooth-L1差分误差，尺度0.2米，同时使用与priority_guard完全相同的50%临界根采样。训练身份参数记录在既有protocol.arguments；网络结构不变，闭环仍用guard_prediction。v3_dense/guard_interaction_s7101/7102正在12000更新、batch16、CUDA训练，PID18103/18104，最新4800步，标签分数约.0469/.03224，候选差分验证损失约1.39。完成后须与同采样而无差分监督的priority种子配对，不只跟均匀采样比。
+v2稀疏径向模型margin2/g4/risk64三种子7101/7102/7103为240/241/239；匹配物理239、去上下文239、普通预测238。将旧模型直接改margin6后两种子均236，不能把物理参数优化收益归给学习。
 
-当前并行任务约20核：v3_long_matched真实长分支采集4 workers（PID15248；最新44完成、4运行、28待执行），7个dense闭环单worker，两个interaction GPU训练各1 CPU，3个margin6闭环单worker，以及4个新搜索/余量闭环单worker。margin6：guard_phys_w64_g4_m6、v2_guard_s7101_w64_g4_m6、v2_guard_s7102_w64_g4_m6，PID17260—17262；当前物理约42/64、学习各27/64。新扩大搜索：guard_phys_w64_g4_search192、v2_guard_s7101_w64_g4_search192、v2_guard_s7102_w64_g4_search192，bank24/budget192/rounds3，PID18105—18107，各1worker；新物理margin12为guard_phys_w64_g4_m12，PID18108/1worker。启动/参数完整记录在runs/v3_dense/launches.json。不要在这些评价仍会启动新分片时修改guard_prediction.py、pair_geometry.py或citf核心，否则同一运行的代码身份会混合；新的训练包装模块可独立新增。
+v3_dense全部完整结果：guard完整7101/7102/7103为239/237/237；去上下文238，普通预测236；priority7101/7102为238/241；interaction7101/7102为238/237。多数各有1碰撞。密集数据、临界根加采样、同自身候选的其他艇几何差分监督，均未建立稳定提升。直接接近攻击艇距离目标此前明显差，仍不作为主线。比较真实分支min_i max_t与max_t min_i径向差，跨0米和-6米边界均为0，因此未实现新的全队frontier头。
 
-下一步依据：先完成dense与交互监督、较大防护余量及扩大联合搜索的实际闭环结果，保留所有种子与损害。7个dense结果不必等待整体全部结束才启动已经训练完成的对照，但按腾出的CPU槽安排。margin12的两个学习种子尚未启动；若继续此比较应同物理参数配对。interaction训练结束会空出2 CPU/GPU槽，优先考虑长区间学习：v3_long_matched使用32步6.4秒标签、16步3.2秒名义避碰与候选提议、物理64行为，128训练/24标签验证布局，根0/4/8/12/16/20/30/40/50/60/70秒。若全128仍在采集，首64预分配训练布局的32片全部completed后，可先做固定64布局pilot，全部24验证片仍共用；不能按先完成的容易分片随意选样本。长训练入口experiments.long_geometry train，优先encounter-weight=0（径向目标），guard-weight4，risk objective64，temperature2，可用width96扩大模型容量；两个种子后补相同数据的无上下文/普通预测。长模型加载/评价入口仍experiments.long_geometry，任务文件runs/v3_long_matched/closed_bank.json，注册表用原extended/layout_registry.json。新采样集合不要和被停止的v3_long混合；后者仅保留早期候选提议不一致尝试。
+新experiments/guard_uncertainty.py保持径向均值，在线按--guard-sigma-scale缩放拟合标准差（0=均值点预测，.5=一半）。四个完整256比较进行中：v2_guard_s7101/7102_w64_g4_m6_sig0p0、sig0p5；15:59约42/64分片。用于判断原模型是否过度保守，尚无完整结果。parallel_evaluate已支持该参数。
 
-另有尚未执行的低成本开发候选：对新dense数据重训原艇间距离预测，将排名监督从.05加强至1或2、温度从8降至1，或评价已有模型的mean_distance风险；这是为缩小真实反馈排序与学习排序差距（反馈小池29/32对物理22/32），不是已取得的结果。没有新增direct-risk或global-frontier模型，不要把思考中的方案当成源码。当前优先级仍是已启动的有效径向路线与长区间学习，按结果再选择，而不是无限加方法。
+v4_guard6：数据仍为v0+v1+v2_dense、50%事前名义临界根采样，width96、margin6/g4/risk64、rank-weight1、temperature1、16000更新、batch16。完整7101标签选中0步/.18632，7102选中16000/.17893，7103选中16000/.17864；去上下文7101选中0/.18632。普通预测7101已完成；首次错误CLI mode=predictive无训练更新，改为predictive_only后重新启动，原失败日志保留。为判断标签选模与控制是否错位，实际闭环比较固定16000步：v4_guard_fixed_s7101/7102/7103_w64_g4_m6，v4_guard_nocontext_fixed_s7101_w64_g4_m6（PID23298—23301），另零更新对照v4_guard_zero_w64_g4_m6（PID23302）。普通预测固定终点v4_guard_predictive_fixed_s7101_w64_g4_m6刚启动PID24768。固定终点用snapshots/update_016000.pt，不能把0步标为训练有效，也不能事后只留较好种子。五个最早评价约15:51启动。
+
+v3_long_matched：128训练/24标签验证布局的76片全部完成，32步6.4秒真实标签，16步名义避碰/候选提议，phys64行为，事前根0/4/8/12/16/20/30/40/50/60/70秒。long_geometry模块保留3.2秒避碰而延长径向预测。固定首64布局pilot guard64_s7101训完16000、选中16000/.15046，其256闭环v3_long_guard64_s7101_w64_g4在15:55为28/64片。完整128布局两个种子均选中3200，分数.14898/.14921，闭环v3_long_guard128_s7101/7102_w64_g4已启动PID23812/23813。任务文件用runs/v3_long_matched/closed_bank.json（horizon32），注册表仍extended。encounter-weight0、guard4、risk64，width96、rank.25/temp2。纯长区间物理版本231；尚未安排长区间消融，先看是否实际有用。
+
+**新增批量反馈物理预测正在运行：** experiments/batched_feedback.py从当前可观测状态出发，固定各候选融合系数，分支内重新计算SAC、Boids和有序APF。未来海流与APF噪声均为0，名义攻击机动性统一2.25，不读取每个任务的隐藏真实机动性；初始速度用可观测速度。float32四次.05秒WAMV积分，保留源码最后加速更新之前的legacy velocity用于后续源控制观察。首步使用真实根的SAC和Boids，后续只需Actor确定性前两维动作；门值始终固定。真实环境仍使用原带噪APF，预测只是声明的名义模型。停止于预测捕获、碰撞、突破或径向失守，目标仍短期物理间距与径向余量。这是新开发物理控制器，不重命名为CITF-Phys，也不声称已实现学习残差。
+
+旧branch_diagnosis.feedback_distances曾仅清除海流，遗漏清除克隆状态内的APF随机扰动。因此旧29/32不能当成纯可观测、零未来噪声的干净参考结果。现在该分支另设_apf_force_noise=lambda:np.zeros(2)，REVISION升v2，旧记录原样保留并受此限制。没有修改source_archive。
+
+批量反馈首次TorchScript因norm overload启动失败；补p=2后r2又在首个任务前耗费数分钟CPU，已停止并保留状态，未形成完整任务结果。去掉TorchScript后eager r3实际跑起来，每次决策约225—230毫秒。两个32任务pilot（g0/g4、margin6）各完成15个任务后停止，将GPU转给更快完整版本；committed记录和部分轨迹都保留，状态superseded_by_graph_execution，不能报32任务完成。
+
+新增experiments/graphed_feedback.py把相同方程用CUDA graph重复执行；队友索引改固定切片，候选复制填充到16或64倍数，选择与分支计数仍只计实际配置。Source对象缓存两种图；剩余短时域用eager。没有执行工程等价性测试，不声称位级相等（批量形状不同）。初期7个任务实测平均约57毫秒选择，尚不代表全部时延。完整256运行均在extended：feedback_graph_w64_g0_m6（PID24254）、g4_m6（PID24255），刚加g16_m6（PID24767）。GPU、每项1worker、nominal-agility2.25，g16与当前245/256物理目标匹配。15:59前两项6/6已提交；必须等待完整结果。parallel_evaluate已支持--device和--nominal-agility。
+
+下一步：持续查看上述完整结果、共同任务救援/新增失败，优先推进真实收益方向。仍有约6个半小时；不要停止在245/256或把当前物理最优当成Transformer机制证明。若批量反馈有效，可考虑把仅由可观测输入计算的反馈物理量蒸馏给预测器以降低计算量，或重新定义其名义残差；目前尚无蒸馏数据/训练/源码，不要把构想写成已实现。所有运行身份依赖子进程导入时的源码；guard_prediction、pair_geometry、citf核心、batched_feedback和graphed_feedback正在评价时不可随意覆盖，否则同一运行分片代码会混合。新增包装模块可独立实现。远端活跃工作数按实际/proc和status统计，近20核预算，随着任务结束把槽位转移，避免无限超配。最后预留时间同步必要结果与权重，完整与部分记录分开；不新增无关报告或打包工程。
+
+### 追加研发决策（UTC 2026-11-02 16:21附近）
+
+物理径向参数补充完整结果：g16/m4为242/256，g64/m6为244，g256/m6为243，当前245仍为g16/m6。旧径向学习模型缩减不确定性后：7101/7102的sigma=0均240；sigma=.5分别238/239，仍未超过245。长区间64布局pilot为239/256，未超过当前强物理版本；128布局两种子仍在评价。
+
+下一假设是替换名义风险同时取消了有用的保守性，因此新增experiments.guard_envelope：每艇先取名义正部平方与学习期望正部平方的较大值，再跨艇取最小，碰撞项保持原名义风险64。这个上包络不会降低单个配置的原名义防护成本，但不保证闭环一定改善。三个旧模型种子7101/7102/7103以g16/m6在共同256库运行，任务名前缀v2_envelope，命令登记runs/v5_envelope/launches.json；去上下文与普通预测对照待空余资源启动。
+
+experiments.guard_focus将训练直接对应上包络选择目标：只训练停止区间径向高斯似然、归一化径向风险Huber误差与配置排序，不再以辅助运动/艇间距离损失争夺表征。保持原GuardPredictor结构，配置修订CITF-stopped-guard-envelope-focus-v1。三个种子focused_s7101/7102/7103已启动16000更新，旧v0+v1+v2_dense数据，width96、batch16、优先采样.5、g16/m6、NLL.1/risk1/rank.5/temp2，快照0/4000/8000/16000；两匹配训练消融随后补齐。必须实际评价训练模型及匹配对照，不将新目标当成已验证改进。
+
+同时补训练候选覆盖缺口：experiments.collect_guard_local已实现。行为采用物理g16/m6/risk64；根时刻事前指定。每根先放实际行为选择与源中心，再对每艘艇选最多3个替代候选，保持其余艇不变，余量以初始候选及原提议填满24。三个共同未来仍真实推进SAC/Boids与APF并记录停止事件。行为风险64与原数据物理协议risk32明确分别记录，risk只影响行为/搜索，不改变物理分支；便于与同协议旧数据合并。复用v1_onpolicy的128训练/24验证布局，不用闭环成功筛选根或候选。实际按每2秒的事前根、4个worker启动（按当时资源余量调低），runs/v5_guard_local，manager PID28553；UTC16:37完成16/76片。新数据训练优先比较是否修复实际邻域配置泛化。
+
+### 持续执行恢复点（UTC 2026-11-02 16:38附近）
+
+十小时任务截止仍为UTC22:40:28，剩余约6小时，尚未结束。直接目标是把学习作用转化为真实闭环收益，而不是以物理最优代替Transformer机制；所有新结果仍是固定源开发验证。新AGENTS禁止额外工程测试与哈希核验，当前只进行真实训练、闭环评价、采样及研究结果分析。
+
+v4旧损失margin6固定16000步完整结果为236/234/231（三种子），去上下文238；7101标签选到0步，其闭环242。两个完全相同命令的重复队列已停止，已完成的逐任务记录保留：v4_guard_fixed_s7101_w64_g4_m6对应完整canonical v4_guard_rank_s7101_w64_g4_m6_step16000；v4_guard_zero_w64_g4_m6对应完整canonical v4_guard_rank_s7101_w64_g4_m6_best。停止原因只为命令、权重路径和任务参数完全重复，不按成绩筛选；部分目录status为stopped_redundant_exact_command，不能报完整完成。
+
+旧模型上包络的三个完整种子和两项匹配消融均已启动，每项1 worker；命名前缀v2_envelope，g16/m6/risk64，均在extended。新focused三种子接近16000更新（16:37约15400—15700），两消融约10800—11500。它们的闭环须用experiments.guard_focus_evaluate，不能直接用guard_envelope加载，因为新checkpoint revision不同。准备完成后即将CPU槽转为对应256闭环，加载各自best.pt；同时保留零更新选择信息，不能把0步当学习有效。评价入口已同步远端。
+
+新增experiments.ordered_guard实现观察列表位置编码：原始APF按defender列表遍历，每遇更近障碍就缩小影响半径且保留此前贡献，因而对任意列表置换并不不变；原网络完全置换等变，未编码这个已知顺序。新版本在历史实体特征加入零初始化的3维序位线性编码，不输入隐藏机动性或未来动作，仍用focused径向训练及上包络控制。它不再宣称对原列表任意重排保持等变。ordered_s7101训练已于16:38启动，PID30277，16000更新，其他参数与focused一致。入口训练为experiments.ordered_guard train，评价为experiments.ordered_guard。后续应补其他种子、无上下文与普通预测比较，不把这项表示变化当作已验证收益。
+
+新增experiments.graphed_feedback_long已实现并同步但尚未运行：在任务文件声明32步径向反馈分支时，候选提议与碰撞风险只取前16步，真实名义终止仍检查全区间；graph重放、零未来海流/APF扰动、固定名义agility2.25保持。拟在短区间反馈完整结果出来及GPU训练腾位后评价g4与g16，任务用v3_long_matched/closed_bank.json，不能直接拿32步任务运行原graphed_feedback并混称。短区间反馈三组16:37约53—56/64片，尚无完整结果；长区间128布局两学习种子约61/63片，也即将结束。
+
+资源16:37为10闭环worker+5focused训练+4数据采样，随后新增1个ordered训练，总约20CPU作业，均各线程1；GPU训练与3个CUDA反馈评价共享4090。磁盘65/100GB已用、36GB可用，暂不清理原证据。实际32任务轨迹的每步门值变化均值在强物理、旧学习及v4分别约.1145/.1161/.1151，没有明显证据支持把频繁切换当主要原因，因此未增加动作平滑惩罚。下一步优先收齐focused闭环、完成局部候选池并重训；只在完整共同任务结果支持时推进有效分支。仍须在截止前同步必要结果和权重到本地，保留所有负结果与未完成状态。
+
+16:40前后三个focused模型均完成16000更新，标签选中更新分别16000/6400/9600，分数约.48666/.31710/.29957，均不是零更新。共同256闭环focused_s7101/7102/7103_w64_g16_m6已启动PID30451/30452/30453，使用guard_focus_evaluate和各自best.pt，每项1 worker。ordered第二种子7102已启动PID30454；第三种子待下一CPU槽。v3_long_guard128_s7102_w64_g4完整237/256、0碰撞、19径向失守。
+
+### 远端继续研发（UTC 2026-11-02 16:49附近）
+
+短区间零噪名义反馈的全256结果：g0=239、g4=238、g16=238；其预测更贴近分支仍未超过强物理245。长区间学习128布局两种子为230/237。旧guard上包络7101/7102为239/240，第三与消融继续收齐；focused三种子及两消融均已完成16000更新并进入全256评价。ordered三种子和两个匹配消融正在训练，仍16000更新、同数据和参数。32步径向/16步碰撞的graphed_feedback_long已经以g4/g16启动全256评价，PID31252/31253，命令在runs/v4_feedback/launches.json。
+
+11次强物理失守全部径向事件，多发生在28—57秒；完整任务/轨迹保留，无选择性删场。新增experiments.fine_guard将每通道离散档从[0,b,1]增为[0,b/2,b,(1+b)/2,1]，每艇最多25候选；保留原推力区间、源偏好公式、预测与代价，分配160唯一评分上限、12初始、1轮邻域。假设为控制分辨率不足而非单纯扩大原9项搜索深度。先在同256库进行fine_phys_w64_g16_m6及预先指定第一focused种子fine_focused_s7101_w64_g16_m6，两组用完全相同新候选与预算。代码根据实际checkpoint revision选择对应模型入口，不把已有9候选训练数据改称25候选训练。尚无结果，不能宣称改进。命令和PID登记v5_envelope/launches.json。
+
+局部候选新数据v5_guard_local在16:48完成29/76片、4采集worker；训练与验证布局继续复用。远端当前约20实际作业，RAM约30/90GiB；所有训练和评价各线程1。十小时截止仍UTC22:40:28，后续优先收齐focused/ordered闭环，局部池完成后重训，按真实闭环结果推进。
+
+
+### 新候选语义实验（UTC 2026-11-02 17:02附近）
+
+当前v5局部池24验证布局已全部完成，共329根，名义径向缺口距边界12米内49根。用focused7101对该独立验证标签做研究分析：径向MAE由保持推力4.565m降至1.208m；共同实际候选库的上包络选择平均后悔值从物理0.4069降至学习0.2086，但有明显后悔值的根数分别7与8。因此预测/排序有改善，不等同真实闭环优势。两个ordered完整种子已完成并以best进入全256闭环，选中步分别14400/3200；第三与两个消融继续完成。旧guard上包络三种子239/240/240；无上下文244、普通预测241，仍不支持候选交互归因。
+
+新增guard_shrinkage把预测随机径向差变为nominal+alpha*(predicted-nominal)，同时缩放均值残差和条件sigma，再保留名义上包络。第一focused种子alpha=.25正在全256评价；不同于此前只缩小sigma，旧版本结果保持。新增warm_guard为新数据训练提供只读初始化，优化器和更新从0开始、独立新目录和0步快照，不冒充修改数据后的断点恢复。尚未启动warm训练。
+
+更根本的新假设：原短分支在16步内保持候选系数，而实际每步重选；精确拟合该分支不保证更适合实际执行。新增experiments.recourse_guard单独记录新语义：仅首个0.2秒使用查询候选，随后每0.2秒按共同强物理g16/m6/risk64、12初始/96上限/1轮邻域重选。仍只预测真实停止前的短时径向物理距离，不使用终局价值、未来标签输入或CV；原固定系数数据不得混入该数据版本。源码与配置CITF-first-action-guard-recourse-v1独立保留，未来论文定义须按实际保留版本修改。
+
+runs/v6_recourse已经启动32训练/24标签验证布局pilot采集，根为8/16/…/72秒事前时刻，24候选、3共同未来、2 worker。布局直接复用v1_onpolicy，候选仍含行为、源中心和单艇变更，后续参考控制器仅用当前分支可观测状态。2 worker基于远端当时实际约18核使用量启动，待当前训练/评价结束再扩展训练布局。启动命令在该目录launches.json；尚无完整数据或新模型成绩。
+
+### 连续研发恢复点（UTC 2026-11-02 17:14）
+
+**仍须持续执行到本轮10小时预算内完成尽可能强的结果，不能因上下文切换或一批结束提前收工。** 截止UTC22:40:28（北京时间11月3日06:40），最后15分钟停止新长作业。用户原始请求与目标见16:03恢复点；当前只做真正的实现、训练、采样、闭环实验和研究分析，不做额外测试或哈希核验、不建周期自动化、不调用未指定技能或子代理。所有开发与负结果保留，正式冻结测试未打开。
+
+本阶段完整结果：focused三种子为238/239/238，碰撞1/0/1，明显未超强物理245；其无上下文242，普通预测240。fine_phys（25候选/160上限）为237、3碰撞、15径向失守；细化控制没有改善物理对照。fine_focused第一种子仍在运行，待完整保留。当前最佳仍guard_phys_w64_g16_m6的245/256，0碰撞，11径向失守，243捕获/2时限成功，不能把它写成Transformer学习优势。
+
+ordered三种子和两消融全部16000更新完成；五个对应256闭环均运行中。前两种子best更新14400/3200，第三3200；无上下文12800，普通预测6400。评价名ordered_s7101/7102/7103_w64_g16_m6与ordered_nocontext/predictive_s7101_w64_g16_m6，后3管理器PID34078/34079/34080，命令均在runs/v5_envelope/launches.json。对应evaluator为experiments.ordered_guard，模型在v5_envelope的训练目录/best.pt。
+
+v5_guard_local采集17:09为53/76片、4worker；前64训练布局和全部24标签验证布局已完成。利用这部分新数据加原v0+v1+v2_dense重放，runs/v6_local启动warm_focused64_s7101、warm_ordered64_s7101两个8000更新，初始分别读取各自v5第一种子best权重，优化器和计数全新，保留0/2000/4000/8000快照，验证/保存每800。PID33589/33590，17:13更新6000/6300，尚无完成status。命令在v6_local/launches.json；验证包含原池与全部v5新标签。完成后必须实际评价其best，若best是0则明确记录只沿用初始模型；不能把启动当成功。
+
+新增experiments.response_guard（已同步远端）让其他艇候选变化显式进入注意力值：历史和本艇候选确定注意力权重，其他艇的两通道融合系数相对0.5的变化线性进入值路径，读出均值与尺度参数修正；本艇自身候选响应保留非线性。删除不使用的运动/艇间/原候选图模块，保留历史Transformer、可见列表顺序和候选查询。配置CITF-control-response-attention-guard-v1，仍用focused径向目标和名义上包络。新训练runs/v6_response/response64_s7101，旧池+前64新局部布局，12000更新，0/3000/6000/12000快照，PID34081，17:13已3600更新且实际运行正常。evaluator为experiments.response_guard；匹配去上下文/普通预测及其他种子尚未启动，可在空槽补齐，不将单一pilot当稳定机制证据。
+
+新增experiments.trusted_guard（已同步）针对预测改善但闭环退化：先完整执行现有物理g16/m6的候选提议与一轮邻域，得到原物理搜索池；学习不改变池，只在完整名义代价<=该池物理最优+slack的候选中按学习上包络排序。保留源中心及全部唯一评分数，记录physical_best、全部名义代价、可选掩码和选中名义代价。不是CV或终局价值。parallel_evaluate仅新增--nominal-slack转发，既有运行中的管理器已载入参数、不改变其后续控制模块。两项完整256实验trusted_focused_s7101_slack1_w64_g16_m6与slack8已于17:14启动PID34510/34511，模型固定focused7101的best，命令在v5_envelope/launches.json；尚无成绩。第一种子残差缩放focused_s7101_shrink025_w64_g16_m6也仍在运行；可按结果补0.5或其他种子，不提前扩大无效方案。
+
+recourse数据pilot（runs/v6_recourse）17:09为8/28片、2worker，实际已经正常提交数据。train32布局、validation24，8/16/.../72秒事前根，24候选3未来。采集先16个训练分片后12验证分片；完整标签出来后用新RecourseConfig和对应entry单独训练，禁止与旧保持系数数据混合。下一步可利用释放的CPU扩到剩余训练布局，但先按实际进度决定。两项graphed_feedback_long完整256仍在运行，g4/g16、32步径向/16步避碰；命令在runs/v4_feedback/launches.json，不拿未完成分母报成功。
+
+资源17:14实际20个工作子进程：4局部采集+2recourse采集+2warm训练+1response训练+5ordered评价+2长反馈评价+1fine学习评价+1shrink评价+2trusted评价；管理器不计CPU重作业。GPU由训练和长反馈共享，RAM约30/90GiB；远端df仍65/100GB、36GB可用。训练结束后槽位先转对应真实闭环和必要匹配消融；根据实际/proc和status安排，不无限叠加。所有线程仍1。最终前须将必要结果、权重和源码同步本地，现阶段未执行本轮完整远端成果同步。
+
+继续使用SSH端口22476，远端root=/root/autodl-tmp/citf-10h-20261102，Python=/root/autodl-tmp/ARBoids/.venv/bin/python。所有本轮新增模块均在本地citf/code/experiments且已同步；不要改正在使用的citf核心、guard_prediction、pair_geometry、graphed_feedback等模块，以免同一运行后续分片混入不同源码。并行评价只有完整完成后才有聚合summary.json；tasks.jsonl和gzip轨迹保留逐任务证据。状态查询应精简输出，不输出整个长命令/整个聊天。当前原始请求所在Codex聊天标题ARBoids Pro方案执行，ID01a18884-e792-7c70-9214-f945af9dea32；有效任务为远端十小时持续研发。

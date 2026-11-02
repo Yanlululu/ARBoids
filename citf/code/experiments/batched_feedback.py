@@ -21,7 +21,6 @@ from citf.contracts import canonical_hash, file_hash
 from citf.search import initialize_bank, nominal_beam, whole_configuration_search
 
 
-@torch.jit.script
 def integrate(state: Tensor, thrust: Tensor) -> Tuple[Tensor, Tensor]:
     position, yaw, velocity = state[..., :2], state[..., 2], state[..., 3:6]
     legacy_velocity = velocity[..., :2]
@@ -43,18 +42,16 @@ def integrate(state: Tensor, thrust: Tensor) -> Tuple[Tensor, Tensor]:
     return torch.cat((position, yaw[..., None], velocity), -1), legacy_velocity
 
 
-@torch.jit.script
 def polar(vector: Tensor, yaw: Tensor) -> Tensor:
-    distance = vector.norm(dim=-1)
+    distance = vector.norm(p=2, dim=-1)
     angle = torch.atan2(vector[..., 1], vector[..., 0]) - yaw
     angle = torch.where(angle > math.pi, angle - 2 * math.pi, angle)
     angle = torch.where(angle < -math.pi, angle + 2 * math.pi, angle)
     return torch.stack((distance, angle), -1)
 
 
-@torch.jit.script
 def force_to_thrust(force: Tensor, yaw: Tensor, agility: float = 1.) -> Tensor:
-    direction = force / force.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    direction = force / force.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-12)
     c, s = yaw.cos(), yaw.sin()
     forward = c * direction[..., 0] + s * direction[..., 1]
     lateral = -s * direction[..., 0] + c * direction[..., 1]
@@ -62,12 +59,11 @@ def force_to_thrust(force: Tensor, yaw: Tensor, agility: float = 1.) -> Tensor:
     return (1000 * agility * torch.stack((forward + .75 * angle, forward - .75 * angle), -1)).clamp(-500 * agility, 1000 * agility)
 
 
-@torch.jit.script
 def source_observations(state: Tensor, legacy_velocity: Tensor) -> Tuple[Tensor, Tensor]:
     defenders = state.shape[1] - 1
     position, yaw = state[:, :-1, :2], state[:, :-1, 2]
     difference = position[:, :, None] - position[:, None]
-    distance = difference.norm(dim=-1)
+    distance = difference.norm(p=2, dim=-1)
     off_diagonal = ~torch.eye(defenders, dtype=torch.bool, device=state.device)
     neighbor = (distance < 15) & off_diagonal[None]
     separation = (difference / (distance - 3.5).clamp_min(.01).square()[..., None] * neighbor[..., None]).sum(2)
@@ -86,7 +82,6 @@ def source_observations(state: Tensor, legacy_velocity: Tensor) -> Tuple[Tensor,
     return observations, normalized_boids
 
 
-@torch.jit.script
 def attacker_thrust(state: Tensor, agility: float) -> Tensor:
     position, yaw = state[:, -1, :2], state[:, -1, 2]
     force = -.1 * position
@@ -95,7 +90,7 @@ def attacker_thrust(state: Tensor, agility: float) -> Tensor:
     # influence radius changes after each closer obstacle contributes.
     for index in range(state.shape[1] - 1):
         delta = position - state[:, index, :2]
-        norm = delta.norm(dim=-1).clamp_min(1e-12)
+        norm = delta.norm(p=2, dim=-1).clamp_min(1e-12)
         distance = (norm - 8.).clamp_min(.1)
         active = distance < influence
         magnitude = 3000 * (distance.reciprocal() - influence.reciprocal()) / distance.square()
