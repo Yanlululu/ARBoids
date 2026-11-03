@@ -60,8 +60,15 @@ def main():
     ap.add_argument('--guard-weight', type=float)
     ap.add_argument('--guard-margin', type=float)
     ap.add_argument('--guard-sigma-scale', type=float)
+    ap.add_argument('--guard-sigma-floor', type=float)
     ap.add_argument('--encounter-weight', type=float)
+    ap.add_argument('--corridor-ratio', type=float)
+    ap.add_argument('--pursuit-weight', type=float)
+    ap.add_argument('--collision-source', choices=['nominal', 'learned'])
+    ap.add_argument('--impulse-reference', action='store_true')
     ap.add_argument('--nominal-slack', type=float)
+    ap.add_argument('--ensemble-checkpoints', nargs='+')
+    ap.add_argument('--guard-combination', choices=['envelope', 'learned'])
     ap.add_argument('--workers', type=int, default=12)
     ap.add_argument('--shard-size', type=int, default=4)
     ap.add_argument('--deadline', default='2026-11-02T22:40:28+00:00')
@@ -70,16 +77,32 @@ def main():
     ap.add_argument('--bank', type=int, default=12)
     ap.add_argument('--rounds', type=int, default=1)
     ap.add_argument('--risk', default='expected', choices=['expected', 'mean_distance'])
+    ap.add_argument('--resume', action='store_true')
     a = ap.parse_args()
     out = Path(a.out).resolve()
     bank = json.loads(Path(a.tasks).read_text())
     if bank['role'] != 'validation' or a.workers < 1 or a.shard_size < 1:
         raise ValueError('A fixed development validation bank and positive counts are required')
-    out.mkdir(parents=True, exist_ok=False)
+    out.mkdir(parents=True, exist_ok=a.resume)
     deadline = datetime.datetime.fromisoformat(a.deadline).timestamp()
-    state = {'started_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-             'pid': os.getpid(), 'arguments': vars(a), 'jobs': [], 'completed': False}
-    for start in range(0, len(bank['tasks']), a.shard_size):
+    if a.resume:
+        state = json.loads((out / 'status.json').read_text())
+        stored = state['arguments']
+        for key, value in vars(a).items():
+            if key not in ('resume', 'workers', 'deadline') and stored.get(key) != value:
+                raise ValueError('Evaluation manager resume argument changed: ' + key)
+        if state['completed']:
+            print(json.dumps({'completed': True, 'already_complete': str(out)}), flush=True)
+            return
+        state.setdefault('resume_history', []).append(dict(
+            previous_pid=state['pid'], pid=os.getpid(), workers=a.workers, deadline=a.deadline,
+            started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat()))
+        state['pid'] = os.getpid()
+    else:
+        arguments = {key: value for key, value in vars(a).items() if key != 'resume'}
+        state = {'started_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                 'pid': os.getpid(), 'arguments': arguments, 'jobs': [], 'completed': False}
+    for start in ([] if a.resume else range(0, len(bank['tasks']), a.shard_size)):
         name = f'shard_{start:04d}'
         path = out / (name + '.json')
         path.write_text(json.dumps(dict(bank, tasks=bank['tasks'][start:start+a.shard_size]), indent=2))
@@ -101,16 +124,32 @@ def main():
             command += ['--guard-margin', str(a.guard_margin)]
         if a.guard_sigma_scale is not None:
             command += ['--guard-sigma-scale', str(a.guard_sigma_scale)]
+        if a.guard_sigma_floor is not None:
+            command += ['--guard-sigma-floor', str(a.guard_sigma_floor)]
         if a.encounter_weight is not None:
             command += ['--encounter-weight', str(a.encounter_weight)]
+        if a.corridor_ratio is not None:
+            command += ['--corridor-ratio', str(a.corridor_ratio)]
+        if a.pursuit_weight is not None:
+            command += ['--pursuit-weight', str(a.pursuit_weight)]
+        if a.collision_source is not None:
+            command += ['--collision-source', a.collision_source]
+        if a.impulse_reference:
+            command += ['--impulse-reference']
         if a.nominal_slack is not None:
             command += ['--nominal-slack', str(a.nominal_slack)]
+        if a.ensemble_checkpoints:
+            command += ['--ensemble-checkpoints', *a.ensemble_checkpoints]
+        if a.guard_combination is not None:
+            command += ['--guard-combination', a.guard_combination]
         state['jobs'].append({'name': name, 'command': command, 'status': 'pending'})
     lock = threading.Lock()
     def save():
         tmp = out / 'status.pending'
         tmp.write_text(json.dumps(state, indent=2)); tmp.replace(out / 'status.json')
     def execute(job):
+        if job['status'] == 'completed':
+            return
         remaining = deadline - time.time()
         if remaining <= 0:
             with lock:
@@ -118,9 +157,17 @@ def main():
             return
         env = os.environ.copy()
         env.update(OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')
-        with (out / (job['name'] + '.log')).open('w') as log:
-            process = subprocess.Popen(job['command'], env=env, stdout=log, stderr=subprocess.STDOUT)
+        command = list(job['command'])
+        if a.resume and (out / job['name'] / 'evaluation.json').is_file():
+            command.append('--resume')
+        attempt = len(state.get('resume_history', []))
+        suffix = f'.resume{attempt}.log' if a.resume else '.log'
+        with (out / (job['name'] + suffix)).open('w') as log:
+            process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
             with lock:
+                if a.resume:
+                    job.setdefault('attempts', []).append(dict(
+                        previous_status=job['status'], command=command, log=job['name'] + suffix))
                 job.update(status='running', pid=process.pid, started=time.time()); save()
             try:
                 code = process.wait(timeout=remaining)

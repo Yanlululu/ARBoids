@@ -157,25 +157,2977 @@
       "development_gain_established": false,
       "frozen_tests_opened": false
     },
-    "development_resource_choice": "user selected local execution after RAM recovers to about 4 GiB",
+    "development_resource_choice": "user authorized ten hours of continuous remote research from 2026-11-02T12:40:28Z",
     "development_start_ram_gib": 4.25,
     "remote_campaign": {
       "root": "/root/autodl-tmp/citf-10h-20261102",
       "deadline_utc": "2026-11-02T22:40:28Z",
       "fixed_source_development": true,
       "stable_gain_established": false,
-      "best_matched_physics_success": 239,
+      "best_matched_physics_success": 245,
       "validation_tasks": 256,
       "formal_tests_opened": false,
-      "latest_stage": "dense behavior data complete; three-seed guarding, matched learning ablations, critical-state sampling, longer-interval data and guarding-margin comparisons",
-      "best_development_learning_success": 241,
-      "best_learning_variant": "direct stopped radial-guard prediction",
+      "latest_stage": "ten-hour development campaign finished; stable closed-loop advantage attributable to candidate interaction remains unestablished",
+      "best_development_learning_success": 246,
+      "best_learning_variant": "precise_boundary128_width48_nll1; synchronized first-action stopped geometry",
       "latest_completed_learning_repetitions": [
-        240,
-        241
+        246,
+        246,
+        245
       ],
-      "matched_physics_success": 239,
-      "candidate_context_attribution_established": false
+      "matched_physics_success": 245,
+      "candidate_context_attribution_established": false,
+      "completed": true,
+      "latest_update_utc": "2026-11-02T22:41:37.720252+00:00",
+      "best_physics_variant": "guard_phys_w64_g16_m6; StoppedGuard-Phys-development",
+      "matched_controls": {
+        "no_context_success": 246,
+        "prediction_only_success": 245,
+        "all_collisions": 0,
+        "seed": 7101,
+        "validation_tasks": 256
+      },
+      "latest_pairing": {
+        "learning_seeds": [
+          7101,
+          7102,
+          7103
+        ],
+        "rescues": [
+          1,
+          1,
+          0
+        ],
+        "harms": [
+          0,
+          0,
+          0
+        ],
+        "common_rescued_task_index": 201
+      },
+      "local_artifact_directory": "runs/remote-10h-20261102",
+      "primary_recipe_results": {
+        "recipe": "128 training layouts; width48; NLL weight1; 16000 updates; original label selection",
+        "seeds": [
+          7101,
+          7102,
+          7103
+        ],
+        "independent_source_trainings": false,
+        "formal_tests": false,
+        "extended256": {
+          "physics": {
+            "N": 256,
+            "success": 245,
+            "capture": 243,
+            "collision": 0,
+            "physical_collision": 0,
+            "physical_breach": 0,
+            "radial_only_failure": 11,
+            "timeout": 2,
+            "capped_capture_time": 28.403124999999985,
+            "latency_mean_ms": 18.925069995981662,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.1188890176089,
+            "path": "extended/guard_phys_w64_g16_m6"
+          },
+          "full": {
+            "7101": {
+              "N": 256,
+              "success": 246,
+              "capture": 243,
+              "collision": 0,
+              "physical_collision": 0,
+              "physical_breach": 0,
+              "radial_only_failure": 10,
+              "timeout": 3,
+              "capped_capture_time": 28.403124999999985,
+              "latency_mean_ms": 28.449081471124753,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.117487989413426,
+              "path": "extended/precise_boundary128_width48_nll1_s7101_w64_g16_m6",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 1,
+                "harms": 0
+              }
+            },
+            "7102": {
+              "N": 256,
+              "success": 246,
+              "capture": 243,
+              "collision": 0,
+              "physical_collision": 0,
+              "physical_breach": 0,
+              "radial_only_failure": 10,
+              "timeout": 3,
+              "capped_capture_time": 28.201562499999984,
+              "latency_mean_ms": 28.39652387951938,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.11306488991889,
+              "path": "extended/precise_boundary128_width48_nll1_s7102_w64_g16_m6",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 1,
+                "harms": 0
+              }
+            },
+            "7103": {
+              "N": 256,
+              "success": 245,
+              "capture": 243,
+              "collision": 0,
+              "physical_collision": 0,
+              "physical_breach": 0,
+              "radial_only_failure": 11,
+              "timeout": 2,
+              "capped_capture_time": 28.403124999999985,
+              "latency_mean_ms": 28.64539238696313,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.1282422417786,
+              "path": "extended/precise_boundary128_width48_nll1_s7103_w64_g16_m6",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 0,
+                "harms": 0
+              }
+            }
+          },
+          "no_context": {
+            "7101": {
+              "N": 256,
+              "success": 246,
+              "capture": 243,
+              "collision": 0,
+              "physical_collision": 0,
+              "physical_breach": 0,
+              "radial_only_failure": 10,
+              "timeout": 3,
+              "capped_capture_time": 28.485156249999985,
+              "latency_mean_ms": 23.919673708944348,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.12855912743972,
+              "path": "extended/precise_boundary128_width48_nll1_nocontext_s7101_w64_g16_m6",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 1,
+                "harms": 0
+              }
+            },
+            "7102": {
+              "N": 256,
+              "success": 234,
+              "capture": 234,
+              "collision": 0,
+              "physical_collision": 0,
+              "physical_breach": 0,
+              "radial_only_failure": 22,
+              "timeout": 0,
+              "capped_capture_time": 29.242187499999982,
+              "latency_mean_ms": 23.99844162701173,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.144589552238806,
+              "path": "extended/precise_boundary128_width48_nll1_nocontext_s7102_w64_g16_m6",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 5,
+                "harms": 16
+              }
+            },
+            "7103": {
+              "N": 256,
+              "success": 240,
+              "capture": 240,
+              "collision": 1,
+              "physical_collision": 1,
+              "physical_breach": 1,
+              "radial_only_failure": 14,
+              "timeout": 0,
+              "capped_capture_time": 28.14218749999998,
+              "latency_mean_ms": 24.016826939762026,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.14955244297737,
+              "path": "extended/precise_boundary128_width48_nll1_nocontext_s7103_w64_g16_m6",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 7,
+                "harms": 12
+              }
+            }
+          },
+          "prediction_only": {
+            "7101": {
+              "N": 256,
+              "success": 245,
+              "capture": 244,
+              "collision": 0,
+              "physical_collision": 0,
+              "physical_breach": 0,
+              "radial_only_failure": 11,
+              "timeout": 1,
+              "capped_capture_time": 28.369531249999987,
+              "latency_mean_ms": 28.27093208504675,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.12597489200081,
+              "path": "extended/precise_boundary128_width48_nll1_predictive_s7101_w64_g16_m6",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 0,
+                "harms": 0
+              }
+            },
+            "7102": {
+              "N": 256,
+              "success": 244,
+              "capture": 242,
+              "collision": 0,
+              "physical_collision": 0,
+              "physical_breach": 0,
+              "radial_only_failure": 12,
+              "timeout": 2,
+              "capped_capture_time": 28.483593749999983,
+              "latency_mean_ms": 28.41146731734625,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.12430555555556,
+              "path": "extended/precise_boundary128_width48_nll1_predictive_s7102_w64_g16_m6",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 0,
+                "harms": 1
+              }
+            },
+            "7103": {
+              "N": 256,
+              "success": 234,
+              "capture": 234,
+              "collision": 1,
+              "physical_collision": 1,
+              "physical_breach": 1,
+              "radial_only_failure": 20,
+              "timeout": 0,
+              "capped_capture_time": 29.010156249999977,
+              "latency_mean_ms": 28.434890305538897,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.15082498526812,
+              "path": "extended/precise_boundary128_width48_nll1_predictive_s7103_w64_g16_m6",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 3,
+                "harms": 14
+              }
+            }
+          },
+          "full_ensemble": {
+            "N": 256,
+            "success": 246,
+            "capture": 244,
+            "collision": 0,
+            "physical_collision": 0,
+            "physical_breach": 0,
+            "radial_only_failure": 10,
+            "timeout": 2,
+            "capped_capture_time": 28.135937499999983,
+            "latency_mean_ms": 47.26087463438266,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.11286340797537,
+            "path": "extended/precise128_ensemble7101_7103_w64_g16_m6",
+            "paired_against_physics": {
+              "N": 256,
+              "rescues": 1,
+              "harms": 0
+            }
+          },
+          "no_context_ensemble": {
+            "N": 256,
+            "success": 241,
+            "capture": 240,
+            "collision": 2,
+            "physical_collision": 2,
+            "physical_breach": 1,
+            "radial_only_failure": 12,
+            "timeout": 1,
+            "capped_capture_time": 28.29609374999998,
+            "latency_mean_ms": 34.12397810148602,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.10030232971723,
+            "path": "extended/precise128_nocontext_ensemble7101_7103_w64_g16_m6",
+            "paired_against_physics": {
+              "N": 256,
+              "rescues": 7,
+              "harms": 11
+            }
+          },
+          "prediction_only_ensemble": {
+            "N": 256,
+            "success": 234,
+            "capture": 234,
+            "collision": 1,
+            "physical_collision": 1,
+            "physical_breach": 1,
+            "radial_only_failure": 20,
+            "timeout": 0,
+            "capped_capture_time": 29.176562499999978,
+            "latency_mean_ms": 47.274768420806446,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.15047591155367,
+            "path": "extended/precise128_predictive_ensemble7101_7103_w64_g16_m6",
+            "paired_against_physics": {
+              "N": 256,
+              "rescues": 4,
+              "harms": 15
+            }
+          },
+          "no_context_prediction_only_seed7101": {
+            "N": 256,
+            "success": 245,
+            "capture": 243,
+            "collision": 0,
+            "physical_collision": 0,
+            "physical_breach": 0,
+            "radial_only_failure": 11,
+            "timeout": 2,
+            "capped_capture_time": 28.396874999999987,
+            "latency_mean_ms": 23.98386222983704,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.1139082823952,
+            "path": "extended/precise_boundary128_width48_nll1_nocontext_predictive_s7101_w64_g16_m6",
+            "paired_against_physics": {
+              "N": 256,
+              "rescues": 0,
+              "harms": 0
+            }
+          },
+          "full_descriptive_summary": {
+            "mean_success_count": 245.66666666666666,
+            "sample_standard_deviation_success_count": 0.5773502691896257,
+            "mean_success_percentage": 95.96354166666666
+          },
+          "no_context_descriptive_summary": {
+            "mean_success_count": 240,
+            "sample_standard_deviation_success_count": 6.0,
+            "mean_success_percentage": 93.75
+          },
+          "prediction_only_descriptive_summary": {
+            "mean_success_count": 241,
+            "sample_standard_deviation_success_count": 6.082762530298219,
+            "mean_success_percentage": 94.140625
+          }
+        },
+        "second_development256": {
+          "physics": {
+            "N": 256,
+            "success": 226,
+            "capture": 223,
+            "collision": 6,
+            "physical_collision": 6,
+            "physical_breach": 0,
+            "radial_only_failure": 24,
+            "timeout": 3,
+            "capped_capture_time": 31.99609374999999,
+            "latency_mean_ms": 17.68029685878389,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.16515856001337,
+            "path": "v13_stage_selection/physical"
+          },
+          "full": {
+            "7101": {
+              "N": 256,
+              "success": 228,
+              "capture": 224,
+              "collision": 5,
+              "physical_collision": 5,
+              "physical_breach": 1,
+              "radial_only_failure": 22,
+              "timeout": 4,
+              "capped_capture_time": 31.98281249999999,
+              "latency_mean_ms": 28.58659412219155,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.188501858117476,
+              "path": "v13_stage_selection/s7101_best",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 3,
+                "harms": 1
+              }
+            },
+            "7102": {
+              "N": 256,
+              "success": 230,
+              "capture": 223,
+              "collision": 5,
+              "physical_collision": 5,
+              "physical_breach": 1,
+              "radial_only_failure": 20,
+              "timeout": 7,
+              "capped_capture_time": 31.750781249999985,
+              "latency_mean_ms": 28.429748798856508,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.184982141373865,
+              "path": "v13_stage_selection/s7102_best",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 5,
+                "harms": 1
+              }
+            },
+            "7103": {
+              "N": 256,
+              "success": 226,
+              "capture": 224,
+              "collision": 5,
+              "physical_collision": 5,
+              "physical_breach": 1,
+              "radial_only_failure": 24,
+              "timeout": 2,
+              "capped_capture_time": 31.94843749999999,
+              "latency_mean_ms": 28.373739577392957,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.194383489347516,
+              "path": "v13_stage_selection/s7103_best",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 1,
+                "harms": 1
+              }
+            }
+          },
+          "no_context": {
+            "7101": {
+              "N": 256,
+              "success": 226,
+              "capture": 224,
+              "collision": 5,
+              "physical_collision": 5,
+              "physical_breach": 3,
+              "radial_only_failure": 22,
+              "timeout": 2,
+              "capped_capture_time": 31.572656249999984,
+              "latency_mean_ms": 23.95191909381718,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.17216768223877,
+              "path": "v13_stage_selection/nocontext_s7101_best",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 5,
+                "harms": 5
+              }
+            },
+            "7102": {
+              "N": 256,
+              "success": 227,
+              "capture": 225,
+              "collision": 7,
+              "physical_collision": 7,
+              "physical_breach": 0,
+              "radial_only_failure": 22,
+              "timeout": 2,
+              "capped_capture_time": 31.307031249999984,
+              "latency_mean_ms": 24.00794121792763,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.16874016874017,
+              "path": "v13_stage_selection/nocontext_s7102_best",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 14,
+                "harms": 13
+              }
+            },
+            "7103": {
+              "N": 256,
+              "success": 222,
+              "capture": 221,
+              "collision": 5,
+              "physical_collision": 5,
+              "physical_breach": 0,
+              "radial_only_failure": 29,
+              "timeout": 1,
+              "capped_capture_time": 31.72656249999998,
+              "latency_mean_ms": 24.075528620024805,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.179587831207066,
+              "path": "v13_stage_selection/nocontext_s7103_best",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 16,
+                "harms": 20
+              }
+            }
+          },
+          "prediction_only": {
+            "7101": {
+              "N": 256,
+              "success": 229,
+              "capture": 223,
+              "collision": 5,
+              "physical_collision": 5,
+              "physical_breach": 1,
+              "radial_only_failure": 21,
+              "timeout": 6,
+              "capped_capture_time": 31.99609374999999,
+              "latency_mean_ms": 28.334847012646353,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.19707808287019,
+              "path": "v13_stage_selection/predictive_s7101_best",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 3,
+                "harms": 0
+              }
+            },
+            "7102": {
+              "N": 256,
+              "success": 231,
+              "capture": 226,
+              "collision": 5,
+              "physical_collision": 5,
+              "physical_breach": 2,
+              "radial_only_failure": 18,
+              "timeout": 5,
+              "capped_capture_time": 31.52031249999999,
+              "latency_mean_ms": 28.278846867419432,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.20530943900267,
+              "path": "v13_stage_selection/predictive_s7102_best",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 5,
+                "harms": 0
+              }
+            },
+            "7103": {
+              "N": 256,
+              "success": 233,
+              "capture": 231,
+              "collision": 6,
+              "physical_collision": 6,
+              "physical_breach": 2,
+              "radial_only_failure": 15,
+              "timeout": 2,
+              "capped_capture_time": 30.167187499999986,
+              "latency_mean_ms": 28.27601707719625,
+              "deadline_fraction": 0.0,
+              "mean_unique_candidates": 52.172600218554095,
+              "path": "v13_stage_selection/predictive_s7103_best",
+              "paired_against_physics": {
+                "N": 256,
+                "rescues": 18,
+                "harms": 11
+              }
+            }
+          },
+          "full_ensemble": {
+            "N": 256,
+            "success": 228,
+            "capture": 223,
+            "collision": 5,
+            "physical_collision": 5,
+            "physical_breach": 0,
+            "radial_only_failure": 23,
+            "timeout": 5,
+            "capped_capture_time": 31.750781249999985,
+            "latency_mean_ms": 47.121134637657946,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.1880289532294,
+            "path": "v13_stage_selection/precise128_ensemble7101_7103",
+            "paired_against_physics": {
+              "N": 256,
+              "rescues": 3,
+              "harms": 1
+            }
+          },
+          "no_context_ensemble": {
+            "N": 256,
+            "success": 230,
+            "capture": 228,
+            "collision": 6,
+            "physical_collision": 6,
+            "physical_breach": 1,
+            "radial_only_failure": 19,
+            "timeout": 2,
+            "capped_capture_time": 30.874999999999982,
+            "latency_mean_ms": 34.16063149298846,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.16520480532638,
+            "path": "v13_stage_selection/precise128_nocontext_ensemble7101_7103",
+            "paired_against_physics": {
+              "N": 256,
+              "rescues": 14,
+              "harms": 10
+            }
+          },
+          "prediction_only_ensemble": {
+            "N": 256,
+            "success": 234,
+            "capture": 231,
+            "collision": 6,
+            "physical_collision": 6,
+            "physical_breach": 1,
+            "radial_only_failure": 15,
+            "timeout": 3,
+            "capped_capture_time": 30.28515624999999,
+            "latency_mean_ms": 47.14344434863578,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.170844194906756,
+            "path": "v13_stage_selection/precise128_predictive_ensemble7101_7103",
+            "paired_against_physics": {
+              "N": 256,
+              "rescues": 19,
+              "harms": 11
+            }
+          },
+          "no_context_prediction_only_seed7101": {
+            "N": 256,
+            "success": 229,
+            "capture": 223,
+            "collision": 5,
+            "physical_collision": 5,
+            "physical_breach": 1,
+            "radial_only_failure": 21,
+            "timeout": 6,
+            "capped_capture_time": 32.00078124999999,
+            "latency_mean_ms": 24.021501945277333,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.188827954914984,
+            "path": "v13_stage_selection/nocontext_predictive_s7101_best",
+            "paired_against_physics": {
+              "N": 256,
+              "rescues": 3,
+              "harms": 0
+            }
+          },
+          "full_descriptive_summary": {
+            "mean_success_count": 228,
+            "sample_standard_deviation_success_count": 2.0,
+            "mean_success_percentage": 89.0625
+          },
+          "no_context_descriptive_summary": {
+            "mean_success_count": 225,
+            "sample_standard_deviation_success_count": 2.6457513110645907,
+            "mean_success_percentage": 87.890625
+          },
+          "prediction_only_descriptive_summary": {
+            "mean_success_count": 231,
+            "sample_standard_deviation_success_count": 2.0,
+            "mean_success_percentage": 90.234375
+          }
+        }
+      },
+      "expanded384_results_completed": {
+        "extended256": {
+          "7101": {
+            "N": 256,
+            "success": 237,
+            "capture": 236,
+            "collision": 0,
+            "physical_collision": 0,
+            "physical_breach": 0,
+            "radial_only_failure": 19,
+            "timeout": 1,
+            "capped_capture_time": 29.23046874999998,
+            "latency_mean_ms": 28.431954245809393,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.13337932620444,
+            "path": "extended/precise_boundary384_width48_nll1_u64000_s7101_w64_g16_m6"
+          },
+          "7102": {
+            "N": 256,
+            "success": 236,
+            "capture": 235,
+            "collision": 0,
+            "physical_collision": 0,
+            "physical_breach": 1,
+            "radial_only_failure": 19,
+            "timeout": 1,
+            "capped_capture_time": 29.778906249999988,
+            "latency_mean_ms": 28.28374351825784,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.16275593660105,
+            "path": "extended/precise_boundary384_width48_nll1_u64000_s7102_w64_g16_m6"
+          },
+          "7103": {
+            "N": 256,
+            "success": 244,
+            "capture": 243,
+            "collision": 0,
+            "physical_collision": 0,
+            "physical_breach": 0,
+            "radial_only_failure": 12,
+            "timeout": 1,
+            "capped_capture_time": 28.403124999999985,
+            "latency_mean_ms": 28.354091285118333,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.122933582569075,
+            "path": "extended/precise_boundary384_width48_nll1_u64000_s7103_w64_g16_m6"
+          }
+        },
+        "second_development256": {
+          "7101": {
+            "N": 256,
+            "success": 223,
+            "capture": 222,
+            "collision": 6,
+            "physical_collision": 6,
+            "physical_breach": 2,
+            "radial_only_failure": 25,
+            "timeout": 1,
+            "capped_capture_time": 31.760937499999986,
+            "latency_mean_ms": 28.291375043063923,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.18002598429645,
+            "path": "v13_stage_selection/full384_s7101_best"
+          },
+          "7102": {
+            "status": "not_completed_at_campaign_end",
+            "path": "v13_stage_selection/full384_s7102_best"
+          },
+          "7103": {
+            "status": "not_completed_at_campaign_end",
+            "path": "v13_stage_selection/full384_s7103_best"
+          }
+        },
+        "all_declared_repetitions_retained": true
+      },
+      "family_balanced_results_completed": {
+        "128_layouts": 242,
+        "384_layouts": 239,
+        "N_each": 256,
+        "collisions_each": 0
+      },
+      "long_interval_pilots_completed": {
+        "long32": 241,
+        "dual32": 240,
+        "multiscale32": 229,
+        "warmdual32": 242,
+        "matched_long_physics": 235,
+        "matched_short_physics": 245,
+        "N_each": 256,
+        "collisions": [
+          0,
+          0,
+          1,
+          1
+        ]
+      },
+      "objective_context_cross_pilot": {
+        "seed": 7101,
+        "ordinary_prediction_without_candidate_context": {
+          "extended256": 245,
+          "second_development256": 229
+        },
+        "ordinary_prediction_with_candidate_context": {
+          "extended256": 245,
+          "second_development256": 229
+        },
+        "not_three_repetitions": true
+      },
+      "control_related_objective_conclusion": "Full objective is more stable on extended256; prediction-only wins all three matched seeds on the second development bank. No consistent cross-bank gain from the extra ranking/difference objective is established.",
+      "expanded384_controls": {
+        "nocontext": {
+          "extended256": {
+            "status": "not_completed_at_campaign_end",
+            "path": "extended/precise_boundary384_width48_nll1_u64000_nocontext_s7101_w64_g16_m6"
+          },
+          "second_development256": {
+            "status": "not_completed_at_campaign_end",
+            "path": "v13_stage_selection/full384_nocontext_s7101_best"
+          }
+        },
+        "predictive": {
+          "extended256": {
+            "status": "not_completed_at_campaign_end",
+            "path": "extended/precise_boundary384_width48_nll1_u64000_predictive_s7101_w64_g16_m6"
+          },
+          "second_development256": {
+            "status": "not_completed_at_campaign_end",
+            "path": "v13_stage_selection/full384_predictive_s7101_best"
+          }
+        }
+      },
+      "family_balanced_results": {
+        "128": {
+          "N": 256,
+          "success": 242,
+          "capture": 241,
+          "collision": 0,
+          "physical_collision": 0,
+          "physical_breach": 0,
+          "radial_only_failure": 14,
+          "timeout": 1,
+          "capped_capture_time": 28.732812499999987,
+          "latency_mean_ms": 28.2500273652678,
+          "deadline_fraction": 0.0,
+          "mean_unique_candidates": 52.13168416510859,
+          "path": "extended/balanced128_width48_nll1_s7101_w64_g16_m6"
+        },
+        "384": {
+          "N": 256,
+          "success": 239,
+          "capture": 239,
+          "collision": 0,
+          "physical_collision": 0,
+          "physical_breach": 0,
+          "radial_only_failure": 17,
+          "timeout": 0,
+          "capped_capture_time": 28.857812499999984,
+          "latency_mean_ms": 28.496826485600472,
+          "deadline_fraction": 0.0,
+          "mean_unique_candidates": 52.14598072611873,
+          "path": "extended/balanced384_width48_nll1_u64000_s7101_w64_g16_m6"
+        }
+      },
+      "long_interval_results": {
+        "matched_long_physics": {
+          "N": 256,
+          "success": 235,
+          "capture": 233,
+          "collision": 0,
+          "physical_collision": 0,
+          "physical_breach": 0,
+          "radial_only_failure": 21,
+          "timeout": 2,
+          "capped_capture_time": 30.198437499999986,
+          "latency_mean_ms": 30.674132206220936,
+          "deadline_fraction": 0.0,
+          "mean_unique_candidates": 52.81918553040391,
+          "path": "extended/long_recourse_phys_w64_g16_m6"
+        },
+        "matched_short_physics": {
+          "N": 256,
+          "success": 245,
+          "capture": 243,
+          "collision": 0,
+          "physical_collision": 0,
+          "physical_breach": 0,
+          "radial_only_failure": 11,
+          "timeout": 2,
+          "capped_capture_time": 28.403124999999985,
+          "latency_mean_ms": 30.788005384342725,
+          "deadline_fraction": 0.0,
+          "mean_unique_candidates": 52.1188890176089,
+          "path": "extended/dual_interval_phys_w64_g16_m6"
+        },
+        "full": {
+          "7101": {
+            "N": 256,
+            "success": 241,
+            "capture": 239,
+            "collision": 0,
+            "physical_collision": 0,
+            "physical_breach": 0,
+            "radial_only_failure": 15,
+            "timeout": 2,
+            "capped_capture_time": 29.339843749999986,
+            "latency_mean_ms": 42.42958665708188,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.84574257425743,
+            "path": "extended/long32_width48_nll1_s7101_w64_g16_m6"
+          },
+          "7102": {
+            "N": 256,
+            "success": 235,
+            "capture": 235,
+            "collision": 1,
+            "physical_collision": 1,
+            "physical_breach": 1,
+            "radial_only_failure": 19,
+            "timeout": 0,
+            "capped_capture_time": 30.09687499999999,
+            "latency_mean_ms": 42.688066946966934,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.849055023589514,
+            "path": "extended/long32_width48_nll1_s7102_w64_g16_m6"
+          },
+          "7103": {
+            "N": 256,
+            "success": 236,
+            "capture": 233,
+            "collision": 3,
+            "physical_collision": 3,
+            "physical_breach": 1,
+            "radial_only_failure": 16,
+            "timeout": 3,
+            "capped_capture_time": 30.60937499999999,
+            "latency_mean_ms": 42.55606795181171,
+            "deadline_fraction": 0.0,
+            "mean_unique_candidates": 52.8573193498792,
+            "path": "extended/long32_width48_nll1_s7103_w64_g16_m6"
+          }
+        },
+        "no_context_seed7101": {
+          "N": 256,
+          "success": 231,
+          "capture": 229,
+          "collision": 0,
+          "physical_collision": 0,
+          "physical_breach": 1,
+          "radial_only_failure": 24,
+          "timeout": 2,
+          "capped_capture_time": 31.05078124999999,
+          "latency_mean_ms": 38.07958050333972,
+          "deadline_fraction": 0.0,
+          "mean_unique_candidates": 52.88770560659025,
+          "path": "extended/long32_width48_nll1_nocontext_s7101_w64_g16_m6"
+        },
+        "prediction_only_seed7101": {
+          "N": 256,
+          "success": 232,
+          "capture": 232,
+          "collision": 1,
+          "physical_collision": 1,
+          "physical_breach": 0,
+          "radial_only_failure": 23,
+          "timeout": 0,
+          "capped_capture_time": 30.497656249999988,
+          "latency_mean_ms": 42.66636872028863,
+          "deadline_fraction": 0.0,
+          "mean_unique_candidates": 52.86735122128648,
+          "path": "extended/long32_width48_nll1_predictive_s7101_w64_g16_m6"
+        },
+        "dual32": {
+          "N": 256,
+          "success": 240,
+          "capture": 239,
+          "collision": 0,
+          "physical_collision": 0,
+          "physical_breach": 0,
+          "radial_only_failure": 16,
+          "timeout": 1,
+          "capped_capture_time": 29.186718749999986,
+          "latency_mean_ms": 42.83244415238214,
+          "deadline_fraction": 0.0,
+          "mean_unique_candidates": 52.17462479076234,
+          "path": "extended/dual32_width48_nll1_s7101_w64_g16_m6"
+        },
+        "multiscale32": {
+          "N": 256,
+          "success": 229,
+          "capture": 229,
+          "collision": 1,
+          "physical_collision": 1,
+          "physical_breach": 0,
+          "radial_only_failure": 26,
+          "timeout": 0,
+          "capped_capture_time": 31.261718749999982,
+          "latency_mean_ms": 43.861064115041714,
+          "deadline_fraction": 0.0,
+          "mean_unique_candidates": 52.614501195153444,
+          "path": "extended/multiscale32_width48_nll1_s7101_w64_g16_m6"
+        },
+        "warmdual32": {
+          "N": 256,
+          "success": 242,
+          "capture": 242,
+          "collision": 1,
+          "physical_collision": 1,
+          "physical_breach": 0,
+          "radial_only_failure": 13,
+          "timeout": 0,
+          "capped_capture_time": 29.29140624999999,
+          "latency_mean_ms": 42.632000006095495,
+          "deadline_fraction": 0.0,
+          "mean_unique_candidates": 52.158146419218944,
+          "path": "extended/warmdual32_width48_nll1_s7101_w64_g16_m6"
+        }
+      },
+      "campaign_artifact_counts": {
+        "completed_evaluations": 242,
+        "completed_256_task_evaluations": 228,
+        "total_evaluated_task_executions": 58464,
+        "completed_training_output_directories": 130,
+        "sum_of_saved_update_counters": 2041200,
+        "directory_counts_are_not_independent_training_runs": true,
+        "independent_source_trainings": 0,
+        "incomplete_evaluation_outputs": [
+          {
+            "path": "extended/stage_selected_s7102_u006000_w64_g16_m6",
+            "jobs": {
+              "completed": 2,
+              "terminated_duplicate_evaluation": 1,
+              "not_started_reused": 61
+            }
+          },
+          {
+            "path": "extended/v4_guard_fixed_s7101_w64_g4_m6",
+            "jobs": {
+              "completed": 58,
+              "stopped_duplicate": 1,
+              "not_started_duplicate": 5
+            }
+          },
+          {
+            "path": "extended/v4_guard_zero_w64_g4_m6",
+            "jobs": {
+              "completed": 59,
+              "stopped_duplicate": 1,
+              "not_started_duplicate": 4
+            }
+          },
+          {
+            "path": "v4_feedback/feedback32_w64_g0_m6",
+            "jobs": {
+              "failed": 8
+            }
+          },
+          {
+            "path": "v4_feedback/feedback32_w64_g0_m6_r2",
+            "jobs": {
+              "stopped_slow_startup": 8
+            }
+          },
+          {
+            "path": "v4_feedback/feedback32_w64_g0_m6_r3",
+            "jobs": {
+              "completed": 3,
+              "superseded_by_graph_execution": 5
+            }
+          },
+          {
+            "path": "v4_feedback/feedback32_w64_g4_m6",
+            "jobs": {
+              "failed": 8
+            }
+          },
+          {
+            "path": "v4_feedback/feedback32_w64_g4_m6_r2",
+            "jobs": {
+              "stopped_slow_startup": 8
+            }
+          },
+          {
+            "path": "v4_feedback/feedback32_w64_g4_m6_r3",
+            "jobs": {
+              "completed": 3,
+              "superseded_by_graph_execution": 5
+            }
+          }
+        ]
+      },
+      "collection_statuses": {
+        "v1": {
+          "completed": true,
+          "jobs": {
+            "completed": 152
+          }
+        },
+        "v12_data": {
+          "completed": true,
+          "jobs": {
+            "completed": 128
+          }
+        },
+        "v17_onpolicy": {
+          "completed": false,
+          "jobs": {
+            "completed": 30,
+            "failed": 2
+          }
+        },
+        "v18_long_recourse": {
+          "completed": true,
+          "jobs": {
+            "completed": 44
+          }
+        },
+        "v1_onpolicy": {
+          "completed": true,
+          "jobs": {
+            "completed": 76
+          }
+        },
+        "v2_dense": {
+          "completed": true,
+          "jobs": {
+            "completed": 76
+          }
+        },
+        "v3_long": {
+          "completed": false,
+          "jobs": {
+            "stopped_for_candidate_proposal_correction": 4,
+            "not_started_superseded": 72
+          }
+        },
+        "v3_long_matched": {
+          "completed": true,
+          "jobs": {
+            "completed": 76
+          }
+        },
+        "v5_guard_local": {
+          "completed": true,
+          "jobs": {
+            "completed": 76
+          }
+        },
+        "v6_recourse": {
+          "completed": true,
+          "jobs": {
+            "completed": 28
+          }
+        },
+        "v6_recourse_extra": {
+          "completed": true,
+          "jobs": {
+            "completed": 48
+          }
+        },
+        "v7_recourse_boundary": {
+          "completed": true,
+          "jobs": {
+            "completed": 76
+          }
+        }
+      },
+      "paper_final_goal_completed": false,
+      "provisional_retained_recipe": "128-layout width48 NLL1 synchronized first-action geometry; retain full-objective and prediction-only candidates, every seed7101--7103 and their equal-weight ensembles; not formally frozen",
+      "training_launch_cutoff_utc": "2026-11-02T22:20:28Z",
+      "regular_evaluation_launch_cutoff_utc": "2026-11-02T22:32:28Z",
+      "last_evaluation_launch_utc": "2026-11-02T22:33:11.929069Z",
+      "last_bounded_launch_exception": "Already-trained expanded384 seed7103, six newly released workers, same hard 22:40:28 deadline; no new training.",
+      "next_development_basis": "More data, family-balanced exposure and longer prediction did not establish superiority to the strongest matched short physical controller. Improve the reliable, action-dependent geometric signal and its decision use before expanding independent formal training.",
+      "all_launched_compute_ended_before_deadline": true,
+      "no_active_campaign_processes_observed_utc": "2026-11-02T22:39:39.843322Z",
+      "final_local_transfer": {
+        "completed_paths": 2894,
+        "pending_paths": 0,
+        "metadata_and_partial_paths": 4184,
+        "metadata_synced_utc": "2026-11-02T22:40:09.216317+00:00",
+        "transfer_processes_exit_code": 0
+      },
+      "unstarted_evaluations": [
+        "expanded384 seed7102 second development bank",
+        "expanded384 seed7103 second development bank",
+        "expanded384 no-context seed7101 both development banks",
+        "expanded384 prediction-only seed7101 both development banks"
+      ],
+      "onpolicy64_training_status": "not_started; only60_of64_acquisition_layouts_completed_before_acquisition_deadline"
+    },
+    "remote_innovation_campaign": {
+      "start_utc": "2026-11-03T03:58:22+00:00",
+      "deadline_utc": "2026-11-03T13:58:22+00:00",
+      "updated_utc": "2026-11-03T14:00:17.450425+00:00",
+      "status": "completed_authorized_10_hour_window",
+      "phase": "fixed-source algorithm development; formal campaign not started",
+      "objective": "Strengthen candidate-interaction learning, preserve effective task-policy gains and reduce newly introduced radial failures",
+      "remote_root": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103",
+      "local_results": "runs/remote-10h-20261102/innovation_20261103",
+      "common_complete_tasks": 512,
+      "physical_reference": {
+        "success": 471,
+        "extended": 245,
+        "v13_stage_selection": 226,
+        "collision": 6,
+        "capped_capture_time": 30.19960937499998,
+        "identity": "extended/guard_phys_w64_g16_m6 and v13_stage_selection/physical"
+      },
+      "completed_joint_policy_seeds": [
+        {
+          "seed": 7101,
+          "revision": "CITF-synchronized-current-configuration-policy-v1",
+          "success": 479,
+          "extended": 241,
+          "v13_stage_selection": 238,
+          "collision": 4,
+          "rescues": 33,
+          "harms": 25,
+          "radial_harms": 24,
+          "capped_capture_time": 26.841015624999976,
+          "checkpoint": "configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt"
+        },
+        {
+          "seed": 7102,
+          "revision": "CITF-synchronized-current-configuration-policy-v1",
+          "success": 473,
+          "extended": 243,
+          "v13_stage_selection": 230,
+          "collision": 7,
+          "rescues": 32,
+          "harms": 30,
+          "radial_harms": 25,
+          "capped_capture_time": 27.826171874999982,
+          "checkpoint": "configuration_policy_joint_geometry_s7102/synchronized_deployment_scale2.pt"
+        },
+        {
+          "seed": 7103,
+          "revision": "CITF-synchronized-current-configuration-policy-v1",
+          "success": 470,
+          "extended": 234,
+          "v13_stage_selection": 236,
+          "collision": 10,
+          "rescues": 33,
+          "harms": 34,
+          "radial_harms": 26,
+          "capped_capture_time": 30.43320312499999,
+          "checkpoint": "configuration_policy_joint_geometry_s7103/synchronized_deployment_scale2.pt"
+        }
+      ],
+      "completed_negative_refinements": {
+        "greedy_readout": {
+          "success": 476,
+          "extended": 241,
+          "v13_stage_selection": 235
+        },
+        "physical_KL_selection128_u80": {
+          "success": 476,
+          "extended": 237,
+          "v13_stage_selection": 239,
+          "collision": 6
+        },
+        "all3_equal_logits": {
+          "N": 512,
+          "success": 475,
+          "collision": 7,
+          "capped_capture_time": 27.78515624999998
+        },
+        "all3_equal_probabilities": {
+          "N": 512,
+          "success": 468,
+          "collision": 7,
+          "capped_capture_time": 28.802343749999984
+        },
+        "capped_capture_reference": {
+          "N": 512,
+          "success": 470,
+          "extended": 238,
+          "v13_stage_selection": 232,
+          "collision": 8
+        }
+      },
+      "semantic_correction": {
+        "module": "code/experiments/synchronized_configuration_policy.py",
+        "revision": "CITF-synchronized-current-configuration-policy-v1",
+        "status": "complete_three_frozen_weight_deployments_and_independent_retraining",
+        "pid": 118674,
+        "iterations": 160,
+        "episodes": 1280,
+        "validation_stages": [
+          0,
+          40,
+          80,
+          120,
+          160
+        ],
+        "physical_initial_and_learned_full_banks_registered": true,
+        "selection128": {
+          "completed_utc": "2026-11-03T12:12:56.812859+00:00",
+          "all_declared_stages": [
+            {
+              "update": 0,
+              "evaluation": "configuration_policy_synchronized_s7101_stage000000_selection128",
+              "success": 117,
+              "collision": 2,
+              "capped_capture_time": 29.467187499999994,
+              "N": 128,
+              "common_initial": false
+            },
+            {
+              "update": 40,
+              "evaluation": "configuration_policy_synchronized_s7101_stage000040_selection128",
+              "success": 103,
+              "collision": 4,
+              "capped_capture_time": 35.88281249999999,
+              "N": 128,
+              "common_initial": false
+            },
+            {
+              "update": 80,
+              "evaluation": "configuration_policy_synchronized_s7101_stage000080_selection128",
+              "success": 116,
+              "collision": 3,
+              "capped_capture_time": 29.14218749999999,
+              "N": 128,
+              "common_initial": false
+            },
+            {
+              "update": 120,
+              "evaluation": "configuration_policy_synchronized_s7101_stage000120_selection128",
+              "success": 111,
+              "collision": 2,
+              "capped_capture_time": 29.954687499999984,
+              "N": 128,
+              "common_initial": false
+            },
+            {
+              "update": 160,
+              "evaluation": "configuration_policy_synchronized_s7101_stage000160_selection128",
+              "success": 113,
+              "collision": 3,
+              "capped_capture_time": 30.234374999999986,
+              "N": 128,
+              "common_initial": false
+            }
+          ],
+          "selected_update": 0,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_synchronized_s7101/stage_000000_scale2.pt",
+          "rule": "highest success, fewer collisions, shorter capped capture time",
+          "original24_selected_update": 140,
+          "full_evaluation": [
+            "configuration_policy_synchronized_s7101_initial_extended",
+            "configuration_policy_synchronized_s7101_initial_v13_stage_selection"
+          ],
+          "no_duplicate_evaluation_basis": "Selected declared common initial policy; reuse its actual complete evaluations without copying or relabelling results.",
+          "phase": "development selection; no formal test"
+        },
+        "frozen_weight_deployment": {
+          "registered_utc": "2026-11-03T12:15:28.950366+00:00",
+          "rationale": "Separate semantic correction from training instability while retaining all three original useful learned policy seeds.",
+          "seeds": [
+            7101,
+            7102,
+            7103
+          ],
+          "derivations": [
+            {
+              "source_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/validation_selected_u000060_scale2.pt",
+              "derived_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt",
+              "seed": 7101,
+              "selected_update": 60,
+              "original_revision": "CITF-joint-current-configuration-policy-v1",
+              "deployment_revision": "CITF-synchronized-current-configuration-policy-v1",
+              "change": "physical candidate search, prior and scalar gap now use max-time min-valid-defender coverage",
+              "selected_weights_unchanged": true,
+              "additional_training_episodes": 0,
+              "role": "frozen-weight deployment semantic correction; not retraining or transfer of old scores",
+              "phase": "fixed-source development",
+              "created_utc": "2026-11-03T12:15:28.847050+00:00"
+            },
+            {
+              "source_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7102/selected_scale2.pt",
+              "derived_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7102/synchronized_deployment_scale2.pt",
+              "seed": 7102,
+              "selected_update": 140,
+              "original_revision": "CITF-joint-current-configuration-policy-v1",
+              "deployment_revision": "CITF-synchronized-current-configuration-policy-v1",
+              "change": "physical candidate search, prior and scalar gap now use max-time min-valid-defender coverage",
+              "selected_weights_unchanged": true,
+              "additional_training_episodes": 0,
+              "role": "frozen-weight deployment semantic correction; not retraining or transfer of old scores",
+              "phase": "fixed-source development",
+              "created_utc": "2026-11-03T12:15:28.890428+00:00"
+            },
+            {
+              "source_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7103/selected_scale2.pt",
+              "derived_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7103/synchronized_deployment_scale2.pt",
+              "seed": 7103,
+              "selected_update": 80,
+              "original_revision": "CITF-joint-current-configuration-policy-v1",
+              "deployment_revision": "CITF-synchronized-current-configuration-policy-v1",
+              "change": "physical candidate search, prior and scalar gap now use max-time min-valid-defender coverage",
+              "selected_weights_unchanged": true,
+              "additional_training_episodes": 0,
+              "role": "frozen-weight deployment semantic correction; not retraining or transfer of old scores",
+              "phase": "fixed-source development",
+              "created_utc": "2026-11-03T12:15:28.930259+00:00"
+            }
+          ],
+          "queued_evaluations": [
+            "configuration_policy_synchronized_deploy_s7101_extended",
+            "configuration_policy_synchronized_deploy_s7101_v13_stage_selection",
+            "configuration_policy_synchronized_deploy_s7102_extended",
+            "configuration_policy_synchronized_deploy_s7102_v13_stage_selection",
+            "configuration_policy_synchronized_deploy_s7103_extended",
+            "configuration_policy_synchronized_deploy_s7103_v13_stage_selection"
+          ],
+          "comparison": "Each original selected policy versus corrected deployment on both identical 256-task development banks; also corrected physical and independently retrained synchronized controls.",
+          "selection": "Unchanged original validation selection and scale2; no selection using the new endpoint results.",
+          "source_task_and_candidate_budget_unchanged": true,
+          "training_cost": "Reuse already-recorded original independent training; no new updates.",
+          "completed_by_seed": {
+            "7101": {
+              "completed_utc": "2026-11-03T12:33:03.505580+00:00",
+              "seed": 7101,
+              "N": 512,
+              "rows": [
+                {
+                  "bank": "extended",
+                  "evaluation": "configuration_policy_synchronized_deploy_s7101_extended",
+                  "N": 256,
+                  "success": 241,
+                  "capture": 240,
+                  "collision": 0,
+                  "capped_capture_time": 27.51796874999998,
+                  "original_success": 241,
+                  "synchronized_physical_success": 245,
+                  "radial_failure": 15,
+                  "against_original_seed": {
+                    "rescues": 0,
+                    "harms": 0,
+                    "radial_harms": 0,
+                    "collision_harms": 0
+                  },
+                  "against_synchronized_physical": {
+                    "rescues": 10,
+                    "harms": 14,
+                    "radial_harms": 14,
+                    "collision_harms": 0
+                  }
+                },
+                {
+                  "bank": "v13_stage_selection",
+                  "evaluation": "configuration_policy_synchronized_deploy_s7101_v13_stage_selection",
+                  "N": 256,
+                  "success": 238,
+                  "capture": 238,
+                  "collision": 4,
+                  "capped_capture_time": 26.164062499999975,
+                  "original_success": 238,
+                  "synchronized_physical_success": 226,
+                  "radial_failure": 14,
+                  "against_original_seed": {
+                    "rescues": 0,
+                    "harms": 0,
+                    "radial_harms": 0,
+                    "collision_harms": 0
+                  },
+                  "against_synchronized_physical": {
+                    "rescues": 23,
+                    "harms": 11,
+                    "radial_harms": 10,
+                    "collision_harms": 1
+                  }
+                }
+              ],
+              "success": 479,
+              "collision": 4,
+              "original_success": 479,
+              "synchronized_physical_success": 471,
+              "capped_capture_time": 26.841015624999976,
+              "against_original_seed": {
+                "rescues": 0,
+                "harms": 0,
+                "radial_harms": 0,
+                "collision_harms": 0
+              },
+              "against_synchronized_physical": {
+                "rescues": 33,
+                "harms": 25,
+                "radial_harms": 24,
+                "collision_harms": 1
+              }
+            },
+            "7102": {
+              "completed_utc": "2026-11-03T12:37:22.859231+00:00",
+              "seed": 7102,
+              "N": 512,
+              "rows": [
+                {
+                  "bank": "extended",
+                  "evaluation": "configuration_policy_synchronized_deploy_s7102_extended",
+                  "N": 256,
+                  "success": 243,
+                  "capture": 240,
+                  "collision": 0,
+                  "capped_capture_time": 27.317187499999985,
+                  "original_success": 243,
+                  "synchronized_physical_success": 245,
+                  "radial_failure": 11,
+                  "against_original_seed": {
+                    "rescues": 0,
+                    "harms": 0,
+                    "radial_harms": 0,
+                    "collision_harms": 0
+                  },
+                  "against_synchronized_physical": {
+                    "rescues": 9,
+                    "harms": 11,
+                    "radial_harms": 10,
+                    "collision_harms": 0
+                  }
+                },
+                {
+                  "bank": "v13_stage_selection",
+                  "evaluation": "configuration_policy_synchronized_deploy_s7102_v13_stage_selection",
+                  "N": 256,
+                  "success": 230,
+                  "capture": 230,
+                  "collision": 7,
+                  "capped_capture_time": 28.33515624999998,
+                  "original_success": 231,
+                  "synchronized_physical_success": 226,
+                  "radial_failure": 18,
+                  "against_original_seed": {
+                    "rescues": 0,
+                    "harms": 1,
+                    "radial_harms": 1,
+                    "collision_harms": 0
+                  },
+                  "against_synchronized_physical": {
+                    "rescues": 23,
+                    "harms": 19,
+                    "radial_harms": 15,
+                    "collision_harms": 3
+                  }
+                }
+              ],
+              "success": 473,
+              "collision": 7,
+              "original_success": 474,
+              "synchronized_physical_success": 471,
+              "capped_capture_time": 27.826171874999982,
+              "against_original_seed": {
+                "rescues": 0,
+                "harms": 1,
+                "radial_harms": 1,
+                "collision_harms": 0
+              },
+              "against_synchronized_physical": {
+                "rescues": 32,
+                "harms": 30,
+                "radial_harms": 25,
+                "collision_harms": 3
+              }
+            },
+            "7103": {
+              "completed_utc": "2026-11-03T12:40:22.347237+00:00",
+              "seed": 7103,
+              "N": 512,
+              "rows": [
+                {
+                  "bank": "extended",
+                  "evaluation": "configuration_policy_synchronized_deploy_s7103_extended",
+                  "N": 256,
+                  "success": 234,
+                  "capture": 234,
+                  "collision": 2,
+                  "capped_capture_time": 30.390624999999993,
+                  "original_success": 235,
+                  "synchronized_physical_success": 245,
+                  "radial_failure": 19,
+                  "against_original_seed": {
+                    "rescues": 0,
+                    "harms": 1,
+                    "radial_harms": 1,
+                    "collision_harms": 0
+                  },
+                  "against_synchronized_physical": {
+                    "rescues": 8,
+                    "harms": 19,
+                    "radial_harms": 16,
+                    "collision_harms": 2
+                  }
+                },
+                {
+                  "bank": "v13_stage_selection",
+                  "evaluation": "configuration_policy_synchronized_deploy_s7103_v13_stage_selection",
+                  "N": 256,
+                  "success": 236,
+                  "capture": 235,
+                  "collision": 8,
+                  "capped_capture_time": 30.47578124999999,
+                  "original_success": 236,
+                  "synchronized_physical_success": 226,
+                  "radial_failure": 12,
+                  "against_original_seed": {
+                    "rescues": 0,
+                    "harms": 0,
+                    "radial_harms": 0,
+                    "collision_harms": 0
+                  },
+                  "against_synchronized_physical": {
+                    "rescues": 25,
+                    "harms": 15,
+                    "radial_harms": 10,
+                    "collision_harms": 5
+                  }
+                }
+              ],
+              "success": 470,
+              "collision": 10,
+              "original_success": 471,
+              "synchronized_physical_success": 471,
+              "capped_capture_time": 30.43320312499999,
+              "against_original_seed": {
+                "rescues": 0,
+                "harms": 1,
+                "radial_harms": 1,
+                "collision_harms": 0
+              },
+              "against_synchronized_physical": {
+                "rescues": 33,
+                "harms": 34,
+                "radial_harms": 26,
+                "collision_harms": 7
+              }
+            }
+          },
+          "all_three_complete": true,
+          "all_seed_successes": [
+            479,
+            473,
+            470
+          ],
+          "mean_successes": 474.0,
+          "no_extra_training": true
+        },
+        "independent_retraining_original24": {
+          "completed_utc": "2026-11-03T12:33:04.953105+00:00",
+          "phase": "fixed-source development, not formal test",
+          "rows": [
+            {
+              "bank": "extended",
+              "evaluation": "configuration_policy_synchronized_s7101_scale2_extended",
+              "N": 256,
+              "success": 225,
+              "capture": 224,
+              "collision": 4,
+              "capped_capture_time": 31.93359374999999,
+              "radial_failure": 27,
+              "against_physical": {
+                "rescues": 7,
+                "harms": 27,
+                "radial_harms": 23,
+                "collision_harms": 4
+              },
+              "against_joint7101": {
+                "rescues": 13,
+                "harms": 29,
+                "radial_harms": 25,
+                "collision_harms": 4
+              }
+            },
+            {
+              "bank": "v13_stage_selection",
+              "evaluation": "configuration_policy_synchronized_s7101_scale2_v13_stage_selection",
+              "N": 256,
+              "success": 232,
+              "capture": 232,
+              "collision": 5,
+              "capped_capture_time": 28.997656249999984,
+              "radial_failure": 19,
+              "against_physical": {
+                "rescues": 22,
+                "harms": 16,
+                "radial_harms": 14,
+                "collision_harms": 2
+              },
+              "against_joint7101": {
+                "rescues": 14,
+                "harms": 20,
+                "radial_harms": 18,
+                "collision_harms": 2
+              }
+            }
+          ],
+          "N": 512,
+          "success": 457,
+          "collision": 9,
+          "capture": 456,
+          "capped_capture_time": 30.46562499999999,
+          "against_physical": {
+            "rescues": 29,
+            "harms": 43,
+            "radial_harms": 37,
+            "collision_harms": 6
+          },
+          "against_joint7101": {
+            "rescues": 27,
+            "harms": 49,
+            "radial_harms": 43,
+            "collision_harms": 6
+          }
+        },
+        "physical_complete": {
+          "completed_utc": "2026-11-03T12:25:31.255102+00:00",
+          "phase": "fixed-source development, not formal test",
+          "rows": [
+            {
+              "bank": "extended",
+              "evaluation": "configuration_policy_synchronized_s7101_initial_extended",
+              "N": 256,
+              "success": 245,
+              "capture": 243,
+              "collision": 0,
+              "capped_capture_time": 28.407812499999984,
+              "radial_failure": 11,
+              "against_physical": {
+                "rescues": 0,
+                "harms": 0,
+                "radial_harms": 0,
+                "collision_harms": 0
+              },
+              "against_joint7101": {
+                "rescues": 14,
+                "harms": 10,
+                "radial_harms": 10,
+                "collision_harms": 0
+              }
+            },
+            {
+              "bank": "v13_stage_selection",
+              "evaluation": "configuration_policy_synchronized_s7101_initial_v13_stage_selection",
+              "N": 256,
+              "success": 226,
+              "capture": 223,
+              "collision": 6,
+              "capped_capture_time": 31.99609374999999,
+              "radial_failure": 24,
+              "against_physical": {
+                "rescues": 0,
+                "harms": 0,
+                "radial_harms": 0,
+                "collision_harms": 0
+              },
+              "against_joint7101": {
+                "rescues": 11,
+                "harms": 23,
+                "radial_harms": 20,
+                "collision_harms": 3
+              }
+            }
+          ],
+          "N": 512,
+          "success": 471,
+          "collision": 6,
+          "capture": 466,
+          "capped_capture_time": 30.20195312499999,
+          "against_physical": {
+            "rescues": 0,
+            "harms": 0,
+            "radial_harms": 0,
+            "collision_harms": 0
+          },
+          "against_joint7101": {
+            "rescues": 25,
+            "harms": 33,
+            "radial_harms": 30,
+            "collision_harms": 3
+          }
+        }
+      },
+      "fixed_reference_search": {
+        "module": "code/experiments/reference_bank_configuration_policy.py",
+        "status": "completed_two_full_banks",
+        "weights_unchanged": true,
+        "same_composed_budget": 160,
+        "result": {
+          "completed_utc": "2026-11-03T13:10:52.119815+00:00",
+          "phase": "fixed-source development, not formal test",
+          "rows": [
+            {
+              "bank": "extended",
+              "evaluation": "configuration_policy_reference_bank160_learned_s7101_extended",
+              "N": 256,
+              "success": 241,
+              "capture": 239,
+              "collision": 2,
+              "capped_capture_time": 27.585156249999983,
+              "radial_failure": 12,
+              "against_physical": {
+                "rescues": 10,
+                "harms": 14,
+                "radial_harms": 11,
+                "collision_harms": 2
+              },
+              "against_joint7101": {
+                "rescues": 12,
+                "harms": 12,
+                "radial_harms": 10,
+                "collision_harms": 1
+              }
+            },
+            {
+              "bank": "v13_stage_selection",
+              "evaluation": "configuration_policy_reference_bank160_learned_s7101_v13_stage_selection",
+              "N": 256,
+              "success": 232,
+              "capture": 231,
+              "collision": 3,
+              "capped_capture_time": 28.157031249999985,
+              "radial_failure": 20,
+              "against_physical": {
+                "rescues": 25,
+                "harms": 19,
+                "radial_harms": 17,
+                "collision_harms": 1
+              },
+              "against_joint7101": {
+                "rescues": 14,
+                "harms": 20,
+                "radial_harms": 18,
+                "collision_harms": 1
+              }
+            }
+          ],
+          "N": 512,
+          "success": 473,
+          "collision": 5,
+          "capture": 470,
+          "capped_capture_time": 27.871093749999986,
+          "against_physical": {
+            "rescues": 35,
+            "harms": 33,
+            "radial_harms": 28,
+            "collision_harms": 3
+          },
+          "against_joint7101": {
+            "rescues": 26,
+            "harms": 32,
+            "radial_harms": 28,
+            "collision_harms": 2
+          }
+        },
+        "matched_composed_physical": {
+          "completed_utc": "2026-11-03T12:53:50.475754+00:00",
+          "phase": "fixed-source development, not formal test",
+          "rows": [
+            {
+              "bank": "extended",
+              "evaluation": "configuration_policy_composed160_physical_s7101_extended",
+              "N": 256,
+              "success": 237,
+              "capture": 234,
+              "collision": 0,
+              "capped_capture_time": 30.020312499999985,
+              "radial_failure": 18,
+              "against_physical": {
+                "rescues": 6,
+                "harms": 14,
+                "radial_harms": 14,
+                "collision_harms": 0
+              },
+              "against_joint7101": {
+                "rescues": 12,
+                "harms": 16,
+                "radial_harms": 15,
+                "collision_harms": 0
+              }
+            },
+            {
+              "bank": "v13_stage_selection",
+              "evaluation": "configuration_policy_composed160_physical_s7101_v13_stage_selection",
+              "N": 256,
+              "success": 222,
+              "capture": 222,
+              "collision": 8,
+              "capped_capture_time": 31.65859374999998,
+              "radial_failure": 25,
+              "against_physical": {
+                "rescues": 17,
+                "harms": 21,
+                "radial_harms": 16,
+                "collision_harms": 4
+              },
+              "against_joint7101": {
+                "rescues": 12,
+                "harms": 28,
+                "radial_harms": 23,
+                "collision_harms": 4
+              }
+            }
+          ],
+          "N": 512,
+          "success": 459,
+          "collision": 8,
+          "capture": 456,
+          "capped_capture_time": 30.839453124999984,
+          "against_physical": {
+            "rescues": 23,
+            "harms": 35,
+            "radial_harms": 30,
+            "collision_harms": 4
+          },
+          "against_joint7101": {
+            "rescues": 24,
+            "harms": 44,
+            "radial_harms": 38,
+            "collision_harms": 4
+          }
+        },
+        "floating_statistics_result": {
+          "completed_utc": "2026-11-03T13:13:50.390180+00:00",
+          "phase": "fixed-source development, not formal test",
+          "rows": [
+            {
+              "bank": "extended",
+              "evaluation": "configuration_policy_composed160_learned_s7101_extended",
+              "N": 256,
+              "success": 231,
+              "capture": 230,
+              "collision": 3,
+              "capped_capture_time": 28.71171874999998,
+              "radial_failure": 21,
+              "against_physical": {
+                "rescues": 8,
+                "harms": 22,
+                "radial_harms": 18,
+                "collision_harms": 3
+              },
+              "against_joint7101": {
+                "rescues": 11,
+                "harms": 21,
+                "radial_harms": 18,
+                "collision_harms": 2
+              }
+            },
+            {
+              "bank": "v13_stage_selection",
+              "evaluation": "configuration_policy_composed160_learned_s7101_v13_stage_selection",
+              "N": 256,
+              "success": 236,
+              "capture": 236,
+              "collision": 3,
+              "capped_capture_time": 27.108593749999983,
+              "radial_failure": 14,
+              "against_physical": {
+                "rescues": 24,
+                "harms": 14,
+                "radial_harms": 11,
+                "collision_harms": 1
+              },
+              "against_joint7101": {
+                "rescues": 13,
+                "harms": 15,
+                "radial_harms": 12,
+                "collision_harms": 0
+              }
+            }
+          ],
+          "N": 512,
+          "success": 467,
+          "collision": 6,
+          "capture": 466,
+          "capped_capture_time": 27.910156249999982,
+          "against_physical": {
+            "rescues": 32,
+            "harms": 36,
+            "radial_harms": 29,
+            "collision_harms": 4
+          },
+          "against_joint7101": {
+            "rescues": 24,
+            "harms": 36,
+            "radial_harms": 30,
+            "collision_harms": 2
+          }
+        }
+      },
+      "radial_diagnostic": {
+        "module": "code/experiments/diagnose_radial_choices.py",
+        "status": "late_and_first_approach_paired_diagnostics_completed",
+        "roots": 12,
+        "scope": "outcome-selected mechanism diagnosis; held short branches and independent-future one-action learned continuations remain distinct",
+        "late_roots_per_continuation": 12,
+        "early_roots_per_continuation": 12,
+        "continuations": [
+          "original_learned_policy",
+          "physical_replanning"
+        ],
+        "interpretation": "Late tried interventions did not rescue the selected harms; early same-state branches were mostly recoverable, with no uniformly best candidate. Outcome-selected mechanism data is not a population success estimate."
+      },
+      "mechanism_controls": {
+        "no_context": {
+          "N": 512,
+          "success": 456,
+          "collision": 8,
+          "capped_capture_time": 30.220312499999988,
+          "against_physical": {
+            "rescues": 28,
+            "harms": 43,
+            "radial_harms": 39,
+            "collision_harms": 3
+          },
+          "against_joint7101": {
+            "rescues": 22,
+            "harms": 45,
+            "radial_harms": 41,
+            "collision_harms": 3
+          },
+          "rows": [
+            {
+              "bank": "extended",
+              "evaluation": "configuration_policy_joint_geometry_nocontext_s7101_scale2_extended",
+              "N": 256,
+              "success": 228,
+              "capture": 228,
+              "collision": 2,
+              "capped_capture_time": 29.232812499999984,
+              "radial_failure": 25,
+              "against_physical": {
+                "rescues": 7,
+                "harms": 24,
+                "radial_harms": 22,
+                "collision_harms": 1
+              },
+              "against_joint7101": {
+                "rescues": 12,
+                "harms": 25,
+                "radial_harms": 23,
+                "collision_harms": 1
+              }
+            },
+            {
+              "bank": "v13_stage_selection",
+              "evaluation": "configuration_policy_joint_geometry_nocontext_s7101_scale2_v13_stage_selection",
+              "N": 256,
+              "success": 228,
+              "capture": 226,
+              "collision": 6,
+              "capped_capture_time": 31.207812499999992,
+              "radial_failure": 22,
+              "against_physical": {
+                "rescues": 21,
+                "harms": 19,
+                "radial_harms": 17,
+                "collision_harms": 2
+              },
+              "against_joint7101": {
+                "rescues": 10,
+                "harms": 20,
+                "radial_harms": 18,
+                "collision_harms": 2
+              }
+            }
+          ]
+        },
+        "frozen_relative": {
+          "N": 512,
+          "success": 451,
+          "collision": 11,
+          "capped_capture_time": 34.67890625,
+          "against_physical": {
+            "rescues": 33,
+            "harms": 53,
+            "radial_harms": 47,
+            "collision_harms": 6
+          },
+          "against_joint7101": {
+            "rescues": 23,
+            "harms": 51,
+            "radial_harms": 46,
+            "collision_harms": 5
+          },
+          "rows": [
+            {
+              "bank": "extended",
+              "evaluation": "configuration_policy_joint_geometry_frozen_relative_s7101_scale2_extended",
+              "N": 256,
+              "success": 220,
+              "capture": 218,
+              "collision": 3,
+              "capped_capture_time": 35.32734375,
+              "radial_failure": 33,
+              "against_physical": {
+                "rescues": 9,
+                "harms": 34,
+                "radial_harms": 32,
+                "collision_harms": 2
+              },
+              "against_joint7101": {
+                "rescues": 13,
+                "harms": 34,
+                "radial_harms": 31,
+                "collision_harms": 3
+              }
+            },
+            {
+              "bank": "v13_stage_selection",
+              "evaluation": "configuration_policy_joint_geometry_frozen_relative_s7101_scale2_v13_stage_selection",
+              "N": 256,
+              "success": 231,
+              "capture": 227,
+              "collision": 8,
+              "capped_capture_time": 34.03046874999999,
+              "radial_failure": 17,
+              "against_physical": {
+                "rescues": 24,
+                "harms": 19,
+                "radial_harms": 15,
+                "collision_harms": 4
+              },
+              "against_joint7101": {
+                "rescues": 10,
+                "harms": 17,
+                "radial_harms": 15,
+                "collision_harms": 2
+              }
+            }
+          ]
+        },
+        "ordinary_prediction": {
+          "N": 512,
+          "success": 466,
+          "collision": 8,
+          "capped_capture_time": 29.746093749999986,
+          "against_physical": {
+            "rescues": 34,
+            "harms": 39,
+            "radial_harms": 32,
+            "collision_harms": 4
+          },
+          "against_joint7101": {
+            "rescues": 24,
+            "harms": 37,
+            "radial_harms": 31,
+            "collision_harms": 3
+          },
+          "rows": [
+            {
+              "bank": "extended",
+              "evaluation": "configuration_policy_joint_geometry_prediction_s7101_scale2_extended",
+              "N": 256,
+              "success": 230,
+              "capture": 229,
+              "collision": 2,
+              "capped_capture_time": 31.346093749999987,
+              "radial_failure": 21,
+              "against_physical": {
+                "rescues": 9,
+                "harms": 24,
+                "radial_harms": 19,
+                "collision_harms": 2
+              },
+              "against_joint7101": {
+                "rescues": 12,
+                "harms": 23,
+                "radial_harms": 18,
+                "collision_harms": 2
+              }
+            },
+            {
+              "bank": "v13_stage_selection",
+              "evaluation": "configuration_policy_joint_geometry_prediction_s7101_scale2_v13_stage_selection",
+              "N": 256,
+              "success": 236,
+              "capture": 234,
+              "collision": 6,
+              "capped_capture_time": 28.14609374999998,
+              "radial_failure": 14,
+              "against_physical": {
+                "rescues": 25,
+                "harms": 15,
+                "radial_harms": 13,
+                "collision_harms": 2
+              },
+              "against_joint7101": {
+                "rescues": 12,
+                "harms": 14,
+                "radial_harms": 13,
+                "collision_harms": 1
+              }
+            }
+          ]
+        }
+      },
+      "stable_transformer_specific_gain_established": false,
+      "paper_final_goal_completed": false,
+      "standalone_engineering_tests_run": false,
+      "recurring_automation_created": false,
+      "single_scheduler": "ARBoids Pro方案执行",
+      "all_three_joint_seeds_complete": true,
+      "joint_policy_mean_success": 474.0,
+      "mechanism_control_scope": "One independent matched training per control under original deployment semantics, same two complete development banks; multiseed synchronized-mechanism ablations not completed.",
+      "original_deployment_joint_policy_seeds": [
+        {
+          "seed": 7101,
+          "success": 479,
+          "extended": 241,
+          "v13_stage_selection": 238,
+          "collision": 4,
+          "rescues": 33,
+          "harms": 25,
+          "radial_harms": 24,
+          "capped_capture_time": 26.846093749999977,
+          "checkpoint": "configuration_policy_joint_geometry_s7101/validation_selected_u000060_scale2.pt"
+        },
+        {
+          "seed": 7102,
+          "success": 474,
+          "extended": 243,
+          "v13_stage_selection": 231,
+          "collision": 7,
+          "rescues": 32,
+          "harms": 29,
+          "radial_harms": 24,
+          "capped_capture_time": 27.74882812499998,
+          "checkpoint": "configuration_policy_joint_geometry_s7102/selected_scale2.pt"
+        },
+        {
+          "seed": 7103,
+          "success": 471,
+          "extended": 235,
+          "v13_stage_selection": 236,
+          "collision": 10,
+          "rescues": 33,
+          "harms": 33,
+          "radial_harms": 25,
+          "capped_capture_time": 30.42304687499999,
+          "checkpoint": "configuration_policy_joint_geometry_s7103/selected_scale2.pt"
+        }
+      ],
+      "original_deployment_joint_policy_mean_success": 474.6666666666667,
+      "window_completion": {
+        "status": "completed_authorized_10_hour_window",
+        "start_utc": "2026-11-03T03:58:22+00:00",
+        "deadline_utc": "2026-11-03T13:58:22+00:00",
+        "closed_utc": "2026-11-03T13:59:44.178139+00:00",
+        "active_compute_slots": 0,
+        "completed_count": 223,
+        "failed_count": 2,
+        "partial_count": 1,
+        "not_started_count": 93,
+        "standalone_engineering_tests_run": false,
+        "formal_test_opened": false,
+        "paper_final_goal_completed": false
+      },
+      "retained_development_recipe": {
+        "revision": "CITF-synchronized-current-configuration-policy-v1",
+        "algorithm": "Joint candidate-interaction encoder and current-configuration categorical actor, trained with ordinary task policy gradient plus stopped short-branch geometry replay; synchronized physical candidate search, prior and gap at deployment.",
+        "seeds": [
+          7101,
+          7102,
+          7103
+        ],
+        "derivations": [
+          {
+            "source_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/validation_selected_u000060_scale2.pt",
+            "derived_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt",
+            "seed": 7101,
+            "selected_update": 60,
+            "original_revision": "CITF-joint-current-configuration-policy-v1",
+            "deployment_revision": "CITF-synchronized-current-configuration-policy-v1",
+            "change": "physical candidate search, prior and scalar gap now use max-time min-valid-defender coverage",
+            "selected_weights_unchanged": true,
+            "additional_training_episodes": 0,
+            "role": "frozen-weight deployment semantic correction; not retraining or transfer of old scores",
+            "phase": "fixed-source development",
+            "created_utc": "2026-11-03T12:15:28.847050+00:00"
+          },
+          {
+            "source_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7102/selected_scale2.pt",
+            "derived_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7102/synchronized_deployment_scale2.pt",
+            "seed": 7102,
+            "selected_update": 140,
+            "original_revision": "CITF-joint-current-configuration-policy-v1",
+            "deployment_revision": "CITF-synchronized-current-configuration-policy-v1",
+            "change": "physical candidate search, prior and scalar gap now use max-time min-valid-defender coverage",
+            "selected_weights_unchanged": true,
+            "additional_training_episodes": 0,
+            "role": "frozen-weight deployment semantic correction; not retraining or transfer of old scores",
+            "phase": "fixed-source development",
+            "created_utc": "2026-11-03T12:15:28.890428+00:00"
+          },
+          {
+            "source_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7103/selected_scale2.pt",
+            "derived_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7103/synchronized_deployment_scale2.pt",
+            "seed": 7103,
+            "selected_update": 80,
+            "original_revision": "CITF-joint-current-configuration-policy-v1",
+            "deployment_revision": "CITF-synchronized-current-configuration-policy-v1",
+            "change": "physical candidate search, prior and scalar gap now use max-time min-valid-defender coverage",
+            "selected_weights_unchanged": true,
+            "additional_training_episodes": 0,
+            "role": "frozen-weight deployment semantic correction; not retraining or transfer of old scores",
+            "phase": "fixed-source development",
+            "created_utc": "2026-11-03T12:15:28.930259+00:00"
+          }
+        ],
+        "complete_task_count": 512,
+        "all_seed_successes": [
+          479,
+          473,
+          470
+        ],
+        "mean_successes": 474.0,
+        "physical_reference_successes": 471,
+        "seed7101_selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt",
+        "selection_scope": "Development candidate, not a final frozen paper winner; retain all independent seeds and original deployment results.",
+        "mechanism_control_scope": "Only one independently trained matched control for each ablation, evaluated under original deployment semantics; no multiseed synchronized-mechanism claim."
+      },
+      "final_research_conclusion": {
+        "learned_control_gain_observed": true,
+        "stable_large_transformer_specific_gain_established": false,
+        "formal_paper_complete": false,
+        "mean_success_gain_vs_physical": 3.0,
+        "paired_seed7101": {
+          "rescues": 33,
+          "harms": 25,
+          "radial_harms": 24,
+          "collision_harms": 1
+        },
+        "mechanism_control_successes": {
+          "no_context": 456,
+          "ordinary_prediction": 466,
+          "frozen_relative": 451
+        },
+        "task_only_refinement_successes": [
+          471,
+          467,
+          476
+        ],
+        "next_basis": "Preserve learned joint policy rather than extend physical heuristics. The remaining issue is reliable candidate-dependent improvement through early encounter decisions without the observed radial harms. Current replay, search enlargement, readout variants and short task-only refinement did not improve the complete development mean. Any next development must be matched across seeds and retain the strong physical reference; formal test remains unopened."
+      },
+      "synchronized_physical_reference": {
+        "completed_utc": "2026-11-03T12:25:31.255102+00:00",
+        "phase": "fixed-source development, not formal test",
+        "rows": [
+          {
+            "bank": "extended",
+            "evaluation": "configuration_policy_synchronized_s7101_initial_extended",
+            "N": 256,
+            "success": 245,
+            "capture": 243,
+            "collision": 0,
+            "capped_capture_time": 28.407812499999984,
+            "radial_failure": 11,
+            "against_physical": {
+              "rescues": 0,
+              "harms": 0,
+              "radial_harms": 0,
+              "collision_harms": 0
+            },
+            "against_joint7101": {
+              "rescues": 14,
+              "harms": 10,
+              "radial_harms": 10,
+              "collision_harms": 0
+            }
+          },
+          {
+            "bank": "v13_stage_selection",
+            "evaluation": "configuration_policy_synchronized_s7101_initial_v13_stage_selection",
+            "N": 256,
+            "success": 226,
+            "capture": 223,
+            "collision": 6,
+            "capped_capture_time": 31.99609374999999,
+            "radial_failure": 24,
+            "against_physical": {
+              "rescues": 0,
+              "harms": 0,
+              "radial_harms": 0,
+              "collision_harms": 0
+            },
+            "against_joint7101": {
+              "rescues": 11,
+              "harms": 23,
+              "radial_harms": 20,
+              "collision_harms": 3
+            }
+          }
+        ],
+        "N": 512,
+        "success": 471,
+        "collision": 6,
+        "capture": 466,
+        "capped_capture_time": 30.20195312499999,
+        "against_physical": {
+          "rescues": 0,
+          "harms": 0,
+          "radial_harms": 0,
+          "collision_harms": 0
+        },
+        "against_joint7101": {
+          "rescues": 25,
+          "harms": 33,
+          "radial_harms": 30,
+          "collision_harms": 3
+        }
+      },
+      "complete_endpoint_comparisons": {
+        "no_context": {
+          "N": 512,
+          "success": 456,
+          "collision": 8,
+          "capped_capture_time": 30.220312499999988,
+          "against_physical": {
+            "rescues": 28,
+            "harms": 43,
+            "radial_harms": 39,
+            "collision_harms": 3
+          },
+          "against_joint7101": {
+            "rescues": 22,
+            "harms": 45,
+            "radial_harms": 41,
+            "collision_harms": 3
+          }
+        },
+        "all3_equal_logits": {
+          "N": 512,
+          "success": 475,
+          "collision": 7,
+          "capped_capture_time": 27.78515624999998,
+          "against_physical": {
+            "rescues": 31,
+            "harms": 27,
+            "radial_harms": 22,
+            "collision_harms": 4
+          },
+          "against_joint7101": {
+            "rescues": 26,
+            "harms": 30,
+            "radial_harms": 25,
+            "collision_harms": 4
+          }
+        },
+        "frozen_relative": {
+          "N": 512,
+          "success": 451,
+          "collision": 11,
+          "capped_capture_time": 34.67890625,
+          "against_physical": {
+            "rescues": 33,
+            "harms": 53,
+            "radial_harms": 47,
+            "collision_harms": 6
+          },
+          "against_joint7101": {
+            "rescues": 23,
+            "harms": 51,
+            "radial_harms": 46,
+            "collision_harms": 5
+          }
+        },
+        "all3_equal_probabilities": {
+          "N": 512,
+          "success": 468,
+          "collision": 7,
+          "capped_capture_time": 28.802343749999984,
+          "against_physical": {
+            "rescues": 28,
+            "harms": 31,
+            "radial_harms": 27,
+            "collision_harms": 2
+          },
+          "against_joint7101": {
+            "rescues": 25,
+            "harms": 36,
+            "radial_harms": 31,
+            "collision_harms": 3
+          }
+        },
+        "ordinary_prediction": {
+          "N": 512,
+          "success": 466,
+          "collision": 8,
+          "capped_capture_time": 29.746093749999986,
+          "against_physical": {
+            "rescues": 34,
+            "harms": 39,
+            "radial_harms": 32,
+            "collision_harms": 4
+          },
+          "against_joint7101": {
+            "rescues": 24,
+            "harms": 37,
+            "radial_harms": 31,
+            "collision_harms": 3
+          }
+        },
+        "synchronized_physical": {
+          "N": 512,
+          "success": 471,
+          "collision": 6,
+          "capped_capture_time": 30.20195312499999,
+          "against_physical": {
+            "rescues": 0,
+            "harms": 0,
+            "radial_harms": 0,
+            "collision_harms": 0
+          },
+          "against_joint7101": {
+            "rescues": 25,
+            "harms": 33,
+            "radial_harms": 30,
+            "collision_harms": 3
+          }
+        },
+        "synchronized_original24": {
+          "N": 512,
+          "success": 457,
+          "collision": 9,
+          "capped_capture_time": 30.46562499999999,
+          "against_physical": {
+            "rescues": 29,
+            "harms": 43,
+            "radial_harms": 37,
+            "collision_harms": 6
+          },
+          "against_joint7101": {
+            "rescues": 27,
+            "harms": 49,
+            "radial_harms": 43,
+            "collision_harms": 6
+          }
+        },
+        "current_policy_replay": {
+          "N": 512,
+          "success": 469,
+          "collision": 8,
+          "capped_capture_time": 28.55937499999998,
+          "against_physical": {
+            "rescues": 35,
+            "harms": 37,
+            "radial_harms": 31,
+            "collision_harms": 5
+          },
+          "against_joint7101": {
+            "rescues": 25,
+            "harms": 35,
+            "radial_harms": 31,
+            "collision_harms": 3
+          }
+        },
+        "actuator_context": {
+          "N": 512,
+          "success": 460,
+          "collision": 11,
+          "capped_capture_time": 29.452734374999984,
+          "against_physical": {
+            "rescues": 35,
+            "harms": 46,
+            "radial_harms": 37,
+            "collision_harms": 8
+          },
+          "against_joint7101": {
+            "rescues": 25,
+            "harms": 44,
+            "radial_harms": 37,
+            "collision_harms": 7
+          }
+        },
+        "composed_physical": {
+          "N": 512,
+          "success": 459,
+          "collision": 8,
+          "capped_capture_time": 30.839453124999984,
+          "against_physical": {
+            "rescues": 23,
+            "harms": 35,
+            "radial_harms": 30,
+            "collision_harms": 4
+          },
+          "against_joint7101": {
+            "rescues": 24,
+            "harms": 44,
+            "radial_harms": 38,
+            "collision_harms": 4
+          }
+        },
+        "fixed_reference_search": {
+          "N": 512,
+          "success": 473,
+          "collision": 5,
+          "capped_capture_time": 27.871093749999986,
+          "against_physical": {
+            "rescues": 35,
+            "harms": 33,
+            "radial_harms": 28,
+            "collision_harms": 3
+          },
+          "against_joint7101": {
+            "rescues": 26,
+            "harms": 32,
+            "radial_harms": 28,
+            "collision_harms": 2
+          }
+        },
+        "encounter_training": {
+          "N": 512,
+          "success": 478,
+          "collision": 5,
+          "capped_capture_time": 27.712499999999984,
+          "against_physical": {
+            "rescues": 34,
+            "harms": 27,
+            "radial_harms": 25,
+            "collision_harms": 2
+          },
+          "against_joint7101": {
+            "rescues": 25,
+            "harms": 26,
+            "radial_harms": 25,
+            "collision_harms": 1
+          }
+        },
+        "composed_learned": {
+          "N": 512,
+          "success": 467,
+          "collision": 6,
+          "capped_capture_time": 27.910156249999982,
+          "against_physical": {
+            "rescues": 32,
+            "harms": 36,
+            "radial_harms": 29,
+            "collision_harms": 4
+          },
+          "against_joint7101": {
+            "rescues": 24,
+            "harms": 36,
+            "radial_harms": 30,
+            "collision_harms": 2
+          }
+        },
+        "query_readout": {
+          "N": 512,
+          "success": 479,
+          "collision": 6,
+          "capped_capture_time": 27.366406249999983,
+          "against_physical": {
+            "rescues": 34,
+            "harms": 26,
+            "radial_harms": 21,
+            "collision_harms": 3
+          },
+          "against_joint7101": {
+            "rescues": 28,
+            "harms": 28,
+            "radial_harms": 24,
+            "collision_harms": 2
+          }
+        },
+        "synchronized_refine_replay005": {
+          "N": 512,
+          "success": 464,
+          "collision": 8,
+          "capped_capture_time": 29.681640624999986,
+          "against_physical": {
+            "rescues": 34,
+            "harms": 41,
+            "radial_harms": 35,
+            "collision_harms": 5
+          },
+          "against_joint7101": {
+            "rescues": 26,
+            "harms": 41,
+            "radial_harms": 35,
+            "collision_harms": 4
+          }
+        },
+        "synchronized_refine_replay0": {
+          "N": 512,
+          "success": 471,
+          "collision": 7,
+          "capped_capture_time": 28.274218749999985,
+          "against_physical": {
+            "rescues": 33,
+            "harms": 33,
+            "radial_harms": 29,
+            "collision_harms": 4
+          },
+          "against_joint7101": {
+            "rescues": 28,
+            "harms": 36,
+            "radial_harms": 31,
+            "collision_harms": 4
+          }
+        },
+        "actuator_context_selection128": {
+          "N": 512,
+          "success": 463,
+          "collision": 7,
+          "capped_capture_time": 29.199218749999986,
+          "against_physical": {
+            "rescues": 32,
+            "harms": 40,
+            "radial_harms": 36,
+            "collision_harms": 3
+          },
+          "against_joint7101": {
+            "rescues": 21,
+            "harms": 37,
+            "radial_harms": 33,
+            "collision_harms": 2
+          }
+        },
+        "query_readout_selection128": {
+          "N": 512,
+          "success": 473,
+          "collision": 6,
+          "capped_capture_time": 27.39648437499998,
+          "against_physical": {
+            "rescues": 33,
+            "harms": 31,
+            "radial_harms": 26,
+            "collision_harms": 4
+          },
+          "against_joint7101": {
+            "rescues": 26,
+            "harms": 32,
+            "radial_harms": 27,
+            "collision_harms": 3
+          }
+        },
+        "current_policy_replay_selection128": {
+          "N": 512,
+          "success": 469,
+          "collision": 9,
+          "capped_capture_time": 28.57070312499998,
+          "against_physical": {
+            "rescues": 34,
+            "harms": 36,
+            "radial_harms": 30,
+            "collision_harms": 6
+          },
+          "against_joint7101": {
+            "rescues": 26,
+            "harms": 36,
+            "radial_harms": 31,
+            "collision_harms": 5
+          }
+        },
+        "proposal_union": {
+          "N": 512,
+          "success": 464,
+          "collision": 10,
+          "capped_capture_time": 30.974999999999987,
+          "against_physical": {
+            "rescues": 34,
+            "harms": 41,
+            "radial_harms": 34,
+            "collision_harms": 7
+          },
+          "against_joint7101": {
+            "rescues": 27,
+            "harms": 42,
+            "radial_harms": 35,
+            "collision_harms": 7
+          }
+        },
+        "proposal_union_initial": {
+          "N": 512,
+          "success": 467,
+          "collision": 6,
+          "capped_capture_time": 30.552734374999986,
+          "against_physical": {
+            "rescues": 3,
+            "harms": 7,
+            "radial_harms": 7,
+            "collision_harms": 0
+          },
+          "against_joint7101": {
+            "rescues": 24,
+            "harms": 36,
+            "radial_harms": 33,
+            "collision_harms": 3
+          }
+        }
+      },
+      "full_experiment_record": "runs/remote-10h-20261102/innovation_20261103/protocol.json",
+      "completed_stage_selections": {
+        "configuration_policy_deterministic128_s7101": {
+          "selected_update": 30,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_deterministic128_s7101/stage_000030.pt",
+          "original24_selected_update": 30,
+          "full_evaluation": [
+            "configuration_policy_deterministic128_s7101_extended",
+            "configuration_policy_deterministic128_s7101_v13_stage_selection"
+          ],
+          "rule": "highestsuccess, fewer collisions, shorter capped capture time"
+        },
+        "configuration_policy_anchored384_s7101": {
+          "selected_update": 80,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_anchored384_s7101/stage_000080.pt",
+          "original24_selected_update": 20,
+          "full_evaluation": [
+            "configuration_policy_anchored384_s7101_selection128u000080_extended",
+            "configuration_policy_anchored384_s7101_selection128u000080_v13_stage_selection"
+          ],
+          "rule": "highest success, fewer collisions, shorter capped capture time"
+        },
+        "configuration_policy_balanced128_s7101": {
+          "selected_update": 0,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_balanced128_s7101/stage_000000.pt",
+          "original24_selected_update": 160,
+          "full_evaluation": [
+            "configuration_policy_joint_geometry_s7101_initial_extended",
+            "configuration_policy_joint_geometry_s7101_initial_v13_stage_selection"
+          ],
+          "rule": "highest success, fewer collisions, shorter capped capture time"
+        },
+        "configuration_policy_reference384_capped_s7101": {
+          "selected_update": 40,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_reference384_capped_s7101/stage_000040.pt",
+          "original24_selected_update": 40,
+          "full_evaluation": [
+            "configuration_policy_reference384_capped_s7101_extended",
+            "configuration_policy_reference384_capped_s7101_v13_stage_selection"
+          ],
+          "rule": "highest success, fewer collisions, shorter capped capture time"
+        },
+        "configuration_policy_synchronized_s7101": {
+          "selected_update": 0,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_synchronized_s7101/stage_000000_scale2.pt",
+          "original24_selected_update": 140,
+          "full_evaluation": [
+            "configuration_policy_synchronized_s7101_initial_extended",
+            "configuration_policy_synchronized_s7101_initial_v13_stage_selection"
+          ],
+          "rule": "highest success, fewer collisions, shorter capped capture time"
+        },
+        "configuration_policy_actuator_context384_s7101": {
+          "selected_update": 40,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_actuator_context384_s7101/stage_000040.pt",
+          "original24_selected_update": 80,
+          "full_evaluation": [
+            "configuration_policy_actuator_context384_s7101_selection128u000040_extended",
+            "configuration_policy_actuator_context384_s7101_selection128u000040_v13_stage_selection"
+          ],
+          "rule": "highest success, fewer collisions, shorter capped capture time"
+        },
+        "configuration_policy_encounter384_s7101": {
+          "selected_update": 0,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_encounter384_s7101/stage_000000.pt",
+          "original24_selected_update": 20,
+          "full_evaluation": [
+            "configuration_policy_joint_geometry_s7101_u000060_scale2_extended",
+            "configuration_policy_joint_geometry_s7101_u000060_scale2_v13_stage_selection"
+          ],
+          "rule": "highest success, fewer collisions, shorter capped capture time"
+        },
+        "configuration_policy_query_readout_s7101_retry1": {
+          "selected_update": 20,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_query_readout_s7101_retry1/stage_000020.pt",
+          "original24_selected_update": 40,
+          "full_evaluation": [
+            "configuration_policy_query_readout_s7101_retry1_selection128u000020_extended",
+            "configuration_policy_query_readout_s7101_retry1_selection128u000020_v13_stage_selection"
+          ],
+          "rule": "highest success, fewer collisions, shorter capped capture time"
+        },
+        "configuration_policy_synchronized_refinement_replay005_s7101": {
+          "selected_update": 0,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_synchronized_refinement_replay005_s7101/stage_000000.pt",
+          "original24_selected_update": 0,
+          "full_evaluation": [
+            "configuration_policy_synchronized_deploy_s7101_extended",
+            "configuration_policy_synchronized_deploy_s7101_v13_stage_selection"
+          ],
+          "rule": "highest success, fewer collisions, shorter capped capture time"
+        },
+        "configuration_policy_synchronized_refinement_replay0_s7101": {
+          "selected_update": 0,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_synchronized_refinement_replay0_s7101/stage_000000.pt",
+          "original24_selected_update": 16,
+          "full_evaluation": [
+            "configuration_policy_synchronized_deploy_s7101_extended",
+            "configuration_policy_synchronized_deploy_s7101_v13_stage_selection"
+          ],
+          "rule": "highest success, fewer collisions, shorter capped capture time"
+        },
+        "configuration_policy_current_replay384_s7101": {
+          "selected_update": 60,
+          "selected_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_current_replay384_s7101/stage_000060.pt",
+          "original24_selected_update": 40,
+          "full_evaluation": [
+            "configuration_policy_current_replay384_s7101_selection128u000060_extended",
+            "configuration_policy_current_replay384_s7101_selection128u000060_v13_stage_selection"
+          ],
+          "rule": "highest success, fewer collisions, shorter capped capture time"
+        }
+      },
+      "synchronized_auxiliary_refinement_comparison": {
+        "synchronized_refine_replay005": 464,
+        "synchronized_refine_replay0": 471
+      },
+      "task_only_refinement_repetitions": {
+        "registered_utc": "2026-11-03T13:18:35.976654+00:00",
+        "rationale": "Seed7101 task-only refinement completed all512 episodes and original24 validation improved23 to24 successes; matched replay005 selected initialization. Further seeds evaluate the same fixed16-update recipe without assuming full-bank benefit.",
+        "phase": "fixed-source development",
+        "seed7101_fixed_final_endpoints": [
+          "configuration_policy_synchronized_refinement_replay0_s7101_stage000016_extended",
+          "configuration_policy_synchronized_refinement_replay0_s7101_stage000016_v13_stage_selection"
+        ],
+        "training_deadline": "2026-11-03T13:40:22+00:00",
+        "evaluation_deadline": "2026-11-03T13:58:22+00:00",
+        "schedule_revision": "Earlier13:18 training cutoff was a planning buffer; only these two bounded fixed16 repetitions extend it. Total10-hour deadline unchanged. Standard queue cutoff13:38 retained; these fixed endpoints may launch after it only if measured remaining runtime fits.",
+        "selection": "No endpoint-dependent seed selection or update search. Evaluate immutable stage16 for all3 seeds; retain original24 best0/16 and seed7101 independent128 selection separately.",
+        "training_comparability": "Same seed-specific original training pipeline,128-layout bank,512 real episodes,loss,learning rates,KL,temperature,optimizer,source and task. Workers6 instead of4 changes execution concurrency only; no bitwise equivalence claim.",
+        "no_calibrated_prediction_claim": true,
+        "all_outcomes_retained": true,
+        "evaluation_workers": 4,
+        "evaluation_schedule": "Four independent shard workers per256-task endpoint, admitted within total24 logical slots. Same per-task policy, tasks and randomness; altered execution concurrency is recorded, and latency is not treated as a matched isolated benchmark.",
+        "updated_utc": "2026-11-03T13:52:08.303833+00:00",
+        "all_three_complete": true,
+        "status": "all3 fixed16 full512 comparisons complete",
+        "success_all_seeds": [
+          471,
+          467,
+          476
+        ],
+        "mean_success_per512": 471.3333333333333,
+        "completed_by_seed": {
+          "7101": {
+            "N": 512,
+            "success": 471,
+            "collision": 7,
+            "training_episodes": 512,
+            "update": 16,
+            "original24_selected_update": 16,
+            "evaluated_update": 16,
+            "against_own_initial": {
+              "rescues": 28,
+              "harms": 36,
+              "radial_harms": 31,
+              "collision_harms": 4
+            },
+            "against_physical": {
+              "rescues": 33,
+              "harms": 33,
+              "radial_harms": 29,
+              "collision_harms": 4
+            }
+          },
+          "7102": {
+            "N": 512,
+            "success": 467,
+            "collision": 6,
+            "training_episodes": 512,
+            "update": 16,
+            "original24_selected_update": 0,
+            "evaluated_update": 16,
+            "against_own_initial": {
+              "rescues": 24,
+              "harms": 30,
+              "radial_harms": 28,
+              "collision_harms": 2
+            },
+            "against_physical": {
+              "rescues": 31,
+              "harms": 35,
+              "radial_harms": 32,
+              "collision_harms": 3
+            }
+          },
+          "7103": {
+            "N": 512,
+            "success": 476,
+            "collision": 7,
+            "training_episodes": 512,
+            "update": 16,
+            "original24_selected_update": 16,
+            "evaluated_update": 16,
+            "against_own_initial": {
+              "rescues": 32,
+              "harms": 26,
+              "radial_harms": 23,
+              "collision_harms": 2
+            },
+            "against_physical": {
+              "rescues": 34,
+              "harms": 29,
+              "radial_harms": 25,
+              "collision_harms": 3
+            }
+          }
+        }
+      },
+      "local_synchronization": {
+        "completed_directories": 223,
+        "failed_directories": [
+          "configuration_policy_frozen_geometry_s7101",
+          "configuration_policy_query_readout_s7101"
+        ],
+        "partial_directories": [
+          "configuration_policy_motion_proposals_s7101_initial_extended"
+        ],
+        "pending_directories": [],
+        "last_transfer_files": 3,
+        "last_transfer_bytes": 1502308,
+        "transfer_command_exit_code": 0,
+        "updated_unix": 1793714391.4120371
+      },
+      "research_status": "Candidate-interaction learned policy has a modest complete development gain; stable large multiseed mechanism advantage and formal paper remain incomplete."
     }
   },
   "artifact_format": {
