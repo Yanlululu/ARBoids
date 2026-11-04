@@ -3133,7 +3133,7 @@
       "scope": "fixed-source algorithm development; no frozen formal results",
       "source_request": "root-cause algorithm redesign plus latest continue; no renewed ten-hour period inferred",
       "original_deadline_utc": "2026-11-04T01:32:37+00:00",
-      "updated_utc": "2026-11-04T18:42:30.229026+00:00",
+      "updated_utc": "2026-11-04T19:54:07.134981+00:00",
       "local_results": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\remote-10h-20261102\\runs\\root_cause_20261103",
       "remote_results": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103",
       "complete_fresh_selected": {
@@ -3493,7 +3493,7 @@
         "capped_capture_time": 25.21562499999998
       },
       "research_status": "fixed-source warm development; stable net benefit and incremental Transformer/response attribution pending complete matched endpoints and repetitions",
-      "pending_experiments": "Complete three decoupled common-future80-update models and each768endpoint; same selected retained weights coupled-versus-decoupled deployment768; original multifuture160endpoint; pair correction repetitions and matched context endpoints; no formal-test results.",
+      "pending_experiments": "Finish actuation fixed768; evaluate finite paired-preference update on the same original training and validation schedule, then decide informative repeats or controls. Formal scope remains pending.",
       "synchronization": {
         "completed_directories": [
           "capture_window_continuations",
@@ -3504,6 +3504,7 @@
           "capture_window_validation_roots",
           "capture_window_validation_short",
           "contact_active_geometry_pretrain_s9101",
+          "contact_actuation_s9101",
           "contact_boundary_pretrain_s9101",
           "contact_common_future_decoupled_no_context_s9101",
           "contact_common_future_decoupled_ordinary_s9101",
@@ -3530,8 +3531,19 @@
           "contact_pair_policy_no_context_s9101",
           "contact_pair_policy_s9101",
           "contact_pair_policy_s9102",
+          "contact_rank_no_context_s9101",
+          "contact_rank_ordinary_s9101",
+          "contact_rank_replay_no_context_s9101",
+          "contact_rank_replay_ordinary_s9101",
+          "contact_rank_replay_s9101",
+          "contact_rank_s9101",
           "contact_retained_mass_policy_s9101",
+          "contact_score_anchor_s9101",
           "contact_single_event_policy_s9101",
+          "contact_tournament_no_context_s9101",
+          "contact_tournament_ordinary_s9101",
+          "contact_tournament_s9101",
+          "extended_contact_actuation_s9101",
           "extended_contact_common_future_decoupled_no_context_s9101",
           "extended_contact_common_future_decoupled_ordinary_s9101",
           "extended_contact_common_future_decoupled_s9101",
@@ -3543,13 +3555,25 @@
           "extended_contact_event_s9103",
           "extended_contact_events_physical",
           "extended_contact_fullpool_s9101",
+          "extended_contact_multifuture_event_s9101",
+          "extended_contact_pair_no_context_s9101",
           "extended_contact_pair_s9101",
           "extended_contact_pair_s9102",
+          "extended_contact_rank_no_context_s9101",
+          "extended_contact_rank_ordinary_s9101",
+          "extended_contact_rank_replay_no_context_s9101",
+          "extended_contact_rank_replay_ordinary_s9101",
+          "extended_contact_rank_replay_s9101",
+          "extended_contact_rank_s9101",
           "extended_contact_retained_mass_decoupled_s9101",
           "extended_contact_retained_mass_s9101",
+          "extended_contact_score_anchor_s9101",
           "extended_contact_single_event_s9101",
           "extended_contact_single_physical",
           "extended_contact_single_s9101",
+          "extended_contact_tournament_no_context_s9101",
+          "extended_contact_tournament_ordinary_s9101",
+          "extended_contact_tournament_s9101",
           "extended_expanded_physical",
           "extended_selected_critical",
           "extended_selected_deterministic8101",
@@ -3566,6 +3590,7 @@
           "extended_selected_transfer_teacher_continue8103",
           "fresh_contact8_entry_pulse",
           "fresh_contact8_while_near",
+          "fresh_contact_actuation_s9101",
           "fresh_contact_common_future_decoupled_no_context_s9101",
           "fresh_contact_common_future_decoupled_ordinary_s9101",
           "fresh_contact_common_future_decoupled_s9101",
@@ -3577,14 +3602,25 @@
           "fresh_contact_event_s9103",
           "fresh_contact_events_physical",
           "fresh_contact_fullpool_s9101",
+          "fresh_contact_multifuture_event_s9101",
           "fresh_contact_pair_no_context_s9101",
           "fresh_contact_pair_s9101",
           "fresh_contact_pair_s9102",
+          "fresh_contact_rank_no_context_s9101",
+          "fresh_contact_rank_ordinary_s9101",
+          "fresh_contact_rank_replay_no_context_s9101",
+          "fresh_contact_rank_replay_ordinary_s9101",
+          "fresh_contact_rank_replay_s9101",
+          "fresh_contact_rank_s9101",
           "fresh_contact_retained_mass_decoupled_s9101",
           "fresh_contact_retained_mass_s9101",
+          "fresh_contact_score_anchor_s9101",
           "fresh_contact_single_event_s9101",
           "fresh_contact_single_physical",
           "fresh_contact_single_s9101",
+          "fresh_contact_tournament_no_context_s9101",
+          "fresh_contact_tournament_ordinary_s9101",
+          "fresh_contact_tournament_s9101",
           "fresh_expanded_physical",
           "fresh_fixed_retained7101_stage10_retry1",
           "fresh_fixed_retained7102_stage10",
@@ -3668,6 +3704,7 @@
           "retained_student_states_train",
           "retained_teacher_train",
           "retained_teacher_validation",
+          "second_contact_actuation_s9101",
           "second_contact_common_future_decoupled_no_context_s9101",
           "second_contact_common_future_decoupled_ordinary_s9101",
           "second_contact_common_future_decoupled_s9101",
@@ -3679,13 +3716,25 @@
           "second_contact_event_s9103",
           "second_contact_events_physical",
           "second_contact_fullpool_s9101",
+          "second_contact_multifuture_event_s9101",
+          "second_contact_pair_no_context_s9101",
           "second_contact_pair_s9101",
           "second_contact_pair_s9102",
+          "second_contact_rank_no_context_s9101",
+          "second_contact_rank_ordinary_s9101",
+          "second_contact_rank_replay_no_context_s9101",
+          "second_contact_rank_replay_ordinary_s9101",
+          "second_contact_rank_replay_s9101",
+          "second_contact_rank_s9101",
           "second_contact_retained_mass_decoupled_s9101",
           "second_contact_retained_mass_s9101",
+          "second_contact_score_anchor_s9101",
           "second_contact_single_event_s9101",
           "second_contact_single_physical",
           "second_contact_single_s9101",
+          "second_contact_tournament_no_context_s9101",
+          "second_contact_tournament_ordinary_s9101",
+          "second_contact_tournament_s9101",
           "second_expanded_physical",
           "second_selected_transfer8101",
           "second_selected_transfer_student_aggregate1200",
@@ -3711,20 +3760,13 @@
           "validation_strong_physical"
         ],
         "added": [
-          "extended_contact_common_future_decoupled_no_context_s9101",
-          "extended_contact_common_future_decoupled_ordinary_s9101",
-          "extended_contact_pair_s9102",
-          "fresh_contact_common_future_decoupled_ordinary_s9101",
-          "fresh_contact_pair_no_context_s9101",
-          "fresh_contact_pair_s9102",
-          "second_contact_common_future_decoupled_no_context_s9101",
-          "second_contact_common_future_decoupled_ordinary_s9101",
-          "second_contact_pair_s9102"
+          "extended_contact_actuation_s9101",
+          "second_contact_actuation_s9101"
         ],
         "transfer_exit_code": 0,
-        "seconds": 25.4,
-        "updated_unix": 1793807175.874038,
-        "updated_utc": "2026-11-04T15:46:15.874038+00:00"
+        "seconds": 6.3,
+        "updated_unix": 1793822047.134981,
+        "updated_utc": "2026-11-04T19:54:07.134981+00:00"
       },
       "engineering_tests_this_continuation": false,
       "formal_result_ready": false,
@@ -12353,7 +12395,7 @@
           "groups_with_future_outcome_difference": 20
         }
       },
-      "latest_research_phase": "direct leading-candidate tournament: completed replay full704/no-context710/ordinary713 preserved; current three1920episode trainings and common768 endpoints recorded in tournament_policy_iteration",
+      "latest_research_phase": "completed tournament709/718/709 and score-anchor716; actuation readout complete717/768, no gains; finite paired preference update main training and fixed endpoints",
       "retained_mass_policy_iteration": {
         "registered_utc": "2026-11-04T13:28:44.351867+00:00",
         "basis": "pair722 versus samefullbank713 confounds reduced exploration mass with removing alternatives; pair changed978/4234events versus fullbank3990/4270",
@@ -12831,15 +12873,15 @@
         }
       },
       "current_research_direction": {
-        "updated_utc": "2026-11-04T18:05:48.510266+00:00",
+        "updated_utc": "2026-11-04T19:53:13.698470+00:00",
         "objective": "stable net task success gain, with collision and other costs; some harmed old successes are allowed if complete matched net performance improves",
         "main_route": "full joint candidate domain, controlled initial exploration mass, common-future current-action comparisons, task-relevant interaction representation and joint selection learning",
         "diagnostics": "pair-only and fewer-correction studies are discriminating controls, not the final action restriction or innovation claim",
         "mechanism_criterion": "meaningful repeated closed-loop task gains with matched evidence for the claimed mechanism; not zero harms,not every seed winning,not mandatory improvement over historical development peak722",
         "limit": "posthoc removal can identify harmful actions retrospectively but does not prove current observations predict beneficial or harmful choices",
         "latest_correction": "Separate action sampling distribution and deployment scoring; common-future credit remains a hypothesis; response-supervision contribution requires matched ordinary-prediction pretraining under same task-policy flow",
-        "latest_stage": "direct leading-candidate tournament from current-only ranking; complete replay controls retained",
-        "candidate_coverage": "registered explicit leading and exploratory alternatives,1920episodes; no historical task replay in primary recipe",
+        "latest_stage": "finite paired preference update after actuation readout completed717and no validation change",
+        "candidate_coverage": "retain all candidates and leading/exploratory queries; no invented labels on unobserved candidates",
         "latest_user_instruction": "complete current three-candidate tournament and matching controls,then revise algorithm from complete results; do not only increase training volume",
         "development_evaluation_scope": "subsequent temporary versions start with main-method evaluation; if clearly regressed,add only controls that can change the next decision; no default full768ablation matrix for every branch",
         "teacher_role": "717/768is an internal frozen learned joint controller,not a public baseline; current context-removal control identifies only the added correction module;if retained finally,describe and count complete teacher training",
@@ -19652,7 +19694,7 @@
                   "2026-11-04T22:36:30.177398+00:00"
                 ],
                 "worker_slots": 4,
-                "status": "running",
+                "status": "completed",
                 "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
                 "pid": 241821,
                 "started_utc": "2026-11-04T18:36:30.177398+00:00"
@@ -19693,7 +19735,7 @@
                   "2026-11-04T22:36:30.177398+00:00"
                 ],
                 "worker_slots": 4,
-                "status": "running",
+                "status": "completed",
                 "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
                 "pid": 242349,
                 "started_utc": "2026-11-04T18:39:47.073088+00:00"
@@ -19734,7 +19776,7 @@
                   "2026-11-04T22:36:30.177398+00:00"
                 ],
                 "worker_slots": 4,
-                "status": "running",
+                "status": "completed",
                 "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
                 "pid": 242350,
                 "started_utc": "2026-11-04T18:39:47.073088+00:00"
@@ -19860,7 +19902,7 @@
                   "2026-11-04T22:33:19.397980+00:00"
                 ],
                 "worker_slots": 4,
-                "status": "running",
+                "status": "completed",
                 "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
                 "pid": 241362,
                 "started_utc": "2026-11-04T18:33:19.397980+00:00"
@@ -19901,7 +19943,7 @@
                   "2026-11-04T22:33:19.397980+00:00"
                 ],
                 "worker_slots": 4,
-                "status": "running",
+                "status": "completed",
                 "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
                 "pid": 241363,
                 "started_utc": "2026-11-04T18:33:19.397980+00:00"
@@ -19942,8 +19984,10 @@
                   "2026-11-04T22:33:19.397980+00:00"
                 ],
                 "worker_slots": 4,
-                "status": "pending",
-                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect"
+                "status": "completed",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 242836,
+                "started_utc": "2026-11-04T18:42:50.908372+00:00"
               }
             ]
           }
@@ -19956,7 +20000,7 @@
           "reason": "balance pending banks within20CPU; running jobs and all model/task/selection identities unchanged"
         },
         "complete_comparisons": {
-          "updated_utc": "2026-11-04T18:39:48.402868+00:00",
+          "updated_utc": "2026-11-04T18:50:50.578225+00:00",
           "scope": "fixed source,one warm correction initialization; three actions by two futures,1920realepisodes; complete common768development; original64 selection; no formal or independent-source claim",
           "teacher": {
             "N": 768,
@@ -20037,12 +20081,1263 @@
                 ],
                 "collision_delta": 2,
                 "radial_failure_delta": 10
+              },
+              "vs_contact_tournament_no_context_s9101": {
+                "rescues": 23,
+                "harms": 32,
+                "delta_success": -9,
+                "delta_percentage_points": -1.171875,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -2.9947916666666665,
+                  0.5208333333333334
+                ],
+                "collision_delta": 2,
+                "radial_failure_delta": 7
+              },
+              "vs_contact_tournament_ordinary_s9101": {
+                "rescues": 25,
+                "harms": 25,
+                "delta_success": 0,
+                "delta_percentage_points": 0.0,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -1.8229166666666667,
+                  1.6927083333333333
+                ],
+                "collision_delta": 0,
+                "radial_failure_delta": 1
+              }
+            },
+            "contact_tournament_no_context_s9101": {
+              "all": {
+                "N": 768,
+                "success": 718,
+                "capture": 715,
+                "collision": 13,
+                "radial_only_failure": 37,
+                "physical_breach": 0,
+                "timeout": 3,
+                "capped_capture_time": 27.379687499999978
+              },
+              "by_bank": [
+                {
+                  "bank": "fresh",
+                  "N": 256,
+                  "success": 240,
+                  "capture": 238,
+                  "collision": 9,
+                  "radial_only_failure": 7,
+                  "physical_breach": 0,
+                  "timeout": 2
+                },
+                {
+                  "bank": "extended",
+                  "N": 256,
+                  "success": 239,
+                  "capture": 238,
+                  "collision": 0,
+                  "radial_only_failure": 17,
+                  "physical_breach": 0,
+                  "timeout": 1
+                },
+                {
+                  "bank": "second",
+                  "N": 256,
+                  "success": 239,
+                  "capture": 239,
+                  "collision": 4,
+                  "radial_only_failure": 13,
+                  "physical_breach": 0,
+                  "timeout": 0
+                }
+              ],
+              "vs_original_teacher": {
+                "rescues": 12,
+                "harms": 11,
+                "delta_success": 1,
+                "delta_percentage_points": 0.13020833333333331,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -0.9114583333333334,
+                  1.3020833333333333
+                ],
+                "collision_delta": 0,
+                "radial_failure_delta": -1
+              },
+              "vs_matched_current_only_ranking": {
+                "rescues": 12,
+                "harms": 11,
+                "delta_success": 1,
+                "delta_percentage_points": 0.13020833333333331,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -0.9114583333333334,
+                  1.3020833333333333
+                ],
+                "collision_delta": 0,
+                "radial_failure_delta": -1
+              }
+            },
+            "contact_tournament_ordinary_s9101": {
+              "all": {
+                "N": 768,
+                "success": 709,
+                "capture": 708,
+                "collision": 15,
+                "radial_only_failure": 43,
+                "physical_breach": 1,
+                "timeout": 1,
+                "capped_capture_time": 27.999218749999983
+              },
+              "by_bank": [
+                {
+                  "bank": "fresh",
+                  "N": 256,
+                  "success": 242,
+                  "capture": 242,
+                  "collision": 9,
+                  "radial_only_failure": 5,
+                  "physical_breach": 0,
+                  "timeout": 0
+                },
+                {
+                  "bank": "extended",
+                  "N": 256,
+                  "success": 234,
+                  "capture": 233,
+                  "collision": 0,
+                  "radial_only_failure": 22,
+                  "physical_breach": 0,
+                  "timeout": 1
+                },
+                {
+                  "bank": "second",
+                  "N": 256,
+                  "success": 233,
+                  "capture": 233,
+                  "collision": 6,
+                  "radial_only_failure": 16,
+                  "physical_breach": 1,
+                  "timeout": 0
+                }
+              ],
+              "vs_original_teacher": {
+                "rescues": 26,
+                "harms": 34,
+                "delta_success": -8,
+                "delta_percentage_points": -1.0416666666666665,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -2.9947916666666665,
+                  0.9114583333333334
+                ],
+                "collision_delta": 2,
+                "radial_failure_delta": 5
+              },
+              "vs_matched_current_only_ranking": {
+                "rescues": 25,
+                "harms": 26,
+                "delta_success": -1,
+                "delta_percentage_points": -0.13020833333333331,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -1.953125,
+                  1.6927083333333333
+                ],
+                "collision_delta": 1,
+                "radial_failure_delta": 0
               }
             }
           },
+          "pending": []
+        },
+        "complete_behavior_diagnostic": {
+          "updated_utc": "2026-11-04T18:43:14.783987+00:00",
+          "scope": "complete development endpoints only; each method follows its own actual trajectory; descriptive behavior is not a same-state causal attention intervention",
+          "methods": {
+            "contact_tournament_s9101": {
+              "counts": {
+                "events": 2500,
+                "changed_events": 1134,
+                "outside_nearest_two_only": 448,
+                "third_proposal": 1134,
+                "changed_tasks": 576,
+                "second_changed": 341,
+                "nearest_changed": 345
+              },
+              "groups": {
+                "both_success": {
+                  "tasks": 686,
+                  "events": 2247,
+                  "changed_events": 998,
+                  "outside_nearest_two_only": 398,
+                  "changed_tasks": 511,
+                  "second_changed": 302,
+                  "nearest_changed": 298
+                },
+                "both_failure": {
+                  "tasks": 28,
+                  "events": 47,
+                  "changed_events": 20,
+                  "nearest_changed": 9,
+                  "changed_tasks": 11,
+                  "outside_nearest_two_only": 10,
+                  "second_changed": 1
+                },
+                "harmed": {
+                  "tasks": 31,
+                  "events": 114,
+                  "changed_events": 65,
+                  "outside_nearest_two_only": 27,
+                  "changed_tasks": 31,
+                  "nearest_changed": 16,
+                  "second_changed": 22
+                },
+                "rescued": {
+                  "tasks": 23,
+                  "events": 92,
+                  "changed_events": 51,
+                  "second_changed": 16,
+                  "nearest_changed": 22,
+                  "outside_nearest_two_only": 13,
+                  "changed_tasks": 23
+                }
+              },
+              "changed_phases": {
+                "capture6": 261,
+                "missed_window": 339,
+                "recovery2": 282,
+                "contact8": 252
+              },
+              "best_alternative_minus_teacher_logit_quantiles": [
+                -2.854486346244812,
+                -1.0904604643583298,
+                -0.18312972784042358,
+                0.8324433267116547,
+                4.337398409843445
+              ],
+              "event_latency_ms_quantiles": [
+                85.39088349789381,
+                90.39289369247854,
+                94.93853132240469
+              ]
+            }
+          }
+        }
+      },
+      "score_anchor_policy_iteration": {
+        "registered_utc": "2026-11-04T18:52:26.555053+00:00",
+        "basis": {
+          "full": 709,
+          "no_context": 718,
+          "ordinary": 709,
+          "teacher": 717,
+          "current_only_ranking": 721
+        },
+        "objective": "reduce unsupported changes in unobserved deployment competitors after observed-action ranking",
+        "hypothesis": "pair ordering of three observations leaves remaining candidate gaps unconstrained; anchoring their upward drift may improve net task performance,but has not been validated",
+        "change": "add0.25*relu(max_unobserved(new_relative_logit-old_relative_logit))^2 per root to unchanged three-action ranking",
+        "anchor": "exact collection-time score relative to the retained action at the same pre-action root; no future outcome in anchor",
+        "information_boundary": "unobserved does not mean harmful; no imputed return or failure labels; no CV,critic or terminal prediction",
+        "unchanged": "full candidate bank,teacher,prepared9101weights,1920realepisodes,320root/prefix schedule,two shared futures,80updates,471optimizer schedule,physical replay,deployment margin1.5,original64selection",
+        "changed_compute": "one additional saved-root model pass and regularizer gradients;20workers instead of7; not an equal-wall-time claim",
+        "items": [
+          {
+            "tag": "full9101",
+            "training": {
+              "name": "contact_score_anchor_s9101",
+              "status": "completed",
+              "command": [
+                "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                "-u",
+                "-m",
+                "experiments.contact_score_anchor_policy",
+                "train",
+                "--project",
+                "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                "--source",
+                "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                "--train-bank",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/train_tasks.json",
+                "--validation-bank",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+                "--pretrained",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/contact_retained_mass_prepared_s9101.pt",
+                "--out",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_score_anchor_s9101",
+                "--deadline",
+                "2026-11-04T21:52:26.555053+00:00",
+                "--seed",
+                "9101",
+                "--iterations",
+                "80",
+                "--workers",
+                "20",
+                "--validation-every",
+                "10",
+                "--epochs",
+                "3",
+                "--lr",
+                "0.0003",
+                "--encoder-lr",
+                "0.00001",
+                "--replay-weight",
+                "0.2",
+                "--replay-batch",
+                "8",
+                "--entropy",
+                "0",
+                "--device",
+                "cpu",
+                "--training-schedule",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_event_fullpool_policy_s9101/episodes.jsonl",
+                "--optimizer-schedule",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_retained_mass_policy_s9101/learning.jsonl"
+              ],
+              "worker_slots": 21,
+              "effective_cpu_slots": 20,
+              "resource_accounting": "synchronous pool.map,20single-thread rollout workers; parent optimizes only after workers finish",
+              "pid": 243921,
+              "started_utc": "2026-11-04T18:52:26.555053+00:00",
+              "selected_update": 50,
+              "complete_training_status": {
+                "completed": true,
+                "update": 80,
+                "total_updates": 80,
+                "training_episodes": 1920,
+                "environment_steps": 242808,
+                "event_roots": 274,
+                "best": {
+                  "update": 50,
+                  "selection_key": [
+                    56,
+                    -3,
+                    -31.49374999999999
+                  ],
+                  "success": 56,
+                  "collision": 3,
+                  "N": 64
+                },
+                "task_replay_roots": 0,
+                "updated_utc": "2026-11-04T19:14:35.531183+00:00"
+              }
+            },
+            "endpoint_queue": [
+              {
+                "name": "fresh_contact_score_anchor_s9101",
+                "tag": "contact_score_anchor_s9101",
+                "bank": "fresh",
+                "training": "contact_score_anchor_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_score_anchor_s9101/stage_000050.pt",
+                "selected_update": 50,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/development_tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_contact_score_anchor_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_score_anchor_s9101/stage_000050.pt",
+                  "--evaluator",
+                  "experiments.contact_score_anchor_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "8",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T23:15:17.337556+00:00"
+                ],
+                "worker_slots": 8,
+                "status": "completed",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 244908,
+                "started_utc": "2026-11-04T19:15:17.337556+00:00"
+              },
+              {
+                "name": "extended_contact_score_anchor_s9101",
+                "tag": "contact_score_anchor_s9101",
+                "bank": "extended",
+                "training": "contact_score_anchor_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_score_anchor_s9101/stage_000050.pt",
+                "selected_update": 50,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/extended/tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/extended/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/extended_contact_score_anchor_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_score_anchor_s9101/stage_000050.pt",
+                  "--evaluator",
+                  "experiments.contact_score_anchor_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "6",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T23:15:17.337556+00:00"
+                ],
+                "worker_slots": 6,
+                "status": "completed",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 244909,
+                "started_utc": "2026-11-04T19:15:17.337556+00:00"
+              },
+              {
+                "name": "second_contact_score_anchor_s9101",
+                "tag": "contact_score_anchor_s9101",
+                "bank": "second",
+                "training": "contact_score_anchor_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_score_anchor_s9101/stage_000050.pt",
+                "selected_update": 50,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/v13_stage_selection/tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/v13_stage_selection/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/second_contact_score_anchor_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_score_anchor_s9101/stage_000050.pt",
+                  "--evaluator",
+                  "experiments.contact_score_anchor_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "6",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T23:15:17.337556+00:00"
+                ],
+                "worker_slots": 6,
+                "status": "completed",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 244910,
+                "started_utc": "2026-11-04T19:15:17.337556+00:00"
+              }
+            ]
+          }
+        ],
+        "continuation": "first complete main training and selected common768; add only repetitions or mechanism controls that affect retention or the next decision,not an automatic full ablation matrix",
+        "formal_result": false,
+        "actual_optimization_budget": {
+          "training_updates": 80,
+          "optimizer_batches": 477,
+          "physical_replay_batches": 477,
+          "matched_schedule": "contact_retained_mass_policy_s9101/learning.jsonl",
+          "comparison": "contact_tournament_s9101 also has477actual optimizer and replay batches",
+          "record_correction": "earlier narrative471was not the actual schedule used by these runs; commands and saved learning records unchanged"
+        },
+        "training_observation": {
+          "complete": true,
+          "episodes": 1920,
+          "environment_control_steps": 242808,
+          "reached_event_roots": 274,
+          "scheduled_roots": 320,
+          "selected_update": 50,
+          "selection_validation_success": 56,
+          "selection_validation_collision": 3,
+          "selection_validation_changed_tasks": 13,
+          "selection_validation_changed_events": 14,
+          "claim": "validation behavior only; fixed common768 endpoints running"
+        },
+        "complete_comparisons": {
+          "updated_utc": "2026-11-04T19:20:45.163736+00:00",
+          "scope": "fixed source,one warm correction initialization; three actions by two futures,1920realepisodes,unobserved relative-score promotion regularization; complete common768development; original64 selection; no formal or independent-source claim",
+          "teacher": {
+            "N": 768,
+            "success": 717,
+            "capture": 714,
+            "collision": 13,
+            "radial_only_failure": 38,
+            "physical_breach": 0,
+            "timeout": 3,
+            "capped_capture_time": 27.176822916666648
+          },
+          "complete": {
+            "contact_score_anchor_s9101": {
+              "all": {
+                "N": 768,
+                "success": 716,
+                "capture": 712,
+                "collision": 13,
+                "radial_only_failure": 39,
+                "physical_breach": 0,
+                "timeout": 4,
+                "capped_capture_time": 27.23749999999998
+              },
+              "by_bank": [
+                {
+                  "bank": "fresh",
+                  "N": 256,
+                  "success": 241,
+                  "capture": 238,
+                  "collision": 9,
+                  "radial_only_failure": 6,
+                  "physical_breach": 0,
+                  "timeout": 3
+                },
+                {
+                  "bank": "extended",
+                  "N": 256,
+                  "success": 238,
+                  "capture": 237,
+                  "collision": 0,
+                  "radial_only_failure": 18,
+                  "physical_breach": 0,
+                  "timeout": 1
+                },
+                {
+                  "bank": "second",
+                  "N": 256,
+                  "success": 237,
+                  "capture": 237,
+                  "collision": 4,
+                  "radial_only_failure": 15,
+                  "physical_breach": 0,
+                  "timeout": 0
+                }
+              ],
+              "vs_original_teacher": {
+                "rescues": 5,
+                "harms": 6,
+                "delta_success": -1,
+                "delta_percentage_points": -0.13020833333333331,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -0.9114583333333334,
+                  0.78125
+                ],
+                "collision_delta": 0,
+                "radial_failure_delta": 1
+              },
+              "vs_matched_current_only_ranking": {
+                "rescues": 18,
+                "harms": 23,
+                "delta_success": -5,
+                "delta_percentage_points": -0.6510416666666667,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -2.2135416666666665,
+                  0.9114583333333334
+                ],
+                "collision_delta": 0,
+                "radial_failure_delta": 5
+              },
+              "vs_matched_unregularized_tournament": {
+                "rescues": 29,
+                "harms": 22,
+                "delta_success": 7,
+                "delta_percentage_points": 0.9114583333333334,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -0.78125,
+                  2.734375
+                ],
+                "collision_delta": -2,
+                "radial_failure_delta": -5
+              }
+            }
+          },
+          "pending": []
+        },
+        "complete_behavior_diagnostic": {
+          "updated_utc": "2026-11-04T19:21:12.567997+00:00",
+          "scope": "complete development endpoints only; each method follows its own actual trajectory; descriptive behavior is not a same-state causal attention intervention",
+          "methods": {
+            "contact_score_anchor_s9101": {
+              "counts": {
+                "events": 2504,
+                "changed_events": 137,
+                "outside_nearest_two_only": 43,
+                "third_proposal": 131,
+                "changed_tasks": 126,
+                "nearest_changed": 55,
+                "second_changed": 39,
+                "physical_choice": 6
+              },
+              "groups": {
+                "both_success": {
+                  "tasks": 711,
+                  "events": 2347,
+                  "changed_events": 122,
+                  "outside_nearest_two_only": 38,
+                  "changed_tasks": 112,
+                  "nearest_changed": 49,
+                  "second_changed": 35
+                },
+                "both_failure": {
+                  "tasks": 46,
+                  "events": 114,
+                  "changed_events": 3,
+                  "nearest_changed": 1,
+                  "changed_tasks": 3,
+                  "outside_nearest_two_only": 2
+                },
+                "rescued": {
+                  "tasks": 5,
+                  "events": 20,
+                  "changed_events": 6,
+                  "second_changed": 2,
+                  "changed_tasks": 5,
+                  "nearest_changed": 3,
+                  "outside_nearest_two_only": 1
+                },
+                "harmed": {
+                  "tasks": 6,
+                  "events": 23,
+                  "changed_events": 6,
+                  "outside_nearest_two_only": 2,
+                  "changed_tasks": 6,
+                  "second_changed": 2,
+                  "nearest_changed": 2
+                }
+              },
+              "changed_phases": {
+                "contact8": 50,
+                "capture6": 38,
+                "missed_window": 36,
+                "recovery2": 13
+              },
+              "best_alternative_minus_teacher_logit_quantiles": [
+                -3.7236008048057556,
+                -1.502855658531189,
+                -1.3870990872383118,
+                -1.1073987483978271,
+                2.460158109664917
+              ],
+              "event_latency_ms_quantiles": [
+                84.66745540499687,
+                90.27478084899485,
+                96.51702723465858
+              ]
+            }
+          }
+        },
+        "decision": "complete716/768 vs717teacher,5rescues6harms; no net gain; retain all records,do not launch automatic repeat/ablation matrix"
+      },
+      "actuation_policy_iteration": {
+        "registered_utc": "2026-11-04T19:25:02.626428+00:00",
+        "basis": {
+          "score_anchor": 716,
+          "teacher": 717,
+          "tournament": 709,
+          "score_anchor_rescues": 5,
+          "score_anchor_harms": 6,
+          "score_anchor_changed_tasks": 126,
+          "score_anchor_changed_events": 137
+        },
+        "hypothesis": "conservative updates alone did not improve net performance; expose actual per-defender thrust changes and their candidate-conditioned fleet context directly to the actor",
+        "change": "replace global pooled actor with sum_i(delta_mixed_thrust_i dot shared_sensitivity_i); retained residual exactlyzero",
+        "inputs": "candidate and retained Transformer encodings,relative position/velocity/heading/yaw/radial gap,current and retained thrust,eventphase",
+        "unchanged": "original all-candidate bank,teacher,task rule,source,response encoder initialization,three-actions/two-common-futures,0.25promotion penalty,1.5deployment margin,320root schedule,80updates,1920episodes,477optimizer/physical-replay schedule,original64selection",
+        "initialization_command": [
+          "/root/autodl-tmp/ARBoids/.venv/bin/python",
+          "-u",
+          "-m",
+          "experiments.contact_actuation_policy",
+          "initialize",
+          "--pretrained",
+          "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/contact_retained_mass_prepared_s9101.pt",
+          "--out",
+          "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/contact_actuation_prepared_s9101.pt",
+          "--seed",
+          "9101"
+        ],
+        "additional_compute": "per-defender readout changes parameters and compute; no additional physical pretraining",
+        "continuation": "complete main and fixedcommon768,then decide useful controls; no automatic full ablation matrix",
+        "formal_result": false,
+        "items": [
+          {
+            "tag": "full9101",
+            "training": {
+              "name": "contact_actuation_s9101",
+              "status": "completed",
+              "command": [
+                "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                "-u",
+                "-m",
+                "experiments.contact_actuation_policy",
+                "train",
+                "--project",
+                "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                "--source",
+                "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                "--train-bank",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/train_tasks.json",
+                "--validation-bank",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+                "--pretrained",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/contact_actuation_prepared_s9101.pt",
+                "--out",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_actuation_s9101",
+                "--deadline",
+                "2026-11-04T22:25:02.626428+00:00",
+                "--seed",
+                "9101",
+                "--iterations",
+                "80",
+                "--workers",
+                "20",
+                "--validation-every",
+                "10",
+                "--epochs",
+                "3",
+                "--lr",
+                "0.0003",
+                "--encoder-lr",
+                "0.00001",
+                "--replay-weight",
+                "0.2",
+                "--replay-batch",
+                "8",
+                "--entropy",
+                "0",
+                "--device",
+                "cpu",
+                "--training-schedule",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_event_fullpool_policy_s9101/episodes.jsonl",
+                "--optimizer-schedule",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_retained_mass_policy_s9101/learning.jsonl"
+              ],
+              "worker_slots": 21,
+              "effective_cpu_slots": 20,
+              "pid": 246106,
+              "started_utc": "2026-11-04T19:25:02.626428+00:00",
+              "selected_update": 0,
+              "complete_training_status": {
+                "completed": true,
+                "update": 80,
+                "total_updates": 80,
+                "training_episodes": 1920,
+                "environment_steps": 242177,
+                "event_roots": 273,
+                "best": {
+                  "update": 0,
+                  "selection_key": [
+                    55,
+                    -3,
+                    -32.48437499999999
+                  ],
+                  "success": 55,
+                  "collision": 3,
+                  "N": 64
+                },
+                "task_replay_roots": 0,
+                "updated_utc": "2026-11-04T19:46:51.643418+00:00"
+              }
+            },
+            "endpoint_queue": [
+              {
+                "name": "fresh_contact_actuation_s9101",
+                "tag": "contact_actuation_s9101",
+                "bank": "fresh",
+                "training": "contact_actuation_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_actuation_s9101/stage_000000.pt",
+                "selected_update": 0,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/development_tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_contact_actuation_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_actuation_s9101/stage_000000.pt",
+                  "--evaluator",
+                  "experiments.contact_actuation_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "8",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T23:47:06.172280+00:00"
+                ],
+                "worker_slots": 8,
+                "status": "completed",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 247392,
+                "started_utc": "2026-11-04T19:47:06.172280+00:00"
+              },
+              {
+                "name": "extended_contact_actuation_s9101",
+                "tag": "contact_actuation_s9101",
+                "bank": "extended",
+                "training": "contact_actuation_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_actuation_s9101/stage_000000.pt",
+                "selected_update": 0,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/extended/tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/extended/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/extended_contact_actuation_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_actuation_s9101/stage_000000.pt",
+                  "--evaluator",
+                  "experiments.contact_actuation_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "6",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T23:47:06.172280+00:00"
+                ],
+                "worker_slots": 6,
+                "status": "completed",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 247393,
+                "started_utc": "2026-11-04T19:47:06.172280+00:00"
+              },
+              {
+                "name": "second_contact_actuation_s9101",
+                "tag": "contact_actuation_s9101",
+                "bank": "second",
+                "training": "contact_actuation_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_actuation_s9101/stage_000000.pt",
+                "selected_update": 0,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/v13_stage_selection/tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/v13_stage_selection/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/second_contact_actuation_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_actuation_s9101/stage_000000.pt",
+                  "--evaluator",
+                  "experiments.contact_actuation_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "6",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T23:47:06.172280+00:00"
+                ],
+                "worker_slots": 6,
+                "status": "completed",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 247394,
+                "started_utc": "2026-11-04T19:47:06.172280+00:00"
+              }
+            ]
+          }
+        ],
+        "training_action_range_diagnostic": {
+          "scope": "descriptive current-action range in all saved training contact roots;12observed proposals per root,not the complete deployed bank;no new rollout or model evaluation",
+          "roots": 1100,
+          "capture6_roots": 284,
+          "quantiles": [
+            0,
+            0.1,
+            0.5,
+            0.9,
+            1
+          ],
+          "normalized_source_span_nearest": [
+            0.21865779161453247,
+            1.1606685280799867,
+            1.638570785522461,
+            1.967711126804352,
+            1.9999934434890747
+          ],
+          "capture6_source_span_nearest": [
+            0.21865779161453247,
+            1.0650379300117492,
+            1.6022972464561462,
+            1.937533712387085,
+            1.9974110126495361
+          ],
+          "teacher_relative_l1_thrust_sum_per_root_max": [
+            0.6758164167404175,
+            1.639856743812561,
+            2.4765820503234863,
+            3.7197741031646734,
+            6.401643753051758
+          ],
+          "teacher_relative_l1_thrust_sum_per_root_median_alternative": [
+            0.20264595746994019,
+            0.48842265605926516,
+            0.8772499561309814,
+            2.009171199798584,
+            4.1045379638671875
+          ],
+          "capture6_roots_with_both_nearest_thruster_source_spans_below_point05": 0,
+          "exact_teacher_force_aliases": 1,
+          "observed_alternatives": 12100
+        },
+        "training_observation": {
+          "selected": {
+            "update": 0,
+            "selection_key": [
+              55,
+              -3,
+              -32.48437499999999
+            ],
+            "success": 55,
+            "collision": 3,
+            "N": 64
+          },
+          "validation": [
+            {
+              "update": 0,
+              "success": 55,
+              "collision": 3,
+              "changed_events": 0
+            },
+            {
+              "update": 10,
+              "success": 55,
+              "collision": 3,
+              "changed_events": 0
+            },
+            {
+              "update": 20,
+              "success": 55,
+              "collision": 3,
+              "changed_events": 0
+            },
+            {
+              "update": 30,
+              "success": 55,
+              "collision": 3,
+              "changed_events": 0
+            },
+            {
+              "update": 40,
+              "success": 55,
+              "collision": 3,
+              "changed_events": 0
+            },
+            {
+              "update": 50,
+              "success": 55,
+              "collision": 3,
+              "changed_events": 0
+            },
+            {
+              "update": 60,
+              "success": 55,
+              "collision": 3,
+              "changed_events": 0
+            },
+            {
+              "update": 70,
+              "success": 55,
+              "collision": 3,
+              "changed_events": 0
+            },
+            {
+              "update": 80,
+              "success": 55,
+              "collision": 3,
+              "changed_events": 0
+            }
+          ],
+          "conclusion": "No validation improvement so far; complete selected-checkpoint endpoint before decision"
+        },
+        "training_preference_diagnostic": {
+          "roots": 273,
+          "observed_action_pairs": 819,
+          "large_mean_return_difference_pairs": 133,
+          "same_direction_two_large_futures": 3,
+          "strong_mean_preference_target_quantiles": [
+            0.7305661489859614,
+            0.7417357297161451,
+            0.983580008757158
+          ],
+          "definition": "descriptive training pairs; three comparisons at one root are not independent",
+          "current_loss": "absolute mean return difference times one-sided logistic ranking; optimum gap is unbounded for every nonzero mean difference",
+          "candidate_target": "mean over paired futures of sigmoid(return_difference/0.5); finite soft preference,not an estimated success probability"
+        },
+        "complete_comparisons": {
+          "updated_utc": "2026-11-04T19:53:58.894567+00:00",
+          "scope": "same fixed source and frozen learned teacher; original64 selection; complete common768 development; no formal or independent-source claim",
+          "teacher": {
+            "N": 768,
+            "success": 717,
+            "capture": 714,
+            "collision": 13,
+            "radial_only_failure": 38,
+            "physical_breach": 0,
+            "timeout": 3,
+            "capped_capture_time": 27.176822916666648
+          },
+          "teacher_paths": [
+            "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_previous_joint7101",
+            "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_synchronized_deploy_s7101_extended",
+            "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_synchronized_deploy_s7101_v13_stage_selection"
+          ],
+          "complete": {
+            "contact_actuation_s9101": {
+              "all": {
+                "N": 768,
+                "success": 717,
+                "capture": 714,
+                "collision": 13,
+                "radial_only_failure": 38,
+                "physical_breach": 0,
+                "timeout": 3,
+                "capped_capture_time": 27.176822916666648
+              },
+              "by_bank": [
+                {
+                  "bank": "fresh",
+                  "N": 256,
+                  "success": 238,
+                  "capture": 236,
+                  "collision": 9,
+                  "radial_only_failure": 9,
+                  "physical_breach": 0,
+                  "timeout": 2
+                },
+                {
+                  "bank": "extended",
+                  "N": 256,
+                  "success": 241,
+                  "capture": 240,
+                  "collision": 0,
+                  "radial_only_failure": 15,
+                  "physical_breach": 0,
+                  "timeout": 1
+                },
+                {
+                  "bank": "second",
+                  "N": 256,
+                  "success": 238,
+                  "capture": 238,
+                  "collision": 4,
+                  "radial_only_failure": 14,
+                  "physical_breach": 0,
+                  "timeout": 0
+                }
+              ],
+              "selected_update": 0,
+              "vs_original_teacher": {
+                "rescues": 0,
+                "harms": 0,
+                "delta_success": 0,
+                "delta_percentage_points": 0.0,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  0.0,
+                  0.0
+                ],
+                "collision_delta": 0,
+                "radial_failure_delta": 0
+              },
+              "vs_matched_current_only_ranking": {
+                "rescues": 18,
+                "harms": 22,
+                "delta_success": -4,
+                "delta_percentage_points": -0.5208333333333333,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -2.083333333333333,
+                  1.0416666666666665
+                ],
+                "collision_delta": 0,
+                "radial_failure_delta": 4
+              },
+              "vs_matched_unregularized_tournament": {
+                "rescues": 31,
+                "harms": 23,
+                "delta_success": 8,
+                "delta_percentage_points": 1.0416666666666665,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -0.6510416666666667,
+                  2.734375
+                ],
+                "collision_delta": -2,
+                "radial_failure_delta": -6
+              },
+              "vs_matched_global_readout_score_anchor": {
+                "rescues": 6,
+                "harms": 5,
+                "delta_success": 1,
+                "delta_percentage_points": 0.13020833333333331,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -0.78125,
+                  1.0416666666666665
+                ],
+                "collision_delta": 0,
+                "radial_failure_delta": -1
+              }
+            }
+          },
+          "pending": []
+        }
+      },
+      "soft_preference_policy_iteration": {
+        "registered_utc": "2026-11-04T19:53:13.698470+00:00",
+        "basis": "actuation readout80updates selected initialization and full768equals717teacher; hard directional ranking plus max-promotion penalty did not generate a useful policy",
+        "hypothesis": "retain task-level comparisons without treating a noisy one-future gain as an indefinitely increasing score target",
+        "change": "mean paired-future sigmoid return preference with temperature0.5 and mean absolute difference weight; replace hard-direction ranking and unobserved maximum-promotion penalty together",
+        "attribution_boundary": "combined update rule; does not isolate soft labels from removing the penalty; not calibrated benefit probability",
+        "unchanged": "same actuation readout and all initial parameters,teacher,three queried actions/two common futures,320root schedule,80updates/1920episodes/477optimizer batches,physical replay,all candidates and1.5deployment margin,original64selection",
+        "initialization_command": [
+          "/root/autodl-tmp/ARBoids/.venv/bin/python",
+          "-u",
+          "-m",
+          "experiments.contact_soft_preference_policy",
+          "prepare",
+          "--pretrained",
+          "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/contact_actuation_prepared_s9101.pt",
+          "--out",
+          "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/contact_soft_preference_prepared_s9101.pt"
+        ],
+        "additional_pretraining": false,
+        "resource_start_gib": 32.78369140625,
+        "items": [
+          {
+            "tag": "full9101",
+            "training": {
+              "name": "contact_soft_preference_s9101",
+              "status": "running",
+              "command": [
+                "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                "-u",
+                "-m",
+                "experiments.contact_soft_preference_policy",
+                "train",
+                "--project",
+                "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                "--source",
+                "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                "--train-bank",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/train_tasks.json",
+                "--validation-bank",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+                "--pretrained",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/contact_soft_preference_prepared_s9101.pt",
+                "--out",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_soft_preference_s9101",
+                "--deadline",
+                "2026-11-04T22:53:13.698470+00:00",
+                "--seed",
+                "9101",
+                "--iterations",
+                "80",
+                "--workers",
+                "20",
+                "--validation-every",
+                "10",
+                "--epochs",
+                "3",
+                "--lr",
+                "0.0003",
+                "--encoder-lr",
+                "0.00001",
+                "--replay-weight",
+                "0.2",
+                "--replay-batch",
+                "8",
+                "--entropy",
+                "0",
+                "--device",
+                "cpu",
+                "--training-schedule",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_event_fullpool_policy_s9101/episodes.jsonl",
+                "--optimizer-schedule",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_retained_mass_policy_s9101/learning.jsonl"
+              ],
+              "worker_slots": 21,
+              "effective_cpu_slots": 20,
+              "resource_accounting": "20single-thread synchronous workers; parent optimizes only after all return",
+              "pid": 248565,
+              "started_utc": "2026-11-04T19:53:13.698470+00:00"
+            },
+            "endpoint_queue": []
+          }
+        ],
+        "continuation": "complete main80and fixed common768; then only repeats or controls that determine whether a useful method or mechanism has emerged",
+        "formal_result": false,
+        "complete_comparisons": {
+          "updated_utc": "2026-11-04T19:53:59.154315+00:00",
+          "scope": "same fixed source and frozen learned teacher; original64 selection; complete common768 development; no formal or independent-source claim",
+          "teacher": {
+            "N": 768,
+            "success": 717,
+            "capture": 714,
+            "collision": 13,
+            "radial_only_failure": 38,
+            "physical_breach": 0,
+            "timeout": 3,
+            "capped_capture_time": 27.176822916666648
+          },
+          "teacher_paths": [
+            "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_previous_joint7101",
+            "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_synchronized_deploy_s7101_extended",
+            "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_synchronized_deploy_s7101_v13_stage_selection"
+          ],
+          "complete": {},
           "pending": [
-            "contact_tournament_no_context_s9101",
-            "contact_tournament_ordinary_s9101"
+            "contact_soft_preference_s9101"
           ]
         }
       }

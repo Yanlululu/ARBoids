@@ -1,7 +1,0 @@
-{
-  "updates": 4,
-  "weights_bitwise_equal": true,
-  "scheduler_equal": true,
-  "best_selection_equal": true,
-  "sampler_rng_equal": true
-}

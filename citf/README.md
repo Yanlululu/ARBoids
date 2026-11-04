@@ -28,6 +28,8 @@ CITF作为完整控制方法定义，候选生成、运动预测、候选条件T
 
 `audit/current_independent_review`和`本轮独立评估.md`保留输入包复核时的68项测试及有限验收记录，属于历史记录。当前实现和任务进度以实际源码与状态记录为准。
 
+当前分支已清退被完整复核取代的`audit/previous_release`、`audit/execution_v3`中的跟踪记录、旧配置与旧交付说明，以及11月2—3日开发窗口的一次性调度脚本。历史跟踪文件可从Git提交`bac5c64`回查；`audit/execution_v3_complete`和当前独立复核保留。输入包的`release/FILE_MANIFEST.json`及`audit/current_independent_review/input_FILE_MANIFEST.json`仅描述当时交付内容，不是清理后工作树的文件清单。实际运行命令、任务库、模型和结果仍以原实验目录中的记录为准。
+
 [ARBoids原文](review_sources/ARBoids_2026_正式期刊版_用户提供.pdf)保留在`review_sources`；[前序M1方法与证据](../docs/new-cooperative-defense-research-route.md)单独作为历史参考。旧r20核心证据保留在`../train/experiments/author-source-fusion-20261011/r20-paper-evidence`。
 
 ```bash
