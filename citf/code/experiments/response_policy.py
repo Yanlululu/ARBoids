@@ -125,10 +125,31 @@ def main():
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--original-bank', action='store_true')
     parser.add_argument('--reference-prior', action='store_true')
+    parser.add_argument('--training-schedule')
+    parser.add_argument('--training-plan')
     args = parser.parse_args(); torch.set_num_threads(1); torch.manual_seed(args.seed)
     out = Path(args.out); out.mkdir(parents=True, exist_ok=False)
     train_bank = json.loads(Path(args.train_bank).read_text())
     validation = json.loads(Path(args.validation_bank).read_text())
+    scheduled_jobs = None
+    if args.training_schedule and args.training_plan:
+        raise ValueError('Choose an executed schedule or a prospective training plan')
+    if args.training_schedule or args.training_plan:
+        scheduled_jobs = {}
+        for line in Path(args.training_schedule or args.training_plan).read_text().splitlines():
+            record = json.loads(line)
+            if args.training_plan and record.get('status') != 'planned':
+                raise ValueError('Prospective training jobs must be marked planned')
+            if args.training_schedule and not record.get('completed'):
+                raise ValueError('Training schedule contains an incomplete episode')
+            scheduled_jobs.setdefault(record['update'], []).append(record)
+        if any(len(scheduled_jobs.get(update, [])) != args.groups * args.group_size
+               for update in range(1, args.iterations + 1)):
+            raise ValueError('Training schedule must contain every declared complete episode')
+        families = {task['geometry_family_id'] for task in train_bank['tasks']}
+        if any(record['task']['geometry_family_id'] not in families
+               for records in scheduled_jobs.values() for record in records):
+            raise ValueError('Training schedule includes a layout outside the training bank')
     if train_bank['role'] != 'train' or validation['role'] != 'validation':
         raise ValueError('Incorrect task split roles')
     if {x['geometry_family_id'] for x in train_bank['tasks']} & {x['geometry_family_id'] for x in validation['tasks']}:
@@ -156,6 +177,9 @@ def main():
         objective='ordinary clipped complete-task policy gradient plus matched short-response replay',
         no_critic_or_terminal_prediction=True, candidate_set_normalization=False,
         policy_prior_mode=cfg.policy_prior_mode,
+        training_action_sampling=getattr(cfg, 'training_action_sampling', 'all policy decisions'),
+        training_schedule=args.training_schedule,
+        training_plan=args.training_plan,
         selection='complete fixed validation tasks: success then fewer collisions then capped time')
     (out / 'protocol.json').write_text(json.dumps(protocol, indent=2))
     update, episodes, total_steps, best = 0, 0, 0, None
@@ -204,11 +228,15 @@ def main():
         proceed = validate()
         while proceed and update < args.iterations and time.time() < deadline and not Path(stop_file).exists():
             parameters = state(); jobs = []
-            for _ in range(args.groups):
-                task = dict(train_bank['tasks'][int(rng.integers(len(train_bank['tasks'])))])
-                task['future_seed'] = int(rng.integers(200000000, 2000000000))
-                for _ in range(args.group_size):
-                    jobs.append(job(task, parameters, True, rng.integers(1, 2000000000)))
+            if scheduled_jobs is not None:
+                jobs = [job(dict(record['task']), parameters, True, record['policy_seed'])
+                        for record in scheduled_jobs[update + 1]]
+            else:
+                for _ in range(args.groups):
+                    task = dict(train_bank['tasks'][int(rng.integers(len(train_bank['tasks'])))])
+                    task['future_seed'] = int(rng.integers(200000000, 2000000000))
+                    for _ in range(args.group_size):
+                        jobs.append(job(task, parameters, True, rng.integers(1, 2000000000)))
             results = list(pool.map(rollout, jobs))
             with (out / 'episodes.jsonl').open('a') as stream:
                 for result in results:
@@ -243,13 +271,15 @@ def main():
                     nn.utils.clip_grad_norm_(model.parameters(), 1.); optimizer.step()
                     losses.append(float(loss.detach())); entropies.append(float(entropy.detach()))
                     kls.append(float(((ratio - 1) - logratio).mean().detach()))
-                if np.mean(kls[-max(1, math.ceil(count / args.batch_size)):]) > .08:
+                if kls and np.mean(kls[-max(1, math.ceil(count / args.batch_size)):]) > .08:
                     break
             update += 1
             row = dict(update=update, training_episodes=episodes, environment_steps=total_steps,
                 success=sum(r['record']['success'] for r in results), collision=sum(r['record']['collision'] for r in results),
                 N=len(results), reward_mean=float(rewards.mean()), advantage_abs_mean=float(np.abs(advantages).mean()),
-                policy_loss=float(np.mean(losses)), entropy=float(np.mean(entropies)), kl=float(np.mean(kls)),
+                policy_loss=float(np.mean(losses)) if losses else 0.,
+                entropy=float(np.mean(entropies)) if entropies else 0.,
+                kl=float(np.mean(kls)) if kls else 0., optimization_batches=len(losses),
                 replay_loss=float(np.mean(replay_losses)) if replay_losses else None)
             with (out / 'learning.jsonl').open('a') as stream:
                 stream.write(json.dumps(row) + '\n')
