@@ -154,7 +154,8 @@ def main():
                 objective_calls=len(optimization_diagnostics),
                 mean_loss=float(np.mean([x['loss'] for x in optimization_diagnostics])),
                 mean_target_confidence=float(np.mean(confidence)) if confidence else None,
-                scope='optimizer calls; reused comparisons are not independent observations')
+                scope='optimizer calls in this process segment; reused comparisons are not independent observations',
+                after_update=protocol.get('resumptions', [{}])[-1].get('update', 0))
             path.write_text(json.dumps(protocol, indent=2) + '\n')
         return result
     common.CommonFutureConfig = SoftPreferenceConfig

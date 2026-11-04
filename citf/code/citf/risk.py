@@ -5,6 +5,12 @@ import torch
 from torch import Tensor
 
 
+def signed_log1p(value: Tensor) -> Tensor:
+    """Signed log compression, including its unit derivative at zero."""
+    sign = torch.where(value >= 0, torch.ones_like(value), -torch.ones_like(value))
+    return sign * torch.log1p(sign * value)
+
+
 def rectified_gaussian_risk(mu: Tensor, sigma: Tensor, clearance: float = 7.) -> Tensor:
     """E[(r-max(0,Z))_+^2], Z~N(mu,sigma^2), NOT a truncated normal.
 

@@ -74,16 +74,16 @@ def response_scores(paths, valid, unary, steps=None):
                 closest_distance=closest, first_loss=first_loss, first_capture=first_capture)
 
 
-def physical_bank(world, source, cfg, budget=96):
+def physical_bank(world, source, cfg, budget=96, bank=12, rounds=1):
     f = factorize(world, source)
     ranked, _ = nominal_beam(f['unary'].numpy(), f['pair'].numpy(), cfg.objective_risk_weight, 128)
     initial, center = initialize_bank(ranked, f['grid'].numpy(), f['valid'].numpy(),
-                                      f['prior'].numpy(), 12, budget)
+                                      f['prior'].numpy(), bank, budget)
     def score(plans):
         b, _, _ = inputs(world, f, plans)
         return synchronized.physical_components(b, cfg)[0][0].numpy()
     choice, trace = whole_configuration_search(initial, score,
-        [x.nonzero()[:, 0].numpy() for x in f['valid']], budget, 1)
+        [x.nonzero()[:, 0].numpy() for x in f['valid']], budget, rounds)
     return f, np.asarray(trace['configurations'], dtype=np.int64), np.asarray(trace['scores']), np.asarray(choice), np.asarray(center)
 
 

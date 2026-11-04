@@ -87,7 +87,10 @@ def contact_objective(output, batch, cfg):
     # Capture-zone errors matter most for the boats that can physically reach it.
     distance = (truth[..., :-1, :, :] - truth[..., -1:, :, :]).norm(dim=-1).mean(2)
     weight = 1 + 3 * torch.exp(-(distance - 5).clamp_min(0) / 3)
-    weight = weight * batch['known_time_valid'][:, None, None]
+    valid = (batch['known_time_valid'][:, None, None]
+             & batch['candidate_valid'][:, :, None, None]
+             & batch['entity_valid'][:, None, :-1, None])
+    weight = weight.masked_fill(~valid, 0)
     def weighted(error, mask):
         return (F.smooth_l1_loss(error, torch.zeros_like(error), reduction='none') * mask[..., None]).sum() / (2 * mask.sum()).clamp_min(1)
     position = weighted(relative_pred - relative_true, weight)
@@ -139,7 +142,7 @@ class ContactEventController(Controller):
                             ('source_implementation_sha256', self.source.implementation_sha256)):
             if self.teacher.checkpoint_protocol.get(key) != actual:
                 raise ValueError(f'Contact teacher differs from the runtime source: {key}')
-        self.teacher_controller = synchronized.joint.JointPolicyController(self.source, self.teacher)
+        self.teacher_controller = self.child_controller(synchronized.joint.JointPolicyController, self.teacher)
         self.stochastic = stochastic
         self.seen = set()
         self.minimum = float('inf')
@@ -263,6 +266,15 @@ def input_batch(items, device):
     return output
 
 
+def contact_data_files(path, role):
+    """All files actually consumed by either supported replay representation."""
+    path = Path(path)
+    if path.is_dir():
+        return [path / 'status.json', *sorted(path.glob('*.pt'))]
+    index = json.loads(path.read_text(encoding='utf-8'))
+    return [path, *(Path(name) for name in index['roots'][role])]
+
+
 def load_contact_data(path, role):
     path = Path(path)
     if path.is_dir():
@@ -366,16 +378,7 @@ def contact_runtime_identity(value, stored):
     value['controller'].update(config)
     value['controller']['teacher_sha256'] = teacher_fingerprint(
         config['teacher_checkpoint'], config.get('teacher_sha256', ''))
-    here = Path(__file__).parent
-    names = ('contact_event_policy', 'candidate_response', 'capture_window_diagnostic',
-        'response_data', 'root_response_diagnostic', 'synchronized_configuration_policy',
-        'joint_configuration_policy', 'configuration_policy', 'joint_stopped_motion',
-        'joint_task_geometry', 'synchronized_guard', 'ordered_guard', 'guard_focus',
-        'guard_envelope', 'priority_guard', 'guard_prediction', 'pair_geometry')
-    dependencies = {name: file_hash(here / (name + '.py')) for name in names}
-    entrypoint = Path(sys.argv[0]).resolve()
-    if entrypoint.parent == here.resolve() and entrypoint.suffix == '.py':
-        dependencies[entrypoint.stem] = file_hash(entrypoint)
+    dependencies = dict(value['runtime_dependencies'])
     value['contact_runtime_dependencies'] = dependencies
     value['runtime_code'] = canonical_hash(dict(core=value['runtime_code'], contact=dependencies))
     return value

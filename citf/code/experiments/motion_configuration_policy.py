@@ -13,6 +13,7 @@ import torch
 from torch import nn
 
 from citf.contracts import canonical_hash, file_hash
+from citf.risk import signed_log1p
 from experiments import joint_configuration_policy as joint
 from experiments import joint_stopped_motion as motion
 
@@ -52,7 +53,7 @@ class MotionConfigurationPolicy(joint.JointConfigurationPolicy):
                 pursuit = measurement['pursuit'].sqrt()
                 for value in (distance / 7, radial / 6, pursuit / 10):
                     mean = value.mean(-1)
-                    summaries.extend((mean.sign() * torch.log1p(mean.abs()),
+                    summaries.extend((signed_log1p(mean),
                                       torch.log1p(value.std(-1, unbiased=False))))
             absolute = torch.stack(summaries, -1)
             valid = batch['candidate_valid'][..., None]

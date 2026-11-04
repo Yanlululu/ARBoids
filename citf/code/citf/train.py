@@ -1,6 +1,6 @@
 """Root-grouped training with resume-equivalent RNG/optimizer/selection state."""
 from __future__ import annotations
-import argparse,json,time,random,hashlib,math
+import argparse,json,time,random,hashlib,math,os
 from pathlib import Path
 from dataclasses import asdict
 import numpy as np
@@ -12,7 +12,10 @@ from .contracts import validate_dataset,SCHEMA,FEATURES,CONTEXT,file_hash,check_
 
 
 def atomic_save(value,path):
-    path=Path(path);tmp=path.with_suffix('.saving');torch.save(value,tmp);tmp.replace(path)
+    path=Path(path);tmp=path.with_suffix('.saving')
+    with tmp.open('wb') as stream:
+        torch.save(value,stream);stream.flush();os.fsync(stream.fileno())
+    tmp.replace(path)
 
 
 @torch.no_grad()

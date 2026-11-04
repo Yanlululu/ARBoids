@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import torch
 
 from citf.contracts import canonical_hash, file_hash
+from citf.risk import signed_log1p
 from experiments import cooperative_search_configuration_policy as composed
 
 joint = composed.joint
@@ -47,7 +48,7 @@ class ReferenceBankPolicy(joint.JointConfigurationPolicy):
         difference = (physical - self.reference_physical) / self.cfg.policy_prior_scale
         # The original bank has nonnegative differences and is unchanged.
         # A newly discovered lower-cost configuration must retain its advantage.
-        baseline = -difference.sign() * torch.log1p(difference.abs())
+        baseline = -signed_log1p(difference)
         return torch.cat((feature, relative), -1), baseline
 
 

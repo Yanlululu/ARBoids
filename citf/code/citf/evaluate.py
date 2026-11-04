@@ -1,13 +1,13 @@
 """Frozen single-world evaluation with full controller identity and per-step traces."""
-import argparse,json,time,gzip
+import argparse,json,time,gzip,inspect
 from dataclasses import replace
 from pathlib import Path
 import numpy as np
 import torch
-from .bridge import Source,World,Controller
+from .bridge import Source,World,Controller,ControlOptions
 from .collect import load_behavior
 from .opponents import load_opponent
-from .contracts import Protocol,verify_freeze,file_hash,runtime_identity,LayoutRegistry,canonical_hash
+from .contracts import Protocol,verify_freeze,file_hash,runtime_identity,LayoutRegistry,canonical_hash,validate_task_banks
 
 
 def atomic_json(value,path):
@@ -45,21 +45,26 @@ def main():
     if a.max_tasks<0:raise ValueError('Invalid task limit')
     if out.exists() and not (a.prepare_runtime or a.resume):raise ValueError('Refuse result overwrite; use --resume')
     tasks=json.loads(Path(a.tasks).read_text());p=Protocol(**tasks.get('protocol',{}));torch.set_num_threads(1)
+    validate_task_banks((tasks['role'],tasks))
     if a.risk_weight is not None:p=replace(p,risk_weight=a.risk_weight)
     opponent=load_opponent(a.opponent_spec,a.device)
     control={'bank':a.bank,'budget':a.budget,'rounds':a.rounds,'risk':a.risk,'nominal_beam_width':128,
              'search':'whole_configuration_single_coordinate_neighbors','initializer':'source_center_reserved_inside_bank-v1','history_cache':True}
     if a.selection=='independent':
-        from .contracts import tree_hash
-        control.update(search='simultaneous_common_source_center',search_code=tree_hash(Path(__file__).parents[1]/'experiments'))
+        control.update(search='simultaneous_common_source_center')
     if a.selection=='independent' and not a.checkpoint:raise ValueError('CITF-independent requires the matched learned predictor')
+    options=ControlOptions(a.bank,a.budget,a.rounds,a.risk,a.selection)
+    checked_source=Source(a.project,a.source,a.device)
+    checked_world=World(a.project,p,tasks['tasks'][0]['defenders'])
+    checked_model=load_behavior(a.checkpoint,checked_source,checked_world,a.device)
+    checked_controller=options.build(Controller,checked_source,checked_model,a.device,world=checked_world)
+    control['supported_selections']=sorted(getattr(checked_controller,'supported_selections',('joint',)))
     method='CITF-independent' if a.selection=='independent' else ('CITF' if a.checkpoint else 'CITF-Phys')
-    identity=runtime_identity(a.project,a.source,a.checkpoint,p,control,a.device,method,opponent=opponent.identity)
+    code_entries=[path for path in (inspect.getsourcefile(Controller),inspect.getsourcefile(type(checked_controller))) if path]
+    identity=runtime_identity(a.project,a.source,a.checkpoint,p,control,a.device,method,
+        opponent=opponent.identity,code_entries=code_entries)
     if a.prepare_runtime:
-        # Validate the ACTUAL loaded source/model interface before issuing an identity.
-        checked_source=Source(a.project,a.source,a.device)
-        checked_world=World(a.project,p,tasks['tasks'][0]['defenders'])
-        load_behavior(a.checkpoint,checked_source,checked_world,a.device)
+        # The actual controller, including its supported modes, was checked above.
         Path(a.prepare_runtime).parent.mkdir(parents=True,exist_ok=True)
         Path(a.prepare_runtime).write_text(json.dumps(identity,ensure_ascii=False,indent=2));return
     if a.phase=='final':
@@ -74,7 +79,8 @@ def main():
     else:
         out.mkdir(parents=True);(out/'task_records').mkdir()
         atomic_json(transaction,out/'evaluation.json');atomic_json(identity,out/'runtime.json')
-    source=Source(a.project,a.source,a.device);registry=LayoutRegistry(a.registry)
+    source=checked_source;registry=LayoutRegistry(a.registry)
+    del checked_controller,checked_model,checked_world
     committed=committed_rows(out,tasks['tasks']);executed=0
     seen=set()
     for index,t in enumerate(tasks['tasks']):
@@ -90,8 +96,7 @@ def main():
         registered=registry.data['families'].get(family)
         if not registered or registered['split']!=tasks['role']:raise ValueError('Task not allocated to declared split')
         model=load_behavior(a.checkpoint,source,world,a.device)
-        controller=Controller(source,model,a.device,a.bank,a.budget,a.rounds,a.risk)
-        controller.selection=a.selection
+        controller=options.build(Controller,source,model,a.device,world=world)
         lat=[];calls=[];step=0;trace_path=out/f'{index:05d}_steps.jsonl.gz'
         pending=trace_path.with_suffix(trace_path.suffix+'.pending')
         with gzip.open(pending,'wt',encoding='utf-8') as trace:

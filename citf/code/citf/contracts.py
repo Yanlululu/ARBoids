@@ -1,14 +1,14 @@
 """CITF v3 execution contract; v2 tensor/model semantics retained."""
 from __future__ import annotations
 from dataclasses import dataclass, asdict
-import hashlib, json, math, sys
+import ast, hashlib, json, math, sys
 import scipy
 from pathlib import Path
 import numpy as np
 import torch
 
 SCHEMA = 'citf-stopped-aware-v2'
-RUNTIME_REVISION = 'CITF-execution-events-v4'
+RUNTIME_REVISION = 'CITF-execution-contracts-v5'
 COLLECTION_SCHEMA = 'citf-branch-events-v1'
 BRANCH_EVENT_FIELDS = ['success','capture','collision','physical_collision','physical_breach',
                        'source_failure','radial_only_failure','timeout']
@@ -30,6 +30,107 @@ def tree_hash(path):
     path=Path(path)
     return canonical_hash({str(p.relative_to(path)):file_hash(p) for p in sorted(path.rglob('*.py'))
                            if '__pycache__' not in p.parts})
+
+
+def source_identity(project, source):
+    project = Path(project)
+    return dict(source_sha256=file_hash(source),
+        source_implementation_sha256=file_hash(project / 'train/policy/networks.py'),
+        environment_sha256=hashlib.sha256(
+            (project / 'train/envs/TADgame.py').read_bytes()
+            + (project / 'train/envs/modules.py').read_bytes()).hexdigest())
+
+
+def python_dependencies(*entries):
+    """Fingerprint the local import closure without importing or executing it.
+
+    Include the actual CLI entry point: experiment adapters replace core objects
+    at runtime, so hashing only the core package cannot identify their behavior.
+    """
+    root = Path(__file__).resolve().parents[1]
+    pending = [Path(__file__), *(Path(p) for p in entries)]
+    entry = Path(sys.argv[0]).resolve()
+    if entry.suffix == '.py' and entry.is_relative_to(root) and entry.is_file():
+        pending.append(entry)
+    found = {}
+
+    def enqueue(parts):
+        for stop in range(1, len(parts) + 1):
+            base = root.joinpath(*parts[:stop])
+            for path in (base.with_suffix('.py'), base / '__init__.py'):
+                if path.is_file():
+                    pending.append(path)
+
+    while pending:
+        path = pending.pop().resolve()
+        if not path.is_relative_to(root):
+            raise ValueError('Code dependency outside the declared Python source root: ' + str(path))
+        name = path.relative_to(root).as_posix()
+        if name in found:
+            continue
+        raw = path.read_bytes()
+        found[name] = hashlib.sha256(raw).hexdigest()
+        package = path.relative_to(root).parts[:-1]
+        for node in ast.walk(ast.parse(raw, filename=str(path))):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    enqueue(alias.name.split('.'))
+            elif isinstance(node, ast.ImportFrom):
+                base = list(package[:len(package) - node.level + 1]) if node.level else []
+                base += node.module.split('.') if node.module else []
+                enqueue(base)
+                for alias in node.names:
+                    if alias.name != '*':
+                        enqueue(base + alias.name.split('.'))
+    return dict(sorted(found.items()))
+
+
+def immutable_run_contract(parameters, files=(), code=()):
+    """Content identity shared by collection, training and resume readers."""
+    paths = sorted({Path(p).resolve() for p in files})
+    return dict(revision='citf-immutable-run-v1', parameters=parameters,
+        artifacts={str(p): file_hash(p) for p in paths}, code=python_dependencies(*code))
+
+
+def require_same_contract(recorded, actual, label):
+    if recorded is None:
+        raise ValueError(label + ' lacks a recorded immutable contract; retain the legacy run and use a new output')
+    if canonical_hash(recorded) != canonical_hash(actual):
+        raise ValueError(label + ' changed: data, source, protocol, configuration or implementation differs')
+
+
+def validate_task_banks(*groups):
+    """Validate roles, distinct tasks, physical-family separation and protocol."""
+    assigned, families, physical = {}, {}, None
+    for role, bank in groups:
+        if role not in ('train', 'validation', 'test', 'final_test') or bank.get('role') != role:
+            raise ValueError('Task bank role differs from its requested use')
+        protocol = asdict(Protocol(**bank['protocol']))
+        if physical is not None and protocol != physical:
+            raise ValueError('Task banks use different physical protocols')
+        physical = protocol
+        tasks = bank['tasks']
+        if not tasks:
+            raise ValueError('Empty task bank')
+        seen, task_ids = set(), set()
+        families[role] = set()
+        for task in tasks:
+            key = (task['scene_seed'], task['future_seed'], task['defenders'], task['agility'])
+            if key in seen:
+                raise ValueError('Repeated physical task in bank')
+            seen.add(key)
+            if 'task_id' in task:
+                if task['task_id'] in task_ids:
+                    raise ValueError('Repeated task identifier in bank')
+                task_ids.add(task['task_id'])
+            family = task['geometry_family_id']
+            if not family:
+                raise ValueError('Missing physical geometry identity')
+            if family in assigned and assigned[family] != role:
+                raise ValueError('Physical layout appears in more than one split')
+            assigned[family] = role
+            families[role].add(family)
+    return families
 
 
 @dataclass(frozen=True)
@@ -205,16 +306,19 @@ def validate_predictor_protocol(trained_protocol,online_protocol):
             'online_scoring_changed':float(trained_protocol['risk_weight'])!=float(online_protocol.risk_weight)}
 
 
-def runtime_identity(project,source,checkpoint,protocol,control,device,method='CITF',opponent=None):
+def runtime_identity(project,source,checkpoint,protocol,control,device,method='CITF',opponent=None,code_entries=()):
     project=Path(project);here=Path(__file__).parent
     source_files=['train/envs/TADgame.py','train/envs/modules.py','train/policy/networks.py']
     if opponent is None:
         from .opponents import APFOpponent
         opponent=APFOpponent().identity
+    dependencies=python_dependencies(*code_entries)
     return {'revision':RUNTIME_REVISION,'method':method,'schema':SCHEMA,
             'history_features':FEATURES,'context_features':CONTEXT,'protocol':asdict(protocol),
             'source_sha256':file_hash(source),'checkpoint_sha256':file_hash(checkpoint) if checkpoint else None,
-            'project_code':{x:file_hash(project/x) for x in source_files},'runtime_code':tree_hash(here),
+            'project_code':{x:file_hash(project/x) for x in source_files},
+            'runtime_code':canonical_hash({'core':tree_hash(here),'dependencies':dependencies}),
+            'runtime_dependencies':dependencies,
             'controller':control,'opponent':opponent,'software':{'python':sys.version,'torch':torch.__version__,'numpy':np.__version__,'scipy':scipy.__version__},'device':str(device)}
 
 

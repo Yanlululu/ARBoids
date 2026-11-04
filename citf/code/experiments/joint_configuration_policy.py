@@ -22,6 +22,7 @@ from torch import nn
 
 from citf.bridge import Source, factorize, inputs
 from citf.contracts import canonical_hash, file_hash
+from citf.risk import signed_log1p
 from citf.search import nominal_beam, initialize_bank, whole_configuration_search
 from citf.train import atomic_save, load_shards
 from experiments import configuration_policy as policy
@@ -68,7 +69,7 @@ class JointConfigurationPolicy(policy.ConfigurationPolicy):
             return torch.cat((mean, maximum), -1)
 
         physical, collision, gap = policy.physical_components(batch, self.cfg)
-        signed_log = lambda value: value.sign() * torch.log1p(value.abs())
+        signed_log = signed_log1p
         scalar = torch.stack((batch['unary'] / 10, torch.log1p(collision), signed_log(gap / 10),
             torch.log1p((out['risk'] * out['pair_valid'][:, None]).sum(-1)),
             signed_log(out['team_mu'] / 10), torch.log1p(out['team_risk']),

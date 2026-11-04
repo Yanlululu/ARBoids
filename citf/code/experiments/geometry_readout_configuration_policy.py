@@ -12,6 +12,7 @@ import torch
 from torch import nn
 
 from citf.contracts import canonical_hash, file_hash
+from citf.risk import signed_log1p
 from experiments import balanced_configuration_policy as balanced
 
 
@@ -51,7 +52,7 @@ class GeometryReadoutPolicy(balanced.BalancedConfigurationPolicy):
         separation = separation.masked_fill(~pair_valid, torch.inf).flatten(1).amin(-1)
         candidates = batch['candidate_valid'].shape[1]
         expand = lambda value: value[:, None].expand(-1, candidates)
-        signed_log = lambda value: value.sign() * torch.log1p(value.abs())
+        signed_log = signed_log1p
         absolute = torch.stack((
             batch['unary'] / 10,
             torch.log1p(collision), signed_log(gap / 10),

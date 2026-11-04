@@ -147,7 +147,7 @@ def predict(world, source, factor, plans, nominal_agility):
         breached = radius[:, -1] < protocol.target_radius
         if protocol.radial_early_failure:
             breached = breached | (gaps > 0).all(-1)
-        stopped = breached | (distance <= protocol.collision_radius).any(-1) | (separation < protocol.capture_radius).any(-1)
+        stopped = breached | (distance < protocol.collision_radius).any(-1) | (separation < protocol.capture_radius).any(-1)
         transitions += alive.sum()
         alive = alive & ~stopped
     return minimum, gap_maximum, int(transitions)

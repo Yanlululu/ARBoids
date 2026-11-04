@@ -5,6 +5,7 @@ This is a new runtime revision and must not inherit 46/48 as its own result.
 """
 from __future__ import annotations
 import copy,sys,hashlib,time
+from dataclasses import dataclass
 from pathlib import Path
 from collections import deque
 import numpy as np
@@ -116,12 +117,67 @@ def inputs(world,f,plans):
         time_context=torch.tensor([[max(0.,world.protocol.time_limit-world.env.Current_T)/world.protocol.time_limit,world.protocol.known_steps(world.env.Current_T)/T]],dtype=torch.float32),
         known_time_valid=(torch.arange(T)<world.protocol.known_steps(world.env.Current_T))[None]),gates,R
 
+@dataclass(frozen=True)
+class ControlOptions:
+    bank: int = 12
+    budget: int = 96
+    rounds: int = 1
+    risk_mode: str = 'expected'
+    selection: str = 'joint'
+
+    def build(self, factory, source, model=None, device='cpu', *, world=None, **kwargs):
+        validator = getattr(model, 'validate_runtime', None)
+        if validator is not None:
+            validator(source, world)
+        controller = factory(source, model, device, self.bank, self.budget,
+                             self.rounds, self.risk_mode, **kwargs)
+        if self.selection not in getattr(controller, 'supported_selections', ('joint',)):
+            raise ValueError(f'{type(controller).__name__} does not implement selection={self.selection}')
+        controller.selection = self.selection
+        return controller
+
+
 class Controller:
+    supported_selections = frozenset(('joint', 'independent'))
+    supported_risk_modes = frozenset(('expected', 'mean_distance'))
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # Replacing act() also replaces the base selection/risk implementation.
+        # An adapter must explicitly opt in when it implements those modes.
+        if 'act' in cls.__dict__:
+            if 'supported_selections' not in cls.__dict__:
+                cls.supported_selections = frozenset(('joint',))
+            if 'supported_risk_modes' not in cls.__dict__:
+                cls.supported_risk_modes = frozenset(('expected',))
+
     def __init__(self,source,model=None,device='cpu',bank=12,budget=96,rounds=1,risk_mode='expected'):
         self.source=source;self.model=model;self.device=device;self.bank=bank;self.budget=budget;self.rounds=rounds;self.risk_mode=risk_mode
-        if risk_mode not in ('expected','mean_distance'):raise ValueError('Unknown geometric risk mode')
+        if risk_mode not in self.supported_risk_modes:raise ValueError(f'{type(self).__name__} does not implement risk={risk_mode}')
         if bank<1 or budget<1 or rounds<0:raise ValueError('Invalid search configuration')
+        self.selection = 'joint'
+        validator = getattr(model, 'validate_runtime', None)
+        if validator is not None:
+            validator(source, None)
         if model is not None:model.to(device).eval()
+
+    @property
+    def selection(self):
+        return self._selection
+
+    @selection.setter
+    def selection(self, value):
+        if value not in self.supported_selections:
+            raise ValueError(f'{type(self).__name__} does not implement selection={value}')
+        self._selection = value
+
+    @property
+    def control_options(self):
+        return ControlOptions(self.bank, self.budget, self.rounds, self.risk_mode, self.selection)
+
+    def child_controller(self, factory, model, **kwargs):
+        return self.control_options.build(factory, self.source, model, self.device, **kwargs)
+
     @torch.no_grad()
     def act(self,world):
         start=time.perf_counter();f=factorize(world,self.source);p=world.protocol

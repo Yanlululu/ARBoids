@@ -8,7 +8,6 @@ import argparse
 import concurrent.futures
 from dataclasses import asdict, replace
 import datetime
-import hashlib
 import json
 import math
 import multiprocessing
@@ -20,7 +19,7 @@ import torch
 from torch import nn
 
 from citf.bridge import Source, World, inputs
-from citf.contracts import Protocol, file_hash
+from citf.contracts import Protocol, source_identity
 from citf.train import atomic_save
 from experiments.candidate_response import (ResponseConfig, CandidateResponseModel,
     add_reference, load_response_data, response_objective)
@@ -108,12 +107,7 @@ def input_batch(items, device):
 
 def validated_training_config(project, source, pretrained, cfg):
     """Check the actual rollout inputs before inheriting pretrained provenance."""
-    project = Path(project)
-    actual = dict(source_sha256=file_hash(source),
-        source_implementation_sha256=file_hash(project / 'train/policy/networks.py'),
-        environment_sha256=hashlib.sha256(
-            (project / 'train/envs/TADgame.py').read_bytes()
-            + (project / 'train/envs/modules.py').read_bytes()).hexdigest())
+    actual = source_identity(project, source)
     for key, fingerprint in actual.items():
         if pretrained['protocol'].get(key) != fingerprint:
             raise ValueError(f'Pretrained checkpoint differs from the training input: {key}')

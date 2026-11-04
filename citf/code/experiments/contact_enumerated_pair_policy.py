@@ -8,18 +8,23 @@ import argparse
 import concurrent.futures
 from dataclasses import asdict, dataclass
 import datetime
+import inspect
 import json
 import multiprocessing
 from pathlib import Path
+import random
 import sys
 import time
+import uuid
 
 import numpy as np
 import torch
 from torch import nn
 
 from citf.bridge import Source, World
-from citf.contracts import Protocol
+from citf.contracts import (Protocol, immutable_run_contract, require_same_contract,
+    validate_task_banks, source_identity, canonical_hash, file_hash)
+from citf.checkpointing import CheckpointJournal, atomic_json
 from citf.search import candidate_grid
 from citf.train import atomic_save
 from experiments import contact_event_policy as contact
@@ -149,6 +154,7 @@ def train_main():
     parser.add_argument('--optimizer-schedule')
     parser.add_argument('--task-replay-batch', type=int, default=0)
     parser.add_argument('--task-replay-weight', type=float, default=.5)
+    parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
     if args.task_replay_batch < 0 or not 0 <= args.task_replay_weight <= 1:
         raise ValueError('Invalid task-comparison replay configuration')
@@ -156,16 +162,16 @@ def train_main():
         raise ValueError('Task-comparison replay requires a declared ranking objective')
     torch.set_num_threads(1)
     torch.manual_seed(args.seed)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
     out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=False)
+    resumed = None
+    if args.resume:
+        resumed = torch.load(out / 'last.pt', map_location='cpu', weights_only=False)
     train_bank = json.loads(Path(args.train_bank).read_text())
     validation = json.loads(Path(args.validation_bank).read_text())
-    if train_bank['role'] != 'train' or validation['role'] != 'validation':
-        raise ValueError('Incorrect task split roles')
-    train_families = {x['geometry_family_id'] for x in train_bank['tasks']}
-    validation_families = {x['geometry_family_id'] for x in validation['tasks']}
-    if train_families & validation_families:
-        raise ValueError('Training and validation geometry overlap')
+    families = validate_task_banks(('train', train_bank), ('validation', validation))
+    train_families, validation_families = families['train'], families['validation']
     schedule = {}
     for line in Path(args.training_schedule).read_text().splitlines():
         row = json.loads(line)
@@ -192,14 +198,38 @@ def train_main():
         dict(params=[p for p in model.parameters() if id(p) not in actor_ids], lr=args.encoder_lr)], weight_decay=1e-4)
     replay_path = value['protocol'].get('response_replay') or value['protocol']['arguments']['train']
     replay, replay_roots = contact.load_contact_data(replay_path, 'train')
+    actual_source = source_identity(args.project, args.source)
+    if any(any(root.get(key) != expected for key, expected in actual_source.items()) for root in replay_roots):
+        raise ValueError('Response replay source or environment differs from the training rollout')
     if {x['geometry_family_id'] for x in replay_roots} & validation_families:
         raise ValueError('Response replay and task validation geometry overlap')
+    files = [args.source, args.pretrained, args.train_bank, args.validation_bank,
+             args.training_schedule, cfg.teacher_checkpoint, *contact.contact_data_files(replay_path, 'train')]
+    if args.optimizer_schedule:
+        files.append(args.optimizer_schedule)
+    code = [__file__]
+    for implementation in (ModelConfig, contact.ContactEventModel, initialize, rollout, event_examples, ACTOR_OBJECTIVE):
+        if implementation is not None:
+            code.append(inspect.getsourcefile(implementation))
+    training_contract = immutable_run_contract(dict(
+        arguments={k: v for k, v in vars(args).items() if k not in ('deadline', 'workers', 'resume')},
+        config=asdict(cfg), proposals=COMPARISON_PROPOSALS, protocol_overrides=PROTOCOL_OVERRIDES,
+        source=actual_source, physical_protocol=train_bank['protocol'],
+        software=dict(python=sys.version, torch=torch.__version__, numpy=np.__version__)), files, code)
+    if resumed is not None:
+        require_same_contract(resumed.get('training_contract'), training_contract, 'Training resume')
+    else:
+        out.mkdir(parents=True, exist_ok=False)
+    journal = CheckpointJournal(out, ('episodes.jsonl', 'learning.jsonl', 'validation.jsonl'))
+    recovery = {}
+    committed_journal = None
     replay_rng = np.random.default_rng(args.seed + 13000)
     task_replay_rng = np.random.default_rng(args.seed + 27000)
     task_comparisons = []
     deadline = datetime.datetime.fromisoformat(args.deadline).timestamp()
     stop_file = str(out.parent / 'STOP_RESPONSE_POLICY')
     protocol = dict(value['protocol'], arguments=vars(args), response_pretrained=args.pretrained,
+        training_contract=training_contract,
         response_replay=replay_path, source_unchanged=True, no_critic_or_terminal_prediction=True,
         objective='enumerated current-event expected complete return; old-policy weighted clipped actor surrogate; physical response replay',
         state_distribution='current greedy prefix and continuation; only the assigned current event is varied',
@@ -215,68 +245,136 @@ def train_main():
         labels='actual mean paired returns and sampling propensity under the recorded historical greedy continuation',
         interpretation='historical preference supervision; not an unbiased objective for the latest continuation',
         budget='same environment episodes and optimizer count; additional historical actor examples increase forward/backward work')
-    (out / 'protocol.json').write_text(json.dumps(protocol, indent=2))
     update, episodes, environment_steps, event_roots, best = 0, 0, 0, 0, None
+    validated_update = None
+    selected_stage_sha256 = None
+    resume_needs_validation = False
+    if resumed is not None:
+        if resumed['config'] != asdict(cfg):
+            raise ValueError('Resume configuration differs from the saved model')
+        recovery = journal.recover(resumed.get('journal_commit'), resumed['update'])
+        learning, episodes_saved = journal.rows('learning.jsonl'), journal.rows('episodes.jsonl')
+        if [row['update'] for row in learning] != list(range(1, resumed['update'] + 1)):
+            raise ValueError('Committed learning records differ from the checkpoint')
+        if len(episodes_saved) != resumed['training_episodes'] or any(
+                not row.get('completed') or row['update'] > resumed['update'] for row in episodes_saved):
+            raise ValueError('Committed episode records differ from the checkpoint')
+        model.load_state_dict(resumed['state'])
+        optimizer.load_state_dict(resumed['optimizer'])
+        replay_rng.bit_generator.state = resumed['replay_rng']
+        torch.set_rng_state(resumed['torch_rng'])
+        random.setstate(resumed['python_rng'])
+        np.random.set_state(resumed['numpy_rng'])
+        if resumed.get('cuda_rng') is not None:
+            torch.cuda.set_rng_state_all(resumed['cuda_rng'])
+        update, episodes = resumed['update'], resumed['training_episodes']
+        environment_steps, event_roots = resumed['environment_steps'], resumed['event_roots']
+        best = resumed['selected']
+        validated_update = resumed['validated_update']
+        committed_journal = resumed['journal_commit']
+        selected_stage_sha256 = resumed['selected_stage_sha256']
+        if best is not None:
+            selected_path = out / f"stage_{best['update']:06d}.pt"
+            if not selected_stage_sha256 or file_hash(selected_path) != selected_stage_sha256:
+                raise ValueError('Selected stage contents differ from the committed checkpoint')
+            selected = torch.load(selected_path, map_location='cpu', weights_only=False)
+            require_same_contract(selected.get('training_contract'), training_contract, 'Selected checkpoint')
+            if selected['update'] != best['update'] or selected['selected'] != best:
+                raise ValueError('Selected stage differs from the committed best selection')
+            atomic_save(selected, out / 'best.pt')
+        if args.task_replay_batch:
+            task_comparisons = resumed['task_comparison_replay']['examples']
+            task_replay_rng.bit_generator.state = resumed['task_comparison_replay']['rng']
+        protocol = dict(resumed['protocol'])
+        previous_protocol = json.loads((out / 'protocol.json').read_text(encoding='utf-8'))
+        require_same_contract(previous_protocol.get('training_contract'), training_contract, 'Recorded training protocol')
+        extensions = {key: item for key, item in previous_protocol.items() if key not in protocol}
+        protocol['resumptions'] = list(protocol.get('resumptions', [])) + [dict(
+            update=update, training_episodes=episodes, arguments=vars(args),
+            recovery=recovery, previous_segment_extensions=extensions,
+            restored='committed model, optimizer, replay/Python/NumPy/Torch RNG, logs, counters and selected stage',
+            resumed_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())]
+        resume_needs_validation = (update % args.validation_every == 0 or update == args.iterations) and validated_update != update
+    atomic_json(protocol, out / 'protocol.json')
 
     def state():
         return {k: v.detach().cpu().numpy().copy() for k, v in model.state_dict().items()}
 
     def save(path):
+        nonlocal committed_journal
         payload = dict(config=asdict(cfg), state={k: v.detach().cpu() for k, v in model.state_dict().items()},
             optimizer=optimizer.state_dict(), protocol=protocol, update=update, selected=best, seed=args.seed,
             training_episodes=episodes, environment_steps=environment_steps, event_roots=event_roots,
-            replay_rng=replay_rng.bit_generator.state, torch_rng=torch.get_rng_state())
+            training_contract=training_contract, training_identity=canonical_hash(training_contract),
+            journal_commit=journal.snapshot(), validated_update=validated_update,
+            replay_rng=replay_rng.bit_generator.state, torch_rng=torch.get_rng_state(),
+            python_rng=random.getstate(), numpy_rng=np.random.get_state(),
+            cuda_rng=torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None)
         if args.task_replay_batch:
             payload['task_comparison_replay'] = dict(examples=task_comparisons,
                 rng=task_replay_rng.bit_generator.state)
+        if Path(path).name == 'last.pt':
+            payload['selected_stage_sha256'] = selected_stage_sha256
         atomic_save(payload, path)
+        if Path(path).name == 'last.pt':
+            committed_journal = payload['journal_commit']
 
     def status(completed=False):
-        (out / 'status.json').write_text(json.dumps(dict(completed=completed, update=update,
+        atomic_json(dict(completed=completed, update=update,
             total_updates=args.iterations, training_episodes=episodes, environment_steps=environment_steps,
-            event_roots=event_roots, best=best,
+            event_roots=event_roots, best=best, validated_update=validated_update, recovery=recovery,
             task_replay_roots=len(task_comparisons),
-            updated_utc=datetime.datetime.now(datetime.timezone.utc).isoformat()), indent=2))
+            updated_utc=datetime.datetime.now(datetime.timezone.utc).isoformat()), out / 'status.json')
 
     def job(task, parameters, training, seed, **extra):
         return dict(task=task, state=parameters, training=training, policy_seed=int(seed),
             protocol=train_bank.get('protocol', {}), deadline=deadline, stop_file=stop_file, **extra)
 
+    if resumed is None:
+        save(out / 'last.pt')
     status()
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers,
             mp_context=multiprocessing.get_context('spawn'), initializer=initialize,
             initargs=(args.project, args.source, asdict(cfg))) as pool:
         def validate():
-            nonlocal best
+            nonlocal best, validated_update, selected_stage_sha256
+            attempt_id = uuid.uuid4().hex
             model.eval()
             parameters = state()
             results = list(pool.map(rollout, [job(t, parameters, False, args.seed + i)
                 for i, t in enumerate(validation['tasks'])]))
             if any(not r['completed'] for r in results):
-                with (out / 'validation.jsonl').open('a') as stream:
-                    stream.write(json.dumps(dict(update=update, completed=False,
-                        results=[{k: v for k, v in r.items() if k != 'transitions'} for r in results])) + '\n')
+                journal.append('validation.jsonl', [dict(update=update, attempt_id=attempt_id, completed=False,
+                    results=[{k: v for k, v in r.items() if k != 'transitions'} for r in results])])
+                save(out / 'last.pt')
                 return False
             rows = [r['record'] for r in results]
             success = sum(r['success'] for r in rows)
             collision = sum(r['collision'] for r in rows)
             capped = sum(r['duration'] if r['capture'] else 80 for r in rows) / len(rows)
             selection = [success, -collision, -capped]
-            with (out / 'validation.jsonl').open('a') as stream:
-                stream.write(json.dumps(dict(update=update, completed=True, N=len(rows), success=success,
-                    collision=collision, capped_capture_time=capped, tasks=rows)) + '\n')
-            if best is None or tuple(selection) > tuple(best['selection_key']):
+            journal.append('validation.jsonl', [dict(update=update, attempt_id=attempt_id, completed=True, N=len(rows), success=success,
+                collision=collision, capped_capture_time=capped, tasks=rows)])
+            improved = best is None or tuple(selection) > tuple(best['selection_key'])
+            if improved:
                 best = dict(update=update, selection_key=selection, success=success, collision=collision, N=len(rows))
-                save(out / 'best.pt')
+            validated_update = update
+            # The immutable stage is available before last.pt commits its selection.
+            # best.pt is a recoverable view of that committed stage, never the authority.
             save(out / f'stage_{update:06d}.pt')
+            if improved:
+                selected_stage_sha256 = file_hash(out / f'stage_{update:06d}.pt')
             save(out / 'last.pt')
+            if improved:
+                save(out / 'best.pt')
             status()
             print(json.dumps(dict(validation_update=update, success=success, collision=collision, best=best)), flush=True)
             model.train()
             return True
 
-        proceed = validate()
+        proceed = validate() if resumed is None or resume_needs_validation else True
         while proceed and update < args.iterations and time.time() < deadline and not Path(stop_file).exists():
+            attempt_id = uuid.uuid4().hex
             parameters, jobs = state(), []
             records = schedule[update + 1]
             for group in range(4):
@@ -291,11 +389,10 @@ def train_main():
                         jobs.append(job(dict(task), parameters, True, original[0]['policy_seed'],
                             proposal=role, future_replica=replica, branch_future_seed=int(future), root_group=group))
             results = list(pool.map(rollout, jobs))
-            with (out / 'episodes.jsonl').open('a') as stream:
-                for result in results:
-                    stream.write(json.dumps(dict(update=update + 1,
-                        **result.get('record', {k: v for k, v in result.items() if k != 'transitions'}))) + '\n')
+            journal.append('episodes.jsonl', [dict(update=update + 1, attempt_id=attempt_id,
+                **result.get('record', {k: v for k, v in result.items() if k != 'transitions'})) for result in results])
             if any(not r['completed'] for r in results):
+                recovery = journal.recover(committed_journal, update)
                 break
             examples, missing = event_examples(results)
             episodes += len(results)
@@ -356,7 +453,7 @@ def train_main():
                 task_comparisons.extend(dict(x, source_update=update + 1) for x in examples)
             update += 1
             deltas = [x['comparison_return'] - x['teacher_return'] for x in examples]
-            row = dict(update=update, training_episodes=episodes, environment_steps=environment_steps,
+            row = dict(update=update, attempt_id=attempt_id, training_episodes=episodes, environment_steps=environment_steps,
                 N=len(results), success=sum(r['record']['success'] for r in results),
                 collision=sum(r['record']['collision'] for r in results),
                 observed_event_roots=len(examples), missed_event_roots=missing,
@@ -369,16 +466,14 @@ def train_main():
                 current_actor_loss=float(np.mean(current_actor_losses)) if current_actor_losses else None,
                 task_replay_loss=float(np.mean(task_replay_losses)) if task_replay_losses else None,
                 task_replay_roots=len(task_comparisons), task_replay_draws=task_replay_draws)
-            with (out / 'learning.jsonl').open('a') as stream:
-                stream.write(json.dumps(row) + '\n')
+            journal.append('learning.jsonl', [row])
+            # Commit the model/optimizer and complete update logs before validation.
+            save(out / 'last.pt')
             print(json.dumps(row), flush=True)
             status()
             if update % args.validation_every == 0 or update == args.iterations:
                 proceed = validate()
-            else:
-                save(out / 'last.pt')
-        save(out / 'last.pt')
-    status(update == args.iterations and proceed)
+    status(update == args.iterations and validated_update == update)
 
 
 def main():

@@ -21,6 +21,7 @@ from torch.nn import functional as F
 
 from citf.bridge import Controller, inputs
 from citf.model import Attention
+from citf.risk import bounded_mean, signed_log1p
 from citf.train import atomic_save
 from experiments import synchronized_configuration_policy as synchronized
 from experiments.response_data import candidate_bank
@@ -59,18 +60,26 @@ def add_reference(batch):
                 reference_nominal=batch['nominal'][:, 0], reference_unary=batch['unary'][:, 0])
 
 
-def geometric_curves(paths):
+def geometric_curves(paths, entity_valid=None):
     """[B,C,K,E,T,2] -> synchronized radial/capture/pair trajectories."""
     radius = paths.norm(dim=-1)
-    radial = (radius[..., :-1, :] - radius[..., -1:, :]).amin(-2)
-    capture = (paths[..., :-1, :, :] - paths[..., -1:, :, :]).norm(dim=-1).amin(-2)
+    radial = radius[..., :-1, :] - radius[..., -1:, :]
+    capture = (paths[..., :-1, :, :] - paths[..., -1:, :, :]).norm(dim=-1)
+    if entity_valid is not None:
+        defenders = entity_valid[:, None, None, :-1, None]
+        radial = radial.masked_fill(~defenders, torch.inf)
+        capture = capture.masked_fill(~defenders, torch.inf)
+    radial, capture = radial.amin(-2), capture.amin(-2)
     i, j = torch.triu_indices(paths.shape[-3] - 1, paths.shape[-3] - 1, 1, device=paths.device)
     pairs = (paths[..., i, :, :] - paths[..., j, :, :]).norm(dim=-1)
     return radial, capture, pairs, radius[..., -1, :]
 
 
-def trajectory_scores(paths, known, unary, cfg, kind=None):
-    radial, capture, pairs, attacker = geometric_curves(paths)
+def trajectory_scores(paths, known, unary, cfg, kind=None, entity_valid=None):
+    radial, capture, pairs, attacker = geometric_curves(paths, entity_valid)
+    if entity_valid is not None:
+        i, j = torch.triu_indices(paths.shape[-3] - 1, paths.shape[-3] - 1, 1, device=paths.device)
+        pairs = pairs.masked_fill(~(entity_valid[:, i] & entity_valid[:, j])[:, None, None, :, None], torch.inf)
     length = paths.shape[-2]
     ticks = torch.arange(length, device=paths.device)
     valid = known[:, None, None]
@@ -182,19 +191,21 @@ class CandidateResponseModel(nn.Module):
         first_difference = nominal[..., :1, :] - batch['reference_nominal'][:, None, :, :1]
         impulse = first_difference[:, :, :, None] * (2 * ticks - 1)[None, None, None, None, :, None]
         paths = (reference + impulse + (raw - ref_raw) * envelope).permute(0, 1, 3, 2, 4, 5)
-        geometry = trajectory_scores(paths, batch['known_time_valid'], batch['unary'], cfg)
+        geometry = trajectory_scores(paths, batch['known_time_valid'], batch['unary'], cfg,
+                                     entity_valid=batch['entity_valid'])
         physical, collision, gap = synchronized.physical_components(batch, cfg)
         ref_batch = dict(batch, nominal=batch['reference_nominal'][:, None], unary=batch['reference_unary'][:, None])
         physical_reference = synchronized.physical_components(ref_batch, cfg)[0]
         ref_paths = reference.permute(0, 1, 3, 2, 4, 5)
-        reference_geometry = trajectory_scores(ref_paths, batch['known_time_valid'], batch['reference_unary'][:, None], cfg)
+        reference_geometry = trajectory_scores(ref_paths, batch['known_time_valid'], batch['reference_unary'][:, None], cfg,
+                                               entity_valid=batch['entity_valid'])
         reference_cost = reference_geometry['cost'].mean(-1)
         expected = geometry['cost'].mean(-1)
         corrected = physical + cfg.geometry_blend * (expected - reference_cost - physical + physical_reference)
         mask = batch['entity_valid'][:, None, :, None]
         pooled_mean = (z * mask).sum(-2) / mask.sum(-2).clamp_min(1)
         pooled_max = z.masked_fill(~mask, -torch.inf).amax(-2)
-        slog = lambda x: x.sign() * torch.log1p(x.abs())
+        slog = signed_log1p
         scalars = torch.stack((batch['unary'] / 10, torch.log1p(collision), slog(gap / 10),
             slog(geometry['gap'].mean(-1) / 10), torch.log1p(geometry['collision'].mean(-1)),
             geometry['closest'].mean(-1) / 20, geometry['gap'].std(-1, unbiased=False) / 5,
@@ -221,8 +232,8 @@ class CandidateResponseModel(nn.Module):
             raise ValueError('Unknown fixed-reference policy prior')
         baseline = -torch.asinh(physical_difference / cfg.policy_prior_scale)
         logits = baseline + cfg.policy_logit_scale * self.actor(action_features).squeeze(-1)
-        return dict(xy=paths, geometry=geometry, physical=physical,
-                    physical_reference=physical_reference, score=corrected,
+        return dict(xy=paths, geometry=geometry, physical=physical.masked_fill(~batch['candidate_valid'], torch.inf),
+                    physical_reference=physical_reference, score=corrected.masked_fill(~batch['candidate_valid'], torch.inf),
                     features=action_features, baseline=baseline,
                     logits=logits.masked_fill(~batch['candidate_valid'], -torch.inf))
 
@@ -230,44 +241,57 @@ class CandidateResponseModel(nn.Module):
 def response_objective(output, batch, cfg):
     actual = stopped_positions(batch)[:, :, :cfg.modes]
     prediction = output['xy']
-    roots, candidates, modes = prediction.shape[:3]
+    modes = prediction.shape[2]
     permutations = torch.tensor(list(itertools.permutations(range(modes))), device=prediction.device)
     # A single matching per root based on the reference trajectory. Candidate
     # alternatives cannot select a different future to hide response error.
-    ref_pred = prediction[:, 0]
-    ref_actual = actual[:, 0]
-    cost = F.smooth_l1_loss(ref_pred[:, :, None].expand(-1, -1, modes, -1, -1, -1),
-                           ref_actual[:, None].expand(-1, modes, -1, -1, -1, -1), reduction='none').mean((-1, -2, -3))
-    perm_cost = cost[:, torch.arange(modes, device=cost.device)[None], permutations].sum(-1)
-    matching = permutations[perm_cost.argmin(-1)]
+    with torch.no_grad():
+        ref_pred = prediction[:, 0]
+        ref_actual = actual[:, 0]
+        error = F.smooth_l1_loss(ref_pred[:, :, None].expand(-1, -1, modes, -1, -1, -1),
+                                ref_actual[:, None].expand(-1, modes, -1, -1, -1, -1), reduction='none')
+        match_valid = (batch['entity_valid'][:, None, None, :, None, None]
+                       & batch['known_time_valid'][:, None, None, None, :, None]).expand_as(error)
+        cost = error.masked_fill(~match_valid, 0).sum((-1, -2, -3)) / match_valid.sum((-1, -2, -3)).clamp_min(1)
+        perm_cost = cost[:, torch.arange(modes, device=cost.device)[None], permutations].sum(-1)
+        matching = permutations[perm_cost.argmin(-1)]
     index = matching[:, None, :, None, None, None].expand_as(actual)
     truth = actual.gather(2, index)
-    known = batch['known_time_valid'][:, None, None, None, :, None]
+    valid = (batch['candidate_valid'][:, :, None, None, None, None]
+             & batch['entity_valid'][:, None, None, :, None, None]
+             & batch['known_time_valid'][:, None, None, None, :, None])
     absolute = F.smooth_l1_loss((prediction - truth) / 3, torch.zeros_like(prediction), reduction='none')
-    absolute_loss = (absolute * known).sum() / known.expand_as(absolute).sum().clamp_min(1)
+    absolute_loss = bounded_mean(absolute, valid)
     response = (prediction - prediction[:, :1]) - (truth - truth[:, :1])
     response_loss = F.smooth_l1_loss(response / .25, torch.zeros_like(response), reduction='none')
-    response_loss = (response_loss * known).sum() / known.expand_as(response_loss).sum().clamp_min(1)
-    pr, pc, pp, _ = geometric_curves(prediction)
-    tr, tc, tp, _ = geometric_curves(truth)
+    response_loss = bounded_mean(response_loss, valid)
+    pr, pc, pp, pa = geometric_curves(prediction, batch['entity_valid'])
+    tr, tc, tp, ta = geometric_curves(truth, batch['entity_valid'])
+    i, j = torch.triu_indices(prediction.shape[-3] - 1, prediction.shape[-3] - 1, 1, device=prediction.device)
+    pair_valid = batch['entity_valid'][:, i] & batch['entity_valid'][:, j]
     def curve_loss(a, b):
-        weight = batch['known_time_valid'].reshape(roots, *([1] * (a.ndim - 2)), horizon)
+        weight = batch['candidate_valid'][:, :, None, None] & batch['known_time_valid'][:, None, None, :]
+        if a.ndim == 5:
+            weight = weight[..., None, :] & pair_valid[:, None, None, :, None]
         error = F.smooth_l1_loss(a, b, reduction='none')
-        return (error * weight).sum() / weight.expand_as(error).sum().clamp_min(1)
-    horizon = prediction.shape[-2]
+        return bounded_mean(error, weight)
     geometric_loss = curve_loss(pr / 2, tr / 2) + curve_loss(pc / 2, tc / 2) + curve_loss(pp / 2, tp / 2)
     difference_loss = curve_loss((pr - pr[:, :1]) / .25, (tr - tr[:, :1]) / .25)
     difference_loss += curve_loss((pc - pc[:, :1]) / .25, (tc - tc[:, :1]) / .25)
     # Soft first physical events supply gradients in their relevant neighborhood.
-    def soft_events(radial, capture, pair):
-        fail = 1 - (1 - torch.sigmoid(radial / .5)) * (1 - torch.sigmoid((5 - pair.amin(-2)) / .5))
+    def soft_events(radial, capture, pair, attacker):
+        pair = pair.masked_fill(~pair_valid[:, None, None, :, None], torch.inf)
+        fail = 1 - ((1 - torch.sigmoid(radial / .5))
+                    * (1 - torch.sigmoid((5 - pair.amin(-2)) / .5))
+                    * (1 - torch.sigmoid((15 - attacker) / .5)))
         caught = torch.sigmoid((5 - capture) / .5)
         time_mask = batch['known_time_valid'][:, None, None]
         fail = fail * time_mask; caught = caught * time_mask
         survive = (1 - fail) * (1 - caught)
         prefix = torch.cat((torch.ones_like(survive[..., :1]), survive[..., :-1]), -1).cumprod(-1)
         return torch.stack(((prefix * fail).sum(-1), (prefix * (1 - fail) * caught).sum(-1)), -1)
-    event_loss = F.mse_loss(soft_events(pr, pc, pp), soft_events(tr, tc, tp))
+    event_error = F.mse_loss(soft_events(pr, pc, pp, pa), soft_events(tr, tc, tp, ta), reduction='none')
+    event_loss = bounded_mean(event_error, batch['candidate_valid'][:, :, None, None])
     total = absolute_loss
     if cfg.supervision == 'response':
         total = total + response_loss + .2 * geometric_loss + .5 * difference_loss + event_loss
@@ -275,7 +299,7 @@ def response_objective(output, batch, cfg):
         raise ValueError('Unknown response learning control')
     return dict(total=total, absolute=absolute_loss, response=response_loss,
                 geometry=geometric_loss, difference=difference_loss, event=event_loss,
-                response_mae=response.abs().mean(), position_mae=(prediction - truth).abs().mean())
+                response_mae=bounded_mean(response.abs(), valid), position_mae=bounded_mean((prediction - truth).abs(), valid))
 
 
 def load_response_data(path, role):
@@ -305,7 +329,9 @@ def response_validation(model, data, device, batch_size=8):
         for key, value in loss.items():
             sums[key] = sums.get(key, 0.) + float(value) * size
         actual = stopped_positions(b)
-        actual_cost = trajectory_scores(actual, b['known_time_valid'], b['unary'], model.cfg)['cost'].mean(-1)
+        actual_cost = trajectory_scores(actual, b['known_time_valid'], b['unary'], model.cfg,
+                                        entity_valid=b['entity_valid'])['cost'].mean(-1)
+        actual_cost = actual_cost.masked_fill(~b['candidate_valid'], torch.inf)
         selected = out['score'].argmin(-1); best = actual_cost.amin(-1)
         regret += float((actual_cost.gather(1, selected[:, None]).squeeze(-1) - best).sum())
         physical = out['physical'].argmin(-1)
