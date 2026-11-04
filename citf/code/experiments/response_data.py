@@ -65,12 +65,13 @@ def initialize(project, source, checkpoint, out, deadline, role, futures, candid
     diagnostic.worker.update(role=role, futures=futures, candidates=candidates, response_hold=response_hold)
 
 
-def sample_response(world, plans, future_seeds, metadata):
+def sample_response(world, plans, future_seeds, metadata, horizon_steps=None):
     """Current configuration then the same known short physical recourse policy."""
     w = diagnostic.worker
     f = factorize(world, w['source']); b, gates, rotation = inputs(world, f, plans)
     count, defenders = gates.shape[:2]
-    horizon = world.protocol.prediction_steps; futures = len(future_seeds)
+    horizon = world.protocol.prediction_steps if horizon_steps is None else int(horizon_steps)
+    futures = len(future_seeds)
     xy = torch.zeros(count, futures, defenders + 1, horizon, 2)
     valid = torch.zeros(count, futures, horizon, dtype=torch.bool)
     actions = torch.zeros(count, futures, horizon, 2)
@@ -111,7 +112,8 @@ def sample_response(world, plans, future_seeds, metadata):
         geometry_family_id=world.initial_identity['fingerprint'],
         elapsed_seconds=float(world.env.Current_T), response_hold_steps=w['response_hold'],
         recourse_policy='unchanged synchronized physical, recomputed every control tick',
-        prediction_condition='current candidate for declared ticks, common physical recourse to 16 ticks or first task event',
+        prediction_condition=f'current candidate for declared ticks, common physical recourse to {horizon} ticks or first task event',
+        response_label_horizon=horizon, recourse_controller_horizon=world.protocol.prediction_steps,
         stopping_target='observed first event inclusive; terminal endpoint is an explicitly absorbing label')
     return data, metadata, cost
 

@@ -100,7 +100,7 @@
   ],
   "old_48_tasks": "archived and recomputed in evidence only, absent from main manuscript",
   "local_execution": {
-    "branch": "codex/citf-independent-20261102",
+    "branch": "codex/citf-root-cause-20261103",
     "phase": "P3 remote result-driven development",
     "runtime_revision": "CITF-execution-events-v4",
     "collection_schema": "citf-branch-events-v1",
@@ -3128,6 +3128,2835 @@
         "updated_unix": 1793714391.4120371
       },
       "research_status": "Candidate-interaction learned policy has a modest complete development gain; stable large multiseed mechanism advantage and formal paper remain incomplete."
+    },
+    "remote_root_cause_campaign": {
+      "scope": "fixed-source algorithm development; no frozen formal results",
+      "source_request": "root-cause algorithm redesign plus latest continue; no renewed ten-hour period inferred",
+      "original_deadline_utc": "2026-11-04T01:32:37+00:00",
+      "updated_utc": "2026-11-04T08:29:38.973343+00:00",
+      "local_results": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\remote-10h-20261102\\runs\\root_cause_20261103",
+      "remote_results": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103",
+      "complete_fresh_selected": {
+        "updated_utc": "2026-11-04T08:28:53.316092+00:00",
+        "scope": "complete common fresh256 DEVELOPMENT tasks; all available selected and fixed-average endpoints retained",
+        "results": [
+          {
+            "tag": "critical",
+            "training": "response_policy_critical_s8101",
+            "selected_update": 20,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 223,
+            "collision": 6,
+            "radial_only_failure": 25,
+            "vs_strong": {
+              "rescues": 16,
+              "harms": 22
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 9,
+              "harms": 24
+            }
+          },
+          {
+            "tag": "deterministic8101",
+            "training": "response_deterministic_full_s8101",
+            "selected_update": 15,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 226,
+            "collision": 9,
+            "radial_only_failure": 20,
+            "vs_strong": {
+              "rescues": 15,
+              "harms": 18
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 11,
+              "harms": 23
+            }
+          },
+          {
+            "tag": "deterministic8102",
+            "training": "response_deterministic_full_s8102",
+            "selected_update": 5,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 227,
+            "collision": 7,
+            "radial_only_failure": 21,
+            "vs_strong": {
+              "rescues": 15,
+              "harms": 17
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 10,
+              "harms": 21
+            }
+          },
+          {
+            "tag": "full8103",
+            "training": "response_policy_full_s8103",
+            "selected_update": 80,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 232,
+            "collision": 10,
+            "radial_only_failure": 14,
+            "vs_strong": {
+              "rescues": 20,
+              "harms": 17
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 12,
+              "harms": 18
+            }
+          },
+          {
+            "tag": "no_context",
+            "training": "response_policy_no_context_s8101",
+            "selected_update": 160,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 235,
+            "collision": 7,
+            "radial_only_failure": 14,
+            "vs_strong": {
+              "rescues": 20,
+              "harms": 14
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 11,
+              "harms": 14
+            }
+          },
+          {
+            "tag": "reference",
+            "training": "response_policy_reference_s8101",
+            "selected_update": 100,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 224,
+            "collision": 10,
+            "radial_only_failure": 22,
+            "vs_strong": {
+              "rescues": 20,
+              "harms": 25
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 13,
+              "harms": 27
+            }
+          },
+          {
+            "tag": "full8101",
+            "training": "response_policy_full_s8101",
+            "selected_update": 0,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 228,
+            "collision": 9,
+            "radial_only_failure": 19,
+            "vs_strong": {
+              "rescues": 7,
+              "harms": 8
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 10,
+              "harms": 20
+            }
+          },
+          {
+            "tag": "full8102",
+            "training": "response_policy_full_s8102",
+            "selected_update": 0,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 228,
+            "collision": 9,
+            "radial_only_failure": 19,
+            "vs_strong": {
+              "rescues": 7,
+              "harms": 8
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 10,
+              "harms": 20
+            }
+          },
+          {
+            "tag": "ordinary",
+            "training": "response_policy_ordinary_s8101",
+            "selected_update": 0,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 228,
+            "collision": 9,
+            "radial_only_failure": 19,
+            "vs_strong": {
+              "rescues": 7,
+              "harms": 8
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 10,
+              "harms": 20
+            }
+          },
+          {
+            "tag": "transfer8101",
+            "training": "response_transfer_full_s8101",
+            "selected_update": 300,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 235,
+            "collision": 6,
+            "radial_only_failure": 14,
+            "vs_strong": {
+              "rescues": 19,
+              "harms": 13
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 12,
+              "harms": 15
+            }
+          },
+          {
+            "tag": "transfer_teacher_continue1200",
+            "training": "response_transfer_teacher_continue_s8101",
+            "selected_update": 1200,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 233,
+            "collision": 8,
+            "radial_only_failure": 14,
+            "vs_strong": {
+              "rescues": 18,
+              "harms": 14
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 12,
+              "harms": 17
+            }
+          },
+          {
+            "tag": "transfer_student_aggregate1200",
+            "training": "response_transfer_student_aggregate_s8101",
+            "selected_update": 1200,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 237,
+            "collision": 6,
+            "radial_only_failure": 12,
+            "vs_strong": {
+              "rescues": 19,
+              "harms": 11
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 11,
+              "harms": 12
+            }
+          },
+          {
+            "tag": "fixed_retained7101_stage10",
+            "training": "retained_deterministic_s7101",
+            "selected_update": 10,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 236,
+            "collision": 10,
+            "radial_only_failure": 10,
+            "vs_strong": {
+              "rescues": 17,
+              "harms": 10
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 11,
+              "harms": 13
+            }
+          },
+          {
+            "tag": "fixed_retained7102_stage10",
+            "training": "retained_deterministic_s7102",
+            "selected_update": 10,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 230,
+            "collision": 12,
+            "radial_only_failure": 12,
+            "vs_strong": {
+              "rescues": 17,
+              "harms": 16
+            },
+            "teacher_seed": 7102,
+            "vs_teacher": {
+              "rescues": 15,
+              "harms": 17
+            }
+          },
+          {
+            "tag": "fixed_retained7103_stage10",
+            "training": "retained_deterministic_s7103",
+            "selected_update": 10,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 238,
+            "collision": 7,
+            "radial_only_failure": 10,
+            "vs_strong": {
+              "rescues": 18,
+              "harms": 9
+            },
+            "teacher_seed": 7103,
+            "vs_teacher": {
+              "rescues": 17,
+              "harms": 12
+            }
+          },
+          {
+            "tag": "transfer_student_aggregate8102",
+            "training": "response_transfer_student_aggregate_s8102",
+            "selected_update": 1200,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 240,
+            "collision": 6,
+            "radial_only_failure": 10,
+            "vs_strong": {
+              "rescues": 22,
+              "harms": 11
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 13,
+              "harms": 11
+            }
+          },
+          {
+            "tag": "transfer_teacher_continue8102",
+            "training": "response_transfer_teacher_continue_s8102",
+            "selected_update": 1200,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 239,
+            "collision": 5,
+            "radial_only_failure": 11,
+            "vs_strong": {
+              "rescues": 21,
+              "harms": 11
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 13,
+              "harms": 12
+            }
+          },
+          {
+            "tag": "transfer_student_aggregate8103",
+            "training": "response_transfer_student_aggregate_s8103",
+            "selected_update": 1200,
+            "averaged_updates": null,
+            "N": 256,
+            "success": 240,
+            "collision": 7,
+            "radial_only_failure": 9,
+            "vs_strong": {
+              "rescues": 21,
+              "harms": 10
+            },
+            "teacher_seed": 7101,
+            "vs_teacher": {
+              "rescues": 10,
+              "harms": 8
+            }
+          }
+        ]
+      },
+      "selected_transfer_validation": {
+        "step": 300,
+        "N": 64,
+        "success": 60,
+        "collision": 2,
+        "radial_only_failure": 2,
+        "capped_capture_time": 25.21562499999998
+      },
+      "research_status": "Three student-state transfer initializations completed fresh256:237,240,240. Matchedteacher-only firsttwo233,239; thirdstill running. Onlyfirst full768pair complete715vs705. Not stablefull768orTransformermechanism confirmation.",
+      "pending_experiments": "Complete registered40-generation deterministic refinements and fixed late averages; all6fixed transfer replica/control endpoints on common768; all formal work remains pending.",
+      "synchronization": {
+        "completed_directories": [
+          "prospective_roots",
+          "fresh_physical",
+          "fresh_previous_joint7101",
+          "prospective_continuations",
+          "fresh_physical_hold4",
+          "fresh_previous_joint7101_hold4",
+          "fresh_previous_joint7102",
+          "fresh_previous_joint7103",
+          "recourse_response_train",
+          "recourse_response_validation",
+          "prospective_recourse_roots",
+          "prospective_recourse_continuations",
+          "fresh_expanded_physical",
+          "validation_strong_physical",
+          "validation_previous_joint7101",
+          "extended_expanded_physical",
+          "second_expanded_physical",
+          "response_full_s8101",
+          "response_full_s8102",
+          "response_full_s8103",
+          "response_no_context_s8101",
+          "response_ordinary_s8101",
+          "response_policy_full_s8101",
+          "response_policy_full_s8102",
+          "response_policy_full_s8103",
+          "response_policy_no_context_s8101",
+          "response_policy_ordinary_s8101",
+          "validation_response_geometry_s8101_initial",
+          "validation_response_geometry_s8101_pretrained2400",
+          "response_policy_reference_s8101",
+          "prospective_recourse_h40_roots",
+          "response_execution_stage20",
+          "prospective_recourse_h40_continuations",
+          "response_mean_execution_stage20",
+          "response_deterministic_full_s8101",
+          "response_sample_execution_initial",
+          "fresh_response_reference_stage20",
+          "response_policy_critical_s8101",
+          "retained_teacher_train",
+          "retained_teacher_validation",
+          "response_deterministic_full_s8102",
+          "response_transfer_full_s8101",
+          "fresh_selected_critical",
+          "fresh_selected_deterministic8101",
+          "fresh_selected_deterministic8102",
+          "fresh_selected_full8103",
+          "fresh_selected_no_context",
+          "fresh_selected_reference",
+          "transfer_validation_stage1200",
+          "transfer_validation_stage0000",
+          "transfer_validation_stage0300",
+          "transfer_validation_stage0600",
+          "transfer_validation_stage0900",
+          "fresh_selected_full8101",
+          "fresh_selected_full8102",
+          "fresh_selected_ordinary",
+          "extended_selected_critical",
+          "extended_selected_deterministic8101",
+          "prospective_learned_recourse_roots",
+          "fresh_selected_transfer8101",
+          "fresh_original_domain_critical",
+          "fresh_original_domain_full8103",
+          "fresh_original_domain_no_context",
+          "extended_selected_transfer8101",
+          "second_selected_transfer8101",
+          "retained_student_states_train",
+          "response_transfer_teacher_continue_s8101",
+          "response_transfer_student_aggregate_s8101",
+          "fresh_transfer_teacher_continue1200",
+          "fresh_transfer_student_aggregate1200",
+          "extended_selected_deterministic8102",
+          "extended_selected_full8103",
+          "prospective_learned_recourse_continuations",
+          "extended_selected_transfer_teacher_continue1200",
+          "second_selected_transfer_teacher_continue1200",
+          "extended_selected_transfer_student_aggregate1200",
+          "second_selected_transfer_student_aggregate1200",
+          "fresh_fixed_retained7101_stage10_retry1",
+          "fresh_fixed_retained7102_stage10",
+          "response_transfer_warm300_full_s8102",
+          "response_transfer_student_aggregate_s8102",
+          "response_transfer_teacher_continue_s8102",
+          "response_transfer_warm300_full_s8103",
+          "response_transfer_student_aggregate_s8103",
+          "fresh_fixed_retained7103_stage10",
+          "fresh_selected_transfer_student_aggregate8102",
+          "response_transfer_teacher_continue_s8103",
+          "response_transfer_warm300_no_context_s8101",
+          "response_transfer_student_aggregate_no_context_s8101",
+          "response_transfer_warm300_ordinary_s8101",
+          "response_transfer_student_aggregate_ordinary_s8101",
+          "fresh_selected_transfer_teacher_continue8102",
+          "fresh_selected_transfer_student_aggregate8103"
+        ],
+        "added": [
+          "fresh_fixed_retained7103_stage10",
+          "fresh_selected_transfer_student_aggregate8102",
+          "response_transfer_student_aggregate_ordinary_s8101",
+          "fresh_selected_transfer_teacher_continue8102",
+          "fresh_selected_transfer_student_aggregate8103"
+        ],
+        "transfer_exit_code": 0,
+        "files": 3733,
+        "bytes": 235914441,
+        "seconds": 24.7,
+        "updated_unix": 1793780959.798519
+      },
+      "engineering_tests_this_continuation": false,
+      "formal_result_ready": false,
+      "original_domain_diagnostic": {
+        "registered_utc": "2026-11-04T06:14:46.215871+00:00",
+        "hypothesis": "Added paired proposals can cause task harms when ranked by the new task head; remove only those proposals with fixed learned weights to identify their effect",
+        "evidence": "All six fresh endpoints complete; critical/full/no_context harmed tasks select additions about21/29/18percent of ticks vs16/21/12percent in retained successes; this association is not causal evidence",
+        "comparison": "same selected frozen actor and response encoder, original strong-physical candidate bank, same fresh256tasks; strong baseline229 retained; no stage reselection",
+        "claims": "diagnostic controller variants, not retrained or formal results",
+        "jobs": [
+          {
+            "name": "fresh_original_domain_critical",
+            "tag": "critical",
+            "training": "response_policy_critical_s8101",
+            "selected_update": 20,
+            "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/original_domain_critical.pt",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.parallel_evaluate",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--tasks",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/development_tasks.json",
+              "--registry",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_original_domain_critical",
+              "--checkpoint",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/original_domain_critical.pt",
+              "--evaluator",
+              "experiments.critical_role_response",
+              "--risk-weight",
+              "64",
+              "--workers",
+              "2",
+              "--shard-size",
+              "4",
+              "--deadline",
+              "2026-11-04T11:14:46.243938+00:00"
+            ],
+            "worker_slots": 2,
+            "status": "running",
+            "pid": 178240
+          },
+          {
+            "name": "fresh_original_domain_full8103",
+            "tag": "full8103",
+            "training": "response_policy_full_s8103",
+            "selected_update": 80,
+            "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/original_domain_full8103.pt",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.parallel_evaluate",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--tasks",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/development_tasks.json",
+              "--registry",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_original_domain_full8103",
+              "--checkpoint",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/original_domain_full8103.pt",
+              "--evaluator",
+              "experiments.candidate_response",
+              "--risk-weight",
+              "64",
+              "--workers",
+              "2",
+              "--shard-size",
+              "4",
+              "--deadline",
+              "2026-11-04T11:14:46.269057+00:00"
+            ],
+            "worker_slots": 2,
+            "status": "running",
+            "pid": 178241
+          },
+          {
+            "name": "fresh_original_domain_no_context",
+            "tag": "no_context",
+            "training": "response_policy_no_context_s8101",
+            "selected_update": 160,
+            "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/original_domain_no_context.pt",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.parallel_evaluate",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--tasks",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/development_tasks.json",
+              "--registry",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_original_domain_no_context",
+              "--checkpoint",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/models/original_domain_no_context.pt",
+              "--evaluator",
+              "experiments.candidate_response",
+              "--risk-weight",
+              "64",
+              "--workers",
+              "2",
+              "--shard-size",
+              "4",
+              "--deadline",
+              "2026-11-04T11:14:46.283847+00:00"
+            ],
+            "worker_slots": 2,
+            "status": "running",
+            "pid": 178242
+          }
+        ],
+        "complete_fresh_result": {
+          "utc": "2026-11-04T06:39:32.257559+00:00",
+          "complete": [
+            {
+              "name": "fresh_original_domain_critical",
+              "N": 256,
+              "success": 228,
+              "collision": 10,
+              "radial_only_failure": 17,
+              "capped_capture_time": 32.70937499999999,
+              "vs_physical": {
+                "rescues": 19,
+                "harms": 20
+              },
+              "vs_old7101": {
+                "rescues": 11,
+                "harms": 21
+              },
+              "vs_same_expanded": {
+                "rescues": 20,
+                "harms": 15
+              }
+            },
+            {
+              "name": "fresh_original_domain_full8103",
+              "N": 256,
+              "success": 234,
+              "collision": 7,
+              "radial_only_failure": 15,
+              "capped_capture_time": 30.026562499999986,
+              "vs_physical": {
+                "rescues": 18,
+                "harms": 13
+              },
+              "vs_old7101": {
+                "rescues": 12,
+                "harms": 16
+              },
+              "vs_same_expanded": {
+                "rescues": 17,
+                "harms": 15
+              }
+            },
+            {
+              "name": "fresh_original_domain_no_context",
+              "N": 256,
+              "success": 230,
+              "collision": 9,
+              "radial_only_failure": 17,
+              "capped_capture_time": 32.94453124999999,
+              "vs_physical": {
+                "rescues": 19,
+                "harms": 18
+              },
+              "vs_old7101": {
+                "rescues": 12,
+                "harms": 20
+              },
+              "vs_same_expanded": {
+                "rescues": 12,
+                "harms": 17
+              }
+            }
+          ]
+        },
+        "interpretation": "Fixed-weight removal of added proposals changed success223to228 critical,232to234 full,235to230 no_context. Mixed effect; it does not universally restore old learned238 or establish a context-specific advantage."
+      },
+      "student_state_transfer_experiment": {
+        "registered_utc": "2026-11-04T06:26:04.476626+00:00",
+        "hypothesis": "Teacher-only state visitation can leave the distilled actor unsupported on states caused by its own decisions; relabel complete student rollouts with the frozen teacher",
+        "source_evidence": "Original transfer agrees with teacher on26.6percent of held-out sampled teacher states at1200updates; full closed-loop transfer still requires its fresh endpoint",
+        "data": "all original128training tasks, frozen selected300student behavior, every8ticks plus declared critical triggers, frozen7101 current-action teacher labels,12candidates retaining teacher and behavior action, all outcomes audit only",
+        "control": "teacher-only continuation and aggregated-state continuation from identical selected300weights, identical1200updates, optimizer reset, batch24,lr3e-4/encoder3e-5,replay0.1,seed8101; original train/validation layouts unchanged",
+        "endpoint": "primary comparison fixed1200additional updates in both arms; no selection of stage using fresh256; all intermediate stages retained",
+        "additional_environment_budget": 128,
+        "complete_outcome_targets": false,
+        "no_cv": true,
+        "jobs": [
+          {
+            "name": "retained_student_states_train",
+            "kind": "student_state_teacher_relabeling",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "collect",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--teacher",
+              "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt",
+              "--bank",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/train_tasks.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_student_states_train",
+              "--deadline",
+              "2026-11-04T09:26:04.476684+00:00",
+              "--workers",
+              "2",
+              "--stride",
+              "8",
+              "--candidates",
+              "12",
+              "--behavior",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_full_s8101/stage_000300.pt"
+            ],
+            "worker_slots": 2,
+            "status": "running",
+            "pid": 178741,
+            "started_utc": "2026-11-04T06:26:04.498566+00:00"
+          },
+          {
+            "name": "response_transfer_teacher_continue_s8101",
+            "kind": "matched_teacher_student_transfer_training",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_full_s8101/stage_000300.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_teacher_continue_s8101",
+              "--deadline",
+              "2026-11-04T10:26:04.476731+00:00",
+              "--seed",
+              "8101",
+              "--steps",
+              "1200",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "depends_on": null,
+            "pid": 179432,
+            "started_utc": "2026-11-04T06:33:15.880530+00:00"
+          },
+          {
+            "name": "response_transfer_student_aggregate_s8101",
+            "kind": "matched_teacher_student_transfer_training",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_full_s8101/stage_000300.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_student_aggregate_s8101",
+              "--deadline",
+              "2026-11-04T10:26:04.476758+00:00",
+              "--seed",
+              "8101",
+              "--steps",
+              "1200",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda",
+              "--augment-train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_student_states_train"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "depends_on": "retained_student_states_train",
+            "pid": 179433,
+            "started_utc": "2026-11-04T06:33:15.881231+00:00"
+          }
+        ],
+        "fixed_endpoint_evaluations": [
+          {
+            "name": "fresh_transfer_teacher_continue1200",
+            "training": "response_transfer_teacher_continue_s8101",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.parallel_evaluate",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--tasks",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/development_tasks.json",
+              "--registry",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_transfer_teacher_continue1200",
+              "--checkpoint",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_teacher_continue_s8101/stage_001200.pt",
+              "--evaluator",
+              "experiments.candidate_response",
+              "--risk-weight",
+              "64",
+              "--workers",
+              "2",
+              "--shard-size",
+              "4",
+              "--deadline",
+              "2026-11-04T11:34:32.684213+00:00"
+            ],
+            "worker_slots": 2,
+            "status": "running",
+            "endpoint": "fixed additional1200updates from common selected300; no stage reselection",
+            "pid": 179701,
+            "started_utc": "2026-11-04T06:35:38.069400+00:00"
+          },
+          {
+            "name": "fresh_transfer_student_aggregate1200",
+            "training": "response_transfer_student_aggregate_s8101",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.parallel_evaluate",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--tasks",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/development_tasks.json",
+              "--registry",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_transfer_student_aggregate1200",
+              "--checkpoint",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_student_aggregate_s8101/stage_001200.pt",
+              "--evaluator",
+              "experiments.candidate_response",
+              "--risk-weight",
+              "64",
+              "--workers",
+              "2",
+              "--shard-size",
+              "4",
+              "--deadline",
+              "2026-11-04T11:34:32.684274+00:00"
+            ],
+            "worker_slots": 2,
+            "status": "running",
+            "endpoint": "fixed additional1200updates from common selected300; no stage reselection",
+            "pid": 180068,
+            "started_utc": "2026-11-04T06:39:13.258364+00:00"
+          }
+        ],
+        "data_completed": true,
+        "collection_outcomes_audit_only": {
+          "retained_teacher_train": {
+            "completed": true,
+            "N": 128,
+            "states": 2321,
+            "success": 118,
+            "collision": 2,
+            "radial": 8,
+            "total_steps": 16376,
+            "teacher_disagreements": 0
+          },
+          "retained_student_states_train": {
+            "completed": true,
+            "N": 128,
+            "states": 2226,
+            "success": 118,
+            "collision": 3,
+            "radial": 6,
+            "total_steps": 15564,
+            "teacher_disagreements": 13372
+          }
+        },
+        "matched_training_completed": true,
+        "primary_endpoint": "fixed additional1200updates; held-out imitation-selected best is not the endpoint",
+        "complete_fresh_matched_fixed_endpoint": {
+          "teacher_only": {
+            "N": 256,
+            "success": 233,
+            "collision": 8,
+            "radial_only_failure": 14
+          },
+          "student_aggregate": {
+            "N": 256,
+            "success": 237,
+            "collision": 6,
+            "radial_only_failure": 12
+          },
+          "initial_transfer300": {
+            "N": 256,
+            "success": 235,
+            "collision": 6,
+            "radial_only_failure": 14
+          },
+          "primary_difference": 4,
+          "interpretation": "One fixed-initialization comparison; extend both arms to common768 without new checkpoint selection"
+        },
+        "complete_768_comparisons": {
+          "updated_utc": "2026-11-04T07:40:07.161469+00:00",
+          "complete_comparisons": [
+            {
+              "method": "teacher_only",
+              "control": "initial300",
+              "N": 768,
+              "success": 705,
+              "control_success": 705,
+              "rescues": 45,
+              "harms": 45,
+              "collision": 16,
+              "control_collision": 15,
+              "radial_only_failure": 44,
+              "control_radial_only_failure": 42
+            },
+            {
+              "method": "student_aggregate",
+              "control": "initial300",
+              "N": 768,
+              "success": 715,
+              "control_success": 705,
+              "rescues": 48,
+              "harms": 38,
+              "collision": 14,
+              "control_collision": 15,
+              "radial_only_failure": 37,
+              "control_radial_only_failure": 42
+            },
+            {
+              "method": "student_aggregate",
+              "control": "teacher_only",
+              "N": 768,
+              "success": 715,
+              "control_success": 705,
+              "rescues": 46,
+              "harms": 36,
+              "collision": 14,
+              "control_collision": 16,
+              "radial_only_failure": 37,
+              "control_radial_only_failure": 44
+            }
+          ],
+          "banks_completed": {
+            "initial300": [
+              "fresh",
+              "extended",
+              "second"
+            ],
+            "teacher_only": [
+              "fresh",
+              "extended",
+              "second"
+            ],
+            "student_aggregate": [
+              "fresh",
+              "extended",
+              "second"
+            ]
+          },
+          "scope": "matched fixed extra1200updates, all common development768tasks, one initialization"
+        }
+      },
+      "retained_greedy_refinement": {
+        "registered_utc": "2026-11-04T06:42:32.801425+00:00",
+        "rationale": "New response and critical-role endpoints have not retained the complete fresh-task performance of the existing learned controllers. Preserve each trained interaction representation, nonlinear actor projection, original physical bank and prior; optimize its final readout under deployed greedy execution.",
+        "inference_limit": "Each endpoint is paired with its own retained controller. This is continued optimization of three existing initializations, not three fresh independent trainings, and architecture or trained-projection causality cannot be inferred by comparison with the new response family.",
+        "prior_state": "Original three complete768 task results717/705/703 vs strong700; all source data and adverse runs retained.",
+        "training": {
+          "iterations": 40,
+          "directions": 4,
+          "common_tasks_per_update": 8,
+          "episodes_per_run": 2560,
+          "optimized_parameters": 64,
+          "sigma": 0.05,
+          "learning_rate": 0.01,
+          "train_bank": "same128training tasks",
+          "validation": "same complete64tasks, every5updates, success then collision then capped capture time",
+          "no_cv": true,
+          "no_value_or_outcome_head": true
+        },
+        "endpoint": "Selected complete validation endpoint on all768development tasks, always compared with its own frozen initialization and strong physical; retain all stages",
+        "jobs": [
+          {
+            "name": "retained_deterministic_s7101",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.retained_policy_search",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt",
+              "--train-bank",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/train_tasks.json",
+              "--validation-bank",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_deterministic_s7101",
+              "--deadline",
+              "2026-11-04T11:42:32.801522+00:00",
+              "--seed",
+              "9101",
+              "--iterations",
+              "40",
+              "--workers",
+              "2",
+              "--directions",
+              "4",
+              "--tasks-per-update",
+              "8",
+              "--validation-every",
+              "5",
+              "--sigma",
+              "0.05",
+              "--lr",
+              "0.01"
+            ],
+            "worker_slots": 2,
+            "status": "pending",
+            "retained_initialization_seed": 7101,
+            "search_seed": 9101
+          },
+          {
+            "name": "retained_deterministic_s7102",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.retained_policy_search",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7102/synchronized_deployment_scale2.pt",
+              "--train-bank",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/train_tasks.json",
+              "--validation-bank",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_deterministic_s7102",
+              "--deadline",
+              "2026-11-04T11:42:32.801576+00:00",
+              "--seed",
+              "9102",
+              "--iterations",
+              "40",
+              "--workers",
+              "2",
+              "--directions",
+              "4",
+              "--tasks-per-update",
+              "8",
+              "--validation-every",
+              "5",
+              "--sigma",
+              "0.05",
+              "--lr",
+              "0.01"
+            ],
+            "worker_slots": 2,
+            "status": "pending",
+            "retained_initialization_seed": 7102,
+            "search_seed": 9102
+          },
+          {
+            "name": "retained_deterministic_s7103",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.retained_policy_search",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7103/synchronized_deployment_scale2.pt",
+              "--train-bank",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/train_tasks.json",
+              "--validation-bank",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_deterministic_s7103",
+              "--deadline",
+              "2026-11-04T11:42:32.801612+00:00",
+              "--seed",
+              "9103",
+              "--iterations",
+              "40",
+              "--workers",
+              "2",
+              "--directions",
+              "4",
+              "--tasks-per-update",
+              "8",
+              "--validation-every",
+              "5",
+              "--sigma",
+              "0.05",
+              "--lr",
+              "0.01"
+            ],
+            "worker_slots": 2,
+            "status": "pending",
+            "retained_initialization_seed": 7103,
+            "search_seed": 9103
+          },
+          {
+            "name": "response_deterministic_transfer_s8101",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.deterministic_response_search",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_full_s8101/stage_000300.pt",
+              "--train-bank",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/train_tasks.json",
+              "--validation-bank",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_deterministic_transfer_s8101",
+              "--deadline",
+              "2026-11-04T11:46:01.189141+00:00",
+              "--seed",
+              "9101",
+              "--iterations",
+              "40",
+              "--workers",
+              "2",
+              "--directions",
+              "4",
+              "--tasks-per-update",
+              "8",
+              "--validation-every",
+              "5",
+              "--sigma",
+              "0.05",
+              "--lr",
+              "0.01"
+            ],
+            "worker_slots": 2,
+            "status": "pending",
+            "retained_initialization_seed": 8101,
+            "search_seed": 9101,
+            "representation": "fixed-reference transferred response actor; original bank retained",
+            "starting_endpoint": "validation-selected300transfer: fresh235/256,19rescues13harms vs229strong,12rescues15harms vs238teacher",
+            "scope": "one prospective pilot, compare with its own235 initialization; no multiseed or mechanism claim"
+          }
+        ]
+      },
+      "retained_policy_transfer_experiment": {
+        "status": "five fixed stages complete; selected endpoint registered",
+        "reason": "Original response PPO first60stages usually lose tasks relative to their zero-actor starting point; transfer the retained useful policy before further deterministic task optimization",
+        "teacher": "frozen synchronized7101 selected at prior60; no teacher retraining or result inheritance",
+        "training": "all registered new train tasks; complete teacher trajectories including failures; every8ticks plus firstcontact12,contact8,radialminus6",
+        "labels": "teacher current-action choice and logits on its original complete physical-search bank; no task outcomes as targets",
+        "state_subset": "fixed physical reference first; teacher action; leading teacher and physical alternatives; seeded random negatives up to12",
+        "representation": "candidate-bank-independent fixed-reference response Transformer; original physical candidate domain at deployment",
+        "optimizer": {
+          "steps": 1200,
+          "validation_every": 300,
+          "actor_lr": 0.0003,
+          "encoder_lr": 3e-05,
+          "batch_size": 24,
+          "short_response_replay": 0.1
+        },
+        "pilot": "full8101 pretrained2400, then fixed fourstage64task closed-loop evaluation; repeat and ablate only if it retains useful complete-task behavior",
+        "claims": "teacher agreement is not a defense improvement; compare separately against strong physical and frozen teacher",
+        "launched": [
+          {
+            "name": "retained_teacher_train",
+            "pid": 153320,
+            "started_utc": "2026-11-03T18:07:43.491604+00:00"
+          },
+          {
+            "name": "retained_teacher_validation",
+            "pid": 153321,
+            "started_utc": "2026-11-03T18:07:43.492125+00:00"
+          }
+        ],
+        "pid": 173763,
+        "started_utc": "2026-11-04T05:43:42.770541+00:00",
+        "train_states": 2321,
+        "validation_states": 1203,
+        "closed_loop_selection": {
+          "tasks": 64,
+          "stages": [
+            0,
+            300,
+            600,
+            900,
+            1200
+          ],
+          "rule": "success then fewer collisions then capped capture time; separate strong physical and frozen teacher comparisons"
+        },
+        "closed_loop_jobs": [
+          {
+            "name": "transfer_validation_stage1200",
+            "stage": 1200,
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.parallel_evaluate",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--tasks",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+              "--registry",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/transfer_validation_stage1200",
+              "--checkpoint",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_full_s8101/stage_001200.pt",
+              "--evaluator",
+              "experiments.candidate_response",
+              "--risk-weight",
+              "64",
+              "--workers",
+              "1",
+              "--shard-size",
+              "4",
+              "--deadline",
+              "2026-11-04T08:46:12.584411+00:00"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 174073
+          },
+          {
+            "name": "transfer_validation_stage0000",
+            "stage": 0,
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.parallel_evaluate",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--tasks",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+              "--registry",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/transfer_validation_stage0000",
+              "--checkpoint",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_full_s8101/stage_000000.pt",
+              "--evaluator",
+              "experiments.candidate_response",
+              "--risk-weight",
+              "64",
+              "--workers",
+              "1",
+              "--shard-size",
+              "4",
+              "--deadline",
+              "2026-11-04T08:46:12.584482+00:00"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 174074
+          },
+          {
+            "name": "transfer_validation_stage0300",
+            "stage": 300,
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.parallel_evaluate",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--tasks",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+              "--registry",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/transfer_validation_stage0300",
+              "--checkpoint",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_full_s8101/stage_000300.pt",
+              "--evaluator",
+              "experiments.candidate_response",
+              "--risk-weight",
+              "64",
+              "--workers",
+              "1",
+              "--shard-size",
+              "4",
+              "--deadline",
+              "2026-11-04T08:46:12.584519+00:00"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 175118
+          },
+          {
+            "name": "transfer_validation_stage0600",
+            "stage": 600,
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.parallel_evaluate",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--tasks",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+              "--registry",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/transfer_validation_stage0600",
+              "--checkpoint",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_full_s8101/stage_000600.pt",
+              "--evaluator",
+              "experiments.candidate_response",
+              "--risk-weight",
+              "64",
+              "--workers",
+              "1",
+              "--shard-size",
+              "4",
+              "--deadline",
+              "2026-11-04T08:46:12.584548+00:00"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 175526
+          },
+          {
+            "name": "transfer_validation_stage0900",
+            "stage": 900,
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.parallel_evaluate",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--tasks",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/policy_validation_tasks.json",
+              "--registry",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/transfer_validation_stage0900",
+              "--checkpoint",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_full_s8101/stage_000900.pt",
+              "--evaluator",
+              "experiments.candidate_response",
+              "--risk-weight",
+              "64",
+              "--workers",
+              "1",
+              "--shard-size",
+              "4",
+              "--deadline",
+              "2026-11-04T08:46:12.584579+00:00"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 176056
+          }
+        ],
+        "teacher_validation_agreement": {
+          "step": 1200,
+          "selection_key": [
+            320,
+            -2.26783898881546
+          ],
+          "N": 1203,
+          "action_agreement": 320,
+          "agreement_rate": 0.2660016625103907,
+          "loss": 2.26783898881546
+        },
+        "training_feature_diagnostic": {
+          "scope": "256 fixed random train states only; descriptive feature and teacher margin measurements",
+          "results": [
+            {
+              "name": "pretrained",
+              "N": 256,
+              "training_action_agreement": 0.0546875,
+              "feature_rms": {
+                "absolute": 0.900833785533905,
+                "fixed_reference_difference": 0.5594212412834167,
+                "within_state_candidate_absolute": 0.047256503254175186,
+                "within_state_candidate_difference": 0.4725649952888489
+              },
+              "teacher_top_margin_median": 0.07140359282493591,
+              "teacher_top_margin_p90": 0.24022233486175537
+            },
+            {
+              "name": "transferred",
+              "N": 256,
+              "training_action_agreement": 0.34765625,
+              "feature_rms": {
+                "absolute": 0.7237566113471985,
+                "fixed_reference_difference": 0.6272355914115906,
+                "within_state_candidate_absolute": 0.0539470799267292,
+                "within_state_candidate_difference": 0.5394707322120667
+              },
+              "teacher_top_margin_median": 0.07140359282493591,
+              "teacher_top_margin_p90": 0.24022233486175537
+            }
+          ]
+        },
+        "closed_loop_stage_results": [
+          {
+            "step": 0,
+            "N": 64,
+            "success": 54,
+            "collision": 3,
+            "radial_only_failure": 7,
+            "capped_capture_time": 34.08437499999999
+          },
+          {
+            "step": 300,
+            "N": 64,
+            "success": 60,
+            "collision": 2,
+            "radial_only_failure": 2,
+            "capped_capture_time": 25.21562499999998
+          },
+          {
+            "step": 600,
+            "N": 64,
+            "success": 58,
+            "collision": 2,
+            "radial_only_failure": 4,
+            "capped_capture_time": 28.57187499999999
+          },
+          {
+            "step": 900,
+            "N": 64,
+            "success": 58,
+            "collision": 2,
+            "radial_only_failure": 3,
+            "capped_capture_time": 29.64999999999999
+          },
+          {
+            "step": 1200,
+            "N": 64,
+            "success": 59,
+            "collision": 2,
+            "radial_only_failure": 3,
+            "capped_capture_time": 26.906249999999982
+          }
+        ],
+        "selected_closed_loop": {
+          "step": 300,
+          "N": 64,
+          "success": 60,
+          "collision": 2,
+          "radial_only_failure": 2,
+          "capped_capture_time": 25.21562499999998
+        },
+        "matched_stage_validation": [
+          {
+            "step": 0,
+            "N": 64,
+            "success": 54,
+            "collision": 3,
+            "radial": 7,
+            "vs_physical": {
+              "rescues": 0,
+              "harms": 0
+            },
+            "vs_teacher": {
+              "rescues": 6,
+              "harms": 7
+            }
+          },
+          {
+            "step": 300,
+            "N": 64,
+            "success": 60,
+            "collision": 2,
+            "radial": 2,
+            "vs_physical": {
+              "rescues": 8,
+              "harms": 2
+            },
+            "vs_teacher": {
+              "rescues": 7,
+              "harms": 2
+            }
+          },
+          {
+            "step": 600,
+            "N": 64,
+            "success": 58,
+            "collision": 2,
+            "radial": 4,
+            "vs_physical": {
+              "rescues": 6,
+              "harms": 2
+            },
+            "vs_teacher": {
+              "rescues": 7,
+              "harms": 4
+            }
+          },
+          {
+            "step": 900,
+            "N": 64,
+            "success": 58,
+            "collision": 2,
+            "radial": 3,
+            "vs_physical": {
+              "rescues": 8,
+              "harms": 4
+            },
+            "vs_teacher": {
+              "rescues": 6,
+              "harms": 3
+            }
+          },
+          {
+            "step": 1200,
+            "N": 64,
+            "success": 59,
+            "collision": 2,
+            "radial": 3,
+            "vs_physical": {
+              "rescues": 8,
+              "harms": 3
+            },
+            "vs_teacher": {
+              "rescues": 7,
+              "harms": 3
+            }
+          }
+        ],
+        "complete_fresh_selected_endpoint": {
+          "N": 256,
+          "success": 235,
+          "collision": 6,
+          "radial_only_failure": 14,
+          "vs_strong": {
+            "rescues": 19,
+            "harms": 13
+          },
+          "vs_teacher7101": {
+            "rescues": 12,
+            "harms": 15
+          }
+        }
+      },
+      "complete_selected_768": {
+        "updated_utc": "2026-11-04T07:40:08.631722+00:00",
+        "scope": "all common development768tasks, fixed-source; no formal claim",
+        "complete": [
+          {
+            "tag": "transfer8101",
+            "complete": true,
+            "banks": {
+              "fresh": {
+                "N": 256,
+                "success": 235,
+                "collision": 6,
+                "radial_only_failure": 14,
+                "capped_capture_time": 28.45078124999998,
+                "vs_strong": {
+                  "rescues": 19,
+                  "harms": 13
+                },
+                "vs_old7101": {
+                  "rescues": 12,
+                  "harms": 15
+                }
+              },
+              "extended": {
+                "N": 256,
+                "success": 240,
+                "collision": 2,
+                "radial_only_failure": 13,
+                "capped_capture_time": 26.433593749999986,
+                "vs_strong": {
+                  "rescues": 9,
+                  "harms": 14
+                },
+                "vs_old7101": {
+                  "rescues": 15,
+                  "harms": 16
+                }
+              },
+              "second": {
+                "N": 256,
+                "success": 230,
+                "collision": 7,
+                "radial_only_failure": 15,
+                "capped_capture_time": 27.689062499999984,
+                "vs_strong": {
+                  "rescues": 22,
+                  "harms": 18
+                },
+                "vs_old7101": {
+                  "rescues": 13,
+                  "harms": 21
+                }
+              }
+            },
+            "all": {
+              "N": 768,
+              "success": 705,
+              "collision": 15,
+              "radial_only_failure": 42,
+              "capped_capture_time": 27.52447916666665
+            },
+            "vs_strong": {
+              "rescues": 50,
+              "harms": 45
+            },
+            "vs_old": {
+              "7101": {
+                "rescues": 40,
+                "harms": 52
+              },
+              "7102": {
+                "rescues": 46,
+                "harms": 46
+              },
+              "7103": {
+                "rescues": 52,
+                "harms": 50
+              }
+            }
+          },
+          {
+            "tag": "transfer_teacher_continue1200",
+            "complete": true,
+            "banks": {
+              "fresh": {
+                "N": 256,
+                "success": 233,
+                "collision": 8,
+                "radial_only_failure": 14,
+                "capped_capture_time": 28.858593749999986,
+                "vs_strong": {
+                  "rescues": 18,
+                  "harms": 14
+                },
+                "vs_old7101": {
+                  "rescues": 12,
+                  "harms": 17
+                }
+              },
+              "extended": {
+                "N": 256,
+                "success": 240,
+                "collision": 3,
+                "radial_only_failure": 11,
+                "capped_capture_time": 27.52812499999998,
+                "vs_strong": {
+                  "rescues": 8,
+                  "harms": 13
+                },
+                "vs_old7101": {
+                  "rescues": 11,
+                  "harms": 12
+                }
+              },
+              "second": {
+                "N": 256,
+                "success": 232,
+                "collision": 5,
+                "radial_only_failure": 19,
+                "capped_capture_time": 27.306249999999977,
+                "vs_strong": {
+                  "rescues": 24,
+                  "harms": 18
+                },
+                "vs_old7101": {
+                  "rescues": 15,
+                  "harms": 21
+                }
+              }
+            },
+            "all": {
+              "N": 768,
+              "success": 705,
+              "collision": 16,
+              "radial_only_failure": 44,
+              "capped_capture_time": 27.897656249999983
+            },
+            "vs_strong": {
+              "rescues": 50,
+              "harms": 45
+            },
+            "vs_old": {
+              "7101": {
+                "rescues": 38,
+                "harms": 50
+              },
+              "7102": {
+                "rescues": 46,
+                "harms": 46
+              },
+              "7103": {
+                "rescues": 54,
+                "harms": 52
+              }
+            }
+          },
+          {
+            "tag": "transfer_student_aggregate1200",
+            "complete": true,
+            "banks": {
+              "fresh": {
+                "N": 256,
+                "success": 237,
+                "collision": 6,
+                "radial_only_failure": 12,
+                "capped_capture_time": 28.21093749999999,
+                "vs_strong": {
+                  "rescues": 19,
+                  "harms": 11
+                },
+                "vs_old7101": {
+                  "rescues": 11,
+                  "harms": 12
+                }
+              },
+              "extended": {
+                "N": 256,
+                "success": 240,
+                "collision": 1,
+                "radial_only_failure": 15,
+                "capped_capture_time": 27.38359374999998,
+                "vs_strong": {
+                  "rescues": 11,
+                  "harms": 16
+                },
+                "vs_old7101": {
+                  "rescues": 15,
+                  "harms": 16
+                }
+              },
+              "second": {
+                "N": 256,
+                "success": 238,
+                "collision": 7,
+                "radial_only_failure": 10,
+                "capped_capture_time": 27.62578124999999,
+                "vs_strong": {
+                  "rescues": 25,
+                  "harms": 13
+                },
+                "vs_old7101": {
+                  "rescues": 15,
+                  "harms": 15
+                }
+              }
+            },
+            "all": {
+              "N": 768,
+              "success": 715,
+              "collision": 14,
+              "radial_only_failure": 37,
+              "capped_capture_time": 27.740104166666654
+            },
+            "vs_strong": {
+              "rescues": 55,
+              "harms": 40
+            },
+            "vs_old": {
+              "7101": {
+                "rescues": 41,
+                "harms": 43
+              },
+              "7102": {
+                "rescues": 50,
+                "harms": 40
+              },
+              "7103": {
+                "rescues": 52,
+                "harms": 40
+              }
+            }
+          }
+        ],
+        "pending": [
+          {
+            "tag": "critical",
+            "completed_banks": [
+              "fresh",
+              "extended"
+            ]
+          },
+          {
+            "tag": "deterministic8101",
+            "completed_banks": [
+              "fresh",
+              "extended"
+            ]
+          },
+          {
+            "tag": "deterministic8102",
+            "completed_banks": [
+              "fresh",
+              "extended"
+            ]
+          },
+          {
+            "tag": "full8103",
+            "completed_banks": [
+              "fresh",
+              "extended"
+            ]
+          },
+          {
+            "tag": "no_context",
+            "completed_banks": [
+              "fresh"
+            ]
+          },
+          {
+            "tag": "reference",
+            "completed_banks": [
+              "fresh"
+            ]
+          },
+          {
+            "tag": "full8101",
+            "completed_banks": [
+              "fresh"
+            ]
+          },
+          {
+            "tag": "full8102",
+            "completed_banks": [
+              "fresh"
+            ]
+          },
+          {
+            "tag": "ordinary",
+            "completed_banks": [
+              "fresh"
+            ]
+          },
+          {
+            "tag": "fixed_retained7101_stage10",
+            "completed_banks": []
+          },
+          {
+            "tag": "fixed_retained7102_stage10",
+            "completed_banks": []
+          }
+        ]
+      },
+      "learned_feedback_diagnostic": {
+        "status": "complete",
+        "registered_utc": "2026-11-04T06:08:00.489908+00:00",
+        "hypothesis": "Candidate-response ranking under physical recourse may not describe the effective learned policy continuation",
+        "paired_design": "All48 prospectively declared roots, same12candidates and8futures, candidate executes1tick then frozen7101 replans everytick for16ticks; same4selection4replication split",
+        "control": "prospective_recourse_roots physical feedback with the same root state and future seeds",
+        "first_phase": "short joint motion difference, response score rankings, held-out future short events",
+        "second_phase": "if short differences warrant, independent matched complete-task continuations under learned feedback; diagnostic outcomes never prediction labels",
+        "no_value_or_terminal_prediction": true,
+        "claims": "Feedback mismatch is a hypothesis, not an established bottleneck",
+        "pid": 176774,
+        "command": [
+          "/root/autodl-tmp/ARBoids/.venv/bin/python",
+          "-u",
+          "-m",
+          "experiments.learned_recourse_diagnostic",
+          "collect",
+          "--project",
+          "/root/autodl-tmp/citf-10h-20261102/source_archive",
+          "--source",
+          "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+          "--checkpoint",
+          "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt",
+          "--roots",
+          "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/prospective_roots",
+          "--out",
+          "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/prospective_learned_recourse_roots",
+          "--deadline",
+          "2026-11-04T09:08:00.489874+00:00",
+          "--workers",
+          "1",
+          "--horizon-steps",
+          "16",
+          "--futures",
+          "8"
+        ],
+        "short_result": {
+          "completed": true,
+          "root_count": 48,
+          "layouts": 16,
+          "absolute_path_difference_m": 0.08063500497519271,
+          "candidate_response_difference_m": 0.024992135702765,
+          "groups": {
+            "guard": {
+              "roots": 48,
+              "choice_changes": 1,
+              "replication_capture_delta_sum": -0.25,
+              "replication_loss_delta_sum": 0.0,
+              "physical_choice_under_learned_capture_delta_sum": -0.25,
+              "physical_choice_under_learned_loss_delta_sum": 0.0
+            },
+            "ordered": {
+              "roots": 48,
+              "choice_changes": 2,
+              "replication_capture_delta_sum": -0.25,
+              "replication_loss_delta_sum": 0.0,
+              "physical_choice_under_learned_capture_delta_sum": -0.25,
+              "physical_choice_under_learned_loss_delta_sum": 0.0
+            },
+            "contact": {
+              "roots": 48,
+              "choice_changes": 20,
+              "replication_capture_delta_sum": 0.25,
+              "replication_loss_delta_sum": 0.0,
+              "physical_choice_under_learned_capture_delta_sum": 0.0,
+              "physical_choice_under_learned_loss_delta_sum": 0.0
+            }
+          }
+        },
+        "continuation_jobs": "learned_recourse_continuation_jobs.json",
+        "continuation_count": 352,
+        "continuation_launch": {
+          "name": "prospective_learned_recourse_continuations",
+          "kind": "independent_full_learned_feedback_continuations",
+          "command": [
+            "/root/autodl-tmp/ARBoids/.venv/bin/python",
+            "-u",
+            "-m",
+            "experiments.learned_recourse_diagnostic",
+            "continue",
+            "--project",
+            "/root/autodl-tmp/citf-10h-20261102/source_archive",
+            "--source",
+            "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+            "--checkpoint",
+            "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt",
+            "--jobs",
+            "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/learned_recourse_continuation_jobs.json",
+            "--out",
+            "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/prospective_learned_recourse_continuations",
+            "--workers",
+            "2",
+            "--deadline",
+            "2026-11-04T09:53:19.319438+00:00"
+          ],
+          "worker_slots": 2,
+          "pid": 181643,
+          "started_utc": "2026-11-04T06:53:19.320155+00:00"
+        },
+        "comparison_boundary": "All candidates within these96root-future pairs share frozen learned feedback and new future seeds; old physical-feedback continuation totals use other future seeds and must not be treated as a paired feedback intervention.",
+        "independent_continuation_result": {
+          "completed": true,
+          "root_count": 48,
+          "layout_count": 16,
+          "N_per_method": 96,
+          "unique_full_continuations": 352,
+          "methods": {
+            "physical": {
+              "N": 96,
+              "success": 90,
+              "collision": 0,
+              "radial_only_failure": 5,
+              "vs_physical_first": {
+                "rescues": 0,
+                "harms": 0
+              },
+              "vs_learned_first": {
+                "rescues": 5,
+                "harms": 5
+              }
+            },
+            "learned": {
+              "N": 96,
+              "success": 90,
+              "collision": 0,
+              "radial_only_failure": 6,
+              "vs_physical_first": {
+                "rescues": 5,
+                "harms": 5
+              },
+              "vs_learned_first": {
+                "rescues": 0,
+                "harms": 0
+              }
+            },
+            "guard_learned_feedback": {
+              "N": 96,
+              "success": 91,
+              "collision": 0,
+              "radial_only_failure": 4,
+              "vs_physical_first": {
+                "rescues": 2,
+                "harms": 1
+              },
+              "vs_learned_first": {
+                "rescues": 6,
+                "harms": 5
+              }
+            },
+            "guard_physical_feedback": {
+              "N": 96,
+              "success": 91,
+              "collision": 0,
+              "radial_only_failure": 4,
+              "vs_physical_first": {
+                "rescues": 2,
+                "harms": 1
+              },
+              "vs_learned_first": {
+                "rescues": 6,
+                "harms": 5
+              }
+            },
+            "ordered_learned_feedback": {
+              "N": 96,
+              "success": 91,
+              "collision": 0,
+              "radial_only_failure": 4,
+              "vs_physical_first": {
+                "rescues": 2,
+                "harms": 1
+              },
+              "vs_learned_first": {
+                "rescues": 6,
+                "harms": 5
+              }
+            },
+            "ordered_physical_feedback": {
+              "N": 96,
+              "success": 91,
+              "collision": 0,
+              "radial_only_failure": 4,
+              "vs_physical_first": {
+                "rescues": 2,
+                "harms": 1
+              },
+              "vs_learned_first": {
+                "rescues": 6,
+                "harms": 5
+              }
+            },
+            "contact_learned_feedback": {
+              "N": 96,
+              "success": 92,
+              "collision": 0,
+              "radial_only_failure": 4,
+              "vs_physical_first": {
+                "rescues": 5,
+                "harms": 3
+              },
+              "vs_learned_first": {
+                "rescues": 4,
+                "harms": 2
+              }
+            },
+            "contact_physical_feedback": {
+              "N": 96,
+              "success": 90,
+              "collision": 0,
+              "radial_only_failure": 6,
+              "vs_physical_first": {
+                "rescues": 5,
+                "harms": 5
+              },
+              "vs_learned_first": {
+                "rescues": 3,
+                "harms": 3
+              }
+            }
+          },
+          "paired_ranking_feedback": {
+            "guard": {
+              "rescues": 0,
+              "harms": 0
+            },
+            "ordered": {
+              "rescues": 0,
+              "harms": 0
+            },
+            "contact": {
+              "rescues": 3,
+              "harms": 1
+            }
+          },
+          "scope": "prospective16development layouts,48correlated root states,2new shared futures per root; every method uses frozen learned feedback after the first tick",
+          "not_comparable_as_paired_to_old_physical_feedback": "new future seeds differ from old physical-feedback continuation dataset",
+          "completed_utc": "2026-11-04T07:06:34.604779+00:00"
+        }
+      },
+      "fixed_readout_average": {
+        "registered_utc": "2026-11-04T07:16:00+00:00",
+        "updates": [
+          25,
+          30,
+          35,
+          40
+        ],
+        "rationale": "Observed simultaneous validation rescues and harms between nearby stages; fixed score averaging tests late readout variation.",
+        "sources": [
+          {
+            "tag": "deterministic8101",
+            "training": "response_deterministic_full_s8101",
+            "evaluator": "experiments.candidate_response",
+            "retrospective": true
+          },
+          {
+            "tag": "deterministic8102",
+            "training": "response_deterministic_full_s8102",
+            "evaluator": "experiments.candidate_response",
+            "retrospective": true
+          },
+          {
+            "tag": "deterministic8103",
+            "training": "response_deterministic_full_s8103",
+            "evaluator": "experiments.candidate_response",
+            "retrospective": false
+          },
+          {
+            "tag": "deterministic_no_context",
+            "training": "response_deterministic_no_context_s8101",
+            "evaluator": "experiments.candidate_response",
+            "retrospective": false
+          },
+          {
+            "tag": "deterministic_ordinary",
+            "training": "response_deterministic_ordinary_s8101",
+            "evaluator": "experiments.candidate_response",
+            "retrospective": false
+          },
+          {
+            "tag": "deterministic_broad8101",
+            "training": "response_deterministic_broad_s8101",
+            "evaluator": "experiments.candidate_response",
+            "retrospective": false
+          },
+          {
+            "tag": "retained7101",
+            "training": "retained_deterministic_s7101",
+            "evaluator": "experiments.synchronized_configuration_policy",
+            "retrospective": false
+          },
+          {
+            "tag": "retained7102",
+            "training": "retained_deterministic_s7102",
+            "evaluator": "experiments.synchronized_configuration_policy",
+            "retrospective": false
+          },
+          {
+            "tag": "retained7103",
+            "training": "retained_deterministic_s7103",
+            "evaluator": "experiments.synchronized_configuration_policy",
+            "retrospective": false
+          },
+          {
+            "tag": "deterministic_transfer8101",
+            "training": "response_deterministic_transfer_s8101",
+            "evaluator": "experiments.candidate_response",
+            "retrospective": false
+          }
+        ],
+        "selection": "Equal late stage actor.3.weight mean, no validation or development stage filtering",
+        "primary": "all complete fresh256; preserve all negative results",
+        "extension": "old512 only if fresh success >= original selected endpoint AND >=strong229; development priority, not formal confirmation"
+      },
+      "student_state_transfer_replication": {
+        "registered_utc": "2026-11-04T07:45:52.293082+00:00",
+        "rationale": "Complete matched768: student-state augmentation715 versus teacher-only705;48rescue38harm versus initial705, lower collisions and radial failures. Verify initialization stability and contextual-mechanism controls.",
+        "student_data": "same frozen8101stage300behavior collection,2226states from128training tasks; shared across all arms, no new outcome supervision",
+        "teacher_data": "same2321states; same frozen7101teacher for every arm",
+        "primary": "fixed300teacher warmstart then fixed1200extra updates, no closed-loop stage selection; replay0.1, all other optimizer settings matched",
+        "comparisons": "full8102/8103 teacher-only versus student-aggregate; no_context8101/ordinary8101 share warmstart+aggregate curriculum with full8101",
+        "caveat": "Three model initializations share one frozen teacher and the same collected data; not new independent teacher training or formal trials",
+        "resources": "one GPU trainer at a time, one CPU thread. Allow one trainer in addition to at most20rollout slots; kernel20CPU/90GiB quota unchanged. Total CPU demand may share the quota.",
+        "jobs": [
+          {
+            "name": "response_transfer_warm300_full_s8102",
+            "variant": "full",
+            "seed": 8102,
+            "stage": "warm300",
+            "dependency": null,
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_full_s8102/stage_002400.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_warm300_full_s8102",
+              "--deadline",
+              "2026-11-04T12:45:52.313725+00:00",
+              "--seed",
+              "8102",
+              "--steps",
+              "300",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 185246,
+            "started_utc": "2026-11-04T07:45:52.314475+00:00"
+          },
+          {
+            "name": "response_transfer_student_aggregate_s8102",
+            "variant": "full",
+            "seed": 8102,
+            "stage": "student_aggregate",
+            "dependency": "response_transfer_warm300_full_s8102",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_warm300_full_s8102/stage_000300.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_student_aggregate_s8102",
+              "--deadline",
+              "2026-11-04T12:46:34.478258+00:00",
+              "--seed",
+              "8102",
+              "--steps",
+              "1200",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda",
+              "--augment-train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_student_states_train"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 185316,
+            "started_utc": "2026-11-04T07:46:34.479034+00:00"
+          },
+          {
+            "name": "response_transfer_teacher_continue_s8102",
+            "variant": "full",
+            "seed": 8102,
+            "stage": "teacher_continue",
+            "dependency": "response_transfer_warm300_full_s8102",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_warm300_full_s8102/stage_000300.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_teacher_continue_s8102",
+              "--deadline",
+              "2026-11-04T12:48:44.973764+00:00",
+              "--seed",
+              "8102",
+              "--steps",
+              "1200",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 185504,
+            "started_utc": "2026-11-04T07:48:44.974522+00:00"
+          },
+          {
+            "name": "response_transfer_warm300_full_s8103",
+            "variant": "full",
+            "seed": 8103,
+            "stage": "warm300",
+            "dependency": null,
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_full_s8103/stage_002400.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_warm300_full_s8103",
+              "--deadline",
+              "2026-11-04T12:51:57.210974+00:00",
+              "--seed",
+              "8103",
+              "--steps",
+              "300",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 185744,
+            "started_utc": "2026-11-04T07:51:57.211813+00:00"
+          },
+          {
+            "name": "response_transfer_student_aggregate_s8103",
+            "variant": "full",
+            "seed": 8103,
+            "stage": "student_aggregate",
+            "dependency": "response_transfer_warm300_full_s8103",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_warm300_full_s8103/stage_000300.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_student_aggregate_s8103",
+              "--deadline",
+              "2026-11-04T12:54:01.619712+00:00",
+              "--seed",
+              "8103",
+              "--steps",
+              "1200",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda",
+              "--augment-train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_student_states_train"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 185901,
+            "started_utc": "2026-11-04T07:54:01.620562+00:00"
+          },
+          {
+            "name": "response_transfer_teacher_continue_s8103",
+            "variant": "full",
+            "seed": 8103,
+            "stage": "teacher_continue",
+            "dependency": "response_transfer_warm300_full_s8103",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_warm300_full_s8103/stage_000300.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_teacher_continue_s8103",
+              "--deadline",
+              "2026-11-04T12:56:35.527757+00:00",
+              "--seed",
+              "8103",
+              "--steps",
+              "1200",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 186111,
+            "started_utc": "2026-11-04T07:56:35.528530+00:00"
+          },
+          {
+            "name": "response_transfer_warm300_no_context_s8101",
+            "variant": "no_context",
+            "seed": 8101,
+            "stage": "warm300",
+            "dependency": null,
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_no_context_s8101/stage_002400.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_warm300_no_context_s8101",
+              "--deadline",
+              "2026-11-04T12:59:20.453627+00:00",
+              "--seed",
+              "8101",
+              "--steps",
+              "300",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 186313,
+            "started_utc": "2026-11-04T07:59:20.454474+00:00"
+          },
+          {
+            "name": "response_transfer_student_aggregate_no_context_s8101",
+            "variant": "no_context",
+            "seed": 8101,
+            "stage": "student_aggregate",
+            "dependency": "response_transfer_warm300_no_context_s8101",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_warm300_no_context_s8101/stage_000300.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_student_aggregate_no_context_s8101",
+              "--deadline",
+              "2026-11-04T13:03:46.376107+00:00",
+              "--seed",
+              "8101",
+              "--steps",
+              "1200",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda",
+              "--augment-train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_student_states_train"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 186643,
+            "started_utc": "2026-11-04T08:03:46.376887+00:00"
+          },
+          {
+            "name": "response_transfer_warm300_ordinary_s8101",
+            "variant": "ordinary",
+            "seed": 8101,
+            "stage": "warm300",
+            "dependency": null,
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_ordinary_s8101/stage_002400.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_warm300_ordinary_s8101",
+              "--deadline",
+              "2026-11-04T13:05:41.577579+00:00",
+              "--seed",
+              "8101",
+              "--steps",
+              "300",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 186801,
+            "started_utc": "2026-11-04T08:05:41.578322+00:00"
+          },
+          {
+            "name": "response_transfer_student_aggregate_ordinary_s8101",
+            "variant": "ordinary",
+            "seed": 8101,
+            "stage": "student_aggregate",
+            "dependency": "response_transfer_warm300_ordinary_s8101",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-u",
+              "-m",
+              "experiments.response_policy_distillation",
+              "train",
+              "--pretrained",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_warm300_ordinary_s8101/stage_000300.pt",
+              "--train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_train",
+              "--validation",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_teacher_validation",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/response_transfer_student_aggregate_ordinary_s8101",
+              "--deadline",
+              "2026-11-04T13:06:17.030038+00:00",
+              "--seed",
+              "8101",
+              "--steps",
+              "1200",
+              "--validation-every",
+              "300",
+              "--batch-size",
+              "24",
+              "--lr",
+              "0.0003",
+              "--encoder-lr",
+              "0.00003",
+              "--replay-weight",
+              "0.1",
+              "--replay-batch",
+              "4",
+              "--device",
+              "cuda",
+              "--augment-train",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_student_states_train"
+            ],
+            "worker_slots": 1,
+            "status": "running",
+            "pid": 186863,
+            "started_utc": "2026-11-04T08:06:17.030837+00:00"
+          }
+        ],
+        "complete_comparisons": {
+          "updated_utc": "2026-11-04T08:08:52.934638+00:00",
+          "scope": "matched development768 fixed-source; full three initializations share one teacher and shared frozen8101student collection; no formal conclusion",
+          "bootstrap": "10000 physical-layout clusters, all futures jointly; intervals describe this development set, not independent training variance",
+          "complete_pairs": [
+            {
+              "seed": 8101,
+              "student": {
+                "N": 768,
+                "success": 715,
+                "collision": 14,
+                "radial_only_failure": 37,
+                "capture": 711,
+                "physical_breach": 2,
+                "timeout": 4,
+                "capped_capture_time": 27.740104166666654
+              },
+              "teacher_only": {
+                "N": 768,
+                "success": 705,
+                "collision": 16,
+                "radial_only_failure": 44,
+                "capture": 702,
+                "physical_breach": 3,
+                "timeout": 3,
+                "capped_capture_time": 27.897656249999983
+              },
+              "student_vs_teacher_only": {
+                "rescues": 46,
+                "harms": 36,
+                "delta_success": 10,
+                "delta_percentage_points": 1.3020833333333335,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -1.0416666666666665,
+                  3.7760416666666665
+                ]
+              },
+              "student_vs_strong": {
+                "rescues": 55,
+                "harms": 40,
+                "delta_success": 15,
+                "delta_percentage_points": 1.953125,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -0.6510416666666667,
+                  4.557291666666666
+                ]
+              },
+              "student_vs_original_teacher": {
+                "rescues": 41,
+                "harms": 43,
+                "delta_success": -2,
+                "delta_percentage_points": -0.26041666666666663,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -2.604166666666667,
+                  2.083333333333333
+                ]
+              }
+            }
+          ],
+          "controls": [],
+          "pending": [
+            8102,
+            8103
+          ]
+        }
+      },
+      "early_retained_stage10": {
+        "registered_utc": "2026-11-04T07:34:11.093940+00:00",
+        "rationale": "Earlier response validation highs failed on complete development tasks; retained7101 first reached62/64 at10. Obtain earlier closed-loop feedback on fixed10forALL3initializations.",
+        "selection": "adaptive development endpoint registered after seeing7101validation62; 7102/7103 not yet at10; no claim of prospective selection",
+        "training_unchanged": "all40generations continue; original complete-training selection remains primary",
+        "stages": [
+          {
+            "seed": 7101,
+            "update": 10
+          },
+          {
+            "seed": 7102,
+            "update": 10
+          },
+          {
+            "seed": 7103,
+            "update": 10
+          }
+        ],
+        "scope": "all common fresh256development tasks, no formal use"
+      },
+      "failed_launch_attempts": [
+        {
+          "name": "fresh_fixed_retained7101_stage10",
+          "tag": "fixed_retained7101_stage10",
+          "bank": "fresh",
+          "training": "retained_deterministic_s7101",
+          "selected_update": 10,
+          "validation": {
+            "update": 10,
+            "completed": true,
+            "N": 64,
+            "success": 62,
+            "collision": 2,
+            "capped_capture_time": 30.628124999999997
+          },
+          "command": [
+            "/root/autodl-tmp/ARBoids/.venv/bin/python",
+            "-u",
+            "-m",
+            "experiments.parallel_evaluate",
+            "--project",
+            "/root/autodl-tmp/citf-10h-20261102/source_archive",
+            "--source",
+            "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+            "--tasks",
+            "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/development_tasks.json",
+            "--registry",
+            "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+            "--out",
+            "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_fixed_retained7101_stage10",
+            "--checkpoint",
+            "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/retained_deterministic_s7101/stage_000010.pt",
+            "--evaluator",
+            "experiments.synchronized_configuration_policy",
+            "--risk-weight",
+            "64",
+            "--workers",
+            "2",
+            "--shard-size",
+            "4",
+            "--deadline",
+            "2026-11-04T12:35:41.822807+00:00"
+          ],
+          "worker_slots": 2,
+          "status": "failed_before_tasks",
+          "selection": "adaptive fixed10development diagnostic for all retained initializations; complete40 selection unchanged",
+          "pid": 184413,
+          "started_utc": "2026-11-04T07:35:41.823615+00:00",
+          "reason": "Synchronized evaluator requires its old revision; retained readout revision needs its own evaluator. All64shards failed model loading; no task scores generated.",
+          "failure_utc": "2026-11-04T07:39:58.934948+00:00"
+        }
+      ]
     }
   },
   "artifact_format": {

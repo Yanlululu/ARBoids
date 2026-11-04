@@ -54,22 +54,35 @@ def rollout(job):
         output = model(batch)
         logits = output['logits'][0]
         distribution = torch.distributions.Categorical(logits=logits)
-        action = int(distribution.sample()) if job['training'] else min(
+        execution = job.get('execution', 'sample' if job['training'] else 'greedy')
+        action = int(distribution.sample()) if execution == 'sample' else min(
             range(len(plans)), key=lambda k: (-float(logits[k]),
                 int(k != 0) if model.cfg.policy_prior_mode == 'reference_saturated' else 0,
                 tuple(plans[k])))
         physical = int(output['physical'][0].argmin())
-        changed += int(action != physical); entropies.append(float(distribution.entropy()))
-        if job['training']:
+        if execution == 'mean':
+            if job.get('record_transitions', True):
+                raise ValueError('Conditional mean execution is a declared deployment diagnostic, not a categorical transition')
+            gate = (distribution.probs[:, None, None] * gates).sum(0)
+            changed += int((gate - gates[physical]).abs().max() > 1e-6)
+        elif execution in ('sample', 'greedy'):
+            gate = gates[action]
+            changed += int(action != physical)
+        else:
+            raise ValueError('Unknown current-configuration execution mode')
+        entropies.append(float(distribution.entropy()))
+        if job['training'] and job.get('record_transitions', True):
             transitions.append(dict(inputs={k: v[0].numpy().copy() for k, v in batch.items()},
                 action=action, old_logp=float(distribution.log_prob(torch.tensor(action)))))
-        gate = gates[action]
         force = (750 * (gate * f['learned'] + (1 - gate) * f['rules']) + 250).numpy()
         result = world.step(force); steps += 1
     reward = (1. if result['success'] else -1.) - .25 * result['collision']
-    reward += .02 * result['capture'] - .0005 * result['duration']
+    reward_duration = job.get('reward_duration', 'observed')
+    duration = (result['duration'] if result['capture'] else 80.) if reward_duration == 'capped_capture' else result['duration']
+    reward += .02 * result['capture'] - .0005 * duration
     record = dict(completed=True, task=task, policy_seed=job['policy_seed'], steps=steps,
-                  reward=reward, changed_fraction=changed / steps, entropy=float(np.mean(entropies)), **result)
+                  execution=execution, reward=reward, reward_duration=reward_duration, changed_fraction=changed / steps,
+                  entropy=float(np.mean(entropies)), **result)
     return dict(completed=True, record=record, transitions=transitions)
 
 
@@ -130,14 +143,16 @@ def main():
     actor_ids = {id(p) for p in model.actor.parameters()}
     optimizer = torch.optim.AdamW([dict(params=model.actor.parameters(), lr=args.lr),
         dict(params=[p for p in model.parameters() if id(p) not in actor_ids], lr=args.encoder_lr)], weight_decay=1e-4)
-    replay, replay_roots = load_response_data(value['protocol']['arguments']['train'], 'train')
+    replay_path = (value['protocol'].get('response_replay')
+                   or value['protocol']['arguments']['train'])
+    replay, replay_roots = load_response_data(replay_path, 'train')
     if {x['geometry_family_id'] for x in replay_roots} & {x['geometry_family_id'] for x in validation['tasks']}:
         raise ValueError('Replay/validation layout overlap')
     rng = np.random.default_rng(args.seed); replay_rng = np.random.default_rng(args.seed + 13000)
     deadline = datetime.datetime.fromisoformat(args.deadline).timestamp()
     stop_file = str(out.parent / 'STOP_RESPONSE_POLICY')
     protocol = dict(value['protocol'], arguments=vars(args), response_pretrained=args.pretrained,
-        response_replay=value['protocol']['arguments']['train'], source_unchanged=True,
+        response_replay=replay_path, source_unchanged=True,
         objective='ordinary clipped complete-task policy gradient plus matched short-response replay',
         no_critic_or_terminal_prediction=True, candidate_set_normalization=False,
         policy_prior_mode=cfg.policy_prior_mode,
