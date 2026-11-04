@@ -1,4 +1,4 @@
-"""Paired hierarchical bootstrap, retaining every run and physical-layout family."""
+"""Paired crossed bootstrap of training runs and shared physical-layout families."""
 import argparse,json
 from pathlib import Path
 import numpy as np
@@ -41,12 +41,15 @@ def paired_difference(left,right,metric='success',repetitions=10000,seed=801):
     values=np.array([[g[k] for k in family_order] for g in grouped]);rng=np.random.default_rng(seed)
     estimates=[]
     for _ in range(repetitions):
-        run_ids=rng.integers(len(grouped),size=len(grouped));sampled=[]
-        for i in run_ids:sampled.append(values[i,rng.integers(len(family_order),size=len(family_order))].mean())
-        estimates.append(np.mean(sampled))
+        run_ids=rng.integers(len(grouped),size=len(grouped))
+        # Layouts are shared across runs, not nested independently within them.
+        # Keep each sampled layout (and all its conditions) common to every run.
+        family_ids=rng.integers(len(family_order),size=len(family_order))
+        estimates.append(float(values[run_ids][:,family_ids].mean()))
     return {'phase':role,'metric':metric,'runs':len(grouped),'families':len(family_order),'paired_tasks_per_run':sum(map(len,grouped[0].values())),
             'mean_difference':float(values.mean()),'ci95':np.quantile(estimates,[.025,.975]).tolist(),
             'bootstrap_repetitions':repetitions,'per_run':per_run,'tasks_sha256':common_tasks,
+            'bootstrap_scheme':'paired crossed runs and shared layout families; all conditions retained',
             'replication_scope':'fixed-source predictor repetitions' if len({load_results(p)[0]['runtime']['source_sha256'] for p in left})==1 else 'multiple sources'}
 
 

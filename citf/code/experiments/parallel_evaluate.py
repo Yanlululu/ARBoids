@@ -15,7 +15,7 @@ def merge(out):
     from citf.contracts import canonical_hash, file_hash
     out = Path(out)
     state = json.loads((out / 'status.json').read_text())
-    if not state['completed']:
+    if not state['jobs'] or any(job['status'] != 'completed' for job in state['jobs']):
         raise ValueError('Cannot merge an incomplete evaluation')
     arguments = state['arguments']
     bank = json.loads(Path(arguments['tasks']).read_text())
@@ -23,6 +23,8 @@ def merge(out):
     for job in state['jobs']:
         directory = out / job['name']
         summary = json.loads((directory / 'summary.json').read_text())
+        if not summary['completed']:
+            raise ValueError('Cannot merge an incomplete shard: ' + job['name'])
         if identity is None:
             identity = summary['runtime']
         elif canonical_hash(identity) != canonical_hash(summary['runtime']):
@@ -33,7 +35,9 @@ def merge(out):
             rows.append(row)
     if [r['task'] for r in rows] != bank['tasks']:
         raise ValueError('Evaluation merge differs from the prespecified bank')
-    (out / 'tasks.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+    pending = out / 'tasks.jsonl.pending'
+    pending.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+    pending.replace(out / 'tasks.jsonl')
     counts = {key: sum(r[key] for r in rows) for key in
               ('success', 'capture', 'collision', 'physical_collision', 'physical_breach', 'radial_only_failure', 'timeout')}
     summary = dict(completed=True, phase='development', N=len(rows), expected_N=len(rows), **counts,
@@ -44,7 +48,9 @@ def merge(out):
                    deadline_fraction=sum(r['deadline_fraction']*r['steps'] for r in rows)/sum(r['steps'] for r in rows),
                    mean_unique_candidates=sum(r['mean_unique_candidates']*r['steps'] for r in rows)/sum(r['steps'] for r in rows),
                    evidence_role='fixed-source development validation', arguments=arguments)
-    (out / 'summary.json').write_text(json.dumps(summary, indent=2))
+    pending = out / 'summary.json.pending'
+    pending.write_text(json.dumps(summary, indent=2))
+    pending.replace(out / 'summary.json')
     return summary
 
 
@@ -91,9 +97,9 @@ def main():
         for key, value in vars(a).items():
             if key not in ('resume', 'workers', 'deadline') and stored.get(key) != value:
                 raise ValueError('Evaluation manager resume argument changed: ' + key)
-        if state['completed']:
-            print(json.dumps({'completed': True, 'already_complete': str(out)}), flush=True)
-            return
+        # Even a legacy completed state may precede a missing/failed merge.
+        # Completed shards are reused below; always finish the aggregate commit.
+        state['completed'] = False
         state.setdefault('resume_history', []).append(dict(
             previous_pid=state['pid'], pid=os.getpid(), workers=a.workers, deadline=a.deadline,
             started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat()))
@@ -186,12 +192,15 @@ def main():
     save()
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as pool:
         list(pool.map(execute, state['jobs']))
-    state['completed'] = all(job['status'] == 'completed' for job in state['jobs'])
-    state['finished_utc'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    jobs_completed = all(job['status'] == 'completed' for job in state['jobs'])
+    state['completed'] = False
     save()
-    if not state['completed']:
+    if not jobs_completed:
         raise RuntimeError('Some evaluation shards did not complete; retain all partial results')
     summary = merge(out)
+    state['completed'] = True
+    state['finished_utc'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    save()
     print(json.dumps(summary), flush=True)
 
 

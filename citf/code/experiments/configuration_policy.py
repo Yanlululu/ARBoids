@@ -272,9 +272,13 @@ def train_main():
         return dict(task=task, actor=state, training=training, policy_seed=int(policy_seed),
                     protocol=train_bank['protocol'], deadline=deadline, stop_file=stop_file)
 
+    validated_update = None
+
     def checkpoint(path, selected=None):
         atomic_save(dict(state=model.state_dict(), config=asdict(cfg), protocol=protocol,
-            selected=selected, update=update, completed=update == args.iterations,
+            selected=selected, update=update,
+            completed=update == args.iterations and validated_update == update,
+            validated_update=validated_update,
             optimizer=optimizer.state_dict(), sampler_rng=rng.bit_generator.state,
             torch_rng=torch.get_rng_state(), training_episodes=training_episodes,
             training_steps=training_steps), path)
@@ -284,7 +288,7 @@ def train_main():
             initializer=initialize_worker,
             initargs=(args.project, args.source, asdict(cfg), pretrained['state'])) as pool:
         def validate():
-            nonlocal best
+            nonlocal best, validated_update
             state = actor_state()
             results = list(pool.map(rollout, [job(task, state, False, args.seed + i)
                                            for i, task in enumerate(validation['tasks'])]))
@@ -296,6 +300,7 @@ def train_main():
             row = dict(update=update, N=len(records), success=success, collision=collision,
                        capped_capture_time=capped, tasks=records)
             with (out / 'validation.jsonl').open('a') as stream: stream.write(json.dumps(row) + '\n')
+            validated_update = update
             key = (success, -collision, -capped)
             if best is None or key > tuple(best['selection_key']):
                 best = dict(update=update, selection_key=list(key), success=success, N=len(records),
@@ -350,7 +355,9 @@ def train_main():
             if update % args.validation_every == 0 or update == args.iterations: proceed = validate()
             else: checkpoint(out / 'last.pt', best)
         checkpoint(out / 'last.pt', best)
-    (out / 'status.json').write_text(json.dumps(dict(completed=update == args.iterations,
+    (out / 'status.json').write_text(json.dumps(dict(
+        completed=update == args.iterations and validated_update == update,
+        validated_update=validated_update,
         update=update, total_updates=args.iterations, best=best,
         training_episodes=training_episodes, environment_steps=training_steps), indent=2))
 

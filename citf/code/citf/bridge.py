@@ -145,7 +145,7 @@ class Controller:
             return (b['unary']+p.risk_weight*(risk*out['pair_valid'][:,None]).sum(-1))[0].cpu().numpy()
         if getattr(self,'selection','joint')=='independent':
             from experiments.independent_select import independent_select
-            ix,meta=independent_select(centre,[x.nonzero()[:,0].numpy() for x in f['valid']],evaluate)
+            ix,meta=independent_select(centre,[x.nonzero()[:,0].numpy() for x in f['valid']],evaluate,budget=self.budget)
         else:
             ix,meta=whole_configuration_search(initial,evaluate,[x.nonzero()[:,0].numpy() for x in f['valid']],self.budget,self.rounds)
         g=f['grid'][torch.arange(len(ix)),torch.tensor(ix)];force=(750*(g*f['learned']+(1-g)*f['rules'])+250).numpy()

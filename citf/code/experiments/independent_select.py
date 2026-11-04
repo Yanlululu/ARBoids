@@ -2,7 +2,7 @@
 import numpy as np
 
 
-def independent_select(center,choices,evaluate,order=None):
+def independent_select(center,choices,evaluate,order=None,budget=None):
     center=np.asarray(center,dtype=np.int64);n=len(center)
     order=list(range(n)) if order is None else list(order)
     if sorted(order)!=list(range(n)):raise ValueError('Each defender must appear once')
@@ -13,6 +13,10 @@ def independent_select(center,choices,evaluate,order=None):
             p=center.copy();p[i]=k;key=tuple(p)
             if key not in plans:plans.append(key)
             by_boat[i].append((k,plans.index(key)))
+    # Truncation would change the declared simultaneous, full-neighbourhood
+    # comparison. Reject an insufficient budget before calling the scorer.
+    if budget is not None and (budget<1 or len(plans)>budget):
+        raise ValueError(f'Independent selection needs {len(plans)} unique scores; budget is {budget}')
     scores=np.asarray(evaluate(np.asarray(plans)),dtype=float)
     if scores.shape!=(len(plans),) or not np.isfinite(scores).all():raise ValueError('Invalid scorer output')
     selected=center.copy()
