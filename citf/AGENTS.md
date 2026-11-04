@@ -1,43 +1,29 @@
-# CITF independent-paper workspace
+# CITF研发执行要求
 
-用户2026-11-05要求规避过程中无意义的检查：只做会影响当前算法/实验决策、真实收益判断或排除具体异常的必要核对，优先复用现有证据并结合正常实验完成；已有结论且相关内容未变时不重复检查。旧文档的核验、验收清单不自动成为每轮或恢复后的前置任务。工程测试、烟雾测试、哈希检查和自动代码验证仍按现行用户规则，仅在明确要求时执行。原定闭环评价、必要机制对照和正式论文实验继续推进；不为本原则新增清单、审批或报告。
+## 目标与决策依据
 
-On context compaction or resume, reuse reliable current context. For missing recovery context, first output only the “简短恢复摘要” and “当前决策依据与下一步” sections of `CODEX_TASK.md`, selecting by heading through the next heading of the same or higher level. Do not substitute large head/tail excerpts, whole-file output or full-plan reads for this entry step. From the repository root, this PowerShell command outputs those two sections:
+以最快、最高效地取得论文方案所需的明显闭环收益为首要目标。按预期收益、实现与实验成本、现有结果选择下一步，直接完成必要的设计、实现、训练、评价和迭代。
 
-```powershell
-$showRecoverySection = $false
-Get-Content -LiteralPath 'citf/CODEX_TASK.md' | ForEach-Object {
-    if ($_ -match '^#{1,3}\s') {
-        $showRecoverySection = $_ -match '^### (简短恢复摘要|当前决策依据与下一步)'
-    }
-    if ($showRecoverySection) { $_ }
-}
-```
+用户2026-11-05最新授权开放全部研究方法与技术路线。模型架构、Transformer用法、表示、预测、价值学习、训练目标、数据、源策略、候选、动作空间、时域及求解方式均可重构。历史上的CV、终局价值、长时域规划等禁用条款已撤销；这些方法与其他方案一样按当前收益潜力选择。旧参数、旧模型、固定教师和输入包中的方案均为参考。
 
-These sections are a navigation aid and current decision snapshot, not a replacement for all effective requirements or the complete plan. Reconcile them with the latest user instruction and actual run state. Read the relevant requirements, plan sections, module specifications or evidence when needed to understand a gap, conflict, method choice, experiment design or stage transition; expand to the full plan when the decision requires it. A current hypothesis or branch does not define the whole research direction or cancel later deliverables. If output is truncated, retrieve only the missing relevant portion. Restore enough context to judge the next action against the original goal, then continue authorized work without adding tests, reports, approvals or experiment gates.
+## 研发方式
 
-The package-era architecture and parameter statements below describe the imported reference implementation. The user's later authorization for internal algorithm redesign, and which earlier instructions it supersedes, are consolidated at the start of `CODEX_TASK.md`; preserve the unchanged task criteria, method identities and final deliverables while applying that authorization.
+- 优先改进影响完整任务成败的控制与学习关系。直接实现最有希望的改法，用最小但足以决定取舍的研究实验推进；有潜力再扩展规模和重复，退步方案及时调整或结束。
+- 完整闭环验证主导选模；预测、排序、梯度和局部事件分析服务于具体修改。根据问题选择诊断深度，复用已有结论与产物。
+- 比较保留有效强对照，记录相同任务下的成功数、救回与损害、碰撞、失守、效率及成本。任务或资源条件调整时同步相应比较，单列条件和效果。
+- 论文方案保留完整方法、竞争性比较、独立重复、机制与系统验证的证据职责；具体实验、消融、参数、章节和图表随最终有效方法优化。
+- P0—P7用于组织工作，按实际依赖推进。基线、VRX及其他模块在需要时补齐，已完成工作直接接续。
 
-Read release/method_registry.json before exporting any paper table or result. CI is the author’s internal unpublished draft in the supplied context, not a published baseline. Define CITF as the complete controller in the manuscript. Keep actual source citations and all needed control equations.
+## 文档与恢复
 
-Published comparison: ARBoids, RP, SAC, Boids, MAPPO. Author-constructed controls: CITF-Phys and the declared learning/selection variants. CI-original is audit-only. CITF-Phys maps to the current no-model held-thrust nominal predictor, not the legacy CI implementation. Never relabel archived results.
+`CODEX_TASK.md`保存原始问题、有效授权、实验关系和当前决策；完整设计见`plan/CITF_最终实验与代码实施方案.md`，接口见`plan/CITF_代码模块实施规格.md`。源码与各次运行记录决定实际实现和完成状态。`release/experiment_manifest.json`保留可调整的参考配方；正式运行采用定型后登记的有效配置。
 
-Document revision is CITF-independent-narrative-v4; runtime code is unchanged execution-v3. VRX and common-opponent experiments now use CITF-Phys instead of legacy CI; register new experimental identities and do not reuse old results.
+恢复时复用可靠上下文；缺失时先读`CODEX_TASK.md`的“简短恢复摘要”和“当前决策依据与下一步”，再按本次决策需要补读相关方案与证据。阶段转换或关键判断变化时更新这两个入口及有关方案。历史段落按记录日期理解，当前用户指令优先。
 
-Use CODEX_TASK.md as the task entry and the paper, full experiment plan and module specifications as detailed references. The imported initial-reading list does not require rereading every document after each compaction. The user-provided evidence, source archive and historical weights/results are read-only. Work in a separate local branch and output directory.
+文档直接陈述目标、事实、决定和下一步；删除重复免责、设计铺垫及过时待办，保留影响取舍的具体理由。用现有任务和方案记录研究，控制文档维护成本。
 
-This is current candidate-interaction fusion only. Do not add CV, terminal value/outcome heads, long-horizon fusion plans or PCF-MBRL. Main training size is six; any other teammate may condition a pair. No three-agent restriction.
+## 实验记录与协作
 
-Runtime revision is CITF-execution-closed-v3. Network and input semantics remain CITF-stopped-direct-v2 and citf-stopped-aware-v2. Actual new-controller results need their own identity; never inherit the old 46/48 result.
+实际结果保留其任务、方法、数据和运行身份，包含全部已执行重复及正负结果。正式论文使用定型方法在留出任务上的结果；方法定义、来源引用、统计分母与实际实现相符。方法角色沿用`release/method_registry.json`并随最终设计更新，历史结果按原身份查询。
 
-Keep known remaining time online and actual future termination in labels only. Direct stopped-distance heads do not use unsupervised auxiliary tails. Future attacker action traces are audit labels, never predictor inputs.
-
-Reserve source centre inside the existing initial bank; deduplicate; log actual score count. Default 96 is a cap; six agents with 12 initial and one 9-choice coordinate neighbourhood can score at most 60 unique configurations.
-
-Only the registered online risk_weight sweep is predictor-load compatible. Final freeze still locks the complete runtime value. Loss weights must reach objective. Preserve immutable current-stage snapshots and best/last checkpoints separately; learning curves use validation only.
-
-The same frozen attacker must drive behavior trajectories, every candidate branch and evaluation. Feedforward deterministic actor export is supported. Stateful/stochastic actors require an explicit clone/RNG contract before use. The untrained interface actor is never an experimental opponent.
-
-Physical geometry family governs splits. Preserve all failed trials and seeds. Record actual commands, resources, provenance, controller/opponent identity and pending/failed/completed states. No placeholder successes. Equations in the manuscript remain unnumbered, formal missing results red 待补.
-
-Use the single P0-P7 stage map in release/phase_contract.json. Implement missing baseline trainers, real attacker learning, VRX and statistics in P2, then complete the registered experiments. Do not claim formal tests or local jobs ran without real execution evidence.
+在1103分支和现有研发结构上继续。原执行会话统一管理已有研究作业；依实际运行状态接续。个人AGENTS中的工具、测试、消息发送、自动化和资源约定继续适用；工程测试、烟雾测试、哈希检查及自动代码验证仅按用户明确要求执行。正常训练与闭环研究实验持续推进。

@@ -3133,7 +3133,7 @@
       "scope": "fixed-source algorithm development; no frozen formal results",
       "source_request": "root-cause algorithm redesign plus latest continue; no renewed ten-hour period inferred",
       "original_deadline_utc": "2026-11-04T01:32:37+00:00",
-      "updated_utc": "2026-11-04T22:22:15.063315+00:00",
+      "updated_utc": "2026-11-04T22:53:23.701760+00:00",
       "local_results": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\remote-10h-20261102\\runs\\root_cause_20261103",
       "remote_results": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103",
       "complete_fresh_selected": {
@@ -3492,7 +3492,7 @@
         "radial_only_failure": 2,
         "capped_capture_time": 25.21562499999998
       },
-      "research_status": "Full geometric fusion controller rejected:149/256 learned,161/256 nominal,matchedteacher228. Complete-task joint fusion policy data collecting; no new learned gain established.",
+      "research_status": "All three macro policy stages complete256 at228success,0rescues,0harms,0alternativeoptions each; no gain. Single final600 no-fixed-offset evaluation running.",
       "pending_experiments": "Finish actuation fixed768; evaluate finite paired-preference update on the same original training and validation schedule, then decide informative repeats or controls. Formal scope remains pending.",
       "synchronization": {
         "completed_directories": [
@@ -12874,7 +12874,7 @@
       },
       "current_research_direction": {
         "updated_utc": "2026-11-04T21:06:28.461695+00:00",
-        "latest_stage": "complete-task-trained continuous joint fusion option policy: full128layout common8future data collecting",
+        "latest_stage": "whole-task joint fusion policy learning from completed320roots and7680complete branches",
         "primary_objective": "substantial repeatable complete common-task net improvement",
         "previous_route": "contact-only correction loss variants closed; projection 713/768 versus teacher 717",
         "next": "learn observable interaction dynamics; continuously replan joint current fusion choices from approach; separate 128-layout selection",
@@ -23677,11 +23677,42 @@
             "reason": "early pilot demonstrates both beneficial and harmful temporally meaningful choices; expand over the existing full training layout pool for learning, not validation reuse",
             "learning_route": "continuous current-fusion option policy trained on paired complete-task preferences; keep teacher feedback as a genuine option; short-response representations enter scoring; no terminal value/outcome head",
             "pilot_not_generalization_evidence": true
+          },
+          "completed_collection": {
+            "completed": true,
+            "layouts": 128,
+            "roots": 320,
+            "complete_branches": 7680,
+            "branch_environment_steps": 703227,
+            "collections": [
+              {
+                "completed": true,
+                "layouts": 16,
+                "roots": 39,
+                "requested_roots": 48,
+                "futures": 8,
+                "complete_branches": 936,
+                "branch_environment_steps": 94690,
+                "elapsed_seconds": 1175.5083093643188,
+                "scope": "training roots with common futures; not independent complete-bank performance"
+              },
+              {
+                "completed": true,
+                "layouts": 112,
+                "roots": 281,
+                "requested_roots": 336,
+                "futures": 8,
+                "complete_branches": 6744,
+                "branch_environment_steps": 608537,
+                "elapsed_seconds": 1770.4711456298828,
+                "scope": "training roots with common futures; not independent complete-bank performance"
+              }
+            ]
           }
         },
         "macro_policy_learning": {
           "registered_utc": "2026-11-04T22:16:46.110936+00:00",
-          "status": "implementation prepared; paired data still collecting; no training or gain yet",
+          "status": "All three stages complete256, unchanged teacher behavior; no gain. Single no-offset execution diagnostic running.",
           "policy_module": "experiments.joint_macro_policy",
           "training_module": "experiments.joint_macro_training",
           "seed": 9301,
@@ -23697,7 +23728,160 @@
           "objective": "finite full-bank policy projection from observed eight-future complete returns, temperature0.5; actual short physical labels; no return predictor",
           "information": "fixed current observations and predicted three-step geometry directly enter candidate-wise joint-entity Transformer and final readout; no future action/RNG/agility/termination inputs",
           "scope": "fixed-source development; fullCITF mechanism must include any retained teacher learning; no claim from module-only ablation",
-          "retention": "complete common-task net gain and necessary repeats; do not continue hand-geometric full-time controller from failed149/256 result"
+          "retention": "complete common-task net gain and necessary repeats; do not continue hand-geometric full-time controller from failed149/256 result",
+          "launch": {
+            "name": "joint_macro_s9301",
+            "kind": "complete_task_joint_fusion_policy_learning",
+            "command": [
+              "/root/autodl-tmp/ARBoids/.venv/bin/python",
+              "-X",
+              "utf8",
+              "-u",
+              "-m",
+              "experiments.joint_macro_training",
+              "--project",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "--source",
+              "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "--teacher",
+              "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt",
+              "--dynamics",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/continuous_interception_20261105/dynamics_s9201/stage_003000.pt",
+              "--out",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/continuous_interception_20261105/joint_macro_s9301",
+              "--data",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/continuous_interception_20261105/macro_common_future_train16",
+              "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/continuous_interception_20261105/macro_common_future_train112",
+              "--seed",
+              "9301",
+              "--device",
+              "cuda:0",
+              "--pretrain",
+              "400",
+              "--updates",
+              "600",
+              "--stages",
+              "100",
+              "300",
+              "600",
+              "--batch",
+              "8"
+            ],
+            "pid": 257646,
+            "worker_slots": 1,
+            "gpu": "cuda:0",
+            "started_utc": "2026-11-04T22:23:22.699728+00:00",
+            "dependency": "both complete allocated macro collections; no fitting partial data",
+            "log": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/continuous_interception_20261105/joint_macro_s9301.log"
+          },
+          "selection_coordinator": {
+            "pid": 257687,
+            "waiting_for": "joint_macro_s9301 completed summary",
+            "stages": [
+              100,
+              300,
+              600
+            ],
+            "total_worker_slots": 20
+          },
+          "training_summary": {
+            "completed": true,
+            "physical_updates": 400,
+            "policy_updates": 600,
+            "seed": 9301,
+            "training_roots": 320,
+            "training_layouts": 126,
+            "complete_branches": 7680,
+            "elapsed_seconds": 9.424853086471558,
+            "selection": "not yet evaluated in complete closed-loop tasks"
+          },
+          "selection_names": [
+            "joint_macro_selection_step100",
+            "joint_macro_selection_step300",
+            "joint_macro_selection_step600"
+          ],
+          "one_execution_diagnostic": {
+            "registered_utc": "2026-11-04T22:41:15.741366+00:00",
+            "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/continuous_interception_20261105/joint_macro_s9301/deployment_no_option_penalty.pt",
+            "declared_stage": 600,
+            "weights_changed": false,
+            "override": {
+              "source_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/continuous_interception_20261105/joint_macro_s9301/stage_000600.pt",
+              "parameter": "alternative_prior",
+              "training_value": 0.25,
+              "deployment_value": 0.0,
+              "weights_changed": false,
+              "reason": "Evaluate learned relative preference without fixed alternative activation offset; fixedfinal600,not selection from endpoints"
+            },
+            "selection_bank": "same256 independent-layout development tasks",
+            "coordinator_pid": 258849,
+            "worker_slots": 20,
+            "starts_after": "all declared100300600 complete256 runs",
+            "reason": "Existing completed-task prefixes all reference; examine actual relative preferences without fixedoffset; no threshold sweep and no learned gain claimed"
+          },
+          "complete_stage_selection": [
+            {
+              "stage": 100,
+              "completed": true,
+              "N": 256,
+              "success": 228,
+              "capture": 228,
+              "collision": 10,
+              "radial_only_failure": 18,
+              "physical_breach": 0,
+              "timeout": 0,
+              "capped_capture_time": 29.747656249999984,
+              "latency_mean_ms": 191.414661164514,
+              "deadline_fraction": 0.33604551377808856,
+              "policy_decisions": 10573,
+              "alternative_options": 0,
+              "alternative_control_ticks": 0,
+              "total_ticks": 31463,
+              "rescues": 0,
+              "harms": 0
+            },
+            {
+              "stage": 300,
+              "completed": true,
+              "N": 256,
+              "success": 228,
+              "capture": 228,
+              "collision": 10,
+              "radial_only_failure": 18,
+              "physical_breach": 0,
+              "timeout": 0,
+              "capped_capture_time": 29.747656249999984,
+              "latency_mean_ms": 190.31992439562816,
+              "deadline_fraction": 0.33604551377808856,
+              "policy_decisions": 10573,
+              "alternative_options": 0,
+              "alternative_control_ticks": 0,
+              "total_ticks": 31463,
+              "rescues": 0,
+              "harms": 0
+            },
+            {
+              "stage": 600,
+              "completed": true,
+              "N": 256,
+              "success": 228,
+              "capture": 228,
+              "collision": 10,
+              "radial_only_failure": 18,
+              "physical_breach": 0,
+              "timeout": 0,
+              "capped_capture_time": 29.747656249999984,
+              "latency_mean_ms": 190.50996107630434,
+              "deadline_fraction": 0.33604551377808856,
+              "policy_decisions": 10573,
+              "alternative_options": 0,
+              "alternative_control_ticks": 0,
+              "total_ticks": 31463,
+              "rescues": 0,
+              "harms": 0
+            }
+          ],
+          "selected_with_fixed_offset": 100
         }
       }
     }

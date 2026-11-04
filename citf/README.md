@@ -1,40 +1,34 @@
 # CITF研发与论文入口
 
-本目录用于Candidate-Interaction Transformer Fusion（CITF）的算法研发、实验和独立论文。目标是在完整防御任务中获得稳定的闭环收益，并用匹配对照建立候选交互学习的贡献。
+本目录用于多无人艇协同防御算法研发、实验和论文。当前优先目标是最快、最高效地取得明显、可重复的完整任务收益，形成有效的CITF方法及与实际实现相符的学习机制贡献。
 
-当前处于固定源策略的算法开发阶段。正式主比较、五次独立学习、泛化、学习型对手和VRX证据仍需完成，开发结果不能替代正式结果。继续工作时，先读取完整实验方案及其1.4节交付边界，再结合`CODEX_TASK.md`末尾的阶段结论、`release/delivery_status.json`中的实际状态和源码；保留原始问题、关键假设、实验关系及决策依据。
+用户2026-11-05已开放全部研究方法与技术路线。架构、源策略、动作空间、预测与价值目标、采样、时域和求解均可调整。既有CITF、717教师及固定参数作为可复用起点，按收益潜力和成本决定保留或替换。
 
 ## 文件入口
 
-| 文件 | 作用 |
+| 文件 | 用途 |
 |---|---|
-| `paper/CITF_中文独立论文_修订稿.pdf` | 独立叙事的完整中文稿，正式结果红色待补 |
-| `paper/CITF_中文独立论文_修订稿.md` | 可编辑正文，公式不编号 |
-| `CODEX_TASK.md` | 原始任务、研发过程、阶段结论和后续决策 |
-| `plan/CITF_最终实验与代码实施方案.md` | 完整实验协议及执行参数 |
-| `plan/CITF_代码模块实施规格.md` | 模块接口与实现规格，完成情况以实际状态和源码为准 |
-| `plan/CITF_独立论文叙事与实验身份修订.md` | 本轮修改与原期刊对应 |
-| `release/method_registry.json` | 公开算法、本文对照和内部版本的身份登记 |
-| `release/experiment_manifest.json` | 更新后的单一正式实验矩阵 |
-| `release/delivery_status.json` | 实际完成与待补状态 |
+| `AGENTS.md` | 当前研发执行要求 |
+| `CODEX_TASK.md` | 原始问题、简短恢复摘要、实验关系、当前结果与下一步 |
+| `plan/CITF_最终实验与代码实施方案.md` | 完整研发与论文方案，可调整的实验配方 |
+| `plan/CITF_代码模块实施规格.md` | 模块职责、接口和实际依赖 |
+| `release/experiment_manifest.json` | 参考配置；定型后更新正式矩阵 |
+| `release/method_registry.json` | 方法身份与论文展示角色 |
+| `release/delivery_status.json` | 各阶段产物与实际完成状态 |
+| `paper/CITF_中文独立论文_修订稿.md` | 可编辑论文；方法与图表随最终方案更新 |
 
-## 方法与证据边界
+当前处于P3研发。恢复时先使用可靠上下文，缺失时读取任务文档的“简短恢复摘要”和“当前决策依据与下一步”，再按需要定位完整方案。继续已有实验和实现，按完整闭环结果决定修改、扩展或结束支线。
 
-CITF作为完整控制方法定义，候选生成、运动预测、候选条件Transformer、联合选择与训练共同组成方法。公开算法比较包括ARBoids、RP、SAC、Boids和MAPPO；CITF-Phys及学习、选择对照按`release/method_registry.json`登记。内部CI不列为公开已有算法，旧结果不改名继承。
+## 论文与实验
 
-六艇主任务、80秒协议、独立重复、核心消融和既定系统验证沿用完整方案。内部探索服务于最终方法，不自动增加交付项目。当前实验使用各自登记的运行身份，不能把输入包的`CITF-execution-closed-v3`当作所有后续开发版本的统一身份。
+最终形成完整方法、公开比较、五次独立学习、核心机制证据、机动性与跨艇数泛化、学习型对手、VRX，以及源码、模型、图表数据和论文。当前六艇80秒协议提供共同比较起点；研究设计可优化，相应比较使用相同有效条件。
 
-## 历史资料与文稿重建
+公开比较包括ARBoids、RP、SAC、Boids、MAPPO。本文构造的物理、学习与选择对照按最终方法定义；既有CITF-Phys与内部CI-original各自保留原实现身份。正式论文使用对应留出评价的真实结果，记录全部独立重复和成败构成。
 
-`audit/current_independent_review`和`本轮独立评估.md`保留输入包复核时的68项测试及有限验收记录，属于历史记录。当前实现和任务进度以实际源码与状态记录为准。
+## 历史资料与文稿
 
-当前分支已清退被完整复核取代的`audit/previous_release`、`audit/execution_v3`中的跟踪记录、旧配置与旧交付说明，以及11月2—3日开发窗口的一次性调度脚本。历史跟踪文件可从Git提交`bac5c64`回查；`audit/execution_v3_complete`和当前独立复核保留。输入包的`release/FILE_MANIFEST.json`及`audit/current_independent_review/input_FILE_MANIFEST.json`仅描述当时交付内容，不是清理后工作树的文件清单。实际运行命令、任务库、模型和结果仍以原实验目录中的记录为准。
+`plan/CITF_本轮意见落实与执行验收.md`、`plan/CITF_独立论文叙事与实验身份修订.md`、`本轮独立评估.md`及`audit`保存各次交付与复核记录。短分支事件补齐记录见`plan/CITF_短分支事件记录验收.md`。这些记录按发生阶段查询。
 
-[ARBoids原文](review_sources/ARBoids_2026_正式期刊版_用户提供.pdf)保留在`review_sources`；[前序M1方法与证据](../docs/new-cooperative-defense-research-route.md)单独作为历史参考。旧r20核心证据保留在`../train/experiments/author-source-fusion-20261011/r20-paper-evidence`。
+输入包文件清单描述当时交付内容；当前实现、模型和运行结果使用实际源码、运行目录及状态记录。已清退的历史跟踪文件可从Git提交`bac5c64`回查。ARBoids原文保留在`review_sources`，前序研究见`../docs/new-cooperative-defense-research-route.md`，r20证据位于`../train/experiments/author-source-fusion-20261011/r20-paper-evidence`。
 
-```bash
-python tools/check_paper_narrative.py
-python tools/build_paper.py
-```
-
-上述命令用于文稿核对与重建，不代表已执行训练或正式评价；是否运行检查遵循当前用户指令。
+论文构建入口为`tools/build_paper.py`；文稿核对工具为`tools/check_paper_narrative.py`，按用户明确要求使用。
