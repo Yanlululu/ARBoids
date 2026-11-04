@@ -17,7 +17,6 @@ from torch import nn
 from citf.train import atomic_save
 from experiments import contact_event_policy as contact
 from experiments import contact_score_anchor_policy as anchor
-from experiments.candidate_response import CandidateResponseModel
 
 common = anchor.common
 training = anchor.training
@@ -37,18 +36,14 @@ class ActuationReadout(nn.Module):
             nn.Linear(3 * width + 24, width), nn.GELU(), nn.Linear(width, 2))
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
-        self.context = None
-        self.last_score = None
 
-    def forward(self, unused_global_features):
-        if self.context is None:
-            raise RuntimeError('Actuation readout requires the current candidate encodings')
-        features, difference, valid = self.context
+    def forward(self, context):
+        features, difference, valid = context
         sensitivity = self.net(features)
         # candidate[..., 6:8] is the actual normalized mixed source command.
         # Identical current forces have zero difference even when gates differ.
-        self.last_score = (sensitivity * difference * valid).sum((-2, -1))
-        return self.last_score[..., None]
+        score = (sensitivity * difference * valid).sum((-2, -1))
+        return score[..., None]
 
 
 class ActuationModel(contact.ContactEventModel):
@@ -57,13 +52,8 @@ class ActuationModel(contact.ContactEventModel):
         self.actor = ActuationReadout(cfg.width)
         # Event information enters the per-defender readout directly.
         del self.phase_embed
-        self._encoding_calls = 0
 
-    def encode_candidates(self, batch, nominal, candidates, history):
-        encoded = super().encode_candidates(batch, nominal, candidates, history)
-        self._encoding_calls += 1
-        if self._encoding_calls != 2:
-            return encoded
+    def actuation_inputs(self, batch, encoded):
         roots, count, entities, width = encoded.shape
         defenders = entities - 1
         if 'teacher_logits' in batch:
@@ -91,24 +81,12 @@ class ActuationModel(contact.ContactEventModel):
             (current - reference) / self.cfg.policy_reference_feature_scale,
             geometry, phase, commands, retained_commands, difference), -1)
         valid = batch['entity_valid'][:, None, :-1, None]
-        self.actor.context = features, difference, valid
-        return encoded
+        return features, difference, valid
 
-    def forward(self, batch, history_cache=None):
-        self._encoding_calls = 0
-        self.actor.context = None
-        self.actor.last_score = None
-        try:
-            # Reuse the same physical-response network and loss outputs, while
-            # replacing the pooled global actor and its phase embedding.
-            output = CandidateResponseModel.forward(self, batch, history_cache)
-            if 'teacher_logits' in batch:
-                logits = batch['teacher_logits'] + self.cfg.policy_logit_scale * self.actor.last_score
-                output['logits'] = logits.masked_fill(~batch['candidate_valid'], -torch.inf)
-            return output
-        finally:
-            self.actor.context = None
-            self.actor.last_score = None
+    def policy_logits(self, batch, features, baseline, encoded):
+        context = self.actuation_inputs(batch, encoded)
+        prior = batch['teacher_logits'] if 'teacher_logits' in batch else baseline
+        return prior + self.cfg.policy_logit_scale * self.actor(context).squeeze(-1)
 
 
 def initialize(project, source, config):

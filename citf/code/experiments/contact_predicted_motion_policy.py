@@ -84,11 +84,10 @@ class PredictedMotionModel(actuation.ActuationModel):
         nn.init.zeros_(self.actor.motion_net[-1].bias)
         self._motion_context = None
 
-    def encode_candidates(self, batch, nominal, candidates, history):
-        encoded = super().encode_candidates(batch, nominal, candidates, history)
-        if self.actor.context is not None:
-            self._motion_context = self.actor.context
-        return encoded
+    def actuation_inputs(self, batch, encoded):
+        context = super().actuation_inputs(batch, encoded)
+        self._motion_context = context
+        return context
 
     def forward(self, batch, history_cache=None):
         self._motion_context = None

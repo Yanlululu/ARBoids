@@ -60,7 +60,7 @@ class MacroPolicy(nn.Module):
         nn.init.zeros_(self.motion[-1].weight);nn.init.zeros_(self.motion[-1].bias)
         nn.init.zeros_(self.actor[-1].weight);nn.init.zeros_(self.actor[-1].bias)
 
-    def forward(self,batch):
+    def forward(self,batch,*,policy=True):
         feature=batch['features'];roots,count,entities,_=feature.shape
         value=self.embedding(feature).reshape(roots*count,entities,self.cfg.width)
         relative=batch['relative'].reshape(roots*count,entities,entities,5)
@@ -68,6 +68,8 @@ class MacroPolicy(nn.Module):
         value=value.reshape(roots,count,entities,self.cfg.width)
         residual=.5*self.motion(value).tanh().reshape(roots,count,entities,self.cfg.short_horizon,2)
         position=batch['base_position']+residual
+        if not policy:
+            return dict(position=position)
         geometric=short_geometry(position,batch['time_valid'])
         pooled=torch.cat((value[:,:,:-1].mean(2),value[:,:,:-1].amax(2),value[:,:,-1],
             geometric,geometric-geometric[:,:1]),-1)

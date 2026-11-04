@@ -69,13 +69,11 @@ class ContactEventModel(CandidateResponseModel):
         correction = self.capture_interaction(flat, valid, edge) - flat
         return (flat + self.capture_strength.tanh() * correction).reshape(b, c, e, d)
 
-    def forward(self, batch, history_cache=None):
-        out = super().forward(batch, history_cache)
+    def policy_logits(self, batch, features, baseline, encoded):
         if 'teacher_logits' in batch:
-            feature = out['features'] + self.phase_embed(batch['event_features'])[:, None]
-            logits = batch['teacher_logits'] + self.cfg.policy_logit_scale * self.actor(feature).squeeze(-1)
-            out['logits'] = logits.masked_fill(~batch['candidate_valid'], -torch.inf)
-        return out
+            features = features + self.phase_embed(batch['event_features'])[:, None]
+            return batch['teacher_logits'] + self.cfg.policy_logit_scale * self.actor(features).squeeze(-1)
+        return super().policy_logits(batch, features, baseline, encoded)
 
 
 def contact_objective(output, batch, cfg):

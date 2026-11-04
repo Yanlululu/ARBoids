@@ -121,8 +121,8 @@ class InteractionDynamics(nn.Module):
             value = layer(value, relative, self.cfg.context)
         return value
 
-    def forward(self, history, defender_command, remaining, attacker_noise=None):
-        encoded = self.encode(history, remaining)
+    def forward(self, history, defender_command, remaining, attacker_noise=None, *, history_cache=None):
+        encoded = self.encode(history, remaining) if history_cache is None else history_cache
         raw = self.attacker(encoded[:, -1])
         attacker_mean = 750 + 2250 * raw[:, :2].tanh()
         attacker_log_std = (-1.5 + raw[:, 2:]).clamp(-4, .4)
@@ -171,28 +171,30 @@ class Trajectories:
         validate_task_banks((role, self.bank))
         self.protocol = Protocol(**self.bank['protocol'])
         self.data_identity = canonical_hash(dict(contract=self.collection_contract, episodes=self.rows))
-        loaded = [np.load(directory/'episodes'/row['episode']) for row in self.rows]
-        lengths = np.asarray([len(x['command']) for x in loaded], np.int64)
-        entities, longest = loaded[0]['state'].shape[1], int(lengths.max())
-        states = np.empty((len(loaded), longest+1, entities, 6), np.float32)
-        commands = np.zeros((len(loaded), longest, entities-1, 2), np.float32)
-        attacker = np.zeros((len(loaded), longest, 2), np.float32)
-        for i, data in enumerate(loaded):
+        lengths = np.asarray([row['steps'] for row in self.rows], np.int64)
+        entities, longest = self.rows[0]['task']['defenders'] + 1, int(lengths.max())
+        states = np.empty((len(self.rows), longest+1, entities, 6), np.float32)
+        commands = np.zeros((len(self.rows), longest, entities-1, 2), np.float32)
+        attacker = np.zeros((len(self.rows), longest, 2), np.float32)
+        for i, row in enumerate(self.rows):
+            # Each compressed array is decoded once; close this episode before
+            # opening the next rather than keeping the entire collection open.
+            with np.load(directory/'episodes'/row['episode']) as archive:
+                data = {key: archive[key] for key in ('state', 'command', 'attacker_thrust_label')}
             n = lengths[i]
-            if (n != self.rows[i]['steps'] or data['state'].shape != (n+1, entities, 6)
+            if (n != row['steps'] or data['state'].shape != (n+1, entities, 6)
                     or data['command'].shape != (n, entities-1, 2)
                     or data['attacker_thrust_label'].shape != (n, 2)
-                    or entities != self.rows[i]['task']['defenders'] + 1):
+                    or entities != row['task']['defenders'] + 1):
                 raise ValueError('Trajectory payload dimensions differ from its committed metadata')
             if any(not np.isfinite(data[key]).all() for key in ('state', 'command', 'attacker_thrust_label')):
                 raise ValueError('Nonfinite observed trajectory')
             states[i, :n+1] = data['state']; states[i, n+1:] = data['state'][-1]
             commands[i, :n] = data['command']; attacker[i, :n] = data['attacker_thrust_label']
-            data.close()
-        self.state = torch.tensor(states, device=device)
-        self.command = torch.tensor(commands, device=device)
-        self.attacker = torch.tensor(attacker, device=device)
-        self.lengths = torch.tensor(lengths, device=device)
+        self.state = torch.from_numpy(states).to(device)
+        self.command = torch.from_numpy(commands).to(device)
+        self.attacker = torch.from_numpy(attacker).to(device)
+        self.lengths = torch.from_numpy(lengths).to(device)
         self.roots = torch.tensor([(i,t) for i,n in enumerate(lengths) for t in range(n)], device=device)
         self.report, self.device = report, device
 

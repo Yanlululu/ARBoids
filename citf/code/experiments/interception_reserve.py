@@ -15,7 +15,7 @@ import torch
 
 from citf.physics import forecast
 from citf.search import whole_configuration_search
-from experiments.batched_feedback import integrate,source_observations,source_actions,attacker_thrust
+from experiments.batched_feedback import source_observations,source_actions
 from experiments.continuous_interception import InterceptionController
 from experiments.interaction_dynamics import load as load_dynamics
 from experiments.root_response_diagnostic import physical_bank
@@ -98,24 +98,9 @@ class InterceptionReserveController(InterceptionController):
 
     @torch.no_grad()
     def rollout(self,world,factor,plans):
-        device=self.source.device;plans=torch.as_tensor(plans,dtype=torch.long,device=device)
-        count=len(plans);raw=np.stack(world.history)
-        length=self.model.cfg.history if self.model is not None else 8
-        raw=np.concatenate((np.repeat(raw[:1],max(0,length-len(raw)),0),raw),0)[-length:]
-        history=torch.as_tensor(raw,dtype=torch.float32,device=device)[None].expand(count,-1,-1,-1).clone()
-        state=history[:,-1];legacy=state[...,3:5];paths=[];sigmas=[]
-        remaining=torch.full((count,),world.protocol.time_limit-world.env.Current_T,device=device)
-        for tick in range(world.protocol.known_steps(world.env.Current_T)):
-            force=self.forces(state,legacy,factor,plans,tick)
-            if self.model is not None:
-                prediction=self.model(history,force,(remaining-.2*tick).clamp_min(0))
-                state,legacy=prediction['state'],prediction['legacy_velocity']
-                sigmas.append(prediction['attacker_log_std'].exp().mean(-1)*2500)
-            else:
-                command=torch.cat((force,attacker_thrust(state,2.25)[:,None]),1)
-                state,legacy=integrate(state,command)
-            paths.append(state[...,:2]);history=torch.cat((history[:,1:],state[:,None]),1)
-        return torch.stack(paths,2),(torch.stack(sigmas,1).mean(-1) if sigmas else None)
+        def forces(state,legacy,selected,tick):
+            return self.forces(state,legacy,factor,selected,tick)
+        return self._rollout(world,plans,forces)
 
     def proposals(self,world,factor,physical_plans,physical_values,reference,center):
         plans=[]

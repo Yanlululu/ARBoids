@@ -31,9 +31,24 @@ class InterceptionController(Controller):
     @torch.no_grad()
     def rollout(self, world, factor, plans):
         plans = torch.as_tensor(plans, dtype=torch.long)
-        count, defenders = plans.shape
+        defenders = plans.shape[1]
         device = self.source.device
         gates = factor['grid'][torch.arange(defenders)[None], plans].to(device)
+        def forces(state, legacy, plans, tick):
+            if tick == 0:
+                learned, boids = factor['learned'].to(device)[None], factor['rules'].to(device)[None]
+            else:
+                observations, boids = source_observations(state, legacy)
+                learned = source_actions(self.source.net, observations)
+            return 750*(gates*learned+(1-gates)*boids)+250
+        return self._rollout(world, plans, forces)
+
+    @torch.no_grad()
+    def _rollout(self, world, plans, forces):
+        """Shared feedback rollout; the caller supplies the executed control rule."""
+        device = self.source.device
+        plans = torch.as_tensor(plans, dtype=torch.long, device=device)
+        count = len(plans)
         raw = np.stack(world.history)
         length = self.model.cfg.history if self.model is not None else 8
         raw = np.concatenate((np.repeat(raw[:1], max(0, length-len(raw)), 0), raw), 0)[-length:]
@@ -41,15 +56,16 @@ class InterceptionController(Controller):
         remaining = torch.full((count,), world.protocol.time_limit-world.env.Current_T, device=device)
         paths, uncertainties = [], []
         state = history[:, -1]
+        legacy = state[..., 3:5]
+        # All candidates start from the same observed history. Later histories
+        # diverge and must be encoded separately; this cache lives for one call.
+        history_cache = (self.model.encode(history[:1], remaining[:1]).expand(count, -1, -1)
+                         if self.model is not None else None)
         for tick in range(world.protocol.known_steps(world.env.Current_T)):
-            if tick == 0:
-                learned, boids = factor['learned'].to(device)[None], factor['rules'].to(device)[None]
-            else:
-                observations, boids = source_observations(state, legacy)
-                learned = source_actions(self.source.net, observations)
-            force = 750*(gates*learned+(1-gates)*boids)+250
+            force = forces(state, legacy, plans, tick)
             if self.model is not None:
-                prediction = self.model(history, force, (remaining-.2*tick).clamp_min(0))
+                prediction = self.model(history, force, (remaining-.2*tick).clamp_min(0),
+                                        history_cache=history_cache if tick == 0 else None)
                 state, legacy = prediction['state'], prediction['legacy_velocity']
                 uncertainties.append(prediction['attacker_log_std'].exp().mean(-1)*2500)
             else:

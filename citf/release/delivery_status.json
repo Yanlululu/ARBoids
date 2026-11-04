@@ -3133,7 +3133,7 @@
       "scope": "fixed-source algorithm development; no frozen formal results",
       "source_request": "root-cause algorithm redesign plus latest continue; no renewed ten-hour period inferred",
       "original_deadline_utc": "2026-11-04T01:32:37+00:00",
-      "updated_utc": "2026-11-04T21:54:03.951887+00:00",
+      "updated_utc": "2026-11-04T22:22:15.063315+00:00",
       "local_results": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\remote-10h-20261102\\runs\\root_cause_20261103",
       "remote_results": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103",
       "complete_fresh_selected": {
@@ -3492,7 +3492,7 @@
         "radial_only_failure": 2,
         "capped_capture_time": 25.21562499999998
       },
-      "research_status": "Main two-source control v3 in full independent256 evaluation; v1/v2 exploratory runs closed as incomplete/adverse. Paired8future training labels collecting. No new reliable task gain yet.",
+      "research_status": "Full geometric fusion controller rejected:149/256 learned,161/256 nominal,matchedteacher228. Complete-task joint fusion policy data collecting; no new learned gain established.",
       "pending_experiments": "Finish actuation fixed768; evaluate finite paired-preference update on the same original training and validation schedule, then decide informative repeats or controls. Formal scope remains pending.",
       "synchronization": {
         "completed_directories": [
@@ -12874,7 +12874,7 @@
       },
       "current_research_direction": {
         "updated_utc": "2026-11-04T21:06:28.461695+00:00",
-        "latest_stage": "joint interception/reserve within original SAC-Boids fusion v3; full256 evaluation",
+        "latest_stage": "complete-task-trained continuous joint fusion option policy: full128layout common8future data collecting",
         "primary_objective": "substantial repeatable complete common-task net improvement",
         "previous_route": "contact-only correction loss variants closed; projection 713/768 versus teacher 717",
         "next": "learn observable interaction dynamics; continuously replan joint current fusion choices from approach; separate 128-layout selection",
@@ -23532,7 +23532,53 @@
               "pid": 255583,
               "started_utc": "2026-11-04T21:38:28.584345+00:00"
             }
-          ]
+          ],
+          "complete_comparisons": {
+            "updated_utc": "2026-11-04T22:02:38.627041+00:00",
+            "scope": "new128layout256development bank, teacher228; complete adverse main result, not formal",
+            "results": {
+              "fusion_v3_learned": {
+                "N": 256,
+                "success": 149,
+                "capture": 144,
+                "collision": 3,
+                "radial_only_failure": 93,
+                "physical_breach": 11,
+                "timeout": 5,
+                "capped_capture_time": 44.3984375,
+                "rescues": 14,
+                "harms": 93,
+                "net_success": -79
+              },
+              "fusion_v3_nominal": {
+                "N": 256,
+                "success": 161,
+                "capture": 157,
+                "collision": 3,
+                "radial_only_failure": 83,
+                "physical_breach": 9,
+                "timeout": 4,
+                "capped_capture_time": 40.381249999999994,
+                "rescues": 17,
+                "harms": 84,
+                "net_success": -67
+              },
+              "selection_strong_physical": {
+                "N": 256,
+                "success": 229,
+                "capture": 229,
+                "collision": 9,
+                "radial_only_failure": 18,
+                "physical_breach": 0,
+                "timeout": 0,
+                "capped_capture_time": 31.01171874999999,
+                "rescues": 15,
+                "harms": 14,
+                "net_success": 1
+              }
+            },
+            "decision": "do not retain geometric full-time planner; no common768 or full ablation expansion for this failed branch"
+          }
         },
         "macro_learning_data": {
           "registered_utc": "2026-11-04T21:49:20.019397+00:00",
@@ -23581,8 +23627,77 @@
               "worker_slots": 4,
               "pid": 256248,
               "started_utc": "2026-11-04T21:49:20.019397+00:00"
+            },
+            {
+              "name": "macro_common_future_train112",
+              "kind": "complete_task_macro_preference_training_data_expansion",
+              "command": [
+                "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                "-X",
+                "utf8",
+                "-u",
+                "-m",
+                "experiments.macro_fusion_data",
+                "--project",
+                "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                "--source",
+                "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                "--teacher",
+                "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt",
+                "--dynamics",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/continuous_interception_20261105/dynamics_s9201/stage_003000.pt",
+                "--tasks",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/continuous_interception_20261105/transition_train_tasks.json",
+                "--out",
+                "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/continuous_interception_20261105/macro_common_future_train112",
+                "--workers",
+                "16",
+                "--layouts",
+                "112",
+                "--layout-offset",
+                "16",
+                "--futures",
+                "8",
+                "--root-times",
+                "4",
+                "10",
+                "16"
+              ],
+              "worker_slots": 16,
+              "pid": 256831,
+              "started_utc": "2026-11-04T22:02:38.627041+00:00"
             }
-          ]
+          ],
+          "expansion": {
+            "layouts": 112,
+            "layout_offset": 16,
+            "combined_layouts": 128,
+            "combined_maximum_roots": 384,
+            "combined_maximum_complete_branches": 9216,
+            "reason": "early pilot demonstrates both beneficial and harmful temporally meaningful choices; expand over the existing full training layout pool for learning, not validation reuse",
+            "learning_route": "continuous current-fusion option policy trained on paired complete-task preferences; keep teacher feedback as a genuine option; short-response representations enter scoring; no terminal value/outcome head",
+            "pilot_not_generalization_evidence": true
+          }
+        },
+        "macro_policy_learning": {
+          "registered_utc": "2026-11-04T22:16:46.110936+00:00",
+          "status": "implementation prepared; paired data still collecting; no training or gain yet",
+          "policy_module": "experiments.joint_macro_policy",
+          "training_module": "experiments.joint_macro_training",
+          "seed": 9301,
+          "physical_warmup_updates": 400,
+          "policy_updates": 600,
+          "declared_stage_updates": [
+            100,
+            300,
+            600
+          ],
+          "selection": "same independent128layout256tasks; success,collision,capped capture,earlier update",
+          "execution": "whole-task three-tick options: retained feedback or current joint original-source fusion/role feedback; reference greedy at initialization",
+          "objective": "finite full-bank policy projection from observed eight-future complete returns, temperature0.5; actual short physical labels; no return predictor",
+          "information": "fixed current observations and predicted three-step geometry directly enter candidate-wise joint-entity Transformer and final readout; no future action/RNG/agility/termination inputs",
+          "scope": "fixed-source development; fullCITF mechanism must include any retained teacher learning; no claim from module-only ablation",
+          "retention": "complete common-task net gain and necessary repeats; do not continue hand-geometric full-time controller from failed149/256 result"
         }
       }
     }

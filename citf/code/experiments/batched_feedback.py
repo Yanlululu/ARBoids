@@ -18,28 +18,12 @@ from torch import Tensor
 
 from citf.bridge import Controller, factorize
 from citf.contracts import canonical_hash, file_hash
+from citf.physics import step
 from citf.search import initialize_bank, nominal_beam, whole_configuration_search
 
 
 def integrate(state: Tensor, thrust: Tensor) -> Tuple[Tensor, Tensor]:
-    position, yaw, velocity = state[..., :2], state[..., 2], state[..., 3:6]
-    legacy_velocity = velocity[..., :2]
-    for _ in range(4):
-        # The source feedback observations use velocity from just before the
-        # last acceleration update. Retain it alongside updated measured state.
-        legacy_velocity = velocity[..., :2]
-        position = position + .05 * velocity[..., :2]
-        yaw = torch.remainder(yaw + .05 * velocity[..., 2], 2 * math.pi)
-        c, s = yaw.cos(), yaw.sin()
-        u = c * velocity[..., 0] + s * velocity[..., 1]
-        v = -s * velocity[..., 0] + c * velocity[..., 1]
-        r = velocity[..., 2]
-        du = (400 * r * v - (100 + 150 * u.abs()) * u + thrust.sum(-1)) / 380
-        dv = (-380 * r * u - (100 + 150 * v.abs()) * v) / 400
-        dr = (-20 * u * v - (980 + 950 * r.abs()) * r + 1.25 * (thrust[..., 0] - thrust[..., 1])) / 1430
-        u, v, r = u + .05 * du, v + .05 * dv, r + .05 * dr
-        velocity = torch.stack((c * u - s * v, s * u + c * v, r), -1)
-    return torch.cat((position, yaw[..., None], velocity), -1), legacy_velocity
+    return step(state, thrust, return_legacy_velocity=True)
 
 
 def polar(vector: Tensor, yaw: Tensor) -> Tensor:

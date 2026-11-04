@@ -16,6 +16,7 @@ import torch
 from torch.nn import functional as F
 
 from citf.bridge import Source
+from citf.train import atomic_save as save
 from experiments.interaction_dynamics import load as load_dynamics
 from experiments.interception_fusion import InterceptionFusionController
 from experiments.interaction_trajectories import atomic_json
@@ -81,7 +82,7 @@ def collate(examples,device):
 
 
 def objective(model,batch,labels,policy=True):
-    output=model(batch);roots=torch.arange(len(labels['queries']),device=output['logits'].device)[:,None]
+    output=model(batch,policy=policy);roots=torch.arange(len(labels['queries']),device=output['position'].device)[:,None]
     predicted=output['position'][roots,labels['queries']]
     error=(predicted[:,:,None]-labels['position'])/.25
     mask=labels['valid'][:,:,:,None,:,None]
@@ -96,11 +97,6 @@ def objective(model,batch,labels,policy=True):
     else:
         projection=physical.new_zeros(());loss=physical
     return loss,dict(policy_projection=float(projection.detach()),short_motion=float(physical.detach()))
-
-
-def save(value,path):
-    path=Path(path);temporary=path.with_suffix(path.suffix+'.pending')
-    torch.save(value,temporary);temporary.replace(path)
 
 
 def main():

@@ -169,6 +169,10 @@ class CandidateResponseModel(nn.Module):
                 z = layer(z, valid, edge)
         return z.reshape(roots, count, entities, -1)
 
+    def policy_logits(self, batch, features, baseline, encoded):
+        """One readout of the current candidate encodings and physical prior."""
+        return baseline + self.cfg.policy_logit_scale * self.actor(features).squeeze(-1)
+
     def forward(self, batch, history_cache=None):
         cfg = self.cfg
         nominal = batch['nominal']; roots, candidates, entities, horizon = nominal.shape[:4]
@@ -231,7 +235,7 @@ class CandidateResponseModel(nn.Module):
         elif cfg.policy_prior_mode != 'signed_physical':
             raise ValueError('Unknown fixed-reference policy prior')
         baseline = -torch.asinh(physical_difference / cfg.policy_prior_scale)
-        logits = baseline + cfg.policy_logit_scale * self.actor(action_features).squeeze(-1)
+        logits = self.policy_logits(batch, action_features, baseline, z)
         return dict(xy=paths, geometry=geometry, physical=physical.masked_fill(~batch['candidate_valid'], torch.inf),
                     physical_reference=physical_reference, score=corrected.masked_fill(~batch['candidate_valid'], torch.inf),
                     features=action_features, baseline=baseline,
