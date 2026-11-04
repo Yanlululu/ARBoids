@@ -38,7 +38,7 @@
     "CITF-Phys": {
       "role": "author_constructed_control",
       "display_name": "CITF-Phys",
-      "execution": "current Controller(model=None); held-thrust nominal forecast and matched candidate initialization/search",
+      "execution": "reference stopped-distance Controller(model=None); held-thrust nominal forecast and matched candidate initialization/search",
       "legacy_engineering_alias": "CI-physical",
       "not_equivalent_to": "CI-original",
       "reuse_formal_scores": "only if complete runtime, data and effective protocol hashes match; archived CI-original never substituted"
@@ -63,11 +63,11 @@
     },
     "CITF-GRU": {
       "role": "author_constructed_control",
-      "definition": "matched GRU predictor in the current control pipeline"
+      "definition": "matched GRU predictor in the reference stopped-distance control pipeline"
     },
     "CITF-Perceiver": {
       "role": "author_constructed_control",
-      "definition": "matched action-conditioned Perceiver predictor in the current control pipeline"
+      "definition": "matched action-conditioned Perceiver predictor in the reference stopped-distance control pipeline"
     },
     "CITF-physical-feedback": {
       "role": "author_constructed_control",
@@ -75,5 +75,6 @@
     }
   },
   "public_prior_status_rule": "If a public CI paper/preprint/report is later supplied, audit overlap and update citations and contribution attribution before submission; do not conceal it.",
-  "no_new_empirical_results": true
+  "no_new_empirical_results": true,
+  "registry_scope": "Existing method identities and historical results retain these definitions; register revised controls for the selected research method. Current research authority is in AGENTS.md and CODEX_TASK.md."
 }

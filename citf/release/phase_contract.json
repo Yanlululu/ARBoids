@@ -1,8 +1,8 @@
 {
-  "P0": "source and contract audit",
-  "P1": "bounded end-to-end verification",
-  "P2": "complete missing execution modules",
-  "P3": "development and fixed recipe",
+  "P0": "source and task definitions as needed",
+  "P1": "targeted execution review under current user instructions",
+  "P2": "implementation support as required by experiments",
+  "P3": "gain-driven algorithm development and recipe selection",
   "P4": "five independent full trainings and final freeze",
   "P5": "main evidence",
   "P6": "system evaluation",

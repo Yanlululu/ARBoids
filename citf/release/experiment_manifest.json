@@ -1,7 +1,9 @@
 {
   "method": "CITF",
   "revision": "CITF-execution-closed-v3",
-  "scientific_status": "independent method manuscript and explicit execution specification; formal empirical results pending",
+  "specification_role": "editable reference recipe; per-run protocol/runtime records define executed methods; update the formal matrix after method selection",
+  "research_priority": "maximize useful closed-loop improvement per development and experiment cost",
+  "scientific_status": "active P3 research; prioritize clear closed-loop gains and an effective paper method",
   "method_frozen": false,
   "primary_training_team_size": 6,
   "source_protocol": {
@@ -21,14 +23,10 @@
     "prior_scale": 0.4
   },
   "scope": {
-    "prediction": "short physical motion and stopped-interval geometry",
-    "decision": "current joint fusion configuration",
-    "forbidden": [
-      "CV",
-      "terminal-value prediction",
-      "long-horizon fusion plans",
-      "PCF-MBRL"
-    ]
+    "prediction": "reference recipe: short motion and stopped geometry; research may redesign prediction, dynamics, value, outcome and policy learning",
+    "decision": "reference recipe: joint source fusion; research may redesign sources, action space, horizon, planning and execution",
+    "forbidden": [],
+    "authorization": "2026-11-05 user authorization opens all research methods and technical routes; choose by expected task benefit and cost"
   },
   "network": {
     "variant": "candidate_graph",
@@ -98,7 +96,7 @@
       "choice": 0.05,
       "temperature": 8.0
     },
-    "selection": "validation regret + 5 * normalized risk MSE; zero-update eligible; earliest tie",
+    "selection": "complete closed-loop validation: success first, important costs and capped capture time next, earlier-stage tie; prediction metrics support diagnosis and screening; record the effective rule for each study",
     "snapshot_updates": [
       0,
       400,
@@ -300,18 +298,19 @@
     "immutable stage snapshots with resume",
     "validation-only stage evaluator",
     "frozen external-opponent branches and behavior",
-    "specified attacker terminal reward"
+    "specified attacker terminal reward",
+    "experiment dependency-matrix runner",
+    "common-reference independent selection",
+    "paired crossed bootstrap across runs and shared layout families"
   ],
   "codex_pending": [
     "source retraining adapters",
     "original baseline loaders",
     "MAPPO trainer",
-    "matrix scheduler",
-    "independent-choice experiment",
     "same-structure information diagnostic",
     "attacker SAC trainer",
     "VRX adapter",
-    "full statistics and figures"
+    "final paper result aggregation and figures"
   ],
   "sensitivity": {
     "online_risk_weight": [
@@ -327,7 +326,7 @@
       0.1
     ],
     "design": "one-factor at a time; development only; supplementary table S1",
-    "online_compatibility": "same predictor; only online risk_weight permitted; complete runtime identity freezes actual value",
+    "online_compatibility": "reference stopped-distance predictor supports its implemented risk_weight sweep; redesigned models declare their actual loading and runtime compatibility",
     "training_weights_must_reach_loss": true
   },
   "matched_architecture_widths": {
@@ -343,10 +342,10 @@
     "perceiver": 150282
   },
   "phases": {
-    "P0": "source and contract audit",
-    "P1": "bounded end-to-end verification",
-    "P2": "complete missing execution modules",
-    "P3": "development and fixed recipe",
+    "P0": "source and task definitions as needed",
+    "P1": "targeted execution review under current user instructions",
+    "P2": "implementation support as required by experiments",
+    "P3": "gain-driven algorithm development and recipe selection",
     "P4": "five independent full trainings and final freeze",
     "P5": "main evidence",
     "P6": "system evaluation",
@@ -381,5 +380,5 @@
       "results_relabel_allowed": false
     }
   ],
-  "unimplemented_modules_role_note": "Original CI adapter is an internal regression utility; external baselines and author controls retain separate role labels."
+  "unimplemented_modules_role_note": "Module plans are reference responsibilities; reuse implemented code and fill dependencies as needed. Current module status is described in the module specification and actual artifacts."
 }
