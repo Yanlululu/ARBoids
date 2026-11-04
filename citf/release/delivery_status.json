@@ -3133,7 +3133,7 @@
       "scope": "fixed-source algorithm development; no frozen formal results",
       "source_request": "root-cause algorithm redesign plus latest continue; no renewed ten-hour period inferred",
       "original_deadline_utc": "2026-11-04T01:32:37+00:00",
-      "updated_utc": "2026-11-04T17:52:32.010904+00:00",
+      "updated_utc": "2026-11-04T18:42:30.229026+00:00",
       "local_results": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\remote-10h-20261102\\runs\\root_cause_20261103",
       "remote_results": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103",
       "complete_fresh_selected": {
@@ -12831,15 +12831,19 @@
         }
       },
       "current_research_direction": {
-        "updated_utc": "2026-11-04T17:41:37.974214+00:00",
+        "updated_utc": "2026-11-04T18:05:48.510266+00:00",
         "objective": "stable net task success gain, with collision and other costs; some harmed old successes are allowed if complete matched net performance improves",
         "main_route": "full joint candidate domain, controlled initial exploration mass, common-future current-action comparisons, task-relevant interaction representation and joint selection learning",
         "diagnostics": "pair-only and fewer-correction studies are discriminating controls, not the final action restriction or innovation claim",
-        "mechanism_criterion": "cross-repetition performance beyond previous best and matched candidate-context-removed controller; reduced action changes alone are insufficient",
+        "mechanism_criterion": "meaningful repeated closed-loop task gains with matched evidence for the claimed mechanism; not zero harms,not every seed winning,not mandatory improvement over historical development peak722",
         "limit": "posthoc removal can identify harmful actions retrospectively but does not prove current observations predict beneficial or harmful choices",
         "latest_correction": "Separate action sampling distribution and deployment scoring; common-future credit remains a hypothesis; response-supervision contribution requires matched ordinary-prediction pretraining under same task-policy flow",
         "latest_stage": "direct leading-candidate tournament from current-only ranking; complete replay controls retained",
-        "candidate_coverage": "registered explicit leading and exploratory alternatives,1920episodes; no historical task replay in primary recipe"
+        "candidate_coverage": "registered explicit leading and exploratory alternatives,1920episodes; no historical task replay in primary recipe",
+        "latest_user_instruction": "complete current three-candidate tournament and matching controls,then revise algorithm from complete results; do not only increase training volume",
+        "development_evaluation_scope": "subsequent temporary versions start with main-method evaluation; if clearly regressed,add only controls that can change the next decision; no default full768ablation matrix for every branch",
+        "teacher_role": "717/768is an internal frozen learned joint controller,not a public baseline; current context-removal control identifies only the added correction module;if retained finally,describe and count complete teacher training",
+        "final_deliverables": "complete CITF,public baselines,independent repetitions,core learning ablations,compact mechanism comparisons,original generalization/learned opponent/VRX,code/models/figures/paper; internal redesign adds no delivery obligation"
       },
       "full_bank_common_future_policy_iteration": {
         "registered_utc": "2026-11-04T14:08:30.437359+00:00",
@@ -19176,6 +19180,139 @@
               ]
             }
           }
+        },
+        "observed_pair_vs_deployment_diagnostic": {
+          "updated_utc": "2026-11-04T18:07:52.274629+00:00",
+          "scope": "selected policy on recorded training roots,using their historical continuation returns; unobserved deployment candidates have no outcome labels here,so outside-support selection is not itself an error or harm label; no held-out or causal improvement claim",
+          "methods": {
+            "contact_rank_replay_s9101": {
+              "selected_update": 80,
+              "comparison_pool_update": 80,
+              "counts": {
+                "all": {
+                  "roots": 273,
+                  "deployment_unobserved_alternative": 131,
+                  "changed_from_collection_choice": 98,
+                  "deployment_teacher": 113,
+                  "observed_pair_correct": 38,
+                  "deployment_observed_alternative": 29,
+                  "pair_correct_but_deployment_unobserved": 13,
+                  "pair_correct_and_observed_winner_selected": 25
+                },
+                "small_or_tied": {
+                  "roots": 228,
+                  "deployment_unobserved_alternative": 114,
+                  "changed_from_collection_choice": 74,
+                  "deployment_teacher": 95,
+                  "deployment_observed_alternative": 19
+                },
+                "positive": {
+                  "roots": 23,
+                  "deployment_teacher": 3,
+                  "changed_from_collection_choice": 12,
+                  "observed_pair_correct": 17,
+                  "deployment_observed_alternative": 10,
+                  "pair_correct_but_deployment_unobserved": 7,
+                  "pair_correct_and_observed_winner_selected": 10,
+                  "deployment_unobserved_alternative": 10
+                },
+                "negative": {
+                  "roots": 22,
+                  "deployment_unobserved_alternative": 7,
+                  "changed_from_collection_choice": 12,
+                  "observed_pair_correct": 21,
+                  "pair_correct_but_deployment_unobserved": 6,
+                  "pair_correct_and_observed_winner_selected": 15,
+                  "deployment_teacher": 15
+                }
+              }
+            },
+            "contact_rank_replay_no_context_s9101": {
+              "selected_update": 40,
+              "comparison_pool_update": 80,
+              "counts": {
+                "all": {
+                  "roots": 274,
+                  "deployment_unobserved_alternative": 149,
+                  "changed_from_collection_choice": 99,
+                  "deployment_teacher": 100,
+                  "observed_pair_correct": 20,
+                  "pair_correct_but_deployment_unobserved": 13,
+                  "pair_correct_and_observed_winner_selected": 7,
+                  "deployment_observed_alternative": 25
+                },
+                "small_or_tied": {
+                  "roots": 231,
+                  "deployment_unobserved_alternative": 118,
+                  "changed_from_collection_choice": 80,
+                  "deployment_teacher": 91,
+                  "deployment_observed_alternative": 22
+                },
+                "positive": {
+                  "roots": 20,
+                  "deployment_unobserved_alternative": 14,
+                  "changed_from_collection_choice": 9,
+                  "observed_pair_correct": 10,
+                  "pair_correct_but_deployment_unobserved": 8,
+                  "pair_correct_and_observed_winner_selected": 2,
+                  "deployment_teacher": 4,
+                  "deployment_observed_alternative": 2
+                },
+                "negative": {
+                  "roots": 23,
+                  "deployment_unobserved_alternative": 17,
+                  "changed_from_collection_choice": 10,
+                  "observed_pair_correct": 10,
+                  "pair_correct_but_deployment_unobserved": 5,
+                  "pair_correct_and_observed_winner_selected": 5,
+                  "deployment_teacher": 5,
+                  "deployment_observed_alternative": 1
+                }
+              }
+            },
+            "contact_rank_replay_ordinary_s9101": {
+              "selected_update": 80,
+              "comparison_pool_update": 80,
+              "counts": {
+                "all": {
+                  "roots": 275,
+                  "deployment_teacher": 167,
+                  "changed_from_collection_choice": 112,
+                  "observed_pair_correct": 35,
+                  "deployment_unobserved_alternative": 92,
+                  "pair_correct_but_deployment_unobserved": 16,
+                  "pair_correct_and_observed_winner_selected": 19,
+                  "deployment_observed_alternative": 16
+                },
+                "small_or_tied": {
+                  "roots": 234,
+                  "deployment_teacher": 146,
+                  "changed_from_collection_choice": 88,
+                  "deployment_unobserved_alternative": 75,
+                  "deployment_observed_alternative": 13
+                },
+                "positive": {
+                  "roots": 21,
+                  "deployment_teacher": 5,
+                  "changed_from_collection_choice": 13,
+                  "observed_pair_correct": 15,
+                  "deployment_unobserved_alternative": 13,
+                  "pair_correct_but_deployment_unobserved": 12,
+                  "pair_correct_and_observed_winner_selected": 3,
+                  "deployment_observed_alternative": 3
+                },
+                "negative": {
+                  "roots": 20,
+                  "deployment_teacher": 16,
+                  "changed_from_collection_choice": 11,
+                  "observed_pair_correct": 20,
+                  "pair_correct_but_deployment_unobserved": 4,
+                  "pair_correct_and_observed_winner_selected": 16,
+                  "deployment_unobserved_alternative": 4
+                }
+              }
+            }
+          }
         }
       },
       "tournament_policy_iteration": {
@@ -19244,11 +19381,157 @@
               ],
               "worker_slots": 8,
               "effective_cpu_slots": 7,
-              "status": "running",
+              "status": "completed",
               "pid": 238024,
-              "started_utc": "2026-11-04T17:41:39.070047+00:00"
+              "started_utc": "2026-11-04T17:41:39.070047+00:00",
+              "selected_update": 60,
+              "complete_training_status": {
+                "completed": true,
+                "update": 80,
+                "total_updates": 80,
+                "training_episodes": 1920,
+                "environment_steps": 245644,
+                "event_roots": 274,
+                "best": {
+                  "update": 60,
+                  "selection_key": [
+                    56,
+                    -2,
+                    -31.434374999999992
+                  ],
+                  "success": 56,
+                  "collision": 2,
+                  "N": 64
+                },
+                "task_replay_roots": 0,
+                "updated_utc": "2026-11-04T18:22:18.076166+00:00"
+              }
             },
-            "endpoint_queue": []
+            "endpoint_queue": [
+              {
+                "name": "fresh_contact_tournament_s9101",
+                "tag": "contact_tournament_s9101",
+                "bank": "fresh",
+                "training": "contact_tournament_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_s9101/stage_000060.pt",
+                "selected_update": 60,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/development_tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_contact_tournament_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_s9101/stage_000060.pt",
+                  "--evaluator",
+                  "experiments.contact_tournament_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "4",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T22:23:09.729370+00:00"
+                ],
+                "worker_slots": 4,
+                "status": "completed",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 240565,
+                "started_utc": "2026-11-04T18:23:09.729370+00:00"
+              },
+              {
+                "name": "extended_contact_tournament_s9101",
+                "tag": "contact_tournament_s9101",
+                "bank": "extended",
+                "training": "contact_tournament_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_s9101/stage_000060.pt",
+                "selected_update": 60,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/extended/tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/extended/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/extended_contact_tournament_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_s9101/stage_000060.pt",
+                  "--evaluator",
+                  "experiments.contact_tournament_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "2",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T22:23:09.729370+00:00"
+                ],
+                "worker_slots": 2,
+                "status": "completed",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 240566,
+                "started_utc": "2026-11-04T18:23:09.729370+00:00"
+              },
+              {
+                "name": "second_contact_tournament_s9101",
+                "tag": "contact_tournament_s9101",
+                "bank": "second",
+                "training": "contact_tournament_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_s9101/stage_000060.pt",
+                "selected_update": 60,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/v13_stage_selection/tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/v13_stage_selection/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/second_contact_tournament_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_s9101/stage_000060.pt",
+                  "--evaluator",
+                  "experiments.contact_tournament_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "4",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T22:23:09.729370+00:00"
+                ],
+                "worker_slots": 4,
+                "status": "completed",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 241193,
+                "started_utc": "2026-11-04T18:31:12.403406+00:00"
+              }
+            ]
           },
           {
             "tag": "no_context9101",
@@ -19306,11 +19589,157 @@
               ],
               "worker_slots": 7,
               "effective_cpu_slots": 6,
-              "status": "running",
+              "status": "completed",
               "pid": 239169,
-              "started_utc": "2026-11-04T17:51:07.588789+00:00"
+              "started_utc": "2026-11-04T17:51:07.588789+00:00",
+              "selected_update": 50,
+              "complete_training_status": {
+                "completed": true,
+                "update": 80,
+                "total_updates": 80,
+                "training_episodes": 1920,
+                "environment_steps": 244685,
+                "event_roots": 273,
+                "best": {
+                  "update": 50,
+                  "selection_key": [
+                    56,
+                    -3,
+                    -31.056249999999984
+                  ],
+                  "success": 56,
+                  "collision": 3,
+                  "N": 64
+                },
+                "task_replay_roots": 0,
+                "updated_utc": "2026-11-04T18:35:56.298746+00:00"
+              }
             },
-            "endpoint_queue": []
+            "endpoint_queue": [
+              {
+                "name": "fresh_contact_tournament_no_context_s9101",
+                "tag": "contact_tournament_no_context_s9101",
+                "bank": "fresh",
+                "training": "contact_tournament_no_context_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_no_context_s9101/stage_000050.pt",
+                "selected_update": 50,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/development_tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_contact_tournament_no_context_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_no_context_s9101/stage_000050.pt",
+                  "--evaluator",
+                  "experiments.contact_tournament_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "4",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T22:36:30.177398+00:00"
+                ],
+                "worker_slots": 4,
+                "status": "running",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 241821,
+                "started_utc": "2026-11-04T18:36:30.177398+00:00"
+              },
+              {
+                "name": "extended_contact_tournament_no_context_s9101",
+                "tag": "contact_tournament_no_context_s9101",
+                "bank": "extended",
+                "training": "contact_tournament_no_context_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_no_context_s9101/stage_000050.pt",
+                "selected_update": 50,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/extended/tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/extended/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/extended_contact_tournament_no_context_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_no_context_s9101/stage_000050.pt",
+                  "--evaluator",
+                  "experiments.contact_tournament_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "4",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T22:36:30.177398+00:00"
+                ],
+                "worker_slots": 4,
+                "status": "running",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 242349,
+                "started_utc": "2026-11-04T18:39:47.073088+00:00"
+              },
+              {
+                "name": "second_contact_tournament_no_context_s9101",
+                "tag": "contact_tournament_no_context_s9101",
+                "bank": "second",
+                "training": "contact_tournament_no_context_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_no_context_s9101/stage_000050.pt",
+                "selected_update": 50,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/v13_stage_selection/tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/v13_stage_selection/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/second_contact_tournament_no_context_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_no_context_s9101/stage_000050.pt",
+                  "--evaluator",
+                  "experiments.contact_tournament_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "4",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T22:36:30.177398+00:00"
+                ],
+                "worker_slots": 4,
+                "status": "running",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 242350,
+                "started_utc": "2026-11-04T18:39:47.073088+00:00"
+              }
+            ]
           },
           {
             "tag": "ordinary9101",
@@ -19368,15 +19797,254 @@
               ],
               "worker_slots": 8,
               "effective_cpu_slots": 7,
-              "status": "running",
+              "status": "completed",
               "pid": 239170,
-              "started_utc": "2026-11-04T17:51:07.588789+00:00"
+              "started_utc": "2026-11-04T17:51:07.588789+00:00",
+              "selected_update": 50,
+              "complete_training_status": {
+                "completed": true,
+                "update": 80,
+                "total_updates": 80,
+                "training_episodes": 1920,
+                "environment_steps": 243362,
+                "event_roots": 274,
+                "best": {
+                  "update": 50,
+                  "selection_key": [
+                    56,
+                    -3,
+                    -30.718749999999982
+                  ],
+                  "success": 56,
+                  "collision": 3,
+                  "N": 64
+                },
+                "task_replay_roots": 0,
+                "updated_utc": "2026-11-04T18:31:12.743012+00:00"
+              }
             },
-            "endpoint_queue": []
+            "endpoint_queue": [
+              {
+                "name": "fresh_contact_tournament_ordinary_s9101",
+                "tag": "contact_tournament_ordinary_s9101",
+                "bank": "fresh",
+                "training": "contact_tournament_ordinary_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_ordinary_s9101/stage_000050.pt",
+                "selected_update": 50,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/development_tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fresh_contact_tournament_ordinary_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_ordinary_s9101/stage_000050.pt",
+                  "--evaluator",
+                  "experiments.contact_tournament_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "4",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T22:33:19.397980+00:00"
+                ],
+                "worker_slots": 4,
+                "status": "running",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 241362,
+                "started_utc": "2026-11-04T18:33:19.397980+00:00"
+              },
+              {
+                "name": "extended_contact_tournament_ordinary_s9101",
+                "tag": "contact_tournament_ordinary_s9101",
+                "bank": "extended",
+                "training": "contact_tournament_ordinary_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_ordinary_s9101/stage_000050.pt",
+                "selected_update": 50,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/extended/tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/extended/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/extended_contact_tournament_ordinary_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_ordinary_s9101/stage_000050.pt",
+                  "--evaluator",
+                  "experiments.contact_tournament_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "4",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T22:33:19.397980+00:00"
+                ],
+                "worker_slots": 4,
+                "status": "running",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect",
+                "pid": 241363,
+                "started_utc": "2026-11-04T18:33:19.397980+00:00"
+              },
+              {
+                "name": "second_contact_tournament_ordinary_s9101",
+                "tag": "contact_tournament_ordinary_s9101",
+                "bank": "second",
+                "training": "contact_tournament_ordinary_s9101",
+                "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_ordinary_s9101/stage_000050.pt",
+                "selected_update": 50,
+                "command": [
+                  "/root/autodl-tmp/ARBoids/.venv/bin/python",
+                  "-u",
+                  "-m",
+                  "experiments.parallel_evaluate",
+                  "--project",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive",
+                  "--source",
+                  "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+                  "--tasks",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/v13_stage_selection/tasks.json",
+                  "--registry",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/v13_stage_selection/layout_registry.json",
+                  "--out",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/second_contact_tournament_ordinary_s9101",
+                  "--checkpoint",
+                  "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/contact_tournament_ordinary_s9101/stage_000050.pt",
+                  "--evaluator",
+                  "experiments.contact_tournament_policy",
+                  "--risk-weight",
+                  "64",
+                  "--workers",
+                  "4",
+                  "--shard-size",
+                  "4",
+                  "--deadline",
+                  "2026-11-04T22:33:19.397980+00:00"
+                ],
+                "worker_slots": 4,
+                "status": "pending",
+                "selection": "all80updates completed,original64validationbest; fixed common768 endpoint cannot reselect"
+              }
+            ]
           }
         ],
         "status": "registered",
-        "launch_enabled": true
+        "launch_enabled": true,
+        "pending_evaluation_resource_schedule": {
+          "updated_utc": "2026-11-04T18:26:01.746917+00:00",
+          "workers": 4,
+          "reason": "balance pending banks within20CPU; running jobs and all model/task/selection identities unchanged"
+        },
+        "complete_comparisons": {
+          "updated_utc": "2026-11-04T18:39:48.402868+00:00",
+          "scope": "fixed source,one warm correction initialization; three actions by two futures,1920realepisodes; complete common768development; original64 selection; no formal or independent-source claim",
+          "teacher": {
+            "N": 768,
+            "success": 717,
+            "capture": 714,
+            "collision": 13,
+            "radial_only_failure": 38,
+            "physical_breach": 0,
+            "timeout": 3,
+            "capped_capture_time": 27.176822916666648
+          },
+          "complete": {
+            "contact_tournament_s9101": {
+              "all": {
+                "N": 768,
+                "success": 709,
+                "capture": 708,
+                "collision": 15,
+                "radial_only_failure": 44,
+                "physical_breach": 0,
+                "timeout": 1,
+                "capped_capture_time": 27.801302083333322
+              },
+              "by_bank": [
+                {
+                  "bank": "fresh",
+                  "N": 256,
+                  "success": 239,
+                  "capture": 239,
+                  "collision": 10,
+                  "radial_only_failure": 7,
+                  "physical_breach": 0,
+                  "timeout": 0
+                },
+                {
+                  "bank": "extended",
+                  "N": 256,
+                  "success": 235,
+                  "capture": 234,
+                  "collision": 0,
+                  "radial_only_failure": 21,
+                  "physical_breach": 0,
+                  "timeout": 1
+                },
+                {
+                  "bank": "second",
+                  "N": 256,
+                  "success": 235,
+                  "capture": 235,
+                  "collision": 5,
+                  "radial_only_failure": 16,
+                  "physical_breach": 0,
+                  "timeout": 0
+                }
+              ],
+              "vs_original_teacher": {
+                "rescues": 23,
+                "harms": 31,
+                "delta_success": -8,
+                "delta_percentage_points": -1.0416666666666665,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -2.8645833333333335,
+                  0.6510416666666666
+                ],
+                "collision_delta": 2,
+                "radial_failure_delta": 6
+              },
+              "vs_matched_current_only_ranking": {
+                "rescues": 19,
+                "harms": 31,
+                "delta_success": -12,
+                "delta_percentage_points": -1.5625,
+                "layout_count": 384,
+                "layout_cluster_bootstrap95_pp": [
+                  -3.3854166666666665,
+                  0.2604166666666667
+                ],
+                "collision_delta": 2,
+                "radial_failure_delta": 10
+              }
+            }
+          },
+          "pending": [
+            "contact_tournament_no_context_s9101",
+            "contact_tournament_ordinary_s9101"
+          ]
+        }
       }
     }
   },

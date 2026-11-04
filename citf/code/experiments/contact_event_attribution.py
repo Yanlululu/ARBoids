@@ -31,7 +31,7 @@ def initialize(project, source, checkpoint, deadline):
     model = ContactEventModel(ContactEventConfig(**value['config']))
     model.load_state_dict(value['state'])
     worker.update(project=project, source=Source(project, source), model=model.eval(),
-        teacher=retained_teacher(model.cfg.teacher_checkpoint), deadline=deadline)
+        teacher=retained_teacher(model.cfg.teacher_checkpoint, model.cfg.teacher_sha256), deadline=deadline)
 
 
 @torch.no_grad()

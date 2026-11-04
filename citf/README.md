@@ -1,18 +1,8 @@
-# 本轮复核交付入口
+# CITF研发与论文入口
 
-以`CODEX_TASK.md`执行。论文的学术措辞已整理，方法、CITF-Phys身份、实验矩阵和核心源码保持原样。本轮重新运行了68项测试与有限端到端验收，记录在`audit/current_independent_review`。
+本目录用于Candidate-Interaction Transformer Fusion（CITF）的算法研发、实验和独立论文。目标是在完整防御任务中获得稳定的闭环收益，并用匹配对照建立候选交互学习的贡献。
 
-正式数据采集前需完成`plan/CITF_短分支事件记录验收.md`所列的标签事件保存。该项尚未修改源码。正式主比较、独立训练与系统验证仍按原P0—P7规格完成。
-
-下方为输入包原说明，其“本轮”指上传版本的修订历史；当前复核范围见`本轮独立评估.md`。
-
----
-
-# CITF独立论文与Codex交付
-
-本轮以用户上一版执行定稿为基础，修正未发表CI在预投稿稿件中的身份。CITF直接作为完整多无人艇控制方法提出，候选生成、名义运动、候选条件Transformer、联合选择及训练在正文中统一定义。内部CI名称与开发历史只保留在执行审计，不列为公开已有算法。
-
-论文的公开算法比较包括ARBoids、RP、SAC、Boids和MAPPO。本文构造的物理预测替代CITF-Phys、两项学习消融与独立选择用于机制验证，仍在正文中给出明确算法定义。原CI与CITF-Phys不是同一个实现，历史结果禁止改名。
+当前处于固定源策略的算法开发阶段。正式主比较、五次独立学习、泛化、学习型对手和VRX证据仍需完成，开发结果不能替代正式结果。继续工作时，先读取完整实验方案及其1.4节交付边界，再结合`CODEX_TASK.md`末尾的阶段结论、`release/delivery_status.json`中的实际状态和源码；保留原始问题、关键假设、实验关系及决策依据。
 
 ## 文件入口
 
@@ -20,29 +10,29 @@
 |---|---|
 | `paper/CITF_中文独立论文_修订稿.pdf` | 独立叙事的完整中文稿，正式结果红色待补 |
 | `paper/CITF_中文独立论文_修订稿.md` | 可编辑正文，公式不编号 |
-| `CODEX_TASK.md` | 完整本地研发与正式验证提示词 |
+| `CODEX_TASK.md` | 原始任务、研发过程、阶段结论和后续决策 |
 | `plan/CITF_最终实验与代码实施方案.md` | 完整实验协议及执行参数 |
-| `plan/CITF_代码模块实施规格.md` | 尚待实现模块的明确接口 |
+| `plan/CITF_代码模块实施规格.md` | 模块接口与实现规格，完成情况以实际状态和源码为准 |
 | `plan/CITF_独立论文叙事与实验身份修订.md` | 本轮修改与原期刊对应 |
 | `release/method_registry.json` | 公开算法、本文对照和内部版本的身份登记 |
 | `release/experiment_manifest.json` | 更新后的单一正式实验矩阵 |
 | `release/delivery_status.json` | 实际完成与待补状态 |
 
-文稿/实验角色修订为`CITF-independent-narrative-v4`。运行核心仍为`CITF-execution-closed-v3`，网络与输入保持`CITF-stopped-direct-v2`和`citf-stopped-aware-v2`。此次没有修改控制器代码、权重或训练结果。
+## 方法与证据边界
 
-## 实验身份变化
+CITF作为完整控制方法定义，候选生成、运动预测、候选条件Transformer、联合选择与训练共同组成方法。公开算法比较包括ARBoids、RP、SAC、Boids和MAPPO；CITF-Phys及学习、选择对照按`release/method_registry.json`登记。内部CI不列为公开已有算法，旧结果不改名继承。
 
-公开算法主表移除内部CI独立条目。CITF-Phys在相同主任务中继续执行，结果移入机制表；VRX和共同攻击者训练参考采用本版明确定义的CITF-Phys，替代原CI的正式实验职责。这是未来实验角色调整，不能将旧模型结果重命名继承。
+六艇主任务、80秒协议、独立重复、核心消融和既定系统验证沿用完整方案。内部探索服务于最终方法，不自动增加交付项目。当前实验使用各自登记的运行身份，不能把输入包的`CITF-execution-closed-v3`当作所有后续开发版本的统一身份。
 
-六艇主任务、80秒协议、五次完整独立学习、两项学习消融、正式布局数量、机动性/跨艇数范围及七图证据职责保持。原始源码、旧开发记录与上一轮68项有限验收材料原样保存。正式主比较、泛化、对手学习和VRX仍待补。
+## 历史资料与文稿重建
 
-## 核对与重建
+`audit/current_independent_review`和`本轮独立评估.md`保留输入包复核时的68项测试及有限验收记录，属于历史记录。当前实现和任务进度以实际源码与状态记录为准。
+
+[ARBoids原文](review_sources/ARBoids_2026_正式期刊版_用户提供.pdf)保留在`review_sources`；[前序M1方法与证据](../docs/new-cooperative-defense-research-route.md)单独作为历史参考。旧r20核心证据保留在`../train/experiments/author-source-fusion-20261011/r20-paper-evidence`。
 
 ```bash
 python tools/check_paper_narrative.py
 python tools/build_paper.py
 ```
 
-运行代码的测试及有限真实流程仍使用原入口。上述叙事检查只核对文稿与实验身份，不代替模型训练或正式性能验证。完整研究从`CODEX_TASK.md`进入P0至P7。
-
-本轮没有向本地Codex提交任务，没有训练或评价新控制器，也没有留下后台作业。
+上述命令用于文稿核对与重建，不代表已执行训练或正式评价；是否运行检查遵循当前用户指令。

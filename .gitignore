@@ -21,6 +21,10 @@ checkpoints/
 /*.tar.gz
 /*.tgz
 
+# Historical exports outside current CITF development
+/paper/figures/interaction/tables.json
+/fromCHAT/PCF-MBRL_完整控制方法与代码实现包.zip
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,10 +1,12 @@
-# 基于候选交互的联合策略融合：方法与论文证据方案
+# 基于候选交互的联合策略融合：历史M1方法与证据
 
-当前方法只保留独立工作的第一项机制（M1）：基于候选交互的联合策略融合。复现基准是冻结的纯 M1/F10 检查点及其匹配独立选择对照。历史实验数据、源代码快照和证据包保留原始身份；当前论文与执行入口以本文和 `joint_fusion.py` 为准。
+本文保留CITF研发前的纯M1/F10方法及匹配独立选择证据，历史结果保持原始身份。现行研发与论文从[CITF入口](../citf/README.md)及其完整实验方案继续；本文和`joint_fusion.py`用于前序M1结果的说明与复现。
+
+2026-11-05清理范围：已停用CV分支在`train/experiments/author-source-fusion-20261011/joint-128-*/training-data.pth`下的16份训练采样文件移入Windows回收站，对应`policy.pth`、`current.pth`和`development.json`保留。核心证据包与当前CITF运行数据保留；这些退役分支的完整采样缓存已不在工作目录中。
 
 ## 1. 研究问题与方法贡献
 
-ARBoids通过状态相关的融合权重调节学习策略与Boids策略的参与程度，并通过队友观测及Boids特征利用群体信息。本文研究不同艇的融合候选如何共同形成有效的团队运动。[ARBoids原文](../paper/2026_ARBoids_Adaptive_Residual_Reinforcement_Learning_With_Boids_Model_for_Cooperative_Multi-USV_Target_Defense.pdf)
+ARBoids通过状态相关的融合权重调节学习策略与Boids策略的参与程度，并通过队友观测及Boids特征利用群体信息。本文研究不同艇的融合候选如何共同形成有效的团队运动。[ARBoids原文](../citf/review_sources/ARBoids_2026_正式期刊版_用户提供.pdf)
 
 **基于候选交互的联合策略融合（Joint Policy Blending Based on Candidate Interactions）。** 将源策略的局部融合建议与候选机动之间的艇对交互关系纳入统一优化，使规则策略和学习策略的融合从各艇局部选择扩展为整队联合决策。主要证据来自候选集合、源策略、预测信息一致的联合／独立选择比较。
 

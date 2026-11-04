@@ -8,6 +8,7 @@ import argparse
 import concurrent.futures
 from dataclasses import asdict, replace
 import datetime
+import hashlib
 import json
 import math
 import multiprocessing
@@ -19,7 +20,7 @@ import torch
 from torch import nn
 
 from citf.bridge import Source, World, inputs
-from citf.contracts import Protocol
+from citf.contracts import Protocol, file_hash
 from citf.train import atomic_save
 from experiments.candidate_response import (ResponseConfig, CandidateResponseModel,
     add_reference, load_response_data, response_objective)
@@ -105,6 +106,23 @@ def input_batch(items, device):
     return result
 
 
+def validated_training_config(project, source, pretrained, cfg):
+    """Check the actual rollout inputs before inheriting pretrained provenance."""
+    project = Path(project)
+    actual = dict(source_sha256=file_hash(source),
+        source_implementation_sha256=file_hash(project / 'train/policy/networks.py'),
+        environment_sha256=hashlib.sha256(
+            (project / 'train/envs/TADgame.py').read_bytes()
+            + (project / 'train/envs/modules.py').read_bytes()).hexdigest())
+    for key, fingerprint in actual.items():
+        if pretrained['protocol'].get(key) != fingerprint:
+            raise ValueError(f'Pretrained checkpoint differs from the training input: {key}')
+    if getattr(cfg, 'teacher_checkpoint', None):
+        from experiments.contact_event_policy import pin_teacher
+        cfg = pin_teacher(cfg, pretrained['protocol'])
+    return cfg
+
+
 def main():
     parser = argparse.ArgumentParser()
     for key in ['project', 'source', 'pretrained', 'train-bank', 'validation-bank', 'out', 'deadline']:
@@ -160,6 +178,7 @@ def main():
     if args.reference_prior:
         cfg = replace(cfg, revision='CITF-reference-saturated-recourse-response-v2',
                       policy_prior_mode='reference_saturated')
+    cfg = validated_training_config(args.project, args.source, value, cfg)
     model = CandidateResponseModel(cfg).to(args.device); model.load_state_dict(value['state'])
     actor_ids = {id(p) for p in model.actor.parameters()}
     optimizer = torch.optim.AdamW([dict(params=model.actor.parameters(), lr=args.lr),
@@ -183,6 +202,7 @@ def main():
         selection='complete fixed validation tasks: success then fewer collisions then capped time')
     (out / 'protocol.json').write_text(json.dumps(protocol, indent=2))
     update, episodes, total_steps, best = 0, 0, 0, None
+    validated_update = None
     def state():
         return {k: v.detach().cpu().numpy().copy() for k, v in model.state_dict().items()}
     def job(task, parameters, training, seed):
@@ -191,10 +211,13 @@ def main():
     def save(path):
         atomic_save(dict(config=asdict(cfg), state={k: v.detach().cpu() for k, v in model.state_dict().items()},
             optimizer=optimizer.state_dict(), protocol=protocol, update=update, selected=best, seed=args.seed,
+            completed=update == args.iterations and validated_update == update,
+            validated_update=validated_update,
             training_episodes=episodes, training_steps=total_steps, sampler_rng=rng.bit_generator.state,
             replay_rng=replay_rng.bit_generator.state, torch_rng=torch.get_rng_state()), path)
     def status(completed=False):
         record = dict(completed=completed, update=update, total_updates=args.iterations,
+            validated_update=validated_update,
             training_episodes=episodes, training_steps=total_steps, best=best,
             updated_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
         (out / 'status.json').write_text(json.dumps(record, indent=2))
@@ -203,7 +226,7 @@ def main():
             mp_context=multiprocessing.get_context('spawn'), initializer=initialize,
             initargs=(args.project, args.source, asdict(cfg))) as pool:
         def validate():
-            nonlocal best
+            nonlocal best, validated_update
             model.eval(); parameters = state()
             results = list(pool.map(rollout, [job(t, parameters, False, args.seed + i)
                                               for i, t in enumerate(validation['tasks'])]))
@@ -219,6 +242,7 @@ def main():
                        capped_capture_time=capped, tasks=records)
             with (out / 'validation.jsonl').open('a') as stream:
                 stream.write(json.dumps(row) + '\n')
+            validated_update = update
             if best is None or tuple(selection) > tuple(best['selection_key']):
                 best = dict(update=update, selection_key=selection, success=success, collision=collision, N=len(records))
                 save(out / 'best.pt')
@@ -289,7 +313,7 @@ def main():
             else:
                 save(out / 'last.pt')
         save(out / 'last.pt')
-    status(update == args.iterations)
+    status(update == args.iterations and validated_update == update)
 
 
 if __name__ == '__main__':

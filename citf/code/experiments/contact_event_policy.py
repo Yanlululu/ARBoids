@@ -20,7 +20,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from citf.bridge import Controller, Source, World, factorize, inputs
-from citf.contracts import Protocol
+from citf.contracts import Protocol, canonical_hash, file_hash
 from citf.model import Attention
 from citf.train import atomic_save
 from experiments import synchronized_configuration_policy as synchronized
@@ -33,6 +33,7 @@ from experiments.capture_window_diagnostic import geometry
 class ContactEventConfig(ResponseConfig):
     revision: str = 'CITF-retained-contact-event-response-v1'
     teacher_checkpoint: str = ''
+    teacher_sha256: str = ''
     event_strategy: str = 'learned'
     event_schedule: str = 'first8_first6_firstmiss_recovery2'
     response_reference: str = 'current candidate one tick then frozen teacher feedback'
@@ -99,18 +100,45 @@ def contact_objective(output, batch, cfg):
     return result
 
 
-def retained_teacher(path):
+def teacher_fingerprint(path, expected=''):
+    fingerprint = file_hash(path)
+    if expected and fingerprint != expected:
+        raise ValueError('Frozen contact teacher checkpoint has changed')
+    return fingerprint
+
+
+def pin_teacher(cfg, protocol):
+    """New artifacts pin teacher contents; legacy artifacts keep their history."""
+    fingerprint = teacher_fingerprint(cfg.teacher_checkpoint, cfg.teacher_sha256)
+    teacher = torch.load(cfg.teacher_checkpoint, map_location='cpu', weights_only=False)
+    for key in ('source_sha256', 'source_implementation_sha256', 'environment_sha256'):
+        if not protocol.get(key) or teacher['protocol'].get(key) != protocol[key]:
+            raise ValueError(f'Contact teacher and student differ: {key}')
+    return replace(cfg, teacher_sha256=fingerprint)
+
+
+def retained_teacher(path, expected_sha256=''):
     synchronized.install_semantics()
+    fingerprint = teacher_fingerprint(path, expected_sha256)
     value = torch.load(path, map_location='cpu', weights_only=False)
     model = synchronized.joint.JointConfigurationPolicy(synchronized.SynchronizedPolicyConfig(**value['config']))
     model.load_state_dict(value['state'])
+    model.checkpoint_sha256 = fingerprint
+    model.checkpoint_protocol = value['protocol']
     return model.eval().requires_grad_(False)
 
 
 class ContactEventController(Controller):
     def __init__(self, *args, stochastic=False, teacher=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.teacher = teacher if teacher is not None else retained_teacher(self.model.cfg.teacher_checkpoint)
+        self.teacher = teacher if teacher is not None else retained_teacher(
+            self.model.cfg.teacher_checkpoint, self.model.cfg.teacher_sha256)
+        if self.model.cfg.teacher_sha256 and self.teacher.checkpoint_sha256 != self.model.cfg.teacher_sha256:
+            raise ValueError('Supplied contact teacher differs from the checkpoint identity')
+        for key, actual in (('source_sha256', self.source.sha256),
+                            ('source_implementation_sha256', self.source.implementation_sha256)):
+            if self.teacher.checkpoint_protocol.get(key) != actual:
+                raise ValueError(f'Contact teacher differs from the runtime source: {key}')
         self.teacher_controller = synchronized.joint.JointPolicyController(self.source, self.teacher)
         self.stochastic = stochastic
         self.seen = set()
@@ -122,6 +150,8 @@ class ContactEventController(Controller):
 
     @torch.no_grad()
     def act(self, world):
+        if self.teacher.checkpoint_protocol.get('environment_sha256') != world.environment_sha256:
+            raise ValueError('Contact teacher differs from the runtime environment')
         geo = geometry(world.state())
         distance = geo['distance']; elapsed = float(world.env.Current_T)
         self.minimum = min(self.minimum, distance)
@@ -184,7 +214,7 @@ def initialize(project, source, config):
     torch.set_num_threads(1)
     cfg = ContactEventConfig(**config)
     worker.update(project=project, source=Source(project, source), model=ContactEventModel(cfg).eval(),
-                  teacher=retained_teacher(cfg.teacher_checkpoint))
+                  teacher=retained_teacher(cfg.teacher_checkpoint, cfg.teacher_sha256))
 
 
 @torch.no_grad()
@@ -262,9 +292,10 @@ def prepare_main():
     out = Path(args.out); out.mkdir(parents=True, exist_ok=False)
     value = torch.load(args.pretrained, map_location='cpu', weights_only=False)
     cfg = ContactEventConfig(**dict(value['config'], revision=ContactEventConfig().revision,
-        teacher_checkpoint=args.teacher, response_reference=ContactEventConfig().response_reference,
+        teacher_checkpoint=args.teacher, teacher_sha256='', response_reference=ContactEventConfig().response_reference,
         candidate_domain='original_physical_bank', deployment='policy',
         candidate_context=not args.no_context, supervision='ordinary' if args.ordinary else 'response'))
+    cfg = pin_teacher(cfg, value['protocol'])
     model = ContactEventModel(cfg).to(args.device)
     model.load_state_dict(value['state'], strict=False)
     nn.init.zeros_(model.actor[-1].weight); nn.init.zeros_(model.actor[-1].bias)
@@ -329,23 +360,41 @@ def load_model(path, source, world, device):
     return model.to(device).eval()
 
 
+def contact_runtime_identity(value, stored):
+    """Include external teacher contents and the shared inference dependency chain."""
+    config = stored['config']
+    value['controller'].update(config)
+    value['controller']['teacher_sha256'] = teacher_fingerprint(
+        config['teacher_checkpoint'], config.get('teacher_sha256', ''))
+    here = Path(__file__).parent
+    names = ('contact_event_policy', 'candidate_response', 'capture_window_diagnostic',
+        'response_data', 'root_response_diagnostic', 'synchronized_configuration_policy',
+        'joint_configuration_policy', 'configuration_policy', 'joint_stopped_motion',
+        'joint_task_geometry', 'synchronized_guard', 'ordered_guard', 'guard_focus',
+        'guard_envelope', 'priority_guard', 'guard_prediction', 'pair_geometry')
+    dependencies = {name: file_hash(here / (name + '.py')) for name in names}
+    entrypoint = Path(sys.argv[0]).resolve()
+    if entrypoint.parent == here.resolve() and entrypoint.suffix == '.py':
+        dependencies[entrypoint.stem] = file_hash(entrypoint)
+    value['contact_runtime_dependencies'] = dependencies
+    value['runtime_code'] = canonical_hash(dict(core=value['runtime_code'], contact=dependencies))
+    return value
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] in ('prepare', 'train'):
         mode = sys.argv.pop(1)
         return prepare_main() if mode == 'prepare' else train_main()
     import citf.evaluate as evaluation
-    from citf.contracts import canonical_hash, file_hash
     evaluation.load_behavior = load_model
     evaluation.Controller = ContactEventController
     original = evaluation.runtime_identity
     def identity(*args, **kwargs):
         value = original(*args, **kwargs)
         checkpoint = args[2] if len(args) > 2 else kwargs['checkpoint']
-        config = torch.load(checkpoint, map_location='cpu', weights_only=False)['config']
+        stored = torch.load(checkpoint, map_location='cpu', weights_only=False)
         value['method'] = 'CITF-retained-contact-event-response-development'
-        value['controller'].update(config)
-        value['runtime_code'] = canonical_hash(dict(core=value['runtime_code'], contact_event=file_hash(__file__)))
-        return value
+        return contact_runtime_identity(value, stored)
     evaluation.runtime_identity = identity
     evaluation.main()
 

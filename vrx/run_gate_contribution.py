@@ -55,6 +55,7 @@ class SourceTrial(runner.Trial):
         self.transport_stamp = np.full(args.num_robots, np.nan)
         self.last_received = np.zeros(args.num_robots)
         self.yaw_rates = np.zeros(args.num_robots)
+        self.initialize_terminal_feedback(args.num_robots)
         self.collision_seen = False
         self.publishers = [self.node.create_publisher(Float64, f'/wamv{i+1}/thrusters/{side}/thrust', 10)
                            for i in range(args.num_robots) for side in ('left','right')]
@@ -124,18 +125,30 @@ class SourceTrial(runner.Trial):
             # prevents camera startup from changing the compared initial time.
             if stamp >= 2.-1e-8:
                 self.last_stamp[i] = stamp
+                xyz, q = tf.transform.translation, tf.transform.rotation
+                position = np.array([xyz.x, xyz.y]) - self.origin
+                yaw = np.arctan2(2 * (q.w*q.z + q.x*q.y), 1 - 2 * (q.y*q.y + q.z*q.z))
+                self.record_terminal_pose(i, stamp, position, yaw)
             self.last_received[i] = time.monotonic()
 
-    def outcome(self, elapsed):
+    def outcome(self, elapsed, positions):
         # Refresh the same geometric bookkeeping used by the original check.
         # The decision function itself is the byte-identical author function.
-        defenders = self.curr_pos[1:]
+        defenders = positions[1:]
         n = len(defenders)
-        self.def_att_dists = np.linalg.norm(defenders-self.curr_pos[0], axis=-1)
+        self.def_att_dists = np.linalg.norm(defenders-positions[0], axis=-1)
         d = np.linalg.norm(defenders[:, None]-defenders[None], axis=-1)
         self.def_def_dists = d[~np.eye(n, dtype=bool)].reshape(n, n-1)
         self.curr_time = elapsed
-        return AUTHOR.ExperimentManager.check_is_terminated(self)
+        # The source predicate also reads the attacker's position directly.
+        # Keep its exact thresholds/precedence while giving every geometry
+        # term the same measured time; restore the original control input.
+        latest_positions = self.curr_pos
+        try:
+            self.curr_pos = positions
+            return AUTHOR.ExperimentManager.check_is_terminated(self)
+        finally:
+            self.curr_pos = latest_positions
 
     def control(self, elapsed):
         started = time.monotonic()

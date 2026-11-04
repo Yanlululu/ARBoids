@@ -24,6 +24,7 @@ from citf.search import candidate_grid
 from citf.train import atomic_save
 from experiments import contact_event_policy as contact
 from experiments import contact_pair_policy as pair
+from experiments.response_policy import validated_training_config
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ def initialize(project, source, config):
     cfg = ModelConfig(**config)
     worker.update(project=project, source=Source(project, source),
         model=contact.ContactEventModel(cfg).eval(),
-        teacher=contact.retained_teacher(cfg.teacher_checkpoint))
+        teacher=contact.retained_teacher(cfg.teacher_checkpoint, cfg.teacher_sha256))
 
 
 @torch.no_grad()
@@ -183,6 +184,7 @@ def train_main():
     cfg = ModelConfig(**dict(value['config'], revision=ModelConfig().revision,
         decision_domain=ModelConfig().decision_domain,
         training_action_sampling=ModelConfig().training_action_sampling))
+    cfg = validated_training_config(args.project, args.source, value, cfg)
     model = contact.ContactEventModel(cfg).to(args.device)
     model.load_state_dict(value['state'])
     actor_ids = {id(p) for p in model.actor.parameters()}

@@ -1,5 +1,6 @@
 """Run one bounded ARBoids experiment against a real ROS 2 / Gazebo world."""
 import argparse
+from collections import deque
 import hashlib
 import json
 import os
@@ -38,6 +39,7 @@ class Trial(ExperimentManager):
         self.last_stamp = np.full(args.num_robots, np.nan)
         self.last_received = np.zeros(args.num_robots)
         self.yaw_rates = np.zeros(args.num_robots)
+        self.initialize_terminal_feedback(args.num_robots)
         self.collision_seen = False
         self.publishers = [
             self.node.create_publisher(Float64, f'/wamv{i + 1}/thrusters/{side}/thrust', 10)
@@ -97,6 +99,47 @@ class Trial(ExperimentManager):
         path.write_bytes(png)
         self.frames.append({'file': path.name, 'simulation_seconds': stamp-start_sim, 'gazebo_timestamp': stamp})
 
+    def initialize_terminal_feedback(self, count):
+        self.terminal_pose_history = [deque() for _ in range(count)]
+
+    def record_terminal_pose(self, index, stamp, position, yaw):
+        if not np.isfinite(stamp) or not np.isfinite(position).all() or not np.isfinite(yaw):
+            raise ValueError('Non-finite pose feedback cannot determine a task outcome')
+        history = self.terminal_pose_history[index]
+        if not history or stamp > history[-1][0]:
+            history.append((float(stamp), np.asarray(position).copy(), float(yaw)))
+
+    def terminal_snapshot(self):
+        """Interpolate observed poses at one shared time, without extrapolation."""
+        histories = self.terminal_pose_history
+        if any(not history for history in histories):
+            return None
+        latest = np.array([history[-1][0] for history in histories])
+        stamp = float(latest.min())
+        if any(history[0][0] > stamp for history in histories):
+            return None
+        positions, yaws, spans = [], [], []
+        for history in histories:
+            # Keep the left bracket and all not-yet-consumed measurements.
+            while len(history) > 1 and history[1][0] <= stamp:
+                history.popleft()
+            before = history[0]
+            if before[0] == stamp:
+                position, yaw, span = before[1], before[2], 0.
+            else:
+                after = history[1]
+                span = after[0] - before[0]
+                fraction = (stamp - before[0]) / span
+                position = before[1] + fraction * (after[1] - before[1])
+                angle = np.arctan2(np.sin(after[2] - before[2]), np.cos(after[2] - before[2]))
+                yaw = before[2] + fraction * angle
+                yaw = np.arctan2(np.sin(yaw), np.cos(yaw))
+            positions.append(position)
+            yaws.append(yaw)
+            spans.append(span)
+        return dict(positions=np.asarray(positions), yaws=np.asarray(yaws), stamp=stamp,
+                    feedback_skew=float(np.ptp(latest)), interpolation_span=float(max(spans)))
+
     def on_pose(self, message):
         for tf in message.transforms:
             name = tf.child_frame_id
@@ -117,19 +160,20 @@ class Trial(ExperimentManager):
             self.curr_phi[index] = yaw
             self.last_stamp[index] = stamp
             self.last_received[index] = time.monotonic()
+            self.record_terminal_pose(index, stamp, position, yaw)
 
-    def outcome(self, elapsed):
+    def outcome(self, elapsed, positions):
         paper = getattr(self.args, 'termination_rule', 'source') == 'paper'
-        breached = np.linalg.norm(self.curr_pos[0]) <= self.target_r if paper else np.linalg.norm(self.curr_pos[0]) < self.target_r
+        breached = np.linalg.norm(positions[0]) <= self.target_r if paper else np.linalg.norm(positions[0]) < self.target_r
         if breached:
             return 1
-        defenders = self.curr_pos[1:]
+        defenders = positions[1:]
         distances = np.linalg.norm(defenders[:, None] - defenders[None, :], axis=-1)
         np.fill_diagonal(distances, np.inf)
         colliding = distances <= self.collision_r if paper else distances < self.collision_r
         if np.any(colliding):
             return 2
-        if np.any(np.linalg.norm(defenders - self.curr_pos[0], axis=1) < self.defend_r):
+        if np.any(np.linalg.norm(defenders - positions[0], axis=1) < self.defend_r):
             return 3
         return 4 if elapsed >= self.total_time else 0
 
@@ -306,6 +350,7 @@ def main():
               'message_drop_probability': args.message_drop_probability,
               'communication_scope': 'local per-directed-link delay/loss emulation, not a physical network',
               'capture_radius': 5.0, 'target_radius': 15.0, 'collision_radius': 5.0,
+              'terminal_feedback_alignment': 'common-time interpolation of bracketing measured poses; no extrapolation',
               'checkpoint': args.checkpoint,
               'thruster_mapping': 'policy[0]->starboard; policy[1]->port (ENU yaw matching training)'}
     if args.checkpoint:
@@ -336,9 +381,13 @@ def main():
                 image_bridge = subprocess.Popen(
                     ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge', '/arboids/overview/image@sensor_msgs/msg/Image[gz.msgs.Image'],
                     env=launch_env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-            while not (np.isfinite(trial.last_stamp).all() and
-                       all(p.get_subscription_count() > 0 for p in trial.publishers) and
-                       (not args.capture_frames or trial.latest_image is not None)):
+            while True:
+                if (np.isfinite(trial.last_stamp).all()
+                        and all(p.get_subscription_count() > 0 for p in trial.publishers)
+                        and (not args.capture_frames or trial.latest_image is not None)):
+                    initial_snapshot = trial.terminal_snapshot()
+                    if initial_snapshot is not None:
+                        break
                 if process.poll() is not None:
                     raise RuntimeError(f'Gazebo launch exited ({process.returncode}); see gazebo.log')
                 if time.monotonic() - started > args.startup_timeout:
@@ -346,7 +395,8 @@ def main():
                 if hasattr(trial, 'startup_tick'):
                     trial.startup_tick(output, launch_env)
                 rclpy.spin_once(trial.node, timeout_sec=0.05)
-            start_sim = float(np.min(trial.last_stamp))
+            start_sim = initial_snapshot['stamp']
+            last_terminal_stamp = None
             next_action = 0.
             next_frame = 0.
             print(f'[READY] all {args.num_robots} vessels and thrust bridges at t={start_sim:.3f}', flush=True)
@@ -358,13 +408,18 @@ def main():
                     raise TimeoutError('Trial exceeded wall-clock limit')
                 if np.any(time.monotonic() - trial.last_received > 15.):
                     raise TimeoutError('A vessel stopped publishing pose feedback')
-                elapsed = float(np.min(trial.last_stamp) - start_sim)
-                defender_distances = np.linalg.norm(trial.curr_pos[1:, None] - trial.curr_pos[None, 1:], axis=-1)
+                snapshot = trial.terminal_snapshot()
+                if snapshot is None or (last_terminal_stamp is not None and snapshot['stamp'] <= last_terminal_stamp):
+                    continue
+                last_terminal_stamp = snapshot['stamp']
+                positions = snapshot['positions']
+                elapsed = snapshot['stamp'] - start_sim
+                defender_distances = np.linalg.norm(positions[1:, None] - positions[None, 1:], axis=-1)
                 np.fill_diagonal(defender_distances, np.inf)
                 collision_now = (defender_distances <= trial.collision_r if args.termination_rule == 'paper'
                                  else defender_distances < trial.collision_r)
                 trial.collision_seen |= bool(collision_now.any())
-                code = trial.outcome(elapsed)
+                code = trial.outcome(elapsed, positions)
                 if code:
                     if args.capture_frames:
                         trial.save_frame(output, start_sim)
@@ -384,8 +439,11 @@ def main():
                                   success=code > 2, simulation_seconds=elapsed,
                                   defender_collision=trial.collision_seen,
                                   attacker_max_displacement=distance,
-                                  terminal_positions=trial.curr_pos.tolist(),
-                                  terminal_yaw=trial.curr_phi.tolist())
+                                  terminal_positions=positions.tolist(),
+                                  terminal_yaw=snapshot['yaws'].tolist(),
+                                  terminal_simulation_stamp=snapshot['stamp'],
+                                  terminal_feedback_skew_seconds=snapshot['feedback_skew'],
+                                  terminal_interpolation_span_seconds=snapshot['interpolation_span'])
                     break
                 if elapsed + 1e-6 >= next_action:
                     trial.control(elapsed)

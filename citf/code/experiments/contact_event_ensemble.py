@@ -79,10 +79,10 @@ def main():
         checkpoint = args[2] if len(args) > 2 else kwargs['checkpoint']
         stored = torch.load(checkpoint, map_location='cpu', weights_only=False)
         value['method'] = 'CITF-retained-contact-event-equal-mean-development'
-        value['controller'].update(stored['config'])
+        value = contact_event_policy.contact_runtime_identity(value, stored)
         value['controller']['ensemble'] = stored['protocol']['ensemble']
         value['runtime_code'] = canonical_hash(dict(core=value['runtime_code'],
-            contact_event=file_hash(contact_event_policy.__file__), ensemble=file_hash(__file__)))
+            ensemble=file_hash(__file__)))
         return value
 
     evaluation.runtime_identity = identity
