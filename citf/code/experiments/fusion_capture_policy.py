@@ -44,6 +44,12 @@ class FusionConfig:
     failure_weight: float = 200.
     distribution: str = 'rectified_gaussian'
 
+    def __post_init__(self):
+        if min(self.width,self.heads,self.history,self.horizon,self.decision_ticks) < 1 or self.width % self.heads:
+            raise ValueError('Fusion dimensions and decision period must be positive; width must divide into heads')
+        if self.distribution not in ('rectified_gaussian','hurdle') or self.predictor not in ('learned','nominal'):
+            raise ValueError('Unknown fusion distribution or predictor')
+
 
 def feedback_rules(state, boids, parameters):
     """parameters = lead seconds, lateral m, radial m, guard flag, tracking flag."""
@@ -139,10 +145,12 @@ class NominalStep(nn.Module):
 def nominal_paths(world, source, gates, parameters, actual_first, horizon):
     """Known nominal feedback; future projection corrections are learned residuals."""
     c, n = gates.shape[:2]
-    state = torch.as_tensor(world.state(), dtype=torch.float32)[None].expand(c, -1, -1).clone()
+    device = next(source.net.parameters()).device
+    state = torch.as_tensor(world.state(), dtype=torch.float32, device=device)[None].expand(c, -1, -1).clone()
+    gates, parameters, actual_first = (value.to(device) for value in (gates, parameters, actual_first))
     legacy = state[..., 3:5].clone()
-    first = torch.ones(c, 1, 1)
-    key = (c, n)
+    first = state.new_ones(c, 1, 1)
+    key = (c, n, str(device))
     if not hasattr(source, '_fusion_nominal'):
         source._fusion_nominal = {}
     if key not in source._fusion_nominal:
@@ -156,7 +164,7 @@ def nominal_paths(world, source, gates, parameters, actual_first, horizon):
         state, legacy = step(state, legacy, gates, parameters, actual_first,
                              first if tick == 0 else torch.zeros_like(first))
         paths.append(state[..., :2])
-    return torch.stack(paths, -2)
+    return torch.stack(paths, -2).cpu()
 
 
 @torch.no_grad()
@@ -253,6 +261,20 @@ class FusionOutcomeTransformer(nn.Module):
             else:
                 self.pair[-1].bias[1]=-1.5;self.team[-1].bias[[1,3]]=-1.5
 
+    def validate_runtime(self,source,world):
+        identity=getattr(self,'source_identity',{})
+        for key,actual in [('source_sha256',source.sha256),
+                           ('source_implementation_sha256',source.implementation_sha256)]:
+            if identity.get(key) and identity[key] != actual:
+                raise ValueError('Fusion predictor and runtime source differ: '+key)
+        if world is not None:
+            if world.protocol.history_steps != self.cfg.history:
+                raise ValueError('Fusion runtime history differs from the trained model')
+            if hasattr(self,'physical_protocol'):
+                validate_predictor_protocol(self.physical_protocol,world.protocol)
+            if identity.get('environment_sha256') and identity['environment_sha256'] != world.environment_sha256:
+                raise ValueError('Fusion predictor and runtime environment implementation differ')
+
     def forward(self,batch):
         history=batch['history'];B,E,L,_=history.shape
         valid=batch['entity_valid'];hv=batch['history_valid'].reshape(B*E,L)
@@ -331,6 +353,8 @@ def load_policy(path,device='cpu'):
     payload=torch.load(path,map_location='cpu',weights_only=False)
     model=FusionOutcomeTransformer(FusionConfig(**payload['config']))
     model.load_state_dict(payload['state']);model.physical_protocol=payload['physical_protocol']
+    model.teacher_sha256=payload.get('teacher_sha256','')
+    model.source_identity=payload.get('source_identity',{})
     return model.to(device).eval()
 
 
@@ -338,12 +362,17 @@ class FusionCaptureController(Controller):
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
         self.cfg=self.model.cfg
-        self.teacher=joint.JointPolicyController(self.source,retained_teacher(self.cfg.teacher_checkpoint),
-            'cpu',12,96,1)
+        teacher=retained_teacher(self.cfg.teacher_checkpoint,getattr(self.model,'teacher_sha256',''))
+        for key,actual in [('source_sha256',self.source.sha256),
+                           ('source_implementation_sha256',self.source.implementation_sha256)]:
+            if teacher.checkpoint_protocol.get(key) != actual:
+                raise ValueError('Fusion teacher and runtime source differ: '+key)
+        self.teacher=joint.JointPolicyController(self.source,teacher,'cpu',12,96,1)
         self.executor=ConfigurationExecutor(self.source)
         self.guard=None;self.last_time=None;self.ticks=0;self.current=None
 
     def act(self,world):
+        self.model.validate_runtime(self.source,world)
         started=time.perf_counter();now=world.env.Current_T
         if self.guard is None or self.last_time is not None and now<=self.last_time:
             state=world.state();enemy=state[-1,:2];target=enemy/max(np.linalg.norm(enemy),1e-6)*12.5

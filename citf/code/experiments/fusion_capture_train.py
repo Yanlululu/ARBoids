@@ -12,7 +12,11 @@ import torch
 from torch.nn import functional as F
 
 from citf.evaluate import atomic_json
+from citf.contracts import (Protocol, immutable_run_contract, require_same_contract,
+                            source_identity, file_hash)
 from citf.risk import rectified_gaussian_nll
+from citf.train import read_journal
+from citf.opponents import APFOpponent
 from experiments.fusion_capture_data import save_tensor
 from experiments.fusion_capture_policy import FusionConfig, FusionOutcomeTransformer, control_score, capture_probability
 
@@ -38,22 +42,36 @@ def targets(payload, cfg):
                 xy=mean, xy_valid=valid.any(1), capture=event)
 
 
-def load_data(directory, cfg):
+def load_data(directory, cfg, role=None):
     directory = Path(directory)
+    protocol = json.loads((directory/'protocol.json').read_text())
+    if role is not None and protocol['role'] != role:
+        raise ValueError('Fusion dataset role differs from its requested use')
+    physical = asdict(Protocol(**protocol['physical_protocol']))
+    opponent = protocol.get('opponent_identity',APFOpponent().identity)
     summary = json.loads((directory/'summary.json').read_text())
     if not summary['completed']: raise ValueError('Data collection is incomplete')
     roots = []
     for path in sorted((directory/'roots').glob('*.pt')):
         payload = torch.load(path, map_location='cpu', weights_only=False)
+        if asdict(Protocol(**payload['physical_protocol'])) != physical:
+            raise ValueError('Fusion root uses a different physical protocol')
+        if payload.get('opponent_identity',APFOpponent().identity) != opponent:
+            raise ValueError('Fusion root uses a different opponent from its dataset')
+        if (payload['batch']['history'].shape[-2] != cfg.history
+                or payload['batch']['nominal'].shape[-2] != cfg.horizon):
+            raise ValueError('Fusion dataset history/horizon differs from its model')
         roots.append(dict(batch=payload['batch'], target=targets(payload,cfg),
             root_id=payload['root_id'], family=payload['task']['geometry_family_id']))
+    if not roots or len(roots) != summary['roots'] or len({r['root_id'] for r in roots}) != len(roots):
+        raise ValueError('Fusion dataset has missing, duplicated or unrecorded roots')
     return roots, summary
 
 
-def load_pools(directories,cfg):
+def load_pools(directories,cfg,role=None):
     roots=[];pools=[];summaries=[]
     for directory in directories:
-        group,summary=load_data(directory,cfg)
+        group,summary=load_data(directory,cfg,role)
         pools.append(list(range(len(roots),len(roots)+len(group))))
         roots.extend(group);summaries.append(dict(directory=str(directory),**summary))
     return roots,pools,dict(datasets=summaries,roots=len(roots),
@@ -129,15 +147,42 @@ def main():
     parser.add_argument('--balanced-data',action='store_true')
     parser.add_argument('--learning-rate',type=float,default=3e-4)
     args = parser.parse_args(); torch.set_num_threads(1)
+    if (min(args.updates,args.batch_roots) < 1 or not math.isfinite(args.selection_weight)
+            or args.selection_weight < 0 or not math.isfinite(args.learning_rate) or args.learning_rate <= 0):
+        parser.error('Updates, batch size and learning rate must be positive; selection weight must be nonnegative')
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
-    out = Path(args.out); out.mkdir(parents=True,exist_ok=args.resume)
-    cfg = FusionConfig(teacher_checkpoint=args.teacher,context=not args.without_context,distribution=args.distribution)
+    out = Path(args.out)
+    if out.exists() and not args.resume:
+        raise ValueError('Refuse training overwrite; choose a new output or resume its unchanged configuration')
+    datasets=[json.loads((Path(folder)/'protocol.json').read_text()) for folder in args.train+args.validation]
+    protocol=datasets[0]
+    physical=asdict(Protocol(**protocol['physical_protocol']))
+    teacher_sha256=file_hash(args.teacher)
+    inputs=[]
+    for record in datasets:
+        if asdict(Protocol(**record['physical_protocol'])) != physical:
+            raise ValueError('Fusion datasets use different task rules')
+        sampled_teacher=record.get('teacher_sha256') or file_hash(record['config']['teacher_checkpoint'])
+        if sampled_teacher != teacher_sha256:
+            raise ValueError('Fusion runtime teacher differs from the sampled teacher')
+        inputs.append(record.get('source_identity') or source_identity(
+            record['arguments']['project'],record['arguments']['source']))
+    if any(value != inputs[0] for value in inputs):
+        raise ValueError('Fusion datasets use different source controllers or environment implementations')
+    cfg = FusionConfig(teacher_checkpoint=args.teacher,history=protocol['config']['history'],
+        horizon=protocol['config']['horizon'],context=not args.without_context,distribution=args.distribution)
     if args.distribution=='hurdle':cfg=replace(cfg,revision='CITF-joint-feedback-hurdle-distance-v2')
-    train,pools,train_summary = load_pools(args.train,cfg)
-    validation,_,val_summary = load_pools(args.validation,cfg)
+    train,pools,train_summary = load_pools(args.train,cfg,'train')
+    validation,_,val_summary = load_pools(args.validation,cfg,'validation')
     if set(r['family'] for r in train)&set(r['family'] for r in validation):
         raise ValueError('Training and model-validation geometry overlap')
-    protocol = json.loads((Path(args.train[0])/'protocol.json').read_text())
+    parameters={k:v for k,v in vars(args).items() if k not in ('resume','out','device')}
+    contract=immutable_run_contract(dict(arguments=parameters,config=asdict(cfg),source_identity=inputs[0],
+        training_roots=[(r['root_id'],r['family']) for r in train],
+        validation_roots=[(r['root_id'],r['family']) for r in validation]),
+        files=[args.teacher,*([args.initialize_from] if args.initialize_from else []),
+            *[Path(folder)/name for folder in args.train+args.validation
+                for name in ('protocol.json','summary.json')]],code=[__file__])
     model = FusionOutcomeTransformer(cfg).to(args.device)
     if args.initialize_from:
         initial=torch.load(args.initialize_from,map_location='cpu',weights_only=False)
@@ -147,14 +192,19 @@ def main():
     start = 0
     if args.resume:
         checkpoint = torch.load(out/'latest.pt',map_location='cpu',weights_only=False)
+        require_same_contract(checkpoint.get('contract'),contract,'Fusion training resume')
         if checkpoint['config']!=asdict(cfg): raise ValueError('Resume configuration changed')
         model.load_state_dict(checkpoint['state']); optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler']); start=checkpoint['update']
         random.setstate(checkpoint['random']); np.random.set_state(checkpoint['numpy'])
         torch.set_rng_state(checkpoint['torch']); torch.cuda.set_rng_state_all(checkpoint['cuda'])
+        read_journal(out/'training.jsonl',committed_update=start)
+    out.mkdir(parents=True,exist_ok=args.resume)
     def payload(update):
         return dict(state={k:v.detach().cpu() for k,v in model.state_dict().items()},config=asdict(cfg),
-            physical_protocol=protocol['physical_protocol'],update=update,seed=args.seed,
+            physical_protocol=protocol['physical_protocol'],update=update,seed=args.seed,contract=contract,
+            teacher_sha256=teacher_sha256,source_identity=inputs[0],
+            training_opponents=[record.get('opponent_identity',APFOpponent().identity) for record in datasets],
             optimizer=optimizer.state_dict(),scheduler=scheduler.state_dict(),
             random=random.getstate(),numpy=np.random.get_state(),torch=torch.get_rng_state(),
             cuda=torch.cuda.get_rng_state_all(),arguments=vars(args),
@@ -162,11 +212,12 @@ def main():
             supervision='unweighted proper likelihood on all common futures; stopped distance,collision,capture and breach; actual score distribution loss',
             selection_rule='complete independent256: success,captures,capped_capture_time; stages500/1500/3000')
     if not args.resume:
-        save_tensor(payload(0),out/'stage_000000.pt')
-        nominal=payload(0);nominal['config']=asdict(replace(cfg,predictor='nominal'))
+        initial=payload(0)
+        save_tensor(initial,out/'stage_000000.pt');save_tensor(initial,out/'latest.pt')
+        nominal=dict(initial);nominal['config']=asdict(replace(cfg,predictor='nominal'))
         nominal['method_role']='matched same candidate/executor nominal predictor; not trained'
         save_tensor(nominal,out/'nominal.pt')
-        atomic_json(dict(arguments=vars(args),config=asdict(cfg),training=train_summary,validation=val_summary,
+        atomic_json(dict(arguments=vars(args),config=asdict(cfg),contract=contract,training=train_summary,validation=val_summary,
             effective_training_layouts=len(set(r['family'] for r in train)),
             effective_validation_layouts=len(set(r['family'] for r in validation)),
             readout='all bank scores depend directly on predicted physical outcome distributions'),out/'protocol.json')
@@ -179,9 +230,9 @@ def main():
             batch,truth=stack(train,indices,args.device)
             optimizer.zero_grad(set_to_none=True);loss,metrics=objective(model,batch,truth,args.selection_weight)
             if not torch.isfinite(loss): raise FloatingPointError('Nonfinite training loss')
-            loss.backward();norm=torch.nn.utils.clip_grad_norm_(model.parameters(),5.)
+            loss.backward();norm=torch.nn.utils.clip_grad_norm_(model.parameters(),5.,error_if_nonfinite=True)
             optimizer.step();scheduler.step()
-            if update%100==0:
+            if update%100==0 or update==args.updates:
                 row=dict(update=update,seconds=time.time()-started,gradient_norm=float(norm),training=metrics)
                 model.eval(); values=[]
                 with torch.no_grad():

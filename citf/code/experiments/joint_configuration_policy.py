@@ -148,6 +148,7 @@ class JointPolicyController(policy.PolicyController):
             changed=int(not np.array_equal(indices, physical_choice)), entropy=float(distribution.entropy()))
         all_scored = set(map(tuple, physical_trace['configurations'])) | set(map(tuple, learned_trace['configurations']))
         trace = dict(cost=float(-logits[choice]), evaluated_unique=len(plans),
+            forward_batches=physical_trace['forward_batches']+learned_trace['forward_batches']+1,
             configurations=plans.tolist(), scores=(-logits).cpu().tolist(),
             gates=gates.tolist(), selected_indices=indices.tolist(), physical_thrust=force.tolist(),
             physical_selected_indices=physical_choice.tolist(), learned_selected_indices=learned_choice.tolist(),

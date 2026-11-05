@@ -155,6 +155,7 @@ class PolicyController(Controller):
             log_probability=float(distribution.log_prob(torch.as_tensor(choice, device=logits.device))),
             changed=int(choice != physical_choice), entropy=float(distribution.entropy()))
         trace.update(cost=float(-logits[choice]), scores=(-logits).cpu().tolist(),
+            forward_batches=trace['forward_batches']+1,
             gates=gates.tolist(), selected_indices=indices.tolist(), physical_thrust=force.tolist(),
             physical_selected_indices=plans[physical_choice].tolist(),
             source_center_indices=centre.tolist(), source_center_scored=centre.tolist() in trace['configurations'],
