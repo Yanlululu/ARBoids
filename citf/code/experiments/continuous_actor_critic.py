@@ -1,10 +1,4 @@
-"""Full-task joint continuous-thrust actor and centralized state value.
-
-The strong controller supplies an initial reference, not an action-space hull.
-The actor changes both thrusters of every defender throughout the episode.
-Only the common hardware bounds constrain executed force. The state-value
-critic is used for learning, not as a privileged online outcome input.
-"""
+"""Full-task continuous control with selectable teacher, source or direct reference."""
 from dataclasses import asdict,dataclass
 import time
 
@@ -14,7 +8,7 @@ from torch import nn
 from torch.distributions import Normal
 
 from citf.bridge import Controller
-from citf.contracts import canonical_hash,file_hash
+from citf.contracts import canonical_hash,file_hash,Protocol
 from experiments.contact_event_policy import retained_teacher
 from experiments.interaction_dynamics import DynamicsConfig,InteractionDynamics,InteractionLayer
 from experiments.synchronized_configuration_policy import joint
@@ -32,6 +26,16 @@ class ContinuousConfig:
     context:bool=True
     residual_scale:float=1500.
     initial_std:float=.06
+    reference_mode:str='teacher'
+    teacher_sha256:str=''
+
+    def __post_init__(self):
+        if self.reference_mode not in ('teacher','source','direct'):
+            raise ValueError('Unknown control reference mode')
+        if self.history < 1 or self.residual_scale <= 0 or not np.isfinite(self.residual_scale):
+            raise ValueError('History and residual scale must be positive')
+        if self.initial_std <= 0 or not np.isfinite(self.initial_std):
+            raise ValueError('Initial exploration scale must be positive')
 
 
 class ObservedEncoder(nn.Module):
@@ -93,29 +97,70 @@ class ContinuousActorCritic(nn.Module):
         state={k:v for k,v in value['state'].items() if k.startswith(('embedding.','layers.'))}
         self.encoder.load_state_dict(state)
 
+    def validate_runtime(self,source,world):
+        if world is None:return
+        if world.protocol.history_steps<self.cfg.history:
+            raise ValueError('Runtime history buffer is shorter than the trained actor window')
+        trained=getattr(self,'training_protocol',None)
+        if trained:
+            before=asdict(Protocol(**trained));after=asdict(world.protocol)
+            changes={key:dict(training=before[key],execution=value) for key,value in after.items() if before[key]!=value}
+            if set(changes)-{'name','radial_early_failure','apf_obstacle_rule','history_steps','prediction_steps','risk_weight','risk_clearance','prior_scale'}:
+                raise ValueError('Continuous policy evaluation changed task duration or physical dynamics')
+            self.protocol_transfer=changes
+
 
 def load_policy(path,device='cpu'):
     payload=torch.load(path,map_location='cpu',weights_only=False)
     model=ContinuousActorCritic(ContinuousConfig(**payload['config'])).to(device)
     model.load_state_dict(payload['state']);model.eval()
+    model.training_protocol=payload.get('physical_protocol',payload.get('protocol',{}).get('physical_protocol'))
     return model
 
 
 def observed_history(world,length=8):
-    history=np.stack(world.history).astype(np.float32)
+    history=np.stack(list(world.history)[-length:]).astype(np.float32)
     return np.concatenate((np.repeat(history[:1],length-len(history),0),history),0)
+
+
+class ReferenceController:
+    """Explicit online reference, including a teacher-free direct policy mode."""
+    def __init__(self, source, cfg, device='cpu', bank=12, budget=96, rounds=1, risk_mode='expected'):
+        self.source, self.mode = source, cfg.reference_mode
+        teacher=retained_teacher(cfg.teacher_checkpoint,cfg.teacher_sha256) if self.mode=='teacher' else None
+        if teacher is not None:
+            for key,actual in (('source_sha256',source.sha256),('source_implementation_sha256',source.implementation_sha256)):
+                expected=teacher.checkpoint_protocol.get(key)
+                if expected and expected!=actual:
+                    raise ValueError('Online teacher uses a different source controller: '+key)
+        self.teacher = (joint.JointPolicyController(source, teacher,
+            device, bank, budget, rounds, risk_mode) if self.mode == 'teacher' else None)
+
+    def act(self, world):
+        if self.teacher is not None:
+            cfg=self.teacher.model.cfg
+            if (world.protocol.history_steps,world.protocol.prediction_steps)!=(cfg.history,cfg.horizon):
+                raise ValueError('Teacher input history/horizon differs from its trained network')
+            return self.teacher.act(world)
+        if self.mode == 'source':
+            learned, boids, gates = self.source.commands(world.env)
+            force = (250 + 750 * (gates * learned + (1-gates) * boids)).numpy()
+        else:
+            force = np.full((world.env.defender_num, 2), 250., np.float32)
+        return force, dict(evaluated_unique=int(self.mode == 'source'),
+                          forward_batches=int(self.mode == 'source'), reference_mode=self.mode)
 
 
 class ContinuousController(Controller):
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
-        self.teacher=joint.JointPolicyController(self.source,retained_teacher(self.model.cfg.teacher_checkpoint),
+        self.teacher=ReferenceController(self.source,self.model.cfg,
             self.device,self.bank,self.budget,self.rounds,self.risk_mode)
 
     @torch.no_grad()
     def act(self,world):
         started=time.perf_counter();reference,trace=self.teacher.act(world)
-        history=torch.as_tensor(observed_history(world),device=self.device)[None]
+        history=torch.as_tensor(observed_history(world,self.model.cfg.history),device=self.device)[None]
         remaining=torch.tensor([world.protocol.time_limit-world.env.Current_T],device=self.device)
         reference_tensor=torch.as_tensor(reference,dtype=torch.float32,device=self.device)[None]
         output=self.model(history,remaining,reference_tensor)
@@ -142,10 +187,14 @@ def main():
             control='all task states,every0.2s,no event/activation margin',
             learning='centralized state-value and on-policy complete-episode reward withPPO/GAE',
             online_inputs='joint observed history,remaining time,current strong-reference force',
-            teacher_checkpoint_sha256=file_hash(cfg['teacher_checkpoint']),
-            encoder_initialization_sha256=file_hash(cfg['encoder_checkpoint']),
+            reference_mode=cfg.get('reference_mode','teacher'),
+            teacher_used_online=cfg.get('reference_mode','teacher')=='teacher',
+            source_used_online=cfg.get('reference_mode','teacher')!='direct',
+            teacher_checkpoint_sha256=(file_hash(cfg['teacher_checkpoint']) if cfg.get('reference_mode','teacher')=='teacher'
+                                       else value.get('teacher_sha256')),
+            encoder_initialization_sha256=value.get('encoder_initialization_sha256'),
             training_update=value.get('update'),training_environment_steps=value.get('environment_steps'),
-            reference_has_learning=True,expanded_control_domain=True)
+            reference_has_learning=cfg.get('reference_mode','teacher')!='direct',expanded_control_domain=True)
         result['runtime_code']=canonical_hash(dict(core=result['runtime_code'],policy=file_hash(__file__),
             encoder=file_hash(dynamics.__file__)))
         return result

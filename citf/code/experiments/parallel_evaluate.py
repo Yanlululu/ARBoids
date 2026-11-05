@@ -40,6 +40,8 @@ def merge(out):
     pending.replace(out / 'tasks.jsonl')
     counts = {key: sum(r[key] for r in rows) for key in
               ('success', 'capture', 'collision', 'physical_collision', 'physical_breach', 'radial_only_failure', 'timeout')}
+    for key in ('ever_radial_disadvantage','radial_recovery'):
+        if all(key in row for row in rows):counts[key]=sum(row[key] for row in rows)
     summary = dict(completed=True, phase='development', N=len(rows), expected_N=len(rows), **counts,
                    runtime=identity, tasks_sha256=file_hash(arguments['tasks']),
                    registry_sha256=file_hash(arguments['registry']),

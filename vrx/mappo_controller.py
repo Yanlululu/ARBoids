@@ -1,4 +1,4 @@
-"""ROS-independent deployment adapter using the exact training actor/predictor."""
+"""ROS-independent deployment adapter for the custom PredictiveMAPPO method."""
 from pathlib import Path
 import sys
 import numpy as np
@@ -9,6 +9,7 @@ if str(TRAIN) not in sys.path:
 
 
 class MAPPOController:
+    """Legacy controller name for PredictiveMAPPO checkpoints."""
     def __init__(self, checkpoint, device='cpu', delay_steps=0, drop_probability=0., communication_seed=0):
         from policy.mappo import PredictiveMAPPO
         from policy.message_stress import MessageStress

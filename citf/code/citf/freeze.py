@@ -13,7 +13,7 @@ def main():
     matrix=json.loads(Path(a.method_matrix).read_text())
     if tasks['role']!='final_test':raise ValueError('Wrong task role')
     required={'revision','schema','history_features','context_features','protocol','source_sha256','checkpoint_sha256','project_code','runtime_code','controller','software','device','method','opponent'}
-    if set(runtime)!=required:raise ValueError('Incomplete runtime identity')
+    if not required.issubset(runtime):raise ValueError('Incomplete runtime identity')
     out.parent.mkdir(parents=True,exist_ok=True)
     out.write_text(json.dumps({'frozen':True,'runtime':runtime,'runtime_sha256':canonical_hash(runtime),
         'tasks_sha256':file_hash(a.tasks),'registry_sha256':file_hash(a.registry),'selection_rule':a.selection_rule,

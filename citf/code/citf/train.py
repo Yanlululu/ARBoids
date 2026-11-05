@@ -18,6 +18,24 @@ def atomic_save(value,path):
     tmp.replace(path)
 
 
+def read_journal(path,committed_update=None):
+    """Recover a torn final JSONL write and optionally discard uncommitted updates."""
+    path=Path(path)
+    if not path.exists():return []
+    raw=path.read_text(encoding='utf-8');lines=raw.splitlines();rows=[]
+    for index,line in enumerate(lines):
+        try:row=json.loads(line)
+        except json.JSONDecodeError:
+            if index!=len(lines)-1:raise
+            break
+        if (committed_update is None or row.get('phase')=='value_initialization'
+                or row.get('update',0)<=committed_update):rows.append(row)
+    if len(rows)!=len(lines) or raw and not raw.endswith('\n'):
+        pending=path.with_suffix(path.suffix+'.pending')
+        pending.write_text(''.join(json.dumps(row)+'\n' for row in rows),encoding='utf-8');pending.replace(path)
+    return rows
+
+
 @torch.no_grad()
 def evaluate(model,data,batch_size=8,device='cpu',clearance=7.,weight=32.,loss_kwargs=None):
     model.eval();sums={};N=len(data['history']);groups={'early':{'sum':0.,'n':0},'complete':{'sum':0.,'n':0}}

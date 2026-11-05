@@ -1,6 +1,5 @@
 """Train prediction-conditioned, two-stage MAPPO on complete team episodes."""
 import argparse
-from contextlib import contextmanager
 import copy
 from pathlib import Path
 import random
@@ -13,6 +12,7 @@ import yaml
 from envs.mappo_env import MAPPOEnv
 from policy.mappo import PredictiveMAPPO
 from policy.rollout_buffer import RolloutBuffer
+from utils.protocol import evaluation_rng
 
 ROOT = Path(__file__).resolve().parent
 
@@ -134,22 +134,6 @@ def collect_episodes(agent, env, episodes, agility, noisy_agility=False):
         transitions, summary = play_episode(agent, env, agility, noisy_agility)
         rollout.add_episode(transitions, summary)
     return rollout
-
-
-@contextmanager
-def evaluation_rng():
-    """Evaluation must not change subsequent training resets/exploration."""
-    numpy_state, python_state = np.random.get_state(), random.getstate()
-    torch_state = torch.get_rng_state()
-    cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
-    try:
-        yield
-    finally:
-        np.random.set_state(numpy_state)
-        random.setstate(python_state)
-        torch.set_rng_state(torch_state)
-        if cuda_state is not None:
-            torch.cuda.set_rng_state_all(cuda_state)
 
 
 def evaluate(agent, episodes=20, first_seed=10000, agility=2., duration=None):

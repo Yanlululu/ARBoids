@@ -1,6 +1,7 @@
 """Stopped short-motion data with known time context and physical layout identity."""
 from __future__ import annotations
 import argparse,json,time
+from dataclasses import asdict
 from pathlib import Path
 import numpy as np
 import torch
@@ -18,8 +19,10 @@ def load_behavior(path,source,world,device):
     if ck['protocol']['source_sha256']!=source.sha256 or ck['protocol']['environment_sha256']!=world.environment_sha256:
         raise ValueError('Behavior model source/environment mismatch')
     if ck['protocol'].get('source_implementation_sha256')!=source.implementation_sha256:raise ValueError('Behavior source network implementation mismatch')
-    validate_predictor_protocol(ck['protocol']['physical_protocol'],world.protocol)
-    model=Predictor(Config(**ck['config']));model.load_state_dict(ck['state']);return model.to(device).eval()
+    transfer=validate_predictor_protocol(ck['protocol']['physical_protocol'],world.protocol,allow_task_transfer=True)
+    model=Predictor(Config(**ck['config']));model.load_state_dict(ck['state'])
+    model.protocol_transfer=transfer
+    return model.to(device).eval()
 
 
 def sample_root(world,source,plans,future_seeds,root_metadata,opponent=None,stop_file=None):
@@ -62,6 +65,7 @@ def sample_root(world,source,plans,future_seeds,root_metadata,opponent=None,stop
     meta={**root_metadata,'collection_schema':COLLECTION_SCHEMA,'branch_event_fields':BRANCH_EVENT_FIELDS,
           'future_seeds':list(map(int,future_seeds)),'source_sha256':source.sha256,
           'source_implementation_sha256':source.implementation_sha256,'environment_sha256':world.environment_sha256,
+          'physical_protocol':asdict(world.protocol),
           'capture_stage':f't={world.env.Current_T:.1f}s','elapsed_seconds':float(world.env.Current_T),
           'remaining_seconds':max(0.,world.protocol.time_limit-world.env.Current_T),
           'geometry_identity':ident,'geometry_family_id':ident['fingerprint'],

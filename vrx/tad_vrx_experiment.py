@@ -1,9 +1,19 @@
 """Shared VRX control and scene geometry; execution lives in run_experiment."""
 import numpy as np
 import torch
+from pathlib import Path
+import sys
+_CONTROL_CODE = Path(__file__).resolve().parents[1] / 'citf' / 'code'
+if str(_CONTROL_CODE) not in sys.path:
+    sys.path.insert(0, str(_CONTROL_CODE))
+from citf.environment import apf_force
 
 def force_to_thruster(force, phi, is_attacker=True, min_thrust=-500.0, max_thrust=1000.0):
-    force = force / np.linalg.norm(force)
+    force = np.asarray(force, dtype=float)
+    magnitude = np.linalg.norm(force)
+    if magnitude == 0.0:
+        return np.zeros(2)
+    force = force / magnitude
     rotation = np.array([
         [np.cos(phi), np.sin(phi)],
         [-np.sin(phi), np.cos(phi)]
@@ -19,7 +29,8 @@ def force_to_thruster(force, phi, is_attacker=True, min_thrust=-500.0, max_thrus
         r = (acc - 0.75 * ang) * max_thrust
     return np.clip(np.array([l, r]), min_thrust, max_thrust)
 
-def APF_navi_control(position, goal, obstacles, phi, min_thrust=-500.0, max_thrust=1000.0, improved=True):
+def APF_navi_control(position, goal, obstacles, phi, min_thrust=-500.0, max_thrust=1000.0, improved=True,
+                     *, apf_obstacle_rule='all_obstacles'):
     '''
         Artificial Potential Field Navigation
         
@@ -34,29 +45,8 @@ def APF_navi_control(position, goal, obstacles, phi, min_thrust=-500.0, max_thru
     else:
         alpha = 0.0
 
-    k_att = 0.1
-    goal_direction = goal - position
-    att_force = k_att * goal_direction
-
-    k_rep = 2000.0
-    influence_radius = 20.0
-    rep_force = np.zeros(2)
-    for obs in obstacles:
-        distance = max(np.linalg.norm(position - obs) - 7.0, 0.1)
-        if distance < influence_radius:
-            obs_direction = position - obs
-            obs_direction = obs_direction / np.linalg.norm(obs_direction)
-            perpendicular_direction = np.array([-obs_direction[1], obs_direction[0]])
-
-            mag = k_rep * (1.0 / distance - 1.0 / influence_radius) / (distance ** 2)
-            base_force = mag * obs_direction
-
-            adjusted_force = (1 - alpha) * base_force + alpha * mag * perpendicular_direction
-            rep_force += adjusted_force
-
-            influence_radius = distance
-
-    force = att_force + rep_force
+    force = apf_force(position, goal, obstacles, [7.] * len(obstacles), influence=20.,
+                      repulsion=2000., tangential=alpha, rule=apf_obstacle_rule)
     return force_to_thruster(force, phi, True, min_thrust, max_thrust)
 
 def Boids_navi_control(positions, velocities, phis, goal, min_thrust=-500.0, max_thrust=1000.0):

@@ -1,5 +1,5 @@
 {
-  "document_revision": "CITF-independent-narrative-v4",
+  "document_revision": "CITF-reference-roles-v6",
   "basis": "User identifies CI as their earlier draft method. No CI public publication was supplied for this revision.",
   "author_method": "CITF",
   "roles": {
@@ -11,7 +11,8 @@
       "RP",
       "SAC",
       "Boids",
-      "MAPPO"
+      "MAPPO",
+      "MAAC"
     ],
     "author_constructed_control": [
       "CITF-Phys",
@@ -23,7 +24,8 @@
       "CITF-physical-feedback"
     ],
     "internal_development_reference": [
-      "CI-original"
+      "CI-original",
+      "retained-joint-policy-teacher"
     ]
   },
   "paper_main_table": [
@@ -35,6 +37,19 @@
     "MAPPO"
   ],
   "definitions": {
+    "MAPPO": {
+      "role": "published_baseline",
+      "implementation": "citf.baselines.SourceMAPPO; experiments.public_baselines train/evaluate",
+      "adaptation": "Shared decentralized continuous actors, centralized value, GAE/PPO and PopArt; measured current state, direct thrusters.",
+      "status": "Training, restore, fixed validation selection and common final-evaluation entry implemented; new training results pending.",
+      "legacy_result_identity": "train/train_mappo.py and historical mappo/VRX MAPPO outputs use PredictiveMAPPO."
+    },
+    "MAAC": {
+      "role": "published_baseline",
+      "implementation": "citf.baselines.SourceMAAC; experiments.public_baselines train/evaluate",
+      "adaptation": "Shared continuous actors, attention critic, entropy objective, target networks and replay; measured current state, direct thrusters.",
+      "status": "Training, replay/optimizer/RNG restore and common evaluation entry implemented; new training results pending."
+    },
     "CITF-Phys": {
       "role": "author_constructed_control",
       "display_name": "CITF-Phys",
@@ -71,8 +86,30 @@
     },
     "CITF-physical-feedback": {
       "role": "author_constructed_control",
-      "definition": "information-matched physical feedback model; distinguish from nominal held-thrust CITF-Phys"
+      "definition": "information-matched physical feedback model; distinguish from nominal held-thrust CITF-Phys",
+      "source_learning": "Shared source SAC may remain learned; physical describes the added feedback and scoring layer.",
+      "comparison_purpose": "Measure added interaction learning with matched source, control domain and resources."
+    },
+    "retained-joint-policy-teacher": {
+      "role": "internal_development_reference",
+      "display_name": "保留的已学习联合策略教师",
+      "implementation": "contact_event_policy.retained_teacher -> SynchronizedPolicyConfig/JointConfigurationPolicy -> JointPolicyController",
+      "learned_components": "Source SAC and retained learned joint-configuration policy; identify checkpoints in each runtime.",
+      "current_runtime_role": "reference_mode selects online teacher, current source center, or direct control. Optional teacher rollout warmstart supervises force and return before independent PPO.",
+      "current_action": "clip(reference + residual_scale*tanh(latent), -500, 1000); direct reference is the fixed 250 N normalization midpoint.",
+      "current_learning_target": "Actual complete-episode terminal reward and time cost.",
+      "comparison_purpose": "Measure the incremental rescue, harm and net task change of the added module against its exact retained teacher.",
+      "research_use": "Reuse, replace, jointly optimize or remove according to task benefit and total cost.",
+      "paper_accounting": "Include actual teacher/encoder initialization data, learning and online cost. Attribute physical control and learned improvements to the retained mechanisms.",
+      "training_entry": "experiments.continuous_episode_training --reference-mode direct --teacher <checkpoint> --warmstart-episodes <count>",
+      "role_selection": "Use complete-task results and cost to retain, fine-tune, replace or remove teacher dependence."
     }
+  },
+  "benefit_reporting": {
+    "complete_method": "Compare the full deployed method with public algorithms on the common task.",
+    "added_module": "Compare against the exact teacher/reference used by that method on the same tasks.",
+    "mechanism": "Match shared components, control domain and reasonable resources for the mechanism being claimed.",
+    "protocol_change": "Reevaluate methods and references under the same corrected environment; retain historical scores under their original protocol."
   },
   "public_prior_status_rule": "If a public CI paper/preprint/report is later supplied, audit overlap and update citations and contribution attribution before submission; do not conceal it.",
   "no_new_empirical_results": true,

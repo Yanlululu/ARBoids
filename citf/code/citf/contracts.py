@@ -8,7 +8,9 @@ import numpy as np
 import torch
 
 SCHEMA = 'citf-stopped-aware-v2'
-RUNTIME_REVISION = 'CITF-execution-contracts-v5'
+RUNTIME_REVISION = 'CITF-defense-task-contracts-v6'
+LEGACY_PROTOCOL = 'citf-source80-v2'
+CURRENT_PROTOCOL = 'citf-defense80-v3'
 COLLECTION_SCHEMA = 'citf-branch-events-v1'
 BRANCH_EVENT_FIELDS = ['success','capture','collision','physical_collision','physical_breach',
                        'source_failure','radial_only_failure','timeout']
@@ -135,7 +137,7 @@ def validate_task_banks(*groups):
 
 @dataclass(frozen=True)
 class Protocol:
-    name:str='citf-source80-v2'
+    name:str=CURRENT_PROTOCOL
     environment:str='source'
     time_limit:float=80.
     control_dt:float=.2
@@ -144,16 +146,23 @@ class Protocol:
     capture_radius:float=5.
     collision_radius:float=5.
     risk_clearance:float=7.
-    radial_early_failure:bool=True
+    radial_early_failure:bool|None=None
+    apf_obstacle_rule:str|None=None
     prediction_steps:int=16
     history_steps:int=8
     risk_weight:float=32.
     prior_scale:float=.4
     def __post_init__(self):
+        if self.radial_early_failure is None:
+            object.__setattr__(self, 'radial_early_failure', self.name == LEGACY_PROTOCOL)
+        if self.apf_obstacle_rule is None:
+            object.__setattr__(self, 'apf_obstacle_rule', 'legacy_ordered' if self.name == LEGACY_PROTOCOL else 'all_obstacles')
+        if type(self.radial_early_failure) is not bool or self.apf_obstacle_rule not in ('legacy_ordered', 'all_obstacles'):
+            raise ValueError('Invalid task termination or APF rule')
         # The reference environment has a fixed integration/geometry contract.
         # Reject unsupported changes rather than silently recording false settings.
         locked={'environment':'source','control_dt':.2,'integration_dt':.05,
-                'target_radius':15.,'capture_radius':5.,'collision_radius':5.,'radial_early_failure':True}
+                'target_radius':15.,'capture_radius':5.,'collision_radius':5.}
         for key,value in locked.items():
             if getattr(self,key)!=value:raise ValueError(f'Unsupported environment change {key}; explicit shared environment migration required')
         for key in ('time_limit','risk_clearance','prior_scale'):
@@ -164,6 +173,12 @@ class Protocol:
     def digest(self):return canonical_hash(asdict(self))
     def known_steps(self,elapsed):
         return min(self.prediction_steps,max(0,int(math.ceil((self.time_limit-elapsed)/self.control_dt-1e-7))))
+
+
+def recorded_protocol(record):
+    """Read recorded task semantics; metadata predating versioned rules is legacy."""
+    value=record.get('physical_protocol') or record.get('protocol')
+    return Protocol(**value) if value else Protocol(name=LEGACY_PROTOCOL)
 
 
 def geometry_identity(initial_state,defenders,initialization='source-reset-v1'):
@@ -274,6 +289,8 @@ def validate_branch_events(data,roots,protocol):
     for name,value in expected.items():
         if not torch.equal(events[...,BRANCH_EVENT_FIELDS.index(name)],value):
             raise ValueError('Branch outcome/event mismatch '+name)
+    if not protocol.radial_early_failure and events[...,BRANCH_EVENT_FIELDS.index('radial_only_failure')].any():
+        raise ValueError('Radial-only terminal labels conflict with the physical-defense task')
     if ((codes==4)&((data['branch_stop_time']-protocol.time_limit).abs()>1e-5)).any():
         raise ValueError('Timeout event before task time limit')
 
@@ -293,17 +310,22 @@ def predictor_contract(protocol):
     It changes scoring, not the target D or the model input. All other fields
     (including prior normalization and clearance) remain compatibility checks.
     """
-    value=asdict(protocol) if isinstance(protocol,Protocol) else dict(protocol)
-    Protocol(**value)
+    value=asdict(protocol) if isinstance(protocol,Protocol) else asdict(Protocol(**protocol))
     return {k:v for k,v in value.items() if k not in ('name','risk_weight')}
 
 
-def validate_predictor_protocol(trained_protocol,online_protocol):
-    if predictor_contract(trained_protocol)!=predictor_contract(online_protocol):
+def validate_predictor_protocol(trained_protocol,online_protocol,*,allow_task_transfer=False):
+    trained, online = predictor_contract(trained_protocol), predictor_contract(online_protocol)
+    task_keys = ('radial_early_failure', 'apf_obstacle_rule')
+    changed = {key: {'training': trained[key], 'execution': online[key]}
+               for key in task_keys if trained[key] != online[key]}
+    ignored = task_keys if allow_task_transfer else ()
+    if {k:v for k,v in trained.items() if k not in ignored}!={k:v for k,v in online.items() if k not in ignored}:
         raise ValueError('Predictor dynamics/input/label contract mismatch')
     return {'training_risk_weight':float(trained_protocol['risk_weight']),
             'online_risk_weight':float(online_protocol.risk_weight),
-            'online_scoring_changed':float(trained_protocol['risk_weight'])!=float(online_protocol.risk_weight)}
+            'online_scoring_changed':float(trained_protocol['risk_weight'])!=float(online_protocol.risk_weight),
+            'task_transfer':changed}
 
 
 def runtime_identity(project,source,checkpoint,protocol,control,device,method='CITF',opponent=None,code_entries=()):
@@ -317,6 +339,8 @@ def runtime_identity(project,source,checkpoint,protocol,control,device,method='C
             'history_features':FEATURES,'context_features':CONTEXT,'protocol':asdict(protocol),
             'source_sha256':file_hash(source),'checkpoint_sha256':file_hash(checkpoint) if checkpoint else None,
             'project_code':{x:file_hash(project/x) for x in source_files},
+            'environment_rules':{'implementation':file_hash(here/'environment.py'),
+                'apf_obstacle_rule':protocol.apf_obstacle_rule,'radial_early_failure':protocol.radial_early_failure},
             'runtime_code':canonical_hash({'core':tree_hash(here),'dependencies':dependencies}),
             'runtime_dependencies':dependencies,
             'controller':control,'opponent':opponent,'software':{'python':sys.version,'torch':torch.__version__,'numpy':np.__version__,'scipy':scipy.__version__},'device':str(device)}

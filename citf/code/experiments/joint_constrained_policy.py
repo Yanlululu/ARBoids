@@ -30,8 +30,9 @@ class JointConstrainedController(JointMacroController):
     revision='CITF-joint-policy-with-continuous-predicted-separation-v1'
 
     def history(self,world):
-        history=np.stack(world.history)
-        return np.concatenate((np.repeat(history[:1],8-len(history),0),history),0)
+        length=self.planner.model.cfg.history
+        history=np.stack(list(world.history)[-length:])
+        return np.concatenate((np.repeat(history[:1],length-len(history),0),history),0)
 
     def current_factor(self,world):
         factor=dict(self.active['factor'])
@@ -54,7 +55,7 @@ class JointConstrainedController(JointMacroController):
             order=np.argsort(np.asarray(reference_trace['scores']),kind='stable')
             leading=next((original[i] for i in order if not np.array_equal(original[i],reference)),reference)
             plans=candidate_pool(reference,proposal_trace['configurations'],[leading])
-            features,_=policy_features(self.planner,self.history(world),world.env.Current_T,factor,plans)
+            features,_=policy_features(self.planner,self.history(world),world.env.Current_T,factor,plans,world.protocol)
             prediction=self.model({k:v[None] for k,v in features.items()})
             logits=prediction['logits'][0]
             clearance_prediction=minimum_separation(prediction['position'][0],features['time_valid'])
@@ -82,7 +83,7 @@ class JointConstrainedController(JointMacroController):
             # Reforecast the actual held coefficients, with current sources.
             # No fictitious reference candidate is supplied to the readout.
             factor=self.current_factor(world)
-            root=ObservedRoot(self.history(world),world.env.Current_T,3)
+            root=ObservedRoot(self.history(world),world.env.Current_T,3,world.protocol)
             paths,_=self.planner.rollout(root,factor,self.active['plan'][None])
             distance=float(minimum_separation(paths)[0])
             stopped=distance<clearance

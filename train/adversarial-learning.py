@@ -9,7 +9,7 @@ from policy.SAC import SAC, ReplayBuffer
 from envs.TADgame import TADEnv
 from utils.config import load_config
 from utils.manager import ExperimentManager, set_seed
-from utils.protocol import environment_kwargs, apply_adapter_exploration
+from utils.protocol import environment_kwargs, apply_adapter_exploration, evaluation_rng
 
 def evaluate(def_agent, 
              att_agent,
@@ -19,6 +19,7 @@ def evaluate(def_agent,
              agility : float = 2.0,
              episodes: int = 50,
              env_options=None,
+             *, first_seed=10000,
              ):
     '''
         Evaluate current policies of the defenders and attacker
@@ -26,7 +27,9 @@ def evaluate(def_agent,
         Return:
             Defender SR, Defender collision, Attacker SR, Mean reward
     '''
-    with torch.no_grad():
+    if episodes <= 0:
+        raise ValueError('Evaluation episodes must be positive.')
+    with evaluation_rng(), torch.no_grad():
         env = TADEnv(defender_num,
                     LearningSide=LearningSide, **(env_options or {}))
         
@@ -36,7 +39,8 @@ def evaluate(def_agent,
         reward = 0.0
         n = episodes
 
-        for _ in range(n):
+        for episode in range(n):
+            np.random.seed(first_seed + episode)
             def_s, att_s = env.reset(agility, noisy_agility=False)
             done = False
             while not done:
@@ -191,7 +195,7 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
                     eval_num += 1
                     def_sr, def_col, att_sr, reward = evaluate(
                         def_agent, att_agent, LearningSide, Round, defender_num, agility, eval_episodes,
-                        env_options)
+                        env_options, first_seed=getattr(cfg.training, 'eval_seed', 10000))
                     if not np.isfinite([def_sr, def_col, att_sr, reward]).all():
                         raise FloatingPointError("Evaluation returned non-finite metrics.")
                     

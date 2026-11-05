@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 import torch
-from citf.bridge import World,Source
+from citf.bridge import World,Source,Protocol
 from citf.collect import sample_root
 from citf.contracts import (COLLECTION_SCHEMA,BRANCH_EVENT_FIELDS,SCHEMA,FEATURES,
                             CONTEXT,geometry_identity,validate_dataset)
@@ -19,7 +19,7 @@ class BranchEvents(unittest.TestCase):
         cls.source=Source(PROJECT,CK)
 
     def collect(self,kind):
-        world=World(PROJECT);world.reset(911,912,2.)
+        world=World(PROJECT,Protocol(name='citf-source80-v2'));world.reset(911,912,2.)
         positions=np.array([[20.,0.],[-20.,0.],[0.,20.],[0.,-20.],[14.,14.],[-14.,-14.],[60.,0.]])
         if kind=='capture':positions[-1]=[21.,0.]
         if kind in ('collision','simultaneous'):positions[1]=[21.,0.]

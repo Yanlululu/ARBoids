@@ -58,6 +58,8 @@ def main():
     checked_world=World(a.project,p,tasks['tasks'][0]['defenders'])
     checked_model=load_behavior(a.checkpoint,checked_source,checked_world,a.device)
     checked_controller=options.build(Controller,checked_source,checked_model,a.device,world=checked_world)
+    if checked_model is not None and hasattr(checked_model,'protocol_transfer'):
+        control['initialization_protocol_transfer']=checked_model.protocol_transfer
     control['supported_selections']=sorted(getattr(checked_controller,'supported_selections',('joint',)))
     method='CITF-independent' if a.selection=='independent' else ('CITF' if a.checkpoint else 'CITF-Phys')
     code_entries=[path for path in (inspect.getsourcefile(Controller),inspect.getsourcefile(type(checked_controller))) if path]
@@ -128,6 +130,8 @@ def main():
       success=sum(r['success'] for r in rows),capture=sum(r['capture'] for r in rows),collision=sum(r['collision'] for r in rows),
       physical_collision=sum(r['physical_collision'] for r in rows),physical_breach=sum(r['physical_breach'] for r in rows),
       radial_only_failure=sum(r['radial_only_failure'] for r in rows),timeout=sum(r['timeout'] for r in rows),
+      ever_radial_disadvantage=sum(r.get('ever_radial_disadvantage',0) for r in rows),
+      radial_recovery=sum(r.get('radial_recovery',0) for r in rows),
       capped_capture_time=float(np.mean([r['capped_capture_time'] for r in rows])))
     atomic_json(report,out/'summary.json');print(json.dumps({k:report[k] for k in ('completed','N','expected_N','success','capture','collision')},ensure_ascii=False))
 if __name__=='__main__':main()

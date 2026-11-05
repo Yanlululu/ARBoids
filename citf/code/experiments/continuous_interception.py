@@ -71,7 +71,8 @@ class InterceptionController(Controller):
             else:
                 # A strong unlearned same-planner control, using the nominal
                 # observable APF feedback model with fixed, non-task-specific agility.
-                command = torch.cat((force, attacker_thrust(state, 2.25)[:, None]), 1)
+                command = torch.cat((force, attacker_thrust(state, 2.25,
+                    world.protocol.apf_obstacle_rule == 'legacy_ordered')[:, None]), 1)
                 state, legacy = integrate(state, command)
             paths.append(state[..., :2])
             history = torch.cat((history[:, 1:], state[:, None]), 1)
@@ -116,7 +117,9 @@ class InterceptionController(Controller):
         nearest = distance.amin(1)
         radial = gap.amin(1)
         collision = (pair < world.protocol.collision_radius).any(1)
-        loss = collision | (radial>0) | (radius[:,-1]<world.protocol.target_radius)
+        loss = collision | (radius[:,-1]<world.protocol.target_radius)
+        if world.protocol.radial_early_failure:
+            loss = loss | (radial>0)
         capture = nearest < world.protocol.capture_radius
         tick = torch.arange(horizon, device=paths.device)[None]
         first_loss = torch.where(loss,tick,horizon+1).amin(-1)

@@ -66,12 +66,11 @@ def source_observations(state: Tensor, legacy_velocity: Tensor) -> Tuple[Tensor,
     return observations, normalized_boids
 
 
-def attacker_thrust(state: Tensor, agility: float) -> Tensor:
+def attacker_thrust(state: Tensor, agility: float, legacy_ordered: bool = False) -> Tensor:
     position, yaw = state[:, -1, :2], state[:, -1, 2]
     force = -.1 * position
     influence = torch.full_like(yaw, 50.)
-    # Preserve the archived APF's ordered nearest-obstacle update. Its
-    # influence radius changes after each closer obstacle contributes.
+    # The current task sums all obstacles at the fixed 50 m support radius.
     for index in range(state.shape[1] - 1):
         delta = position - state[:, index, :2]
         norm = delta.norm(p=2, dim=-1).clamp_min(1e-12)
@@ -79,7 +78,8 @@ def attacker_thrust(state: Tensor, agility: float) -> Tensor:
         active = distance < influence
         magnitude = 3000 * (distance.reciprocal() - influence.reciprocal()) / distance.square()
         force = force + torch.where(active[:, None], magnitude[:, None] * delta / norm[:, None], torch.zeros_like(delta))
-        influence = torch.where(active, distance, influence)
+        if legacy_ordered:
+            influence = torch.where(active, distance, influence)
     return force_to_thrust(force, yaw, agility)
 
 
@@ -118,7 +118,8 @@ def predict(world, source, factor, plans, nominal_agility):
             observations, boids = source_observations(state, legacy)
             learned = source_actions(source.net, observations)
         force = 750 * (gates * learned + (1 - gates) * boids) + 250
-        thrust = torch.cat((force, attacker_thrust(state, nominal_agility)[:, None]), 1)
+        thrust = torch.cat((force, attacker_thrust(state, nominal_agility,
+            protocol.apf_obstacle_rule == 'legacy_ordered')[:, None]), 1)
         next_state, legacy = integrate(state, thrust)
         state = torch.where(alive[:, None, None], next_state, state)
         positions = state[..., :2]

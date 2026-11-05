@@ -1,5 +1,25 @@
 """Explicit experiment settings while retaining the released-code defaults."""
+from contextlib import contextmanager
+import random
+
 import numpy as np
+import torch
+
+
+@contextmanager
+def evaluation_rng():
+    """Keep validation independent of the training random-number streams."""
+    numpy_state, python_state = np.random.get_state(), random.getstate()
+    torch_state = torch.get_rng_state()
+    cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None
+    try:
+        yield
+    finally:
+        np.random.set_state(numpy_state)
+        random.setstate(python_state)
+        torch.set_rng_state(torch_state)
+        if cuda_state is not None:
+            torch.cuda.set_rng_state_all(cuda_state)
 
 
 def environment_kwargs(cfg):

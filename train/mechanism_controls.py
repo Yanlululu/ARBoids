@@ -4,12 +4,20 @@ import copy
 import hashlib
 from contextlib import nullcontext
 from pathlib import Path
+import sys
 import time
 
 import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+SOURCE_REPEAT_RECIPE = 'source-repeat-v3-defense80'
+FIXED_EVALUATION_RECIPE = 'source-repeat-v2-pure-sac-fixed-evaluation'
+
+_CONTROL_CODE = Path(__file__).resolve().parents[1] / 'citf' / 'code'
+if str(_CONTROL_CODE) not in sys.path:
+    sys.path.insert(0, str(_CONTROL_CODE))
 
 
 class GenericFusionAdapter(nn.Module):
@@ -407,12 +415,14 @@ def independent_source_initialization(template, source_run, seed, *, source_chec
 
 
 def run_author_source_repeat(seed,directory,device='cuda:0',*,defenders=3,family='arboids'):
-    """Independently repeat the published source training configuration."""
+    """Train source baselines with explicit observations and fixed validation tasks."""
     import sys
     import train as training
     from source_arboids import numerical_source,SOURCE_ROOT,SOURCE_COMMIT
     from utils.manager import ExperimentManager,set_seed
     from utils.config import load_config
+    from types import SimpleNamespace
+    from citf.environment import environment_type
     if family not in ('arboids','rp','sac') or defenders < 2:
         raise ValueError('Choose an original source algorithm and a valid fleet size.')
     directory=Path(directory);result=directory/'source-repeat-result.pth'
@@ -421,17 +431,21 @@ def run_author_source_repeat(seed,directory,device='cuda:0',*,defenders=3,family
         if (recorded['seed']!=seed or recorded.get('family','arboids')!=family
                 or recorded.get('training_defenders',3)!=defenders):
             raise ValueError('The source repeat belongs to a different training specification.')
+        if recorded.get('training_recipe') != SOURCE_REPEAT_RECIPE:
+            raise ValueError('This directory contains a legacy training recipe. Evaluate it under its recorded identity, '
+                             'or use a new directory for the corrected baseline recipe.')
         return recorded
     if (directory/'adares1.pth').exists():
         raise ValueError('A partial actor-only source run cannot be treated as resumed independent training.')
     source=numerical_source()
-    training.SAC=source.SAC;training.TADEnv=source.TADEnv
-    training.ReplayBuffer=sys.modules[source.SAC.__module__].ReplayBuffer
     torch.set_num_threads(1);torch.set_grad_enabled(True);set_seed(seed)
     config=load_config(str(SOURCE_ROOT/'train/configs/train.yaml'))
     config.agent.defender_num=defenders
     config.agent.adaptive=family=='arboids';config.agent.residual=family!='sac'
+    config.agent.boid_state=family!='sac'
     config.training.seed=seed
+    config.training.eval_seed=10000
+    config.environment=SimpleNamespace(radial_early_failure=False,apf_obstacle_rule='all_obstacles')
     class SourceRepeatManager(ExperimentManager):
         def record_metrics(self,**metrics):
             super().record_metrics(**metrics);self.latest=metrics
@@ -443,9 +457,19 @@ def run_author_source_repeat(seed,directory,device='cuda:0',*,defenders=3,family
                 self.best=score;self.selection=dict(self.latest)
                 model.save(str(Path(self.exp_dir)/'best-development.pth'))
     experiment=SourceRepeatManager(config,base_dir=str(directory.parent),run_id=directory.name,repeat_idx=1)
-    training.main(config,experiment,torch.device(device))
+    original_types = training.SAC, training.TADEnv, training.ReplayBuffer
+    try:
+        training.SAC=source.SAC;training.TADEnv=environment_type(source.TADEnv)
+        training.ReplayBuffer=sys.modules[source.SAC.__module__].ReplayBuffer
+        training.main(config,experiment,torch.device(device))
+    finally:
+        training.SAC, training.TADEnv, training.ReplayBuffer = original_types
     checkpoint=directory/'adares1.pth'
     recorded=dict(seed=seed,family=family,training_defenders=defenders,
+        training_recipe=SOURCE_REPEAT_RECIPE,
+        observation_variant='boids-augmented' if config.agent.boid_state else 'kinematics-only',
+        evaluation_protocol=dict(first_seed=config.training.eval_seed, fixed_tasks=True, isolated_rng=True),
+        environment_protocol=dict(name='citf-defense80-v3',radial_early_failure=False,apf_obstacle_rule='all_obstacles'),
         source_commit=SOURCE_COMMIT,training_steps=config.training.total_steps,
         checkpoint=str(checkpoint),checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
         configuration_sha256=hashlib.sha256((directory/'config.yaml').read_bytes()).hexdigest(),
@@ -475,6 +499,8 @@ class AuthorSourceRepeatPolicy:
         self.choose_action = source.SAC.choose_action.__get__(self)
         self.controller = 'RL' if not agent['residual'] else ('AdaRes' if adaptive else 'Res')
         self.environment_options = (agent['boid_state'], agent['form_reward'])
+        self.environment_rules = dict(config.get('environment',
+            {'radial_early_failure':True,'apf_obstacle_rule':'legacy_ordered'}))
 
     def __call__(self, observations):
         return np.stack([self.choose_action(row[None], deterministic=True) for row in observations])
@@ -496,6 +522,14 @@ def validate_author_source_repeat(directory):
     expected = yaml.safe_load((SOURCE_ROOT/'train/configs/train.yaml').read_text())
     expected['agent'].update(defender_num=record.get('training_defenders', 3),
                              adaptive=family == 'arboids', residual=family != 'sac')
+    recipe = record.get('training_recipe', 'source-repeat-v1')
+    if recipe in (SOURCE_REPEAT_RECIPE, FIXED_EVALUATION_RECIPE):
+        expected['agent']['boid_state'] = family != 'sac'
+        expected['training']['eval_seed'] = 10000
+        if recipe == SOURCE_REPEAT_RECIPE:
+            expected['environment'] = dict(radial_early_failure=False,apf_obstacle_rule='all_obstacles')
+    elif recipe != 'source-repeat-v1':
+        raise ValueError('Unknown source baseline training recipe: ' + recipe)
     # Earlier repeats set the recorded seed directly before constructing the
     # experiment manager; later repeats additionally serialize it in YAML.
     if 'seed' in config['training']:
@@ -517,6 +551,11 @@ def validate_author_source_repeat(directory):
     if (int(best['step']) != selected['step'] or any(not np.isclose(float(best[key]), selected[key],
             atol=1e-12, rtol=1e-12) for key in ('def_sr', 'reward'))):
         raise ValueError('The selected baseline is not the recorded training-development maximum.')
+    record = dict(record, training_recipe=recipe,
+                  observation_variant='boids-augmented' if config['agent']['boid_state'] else 'kinematics-only')
+    record['evaluation_protocol'] = (dict(first_seed=10000, fixed_tasks=True, isolated_rng=True)
+                                     if recipe in (SOURCE_REPEAT_RECIPE, FIXED_EVALUATION_RECIPE) else
+                                     dict(first_seed=None, fixed_tasks=False, isolated_rng=False))
     return record, config
 
 
@@ -542,6 +581,7 @@ _AUTHOR_REPEAT_POLICIES = {}
 def author_source_repeat_episode(task):
     """Use the frozen source dynamics and the common layout/future seed pair."""
     import joint_fusion as d
+    from citf.environment import environment_type
     scene, future, directory, digest = task
     key = (str(Path(directory).resolve()), digest)
     if key not in _AUTHOR_REPEAT_POLICIES:
@@ -552,7 +592,7 @@ def author_source_repeat_episode(task):
     policy = _AUTHOR_REPEAT_POLICIES[key]
     seed, defenders, agility = scene
     np.random.seed(int(seed)); torch.manual_seed(int(seed))
-    env = d.numerical_source().TADEnv(defenders, *policy.environment_options)
+    env = environment_type(d.numerical_source().TADEnv)(defenders, *policy.environment_options, **policy.environment_rules)
     observations, _ = env.reset(agility=agility, noisy_agility=False)
     if future is not None:
         np.random.seed(int(future))
@@ -561,7 +601,7 @@ def author_source_repeat_episode(task):
         observations, reward, done, _ = env.step(policy(observations), policy.controller)
         total += discount*float(np.mean(reward)); discount *= .99; steps += 1
     row = dict(seed=int(seed), defenders=defenders, agility=agility, **d.outcome(env, done),
-               discounted_return=total, environment_protocol='source', physical_steps=steps)
+               discounted_return=total, environment_protocol=policy.environment_rules, physical_steps=steps)
     if future is not None:
         row['future_seed'] = int(future)
     return row
@@ -588,10 +628,11 @@ def evaluate_author_source_repeat(directory, tasks, *, workers=2, result_suffix=
         if previous['completed']:
             if any(row is None for row in previous['rows']):
                 raise ValueError('A completed baseline evaluation is missing task outcomes.')
-            return previous
+            return dict(previous, source_training=source)
     rows = previous['rows'] if previous else [None]*len(tasks)
     if previous is not None and all(row is not None for row in rows):
-        record=dict(previous,completed=True,evaluated=len(rows),success=sum(row['success'] for row in rows))
+        record=dict(previous,completed=True,evaluated=len(rows),success=sum(row['success'] for row in rows),
+                    source_training=source)
         r.atomic_save(record,path)
         return record
     start = time.monotonic()

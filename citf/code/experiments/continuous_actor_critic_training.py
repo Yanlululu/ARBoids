@@ -19,8 +19,8 @@ import torch
 from torch.nn import functional as F
 
 from citf.bridge import Source,World
-from citf.contracts import Protocol
-from citf.train import atomic_save
+from citf.contracts import Protocol, immutable_run_contract, require_same_contract, validate_task_banks, file_hash
+from citf.train import atomic_save, read_journal
 from experiments.contact_event_policy import retained_teacher
 from experiments.continuous_actor_critic import ContinuousConfig,ContinuousActorCritic,observed_history
 from experiments.interaction_trajectories import atomic_json
@@ -45,7 +45,7 @@ def environment_worker(connection,arguments,index,restored=None):
             world.reset(base['scene_seed'],future,base['agility']);episode+=1;steps=0;episode_return=0.
         def observation():
             reference,_=teacher.act(world)
-            return dict(history=observed_history(world),remaining=protocol.time_limit-world.env.Current_T,
+            return dict(history=observed_history(world,protocol.history_steps),remaining=protocol.time_limit-world.env.Current_T,
                 reference=np.asarray(reference,np.float32))
         if restored is None:reset()
         else:
@@ -79,12 +79,18 @@ def environment_worker(connection,arguments,index,restored=None):
 class Environments:
     def __init__(self,args,restored=None):
         context=mp.get_context('spawn');self.processes=[];self.connections=[]
-        for index in range(args.workers):
-            parent,child=context.Pipe()
-            process=context.Process(target=environment_worker,args=(child,vars(args),index,
-                None if restored is None else restored[index]))
-            process.start();child.close();self.processes.append(process);self.connections.append(parent)
-        self.current=[self.receive(pipe,'ready') for pipe in self.connections]
+        if restored is not None and len(restored)!=args.workers:
+            raise ValueError('Restored environment count changed')
+        try:
+            for index in range(args.workers):
+                parent,child=context.Pipe()
+                process=context.Process(target=environment_worker,args=(child,vars(args),index,
+                    None if restored is None else restored[index]))
+                process.start();child.close();self.processes.append(process);self.connections.append(parent)
+            self.current=[self.receive(pipe,'ready') for pipe in self.connections]
+        except BaseException:
+            self.close()
+            raise
 
     @staticmethod
     def receive(pipe,expected):
@@ -114,12 +120,15 @@ class Environments:
 
 
 class ValueEpisodes:
-    def __init__(self,directory):
+    def __init__(self,directory,physical,families):
         directory=Path(directory)
         protocol=json.loads((directory/'protocol.json').read_text())
         summary=json.loads((directory/'summary.json').read_text())
         if protocol['role']!='train' or not summary['completed']:
             raise ValueError('Value initialization requires completed training-only trajectories')
+        if asdict(Protocol(**protocol['protocol']))!=asdict(physical):
+            raise ValueError('Value returns must use the training task termination and opponent rules')
+        self.physical=physical
         rows=[json.loads(x) for x in (directory/'episodes.jsonl').read_text().splitlines()]
         self.data=[];self.families=set()
         for row in rows:
@@ -127,6 +136,8 @@ class ValueEpisodes:
             with np.load(directory/'episodes'/row['episode']) as arrays:state=arrays['state'].copy()
             self.data.append((state,1. if row['result']['success'] else -1.))
             self.families.add(row['task']['geometry_family_id'])
+        if not self.data or not self.families.issubset(families):
+            raise ValueError('Value initialization needs nonempty trajectories from allocated training layouts')
         self.description=dict(directory=str(directory),episodes=len(self.data),layouts=len(self.families),
             actual_steps=sum(len(x[0])-1 for x in self.data),behavior='strong_physical',
             use='value-head warm start from real complete returns; no validation or future input',
@@ -136,8 +147,8 @@ class ValueEpisodes:
         histories=[];remaining=[];returns=[]
         for _ in range(count):
             state,reward=self.data[int(rng.integers(len(self.data)))];length=len(state)-1
-            tick=int(rng.integers(length));indices=np.maximum(0,np.arange(tick-7,tick+1))
-            histories.append(state[indices]);remaining.append(80.-.2*tick)
+            tick=int(rng.integers(length));indices=np.maximum(0,np.arange(tick+1-self.physical.history_steps,tick+1))
+            histories.append(state[indices]);remaining.append(self.physical.time_limit-self.physical.control_dt*tick)
             returns.append(reward-time_cost*(length-tick))
         return (torch.as_tensor(np.stack(histories),device=device),
             torch.tensor(remaining,dtype=torch.float32,device=device),
@@ -192,7 +203,7 @@ def update_policy(model,optimizer,rollout,bootstrap,args,rng):
     predicted=data['value'];target=data['returns']
     report={key:float(np.mean([x[key] for x in records])) for key in records[0]}
     report.update(minibatch_updates=len(records),kl_stopped=early,
-        value_explained_variance=float((1-(target-predicted).var()/target.var().clamp_min(1e-8)).detach()),
+        value_explained_variance=float((1-(target-predicted).var(unbiased=False)/target.var(unbiased=False).clamp_min(1e-8)).detach()),
         exploration_std=model.log_std.exp().detach().cpu().tolist())
     return report
 
@@ -201,7 +212,7 @@ def main():
     parser=argparse.ArgumentParser()
     for key in ['project','source','teacher','encoder','tasks','value-data','out']:parser.add_argument('--'+key,required=True)
     parser.add_argument('--seed',type=int,default=9401);parser.add_argument('--device',default='cuda:0')
-    parser.add_argument('--workers',type=int,default=16);parser.add_argument('--rollout',type=int,default=128)
+    parser.add_argument('--workers',type=int,default=4);parser.add_argument('--rollout',type=int,default=128)
     parser.add_argument('--updates',type=int,default=96);parser.add_argument('--stages',nargs='+',type=int,default=[16,48,96])
     parser.add_argument('--value-pretrain',type=int,default=500);parser.add_argument('--minibatch',type=int,default=512)
     parser.add_argument('--epochs',type=int,default=4);parser.add_argument('--lr',type=float,default=1e-4)
@@ -210,26 +221,40 @@ def main():
     parser.add_argument('--gae-lambda',type=float,default=.97);parser.add_argument('--time-cost',type=float,default=.00005)
     parser.add_argument('--residual-scale',type=float,default=1500.);parser.add_argument('--initial-std',type=float,default=.06)
     parser.add_argument('--resume',action='store_true');args=parser.parse_args()
+    if min(args.workers,args.rollout,args.updates,args.minibatch,args.epochs)<1 or args.value_pretrain<0:
+        parser.error('Training dimensions must be positive; value pretraining may be zero')
+    if not 0<=args.gae_lambda<=1 or min(args.lr,args.encoder_lr,args.value_lr,args.clip,args.target_kl)<=0 or args.time_cost<0:
+        parser.error('Invalid learning configuration')
     out=Path(args.out);out.mkdir(parents=True,exist_ok=args.resume)
     bank=json.loads(Path(args.tasks).read_text())
     if bank['role']!='train':raise ValueError('On-policy learning requires training layouts')
+    families=validate_task_banks(('train',bank))['train'];physical=Protocol(**bank['protocol'])
     torch.set_num_threads(1);torch.manual_seed(args.seed);np.random.seed(args.seed)
     rng=np.random.default_rng(args.seed+41)
     cfg=ContinuousConfig(teacher_checkpoint=args.teacher,encoder_checkpoint=args.encoder,
+        teacher_sha256=file_hash(args.teacher),history=physical.history_steps,
         residual_scale=args.residual_scale,initial_std=args.initial_std)
     model=ContinuousActorCritic(cfg).to(args.device);model.initialize_encoder(args.encoder)
     actor_params=[*model.command.parameters(),*model.action_context.parameters(),*model.actor.parameters(),model.log_std]
     optimizer=torch.optim.Adam([dict(params=model.encoder.parameters(),lr=0.),
         dict(params=actor_params,lr=args.lr),dict(params=model.critic.parameters(),lr=args.value_lr)],eps=1e-5)
     payload=None;start_update=0;steps=0;episodes=0
+    contract_args={k:v for k,v in vars(args).items() if k not in ('resume','device','out','updates','stages')}
+    contract=immutable_run_contract(dict(arguments=contract_args,config=asdict(cfg),physical_protocol=asdict(physical)),
+        files=[args.source,args.teacher,args.encoder,args.tasks]+[
+            Path(args.value_data)/name for name in ('protocol.json','summary.json','episodes.jsonl')]+[
+            Path(args.project)/'train'/name for name in ('envs/TADgame.py','envs/modules.py','policy/networks.py')],code=[__file__])
     if args.resume:
         payload=torch.load(out/'last.pt',map_location='cpu',weights_only=False)
+        require_same_contract(payload.get('contract'),contract,'Actor-critic training resume')
         model.load_state_dict(payload['state']);optimizer.load_state_dict(payload['optimizer'])
         rng.bit_generator.state=payload['numpy_rng'];torch.set_rng_state(payload['torch_rng'])
         if args.device.startswith('cuda'):torch.cuda.set_rng_state_all(payload['cuda_rng'])
         start_update=payload['update'];steps=payload['environment_steps'];episodes=payload['episodes']
-    values=ValueEpisodes(args.value_data);started=time.time()
-    protocol=dict(arguments=vars(args),config=asdict(cfg),value_initialization=values.description,
+        if args.updates<start_update:raise ValueError('Training endpoint precedes the restored checkpoint')
+        for name in ('episodes.jsonl','learning.jsonl'):read_journal(out/name,committed_update=start_update)
+    values=ValueEpisodes(args.value_data,physical,families);started=time.time()
+    protocol=dict(arguments=vars(args),config=asdict(cfg),physical_protocol=asdict(physical),contract=contract,value_initialization=values.description,
         train_layouts=len({x['geometry_family_id'] for x in bank['tasks']}),
         action='reference force+1500*tanh(joint latent),clipped only to common[-500,1000]N hardware domain',
         goal='complete task success first; terminal+1/-1,per actual control step cost0.00005,gamma1',
@@ -240,27 +265,35 @@ def main():
         started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
     if not args.resume:atomic_json(protocol,out/'protocol.json')
     envs=None
+    def checkpoint(update,value_pretrain_done=None):
+        saved=dict(config=asdict(cfg),state={k:v.detach().cpu() for k,v in model.state_dict().items()},
+            optimizer=optimizer.state_dict(),update=update,environment_steps=steps,episodes=episodes,
+            workers=None if envs is None else envs.snapshot(),numpy_rng=rng.bit_generator.state,torch_rng=torch.get_rng_state(),
+            cuda_rng=torch.cuda.get_rng_state_all() if args.device.startswith('cuda') else [],protocol=protocol,contract=contract,
+            value_pretrain_done=args.value_pretrain if value_pretrain_done is None else value_pretrain_done,
+            teacher_sha256=cfg.teacher_sha256,encoder_initialization_sha256=file_hash(args.encoder))
+        if envs is not None and (update==0 or update in args.stages or update==args.updates):
+            atomic_save(saved,out/f'stage_{update:06d}.pt')
+        atomic_save(saved,out/'last.pt')
     try:
         with (out/'learning.jsonl').open('a' if args.resume else 'w') as log,(out/'episodes.jsonl').open('a' if args.resume else 'w') as episode_log:
-            if not args.resume:
-                for iteration in range(1,args.value_pretrain+1):
+            if payload is None or payload['workers'] is None:
+                pretrain_done=0 if payload is None else payload.get('value_pretrain_done',0)
+                if payload is None:checkpoint(0,value_pretrain_done=0)
+                for iteration in range(pretrain_done+1,args.value_pretrain+1):
                     history,remaining,target=values.batch(rng,args.minibatch,args.device,args.time_cost)
                     loss=F.mse_loss(model(history,remaining)['value'],target)
+                    if not torch.isfinite(loss):raise FloatingPointError('Nonfinite value initialization objective')
                     optimizer.zero_grad(set_to_none=True);loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.critic.parameters(),1.);optimizer.step()
-                    if iteration%100==0:
-                        row=dict(phase='value_initialization',update=iteration,loss=float(loss.detach()))
+                    if iteration%100==0 or iteration==args.value_pretrain:
+                        row=dict(phase='value_initialization',update=0,initialization_iteration=iteration,loss=float(loss.detach()))
                         log.write(json.dumps(row)+'\n');log.flush();atomic_json(dict(completed=False,**row),out/'status.json')
+                        checkpoint(0,value_pretrain_done=iteration)
                         print(json.dumps(row),flush=True)
             optimizer.param_groups[0]['lr']=args.encoder_lr
             envs=Environments(args,None if payload is None else payload['workers'])
-            def checkpoint(update):
-                saved=dict(config=asdict(cfg),state={k:v.detach().cpu() for k,v in model.state_dict().items()},
-                    optimizer=optimizer.state_dict(),update=update,environment_steps=steps,episodes=episodes,
-                    workers=envs.snapshot(),numpy_rng=rng.bit_generator.state,torch_rng=torch.get_rng_state(),
-                    cuda_rng=torch.cuda.get_rng_state_all() if args.device.startswith('cuda') else [],protocol=protocol)
-                atomic_save(saved,out/f'stage_{update:06d}.pt');atomic_save(saved,out/'last.pt')
-            if not args.resume:checkpoint(0)
+            if start_update==0:checkpoint(0)
             for update in range(start_update+1,args.updates+1):
                 rollout={key:[] for key in ['history','remaining','reference','latent','logp','value','reward','done']}
                 recent=[];rollout_started=time.time();model.eval()
@@ -292,7 +325,7 @@ def main():
                     elapsed_seconds=time.time()-started,**detail)
                 log.write(json.dumps(row)+'\n');log.flush();atomic_json(dict(completed=False,**row),out/'status.json')
                 print(json.dumps(row),flush=True)
-                if update in args.stages:checkpoint(update)
+                checkpoint(update)
             report=dict(completed=True,updates=args.updates,environment_steps=steps,completed_episodes=episodes,
                 training_layouts=protocol['train_layouts'],elapsed_seconds=time.time()-started,
                 closed_loop_evaluation='declared checkpoints pending independent complete256 evaluation')

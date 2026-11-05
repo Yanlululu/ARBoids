@@ -6,6 +6,7 @@ Training uses short physical trajectories only, never complete-task returns.
 """
 import argparse
 import concurrent.futures
+from dataclasses import asdict
 import datetime
 import itertools
 import json
@@ -17,7 +18,7 @@ import numpy as np
 import torch
 
 from citf.bridge import World, factorize, inputs
-from citf.contracts import Protocol, BRANCH_EVENT_FIELDS, COLLECTION_SCHEMA
+from citf.contracts import Protocol, BRANCH_EVENT_FIELDS, COLLECTION_SCHEMA, recorded_protocol
 from experiments import root_response_diagnostic as diagnostic
 
 
@@ -50,7 +51,7 @@ def candidate_bank(world, source, cfg):
         paths = b['nominal'][0].numpy()[:, None]
         valid = np.broadcast_to(b['known_time_valid'][0].numpy(),
                                 (len(proposals), 1, paths.shape[-2]))
-        score = diagnostic.response_scores(paths, valid, b['unary'][0].numpy())['contact'][:, 0]
+        score = diagnostic.response_scores(paths, valid, b['unary'][0].numpy(),protocol=world.protocol)['contact'][:, 0]
         order = sorted(range(len(proposals)), key=lambda k: (float(score[k]), tuple(proposals[k])))
         key = tuple(map(int, proposals[order[0]]))
         if key not in plans:
@@ -109,6 +110,7 @@ def sample_response(world, plans, future_seeds, metadata, horizon_steps=None):
         future_seeds=future_seeds, source_sha256=w['source'].sha256,
         source_implementation_sha256=w['source'].implementation_sha256,
         environment_sha256=world.environment_sha256, geometry_identity=world.initial_identity,
+        physical_protocol=asdict(world.protocol),
         geometry_family_id=world.initial_identity['fingerprint'],
         elapsed_seconds=float(world.env.Current_T), response_hold_steps=w['response_hold'],
         recourse_policy='unchanged synchronized physical, recomputed every control tick',
@@ -122,7 +124,7 @@ def sample_response(world, plans, future_seeds, metadata, horizon_steps=None):
 def collect_layout(job):
     w = diagnostic.worker
     task, index = job['task'], job['index']
-    world = World(w['project'], Protocol(), task['defenders'])
+    world = World(w['project'], recorded_protocol(job), task['defenders'])
     world.reset(task['scene_seed'], task['future_seed'], task['agility'])
     controller = diagnostic.synchronized.joint.JointPolicyController(w['source'], w['model'])
     use_learned = bool(index % 2)
@@ -197,7 +199,7 @@ def main():
         raise ValueError('Only declared development train and validation layouts may be sampled')
     out = Path(args.out); out.mkdir(parents=True, exist_ok=False)
     deadline = datetime.datetime.fromisoformat(args.deadline).timestamp()
-    jobs = [dict(index=i, task=t) for i, t in enumerate(bank['tasks'])]
+    jobs = [dict(index=i, task=t,physical_protocol=asdict(recorded_protocol(bank))) for i, t in enumerate(bank['tasks'])]
     status = dict(completed=False, arguments=vars(args), jobs=[dict(index=i, status='pending') for i in range(len(jobs))])
     (out / 'status.json').write_text(json.dumps(status, indent=2))
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers,

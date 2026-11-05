@@ -16,6 +16,7 @@ import torch
 from torch.nn import functional as F
 
 from citf.bridge import Source
+from citf.contracts import recorded_protocol
 from citf.train import atomic_save as save
 from experiments.interaction_dynamics import load as load_dynamics
 from experiments.interception_fusion import InterceptionFusionController
@@ -42,7 +43,7 @@ def load_examples(directories,planner):
                 factor={k:torch.from_numpy(raw[k].copy()) for k in ['grid','prior','lead_seconds','intercept_target']}
                 factor['learned']=torch.from_numpy(raw['learned_source'].copy())
                 factor['rules']=torch.from_numpy(raw['boids_source'].copy())
-                feature,rotation=policy_features(planner,raw['history'],row['elapsed'],factor,plans)
+                feature,rotation=policy_features(planner,raw['history'],row['elapsed'],factor,plans,recorded_protocol(tasks))
                 feature={k:v.cpu() for k,v in feature.items()}
                 reward=torch.from_numpy(raw['reward'].copy()).float()
                 initial=torch.full((len(plans),),-.25);initial[0]=0

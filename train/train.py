@@ -9,7 +9,7 @@ from policy.SAC import SAC, ReplayBuffer
 from envs.TADgame import TADEnv
 from utils.config import load_config
 from utils.manager import ExperimentManager, set_seed
-from utils.protocol import environment_kwargs, apply_adapter_exploration, controller_name
+from utils.protocol import environment_kwargs, apply_adapter_exploration, controller_name, evaluation_rng
 
 def evaluate(agent, 
              defender_num=3, 
@@ -17,16 +17,20 @@ def evaluate(agent,
              boid_state=True,
              controller='Res',
              episodes=50,
-             env_options=None):
-    with torch.no_grad():
+             env_options=None, *, form_reward=True, first_seed=10000):
+    if episodes <= 0:
+        raise ValueError('Evaluation episodes must be positive.')
+    with evaluation_rng(), torch.no_grad():
         env = TADEnv(defender_num,
                     boid_state,
+                    form_reward,
                     **(env_options or {}))
         
         def_win_num = 0
         reward = 0.0
         n = episodes
-        for _ in range(n):
+        for episode in range(n):
+            np.random.seed(first_seed + episode)
             s, _ = env.reset(agility, noisy_agility=False)
             done = False
             while not done:
@@ -60,6 +64,7 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
     total_steps = cfg.training.total_steps
     eval_interval = cfg.training.eval_interval
     eval_episodes = getattr(cfg.training, "eval_episodes", 50)
+    eval_seed = getattr(cfg.training, "eval_seed", 10000)
     log_interval = getattr(cfg.training, "log_interval", 1000)
     if not (0 < warm_steps < total_steps and eval_interval > 0 and eval_episodes > 0 and log_interval > 0):
         raise ValueError("Require 0 < warm_steps < total_steps and positive evaluation/log intervals.")
@@ -123,7 +128,9 @@ def main(cfg, exp: ExperimentManager, device=torch.device('cpu')):
 
                 if train_steps % eval_interval == 0 or train_steps == total_steps:
                     eval_num += 1
-                    def_sr, reward = evaluate(agent, defender_num, eva_agility, boid_state, controller, eval_episodes, env_options)
+                    def_sr, reward = evaluate(agent, defender_num, eva_agility, boid_state,
+                                              controller, eval_episodes, env_options,
+                                              form_reward=form_reward, first_seed=eval_seed)
                     if not np.isfinite([def_sr, reward]).all():
                         raise FloatingPointError("Evaluation returned non-finite metrics.")
                     exp.record_metrics(num=eval_num, step=train_steps, def_sr=def_sr, reward=reward)

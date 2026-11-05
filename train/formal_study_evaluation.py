@@ -1,4 +1,4 @@
-"""Fixed-scene evaluation without critic access or checkpoint selection."""
+"""Legacy paper-protocol evaluation of ARBoids and PredictiveMAPPO."""
 import argparse
 import csv
 import json
@@ -111,7 +111,8 @@ def evaluate(args):
         if (i+1)%25 == 0:
             print(json.dumps(dict(completed=i+1, total=args.episodes, **{k:sum(r[k] for r in rows) for k in
                               ('success','collision','breach')})), flush=True)
-    summary = dict(**specification, completed=True, trained_defenders=trained_n, task_episodes=len(rows))
+    summary = dict(**specification, completed=True, trained_defenders=trained_n, task_episodes=len(rows),
+                   algorithm='PredictiveMAPPO' if args.kind == 'mappo' else 'ARBoids')
     for k in ('success', 'capture', 'timeout', 'collision', 'breach'):
         count = sum(row[k] for row in rows)
         summary[k+'_count'] = count
@@ -133,7 +134,8 @@ def evaluate(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', type=Path, required=True)
-    parser.add_argument('--kind', choices=('sac','mappo'), required=True)
+    parser.add_argument('--kind', choices=('sac','mappo'), required=True,
+                        help='Legacy loader names: sac loads ARBoids; mappo loads PredictiveMAPPO.')
     parser.add_argument('--first-seed', type=int, required=True)
     parser.add_argument('--episodes', type=int, required=True)
     parser.add_argument('--defenders', type=int, default=3)

@@ -7,6 +7,7 @@ can be used separately on training layouts without an outcome/value head.
 """
 import argparse
 import concurrent.futures
+from dataclasses import asdict
 import datetime
 import json
 import multiprocessing
@@ -17,7 +18,7 @@ import numpy as np
 import torch
 
 from citf.bridge import World, factorize, inputs
-from citf.contracts import Protocol, BRANCH_EVENT_FIELDS, COLLECTION_SCHEMA
+from citf.contracts import Protocol, BRANCH_EVENT_FIELDS, COLLECTION_SCHEMA, recorded_protocol
 from experiments import root_response_diagnostic as diagnostic
 from experiments.candidate_response import CandidateResponseModel, ResponseConfig, ResponseController, add_reference
 
@@ -72,7 +73,7 @@ def bank_decisions(world):
         tuple(plans[k])))
     nominal = batch['nominal'][0].numpy()[:, None]
     valid = np.broadcast_to(batch['known_time_valid'][0].numpy(), (len(plans), 1, nominal.shape[-2]))
-    contact = diagnostic.response_scores(nominal, valid, batch['unary'][0].numpy())['contact'][:, 0]
+    contact = diagnostic.response_scores(nominal, valid, batch['unary'][0].numpy(),protocol=world.protocol)['contact'][:, 0]
     contact_choice = min(range(len(plans)), key=lambda k: (float(contact[k]), tuple(plans[k])))
     return f, plans, batch, dict(physical=0, teacher=teacher_choice, student=student_choice,
         nominal_contact=contact_choice), dict(teacher=teacher_logits, student=student_logits,
@@ -89,7 +90,7 @@ def teacher_force(world):
 def collect_layout(job):
     task, index, behavior = job['task'], job['index'], job['behavior']
     w = diagnostic.worker
-    world = World(worker['project'], Protocol(), task['defenders'])
+    world = World(worker['project'], recorded_protocol(job), task['defenders'])
     world.reset(task['scene_seed'], task['future_seed'], task['agility'])
     prefix, roots, reached = [], [], set()
     minimum, previous, receding_steps, missed_time = float('inf'), float('inf'), 0, None
@@ -124,7 +125,7 @@ def collect_layout(job):
             name = f'layout{index:04d}_{behavior}_step{len(prefix):04d}'
             candidate_keys = {'nominal', 'candidate', 'unary', 'candidate_valid'}
             data = {k: (v[0, selected] if k in candidate_keys else v[0]).clone() for k, v in batch.items()}
-            metadata = dict(root_id=name, task=task, split=job['role'], behavior=behavior,
+            metadata = dict(root_id=name, task=task, split=job['role'], behavior=behavior,physical_protocol=asdict(world.protocol),
                 teacher_checkpoint=worker['teacher'], student_checkpoint=worker['student_checkpoint'],
                 root_categories=triggers, root_step=len(prefix), elapsed_seconds=elapsed,
                 prefix_forces=prefix.copy(), candidate_indices=plans[selected].tolist(),
@@ -151,7 +152,7 @@ def collect_layout(job):
 def continue_root(job):
     value = torch.load(job['root_file'], map_location='cpu', weights_only=False)
     data, meta = value['tensors'], value['metadata']; task = meta['task']
-    root = World(worker['project'], Protocol(), task['defenders'])
+    root = World(worker['project'], recorded_protocol(meta), task['defenders'])
     root.reset(task['scene_seed'], task['future_seed'], task['agility'])
     for force in meta['prefix_forces']:
         root.step(force)
@@ -202,7 +203,7 @@ def continue_root(job):
 def short_root(job):
     value = torch.load(job['root_file'], map_location='cpu', weights_only=False)
     meta = value['metadata']; task = meta['task']
-    world = World(worker['project'], Protocol(), task['defenders'])
+    world = World(worker['project'], recorded_protocol(meta), task['defenders'])
     world.reset(task['scene_seed'], task['future_seed'], task['agility'])
     for force in meta['prefix_forces']:
         world.step(force)
@@ -267,7 +268,7 @@ def main():
     if args.mode == 'collect':
         if supplied['role'] not in ('train', 'validation'):
             raise ValueError('Capture-window roots require development training or validation layouts')
-        jobs = [dict(index=i, task=t, behavior=b, role=supplied['role'],
+        jobs = [dict(index=i, task=t, behavior=b, role=supplied['role'],physical_protocol=asdict(recorded_protocol(supplied)),
                      candidates=supplied.get('candidates', 6), futures=supplied.get('futures', 2),
                      fill_candidates=supplied.get('fill_candidates', False))
                 for i, t in enumerate(supplied['tasks']) for b in ('teacher', 'student')]

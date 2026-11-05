@@ -38,7 +38,7 @@ class Revision(unittest.TestCase):
         for k in ['mu','sigma','risk']:torch.testing.assert_close(before[k],after[k])
         self.assertFalse(torch.equal(before['xy'],after['xy']))
     def test_36_protocol_rejects_silent_changes(self):
-        for kw in [{'control_dt':.1},{'target_radius':18.},{'radial_early_failure':False}]:
+        for kw in [{'control_dt':.1},{'target_radius':18.},{'radial_early_failure':'false'}]:
             with self.assertRaises(ValueError):Protocol(**kw)
     def test_37_effective_protocol(self):
         a=World(PROJECT);self.assertEqual(a.env.Action_T,a.protocol.control_dt)

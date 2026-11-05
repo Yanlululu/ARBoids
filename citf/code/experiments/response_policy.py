@@ -19,7 +19,7 @@ import torch
 from torch import nn
 
 from citf.bridge import Source, World, inputs
-from citf.contracts import Protocol, source_identity
+from citf.contracts import Protocol, source_identity, recorded_protocol, validate_task_banks
 from citf.train import atomic_save
 from experiments.candidate_response import (ResponseConfig, CandidateResponseModel,
     add_reference, load_response_data, response_objective)
@@ -42,6 +42,8 @@ def rollout(job):
     torch.manual_seed(job['policy_seed'])
     task = job['task']
     world = World(worker['project'], Protocol(**job['protocol']), task['defenders'])
+    if hasattr(model.cfg,'radial_early_failure'):
+        model.cfg=replace(model.cfg,radial_early_failure=world.protocol.radial_early_failure)
     world.reset(task['scene_seed'], task['future_seed'], task['agility'])
     transitions, steps, changed, entropies = [], 0, 0, []
     while not world.done:
@@ -164,10 +166,13 @@ def main():
             raise ValueError('Training schedule includes a layout outside the training bank')
     if train_bank['role'] != 'train' or validation['role'] != 'validation':
         raise ValueError('Incorrect task split roles')
+    validate_task_banks(('train',train_bank),('validation',validation))
+    physical=recorded_protocol(train_bank)
     if {x['geometry_family_id'] for x in train_bank['tasks']} & {x['geometry_family_id'] for x in validation['tasks']}:
         raise ValueError('Training/validation layout overlap')
     value = torch.load(args.pretrained, map_location='cpu', weights_only=False)
     cfg = replace(ResponseConfig(**value['config']), deployment='policy',
+                  radial_early_failure=physical.radial_early_failure,
                   candidate_domain='original_physical_bank' if args.original_bank else 'physical_bank_plus_joint_pairs')
     if args.reference_prior:
         cfg = replace(cfg, revision='CITF-reference-saturated-recourse-response-v2',
@@ -180,12 +185,14 @@ def main():
     replay_path = (value['protocol'].get('response_replay')
                    or value['protocol']['arguments']['train'])
     replay, replay_roots = load_response_data(replay_path, 'train')
+    if any(recorded_protocol(root)!=physical for root in replay_roots):
+        raise ValueError('Recollect response replay under the current training task protocol')
     if {x['geometry_family_id'] for x in replay_roots} & {x['geometry_family_id'] for x in validation['tasks']}:
         raise ValueError('Replay/validation layout overlap')
     rng = np.random.default_rng(args.seed); replay_rng = np.random.default_rng(args.seed + 13000)
     deadline = datetime.datetime.fromisoformat(args.deadline).timestamp()
     stop_file = str(out.parent / 'STOP_RESPONSE_POLICY')
-    protocol = dict(value['protocol'], arguments=vars(args), response_pretrained=args.pretrained,
+    protocol = dict(value['protocol'], arguments=vars(args), physical_protocol=asdict(physical),response_pretrained=args.pretrained,
         response_replay=replay_path, source_unchanged=True,
         objective='ordinary clipped complete-task policy gradient plus matched short-response replay',
         no_critic_or_terminal_prediction=True, candidate_set_normalization=False,

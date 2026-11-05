@@ -6,7 +6,7 @@ not predicted terminal values. Corrected short physical trajectories explicitly
 enter the policy readout. Complete returns train their relative selection.
 """
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass,replace
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -17,7 +17,7 @@ import torch
 from torch import nn
 
 from citf.bridge import Controller
-from citf.contracts import Protocol,canonical_hash,file_hash
+from citf.contracts import Protocol,canonical_hash,file_hash,recorded_protocol
 from experiments.contact_event_policy import retained_teacher
 from experiments.interaction_dynamics import InteractionLayer,load as load_dynamics
 from experiments.interception_fusion import InterceptionFusionController
@@ -82,10 +82,10 @@ class MacroPolicy(nn.Module):
 
 class ObservedRoot:
     """Only saved observations and known elapsed time; no simulator internals."""
-    def __init__(self,history,elapsed,horizon=3):
+    def __init__(self,history,elapsed,horizon=3,protocol=None):
         self.history=history
         self.env=SimpleNamespace(Current_T=elapsed)
-        self.protocol=Protocol(prediction_steps=horizon)
+        self.protocol=replace(protocol or recorded_protocol({}),prediction_steps=horizon)
     def state(self):return self.history[-1]
 
 
@@ -100,9 +100,9 @@ def candidate_pool(original,all_plans,additional):
 
 
 @torch.no_grad()
-def policy_features(planner,history,elapsed,factor,plans):
+def policy_features(planner,history,elapsed,factor,plans,protocol=None):
     device=planner.source.device
-    root=ObservedRoot(history,elapsed,3)
+    root=ObservedRoot(history,elapsed,3,protocol)
     paths,_=planner.rollout(root,factor,plans)
     known=paths.shape[2]
     if known<3:paths=torch.cat((paths,paths[:,:,-1:].expand(-1,-1,3-known,-1)),2)
@@ -177,9 +177,10 @@ class JointMacroController(Controller):
             order=np.argsort(np.asarray(reference_trace['scores']),kind='stable')
             leading=next((original[i] for i in order if not np.array_equal(original[i],reference)),reference)
             plans=candidate_pool(reference,proposal_trace['configurations'],[leading])
-            history=np.stack(world.history)
-            history=np.concatenate((np.repeat(history[:1],8-len(history),0),history),0)
-            batch,_=policy_features(self.planner,history,world.env.Current_T,factor,plans)
+            length=self.planner.model.cfg.history
+            history=np.stack(list(world.history)[-length:])
+            history=np.concatenate((np.repeat(history[:1],length-len(history),0),history),0)
+            batch,_=policy_features(self.planner,history,world.env.Current_T,factor,plans,world.protocol)
             prediction=self.model({k:v[None] for k,v in batch.items()})
             logits=prediction['logits'][0];choice=int(logits.argmax())
             self.active=dict(tick=tick,choice=choice,plan=plans[choice],factor=factor)

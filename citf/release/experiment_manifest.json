@@ -7,7 +7,7 @@
   "method_frozen": false,
   "primary_training_team_size": 6,
   "source_protocol": {
-    "name": "citf-source80-v2",
+    "name": "citf-defense80-v3",
     "environment": "source",
     "time_limit": 80.0,
     "control_dt": 0.2,
@@ -16,7 +16,8 @@
     "capture_radius": 5.0,
     "collision_radius": 5.0,
     "risk_clearance": 7.0,
-    "radial_early_failure": true,
+    "radial_early_failure": false,
+    "apf_obstacle_rule": "all_obstacles",
     "prediction_steps": 16,
     "history_steps": 8,
     "risk_weight": 32.0,

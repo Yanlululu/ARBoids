@@ -1,10 +1,7 @@
-"""Self-contained, audited adapter to the PROVIDED source80 environment.
-
-No old CV loader, data collector, vector_world or missing study_runtime import.
-This is a new runtime revision and must not inherit 46/48 as its own result.
-"""
+"""Source controller adapter and versioned common defense environment."""
 from __future__ import annotations
-import copy,sys,hashlib,time
+import copy,sys,hashlib,time,importlib.util
+from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 from collections import deque
@@ -12,13 +9,39 @@ import numpy as np
 import torch
 from .contracts import Protocol,file_hash,geometry_identity,canonical_hash
 from .physics import forecast
+from .environment import environment_type
 from .search import candidate_grid,nominal_beam,nominal_score,whole_configuration_search,initialize_bank
+
+@lru_cache(maxsize=None)
+def source_modules(project):
+    """Load the requested checkout without reusing another checkout's module cache."""
+    root = Path(project).resolve() / 'train'
+    prefix = '_citf_source_' + hashlib.sha256(str(root).encode()).hexdigest()[:16]
+    def load(suffix, relative):
+        spec = importlib.util.spec_from_file_location(prefix + suffix, root / relative)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    dynamics = load('_dynamics', 'envs/modules.py')
+    previous = sys.modules.get('envs.modules')
+    sys.modules['envs.modules'] = dynamics
+    try:
+        environment = load('_environment', 'envs/TADgame.py')
+    finally:
+        if previous is None:
+            sys.modules.pop('envs.modules', None)
+        else:
+            sys.modules['envs.modules'] = previous
+    # Register the derived class before workers restore serialized worlds.
+    environment_type(environment.TADEnv)
+    return environment, load('_networks', 'policy/networks.py')
+
 
 class Source:
     def __init__(self,project,checkpoint,device='cpu'):
-        path=str(Path(project)/'train')
-        if path not in sys.path:sys.path.insert(0,path)
-        from policy.networks import ActorAdap
+        _, networks = source_modules(str(Path(project).resolve()))
+        ActorAdap = networks.ActorAdap
         self.net=ActorAdap(6,8,3,512).to(device);self.device=device
         raw=torch.load(checkpoint,map_location='cpu',weights_only=False)
         if 'actor' in raw:
@@ -34,11 +57,12 @@ class Source:
         return a[:,:2],torch.tensor((env.boids_actions-250)/750,dtype=torch.float32),g
 
 class World:
-    def __init__(self,project,protocol=Protocol(),defenders=6):
-        path=str(Path(project)/'train')
-        if path not in sys.path:sys.path.insert(0,path)
-        from envs.TADgame import TADEnv
-        self.env=TADEnv(defenders,protocol=protocol.environment,total_time=protocol.time_limit)
+    def __init__(self,project,protocol=Protocol(),defenders=6,*,boid_state=True,form_reward=True):
+        environment, _ = source_modules(str(Path(project).resolve()))
+        TADEnv = environment_type(environment.TADEnv)
+        self.env=TADEnv(defenders,boid_state,form_reward,protocol=protocol.environment,total_time=protocol.time_limit)
+        self.env.early_attacker_win=protocol.radial_early_failure
+        self.env.apf_obstacle_rule=protocol.apf_obstacle_rule
         self.protocol=protocol;self.history=deque(maxlen=protocol.history_steps);self.done=False
         self.rng=np.random.RandomState(0)
         self.initial_identity=None
@@ -47,7 +71,12 @@ class World:
             if getattr(self.env,key)!=value:raise ValueError('Effective environment differs from protocol '+key)
         for boat in [*self.env.defender_list,self.env.attacker]:
             if boat.dt!=protocol.integration_dt or abs(boat.dt*boat.N-protocol.control_dt)>1e-9:raise ValueError('Integration timing mismatch')
-        self.environment_sha256=hashlib.sha256((Path(project)/'train/envs/TADgame.py').read_bytes()+(Path(project)/'train/envs/modules.py').read_bytes()).hexdigest()
+        self.base_environment_sha256=hashlib.sha256((Path(project)/'train/envs/TADgame.py').read_bytes()+(Path(project)/'train/envs/modules.py').read_bytes()).hexdigest()
+        legacy = protocol.radial_early_failure and protocol.apf_obstacle_rule == 'legacy_ordered'
+        self.environment_sha256=self.base_environment_sha256
+        self.effective_environment_sha256=(self.base_environment_sha256 if legacy else canonical_hash(dict(
+            base=self.base_environment_sha256, rules=file_hash(Path(__file__).with_name('environment.py')),
+            radial_early_failure=protocol.radial_early_failure, apf_obstacle_rule=protocol.apf_obstacle_rule)))
     def _call(self,fun,*args,**kwargs):
         old=np.random.get_state();np.random.set_state(self.rng.get_state())
         try:r=fun(*args,**kwargs);self.rng.set_state(np.random.get_state());return r
@@ -56,6 +85,7 @@ class World:
     def reset(self,scene_seed,future_seed,agility):
         self.rng=np.random.RandomState(scene_seed);self._call(self.env.reset,agility=agility,noisy_agility=False)
         self.rng=np.random.RandomState(future_seed);self.history.clear();self.history.append(self.state().copy());self.done=False
+        self.radial_exposure_steps=0
         self.initial_identity=geometry_identity(self.state(),self.env.defender_num)
     def step(self,force,attacker_action=None):
         if self.done:raise ValueError('Cannot step terminated task')
@@ -64,14 +94,20 @@ class World:
         if attacker_action is not None:
             attacker_action=np.asarray(attacker_action,dtype=float)
             if attacker_action.shape!=(2,) or not np.isfinite(attacker_action).all() or (abs(attacker_action)>1.000001).any():raise ValueError('Invalid normalized attacker action')
-        _,_,code,_=self._call(self.env.step,np.zeros_like(force),defender_thrust=force,att_action=attacker_action)
+        _,reward,code,_=self._call(self.env.step,np.zeros_like(force),defender_thrust=force,att_action=attacker_action)
+        self.last_reward=np.asarray(reward,dtype=np.float32).copy()
         self.history.append(self.state().copy());self.done=bool(code)
         # Independent physical event flags supplement the mutually-exclusive primary outcome.
         events=self.env.physical_events()
         breach=bool(events['breach']);collision=bool(events['collision'])
+        radial=all(np.linalg.norm(self.env.attacker.pos)<np.linalg.norm(x.pos) for x in self.env.defender_list)
+        self.radial_exposure_steps+=int(radial)
         return dict(outcome=int(code),success=int(code>2),capture=int(code==3),collision=int(code==2),
             physical_collision=int(collision),physical_breach=int(breach),source_failure=int(code==1),
-            radial_only_failure=int(code==1 and not breach),timeout=int(code==4),duration=float(self.env.Current_T))
+            radial_only_failure=int(code==1 and not breach),timeout=int(code==4),duration=float(self.env.Current_T),
+            radial_disadvantage=int(radial),radial_exposure_steps=self.radial_exposure_steps,
+            ever_radial_disadvantage=int(self.radial_exposure_steps>0),
+            radial_recovery=int(code>2 and self.radial_exposure_steps>0))
     def clone(self):return copy.deepcopy(self)
     def observation(self):
         # Rotate ALL history into the same CURRENT target-centred frame.

@@ -19,7 +19,7 @@ import torch
 
 from citf.bridge import World, Source, factorize, inputs
 from citf.collect import sample_root
-from citf.contracts import Protocol
+from citf.contracts import Protocol, recorded_protocol
 from citf.search import nominal_beam, initialize_bank, whole_configuration_search
 from experiments import synchronized_configuration_policy as synchronized
 
@@ -38,14 +38,17 @@ def curves(paths):
     return radial, capture, separation, radius[..., -1, :]
 
 
-def response_scores(paths, valid, unary, steps=None):
+def response_scores(paths, valid, unary, steps=None, protocol=None):
     """Three declared geometric objects, all through the first physical event."""
     if steps is not None:
         paths, valid = paths[..., :steps, :], valid[..., :steps]
     radial, distance, separation, attack_radius = curves(paths)
     length = valid.shape[-1]
     tick = np.arange(length)
-    loss = ((radial > 0) | (separation < 5) | (attack_radius < 15)) & valid
+    protocol=protocol or recorded_protocol({})
+    loss = (separation < protocol.collision_radius) | (attack_radius < protocol.target_radius)
+    if protocol.radial_early_failure:loss = loss | (radial > 0)
+    loss = loss & valid
     captured = (distance < 5) & valid
     first_loss = np.where(loss, tick, length + 1).min(-1)
     first_capture = np.where(captured, tick, length + 1).min(-1)
@@ -136,7 +139,7 @@ def diagnostic_candidates(world):
         pb, _, _ = inputs(world, f, np.asarray(proposals))
         nominal = pb['nominal'][0].numpy()[:, None]
         known = np.broadcast_to(pb['known_time_valid'][0].numpy(), (len(proposals), 1, nominal.shape[-2]))
-        scores = response_scores(nominal, known, pb['unary'][0].numpy())
+        scores = response_scores(nominal, known, pb['unary'][0].numpy(),protocol=world.protocol)
         order = np.argsort(scores['contact'][:, 0] + .02 * pb['unary'][0].numpy())
         alternatives.append((float(scores['contact'][order[0], 0]), proposals[int(order[0])]))
     for _, plan in sorted(alternatives, key=lambda x: x[0]):
@@ -175,7 +178,7 @@ def initialize(project, source, checkpoint, out, deadline):
 def collect_layout(job):
     task, index = job['task'], job['index']
     worker['scene_seed'] = task['scene_seed']
-    world = World(worker['project'], Protocol(), task['defenders'])
+    world = World(worker['project'], recorded_protocol(job), task['defenders'])
     world.reset(task['scene_seed'], task['future_seed'], task['agility'])
     use_learned = bool(index % 2)
     controller = synchronized.joint.JointPolicyController(worker['source'], worker['model'])
@@ -221,7 +224,7 @@ def collect_layout(job):
 def continue_root(job):
     value = torch.load(job['root_file'], map_location='cpu', weights_only=False)
     data, meta = value['tensors'], value['metadata']; task = meta['task']
-    root = World(worker['project'], Protocol(), task['defenders'])
+    root = World(worker['project'], recorded_protocol(meta), task['defenders'])
     root.reset(task['scene_seed'], task['future_seed'], task['agility'])
     for force in meta['prefix_forces']:
         root.step(force)
@@ -256,7 +259,8 @@ def main():
     parser.add_argument('--workers', type=int, default=8)
     args = parser.parse_args(); out = Path(args.out); out.mkdir(parents=True, exist_ok=False)
     supplied = json.loads(Path(args.jobs).read_text())
-    jobs = [dict(index=i, task=t) for i, t in enumerate(supplied['tasks'])] if args.mode == 'collect' else supplied['jobs']
+    jobs = [dict(index=i, task=t,physical_protocol=asdict(recorded_protocol(supplied)))
+            for i, t in enumerate(supplied['tasks'])] if args.mode == 'collect' else supplied['jobs']
     state = dict(completed=False, arguments=vars(args), jobs=[dict(index=i, status='pending') for i in range(len(jobs))])
     (out / 'status.json').write_text(json.dumps(state, indent=2))
     fn = collect_layout if args.mode == 'collect' else continue_root

@@ -18,6 +18,7 @@ import numpy as np
 import torch
 
 from citf.train import atomic_save
+from citf.contracts import recorded_protocol,validate_task_banks
 from experiments.candidate_response import CandidateResponseModel, ResponseConfig
 from experiments.response_policy import initialize, rollout
 
@@ -72,6 +73,8 @@ def main(model_factory=None, worker_initializer=initialize, worker_rollout=rollo
     validation = json.loads(Path(args.validation_bank).read_text())
     if train['role'] != 'train' or validation['role'] != 'validation':
         raise ValueError('Task search requires the registered train/validation roles')
+    validate_task_banks(('train',train),('validation',validation))
+    physical=recorded_protocol(train)
     if {x['geometry_family_id'] for x in train['tasks']} & {x['geometry_family_id'] for x in validation['tasks']}:
         raise ValueError('Training and validation physical layouts overlap')
     value = torch.load(args.pretrained, map_location='cpu', weights_only=False)
@@ -83,6 +86,8 @@ def main(model_factory=None, worker_initializer=initialize, worker_rollout=rollo
                               initialization='checkpoint representation and actor weights')
     else:
         cfg, model, representation = model_factory(value)
+    if hasattr(cfg,'radial_early_failure'):
+        cfg=replace(cfg,radial_early_failure=physical.radial_early_failure);model.cfg=cfg
     model.requires_grad_(False)
     parameter = model.actor[-1].weight
     parameter.requires_grad_(True)
@@ -92,7 +97,7 @@ def main(model_factory=None, worker_initializer=initialize, worker_rollout=rollo
     order, cursor = [], 0
     deadline = datetime.datetime.fromisoformat(args.deadline).timestamp()
     stop_file = str(out / 'STOP_DETERMINISTIC_SEARCH')
-    protocol = dict(value['protocol'], arguments=vars(args), response_pretrained=args.pretrained,
+    protocol = dict(value['protocol'], arguments=vars(args),physical_protocol=asdict(physical),response_pretrained=args.pretrained,
         objective='ordinary complete-task return of the deployed deterministic current-configuration policy',
         parameter_estimator='antithetic Gaussian directions on a fixed response representation',
         frozen_response_encoder=True, optimized_parameters=parameter.numel(),

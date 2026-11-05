@@ -1,6 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.io
+from pathlib import Path
+import sys
+_CONTROL_CODE = Path(__file__).resolve().parents[2] / 'citf' / 'code'
+if str(_CONTROL_CODE) not in sys.path:
+    sys.path.insert(0, str(_CONTROL_CODE))
+from citf.environment import apf_force, task_outcome
 from envs.modules import Obstacle, WAMV
 from matplotlib.animation import FuncAnimation
 from matplotlib.patches import Polygon
@@ -15,13 +21,18 @@ class TADEnv():
                  protocol='source',
                  total_time=None,
                  agility_noise_half_width=None,
+                 radial_early_failure=False,
+                 apf_obstacle_rule='all_obstacles',
                  ):
 
         if protocol not in ('source', 'paper-parameters-v1'):
             raise ValueError(f'Unknown environment protocol: {protocol}')
         self.protocol = protocol
         paper = protocol == 'paper-parameters-v1'
-        self.early_attacker_win = not paper
+        self.early_attacker_win = radial_early_failure
+        self.apf_obstacle_rule = apf_obstacle_rule
+        if type(radial_early_failure) is not bool or apf_obstacle_rule not in ('all_obstacles', 'legacy_ordered'):
+            raise ValueError('Invalid radial terminal or APF rule')
         self.agility_noise_half_width = float(
             (0.5 if paper else 0.25) if agility_noise_half_width is None else agility_noise_half_width)
         if not np.isfinite(self.agility_noise_half_width) or self.agility_noise_half_width < 0:
@@ -298,33 +309,7 @@ class TADEnv():
                 3: defender capture
                 4: time out
         '''
-        att_tar_dist = np.linalg.norm(self.attacker.pos)
-        if self.protocol == 'paper-parameters-v1':
-            # Published Section II-B: actual target breach, collision, capture or timeout.
-            if att_tar_dist <= self.Target_R:
-                return 1
-            if (self.def_def_dists <= self.Collision_R).any():
-                return 2
-            if (self.def_att_dists < self.Defend_R).any():
-                return 3
-            return 4 if self.Current_T > self.Total_T - 1e-5 else 0
-        def_tar_dists = [np.linalg.norm(defender.pos) for defender in self.defender_list]
-        # Since the attacker has superior maneuverability over the defenders, once the attacker
-        # is closer to the target than all defenders, the defenders can no longer intercept it
-        # in time. This is therefore treated as an immediate attacker success.
-        if att_tar_dist < self.Target_R or all(att_tar_dist < dist for dist in def_tar_dists):
-            return 1
-        
-        if (self.def_def_dists < self.Collision_R).any():
-            return 2
-        
-        if (self.def_att_dists < self.Defend_R).any():
-            return 3
-        
-        elif self.Current_T > self.Total_T - 1e-5:
-            return 4
-        else:
-            return 0
+        return task_outcome(self)
 
     def _get_paper_rewards(self):
         """Published Eqs. (15)-(17), including rewards on terminal transitions."""
@@ -433,10 +418,11 @@ class TADEnv():
 
             # Avoid Reward
             if min_dist < self.Att_Sensing_R:
-                reward -= 5.0 / min_dist
+                reward -= 5.0 / max(min_dist, self.Defend_R)
             
             # Attraction Reward
-            reward += 0.5 * np.cos(self.attacker.theta + np.arctan2(self.attacker.pos[1], self.attacker.pos[0]))
+            target_bearing = np.arctan2(-self.attacker.pos[1], -self.attacker.pos[0])
+            reward += 0.5 * np.cos(target_bearing - self.attacker.theta)
             reward -= 0.1 * att_tar_dist
 
             # Main Reward
@@ -448,7 +434,11 @@ class TADEnv():
     
     def force_to_thrust(self, force, phi, robot='def'):
         """Convert potential field force to thruster output"""
-        force = force / np.linalg.norm(force)
+        force = np.asarray(force, dtype=float)
+        magnitude = np.linalg.norm(force)
+        if magnitude == 0.0:
+            return np.zeros(2)
+        force = force / magnitude
         rotation = np.array([
             [np.cos(phi), np.sin(phi)],
             [-np.sin(phi), np.cos(phi)]
@@ -488,33 +478,8 @@ class TADEnv():
                 obstacles: List of obstacles [obs1, obs2, ...]
                 phi: Robot's heading
         '''
-        k_att = 0.1
-        goal_direction = (goal - position)
-        att_force = k_att * goal_direction
-        goal_direction = goal_direction / np.linalg.norm(goal_direction)
-
-        k_rep = 3000.0
-        influence_radius = 50.0
-        rep_force = np.zeros(2)
-        for obs in obstacles:
-            distance = max(np.linalg.norm(position - obs.pos) - obs.r, 0.1)
-            if distance < influence_radius:
-                obs_direction = position - obs.pos
-                obs_direction = obs_direction / np.linalg.norm(obs_direction)
-                perpendicular_direction = np.array([-obs_direction[1], obs_direction[0]]) 
-
-                mag = k_rep * (1.0 / distance - 1.0 / influence_radius) / (distance ** 2)
-                base_force = mag * obs_direction
-
-                # Adjust repulsion direction: combine obstacle direction and normal direction
-                alpha = 0.0  # Adjustment factor, controls weight of normal component
-                adjusted_force = (1 - alpha) * base_force + alpha * mag * perpendicular_direction
-                rep_force += adjusted_force
-
-                # if use closest point
-                influence_radius = distance
-
-        force = att_force + rep_force + self._apf_force_noise()
+        force = apf_force(position, goal, [obs.pos for obs in obstacles], [obs.r for obs in obstacles],
+                          rule=self.apf_obstacle_rule) + self._apf_force_noise()
         return self.force_to_thrust(force, phi, robot)
 
     def _apf_force_noise(self):

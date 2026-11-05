@@ -6,7 +6,7 @@ candidate bank.  Joint future modes are matched once per root and reused for
 all candidate differences.  Complete-task returns are not prediction targets.
 """
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import datetime
 import itertools
 import json
@@ -20,6 +20,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from citf.bridge import Controller, inputs
+from citf.contracts import recorded_protocol
 from citf.model import Attention
 from citf.risk import bounded_mean, signed_log1p
 from citf.train import atomic_save
@@ -53,6 +54,7 @@ class ResponseConfig:
     geometry_blend: float = .5
     geometry_kind: str = 'guard'
     candidate_domain: str = 'physical_bank_plus_joint_pairs'
+    radial_early_failure: bool = True  # Old checkpoints used source80 stopping.
 
 
 def add_reference(batch):
@@ -83,7 +85,9 @@ def trajectory_scores(paths, known, unary, cfg, kind=None, entity_valid=None):
     length = paths.shape[-2]
     ticks = torch.arange(length, device=paths.device)
     valid = known[:, None, None]
-    loss = ((radial > 0) | (pairs.amin(-2) < 5) | (attacker < 15)) & valid
+    loss = (pairs.amin(-2) < 5) | (attacker < 15)
+    if cfg.radial_early_failure:loss = loss | (radial > 0)
+    loss = loss & valid
     caught = (capture < 5) & valid
     first_loss = torch.where(loss, ticks, length + 1).amin(-1)
     first_capture = torch.where(caught, ticks, length + 1).amin(-1)
@@ -285,7 +289,8 @@ def response_objective(output, batch, cfg):
     # Soft first physical events supply gradients in their relevant neighborhood.
     def soft_events(radial, capture, pair, attacker):
         pair = pair.masked_fill(~pair_valid[:, None, None, :, None], torch.inf)
-        fail = 1 - ((1 - torch.sigmoid(radial / .5))
+        radial_survival=(1-torch.sigmoid(radial/.5)) if cfg.radial_early_failure else torch.ones_like(radial)
+        fail = 1 - (radial_survival
                     * (1 - torch.sigmoid((5 - pair.amin(-2)) / .5))
                     * (1 - torch.sigmoid((15 - attacker) / .5)))
         caught = torch.sigmoid((5 - capture) / .5)
@@ -362,6 +367,9 @@ def train_main():
     torch.manual_seed(args.seed); np.random.seed(args.seed)
     out = Path(args.out); out.mkdir(parents=True, exist_ok=False)
     train, train_roots = load_response_data(args.train, 'train')
+    physical=recorded_protocol(train_roots[0])
+    if any(recorded_protocol(root)!=physical for root in train_roots):
+        raise ValueError('Response training mixes task termination or APF rules')
     validation, validation_roots = None, []
     def load_validation():
         nonlocal validation, validation_roots
@@ -369,18 +377,21 @@ def train_main():
         if not state_path.exists() or not json.loads(state_path.read_text())['completed']:
             return False
         validation, validation_roots = load_response_data(args.validation, 'validation')
+        if any(recorded_protocol(root)!=physical for root in validation_roots):
+            raise ValueError('Response validation uses a different task protocol')
         if {x['geometry_family_id'] for x in train_roots} & {x['geometry_family_id'] for x in validation_roots}:
             raise ValueError('Train and validation physical layouts overlap')
         return True
     if not args.deferred_validation and not load_validation():
         raise ValueError('Validation data are incomplete; use the registered deferred selection procedure')
-    cfg = ResponseConfig(candidate_context=not args.no_context, supervision='ordinary' if args.ordinary else 'response')
+    cfg = ResponseConfig(candidate_context=not args.no_context, supervision='ordinary' if args.ordinary else 'response',
+        radial_early_failure=physical.radial_early_failure,history=physical.history_steps,horizon=physical.prediction_steps)
     model = CandidateResponseModel(cfg).to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     rng = np.random.default_rng(args.seed)
     deadline = datetime.datetime.fromisoformat(args.deadline).timestamp()
     first = train_roots[0]
-    protocol = dict(arguments=vars(args), source_sha256=first['source_sha256'],
+    protocol = dict(arguments=vars(args), physical_protocol=asdict(physical),source_sha256=first['source_sha256'],
         source_implementation_sha256=first['source_implementation_sha256'], environment_sha256=first['environment_sha256'],
         training_roots=len(train_roots), validation_roots=len(validation_roots) or None,
         model_selection='validation absolute loss for ordinary control; response loss for full/no-context; closed loop validation remains required',
@@ -452,6 +463,7 @@ class ResponseController(Controller):
         started = time.perf_counter()
         if self.model is None:
             raise ValueError('A registered response checkpoint is required')
+        self.model.cfg=replace(self.model.cfg,radial_early_failure=world.protocol.radial_early_failure)
         cfg = self.model.cfg
         f, plans, detail = candidate_bank(world, self.source, cfg)
         if cfg.candidate_domain == 'original_physical_bank':
@@ -468,6 +480,7 @@ class ResponseController(Controller):
         trace = dict(evaluated_unique=len(plans), configurations=plans.tolist(), scores=values,
             selected_indices=plans[choice].tolist(),
             fixed_reference=True, candidate_domain=cfg.candidate_domain, current_action_only=True,
+            radial_early_failure=cfg.radial_early_failure,
             recourse_condition=cfg.response_reference, gates=gate.tolist(), physical_thrust=force.tolist(),
             physical_scores=output['physical'][0].cpu().tolist(),
             compute_seconds=time.perf_counter() - started, **detail)

@@ -19,7 +19,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from citf.bridge import World, inputs
-from citf.contracts import Protocol
+from citf.contracts import Protocol, recorded_protocol
 from citf.train import atomic_save
 from experiments import root_response_diagnostic as diagnostic
 from experiments.candidate_response import (CandidateResponseModel, ResponseConfig,
@@ -47,7 +47,9 @@ def initialize(project, source, teacher, out, deadline, role, stride, candidates
 def collect_task(job):
     task, index = job['task'], job['index']
     w = diagnostic.worker
-    world = World(w['project'], Protocol(), task['defenders'])
+    world = World(w['project'], recorded_protocol(job), task['defenders'])
+    if w['behavior_model'] is not None:
+        w['behavior_model'].cfg=replace(w['behavior_model'].cfg,radial_early_failure=world.protocol.radial_early_failure)
     world.reset(task['scene_seed'], task['future_seed'], task['agility'])
     rng = np.random.default_rng(task['scene_seed'] + 71719)
     samples, step, events, disagreements = [], 0, set(), 0
@@ -96,7 +98,7 @@ def collect_task(job):
         result = world.step(diagnostic.forces(f, plans[executed])); step += 1
     record = dict(completed=True, task=task, steps=step, states=len(samples),
         teacher_disagreements=disagreements, behavior_checkpoint=w['behavior_checkpoint'], **result)
-    atomic_save(dict(samples=samples, metadata=dict(split=w['role'], task=task,
+    atomic_save(dict(samples=samples, metadata=dict(split=w['role'], task=task,physical_protocol=asdict(world.protocol),
         geometry_family_id=task['geometry_family_id'], source_sha256=w['source'].sha256,
         environment_sha256=world.environment_sha256, teacher_checkpoint=w['teacher_checkpoint'],
         behavior_checkpoint=w['behavior_checkpoint']), outcome_audit_only=record),
@@ -111,7 +113,7 @@ def collect_main(args):
         raise ValueError('Teacher transfer requires train or validation layouts')
     out = Path(args.out); out.mkdir(parents=True, exist_ok=False)
     deadline = datetime.datetime.fromisoformat(args.deadline).timestamp()
-    protocol = dict(arguments=vars(args), role=bank['role'],
+    protocol = dict(arguments=vars(args), role=bank['role'],physical_protocol=asdict(recorded_protocol(bank)),
         supervision='frozen teacher current-action logits and choices; no outcome labels',
         candidates='reference, teacher and behavior actions, leading teacher and physical choices, then seeded random negatives',
         state_sampling='every declared stride plus first12m,8m and radial-minus6m states',
@@ -124,7 +126,8 @@ def collect_main(args):
             mp_context=multiprocessing.get_context('spawn'), initializer=initialize,
             initargs=(args.project, args.source, args.teacher, args.out, deadline,
                       bank['role'], args.stride, args.candidates, args.behavior)) as pool:
-        pending = {pool.submit(collect_task, dict(index=i, task=t)): i for i, t in enumerate(bank['tasks'])}
+        pending = {pool.submit(collect_task, dict(index=i, task=t,physical_protocol=asdict(recorded_protocol(bank)))):
+                   i for i, t in enumerate(bank['tasks'])}
         for future in concurrent.futures.as_completed(pending):
             index = pending[future]
             try:
@@ -142,7 +145,7 @@ def collect_main(args):
     (out / 'status.json').write_text(json.dumps(status, indent=2))
 
 
-def load_samples(path, role):
+def load_samples(path, role, physical=None):
     path = Path(path)
     if not json.loads((path / 'status.json').read_text())['completed']:
         raise ValueError('Incomplete teacher trajectory collection')
@@ -151,6 +154,8 @@ def load_samples(path, role):
         value = torch.load(p, map_location='cpu', weights_only=False)
         if value['metadata']['split'] != role:
             raise ValueError('Incorrect teacher transfer split')
+        if physical is not None and recorded_protocol(value['metadata'])!=physical:
+            raise ValueError('Teacher trajectories use a different task protocol')
         samples.extend(value['samples']); layouts.add(value['metadata']['geometry_family_id'])
     return samples, layouts
 
@@ -179,16 +184,18 @@ def distill_loss(logits, teacher, action, valid):
 def train_main(args):
     torch.set_num_threads(1); torch.manual_seed(args.seed)
     out = Path(args.out); out.mkdir(parents=True, exist_ok=False)
-    train, train_layouts = load_samples(args.train, 'train')
+    physical=recorded_protocol(json.loads((Path(args.train)/'protocol.json').read_text()))
+    train, train_layouts = load_samples(args.train, 'train',physical)
     original_train_states = len(train)
     if args.augment_train:
-        augmented, augmented_layouts = load_samples(args.augment_train, 'train')
+        augmented, augmented_layouts = load_samples(args.augment_train, 'train',physical)
         train.extend(augmented); train_layouts |= augmented_layouts
-    validation, validation_layouts = load_samples(args.validation, 'validation')
+    validation, validation_layouts = load_samples(args.validation, 'validation',physical)
     if train_layouts & validation_layouts:
         raise ValueError('Teacher train/validation layouts overlap')
     value = torch.load(args.pretrained, map_location='cpu', weights_only=False)
     cfg = replace(ResponseConfig(**value['config']), deployment='policy',
+        radial_early_failure=physical.radial_early_failure,
         policy_prior_mode='reference_saturated', candidate_domain='original_physical_bank',
         revision=('CITF-student-state-response-policy-transfer-v2' if args.augment_train
                   else 'CITF-bank-independent-response-policy-transfer-v1'))
@@ -199,9 +206,11 @@ def train_main(args):
     replay_path = (value['protocol'].get('response_replay')
                    or value['protocol']['arguments']['train'])
     replay, replay_roots = load_response_data(replay_path, 'train')
+    if any(recorded_protocol(root)!=physical for root in replay_roots):
+        raise ValueError('Recollect response replay under the teacher trajectory task protocol')
     if {x['geometry_family_id'] for x in replay_roots} & validation_layouts:
         raise ValueError('Response replay and teacher validation overlap')
-    protocol = dict(value['protocol'], arguments=vars(args), response_pretrained=args.pretrained,
+    protocol = dict(value['protocol'], arguments=vars(args),physical_protocol=asdict(physical),response_pretrained=args.pretrained,
         response_replay=replay_path, objective='current-action policy transfer plus observed short-response replay',
         complete_task_outcomes_used_for_training=False, train_states=len(train), validation_states=len(validation),
         original_train_states=original_train_states, augmented_train_states=len(train)-original_train_states,

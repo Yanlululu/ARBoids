@@ -22,7 +22,8 @@ def rollout(initial, gates, initial_learned, initial_boids, network, steps, prot
             obs, boids = graphed.observations(state, legacy)
             learned = feedback.source_actions(network, obs)
         force = 750 * (gates * learned + (1 - gates) * boids) + 250
-        thrust = torch.cat((force, feedback.attacker_thrust(state, agility)[:, None]), 1)
+        thrust = torch.cat((force, feedback.attacker_thrust(state, agility,
+            protocol.apf_obstacle_rule == 'legacy_ordered')[:, None]), 1)
         next_state, legacy = feedback.integrate(state, thrust)
         state = torch.where(alive[:, None, None], next_state, state)
         positions = state[..., :2]
@@ -36,7 +37,7 @@ def rollout(initial, gates, initial_learned, initial_boids, network, steps, prot
         breached = radius[:, -1] < protocol.target_radius
         if protocol.radial_early_failure:
             breached = breached | (gaps > 0).all(-1)
-        stopped = breached | (distance <= protocol.collision_radius).any(-1) | (separation < protocol.capture_radius).any(-1)
+        stopped = breached | (distance < protocol.collision_radius).any(-1) | (separation < protocol.capture_radius).any(-1)
         transitions += alive.to(torch.long)
         alive = alive & ~stopped
     return minimum, gap_maximum, transitions

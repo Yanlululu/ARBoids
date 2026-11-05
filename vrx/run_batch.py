@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--agility', type=float, default=2.25)
     parser.add_argument('--duration', type=float, default=60.)
     parser.add_argument('--termination-rule', choices=['source', 'paper'], default='source')
+    parser.add_argument('--apf-obstacle-rule', choices=['all_obstacles', 'legacy_ordered'], default='all_obstacles')
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--gui', action='store_true')
     parser.add_argument('--capture-first', action='store_true', help='Save real camera frames for the first episode')
@@ -34,6 +35,7 @@ def main():
                    '--controller', args.controller,
                    '--seed', str(args.seed+i), '--agility', str(args.agility),
                    '--duration', str(args.duration), '--termination-rule', args.termination_rule,
+                   '--apf-obstacle-rule', args.apf_obstacle_rule,
                    '--output-dir', str(args.output_dir.resolve()),
                    '--run-id', run_id]
         if not args.gui:
@@ -60,6 +62,7 @@ def main():
                    breach_rate=sum(r.get('outcome_code') == 1 for r in results)/len(results),
                    controller=args.controller,
                    agility=args.agility, first_seed=args.seed, termination_rule=args.termination_rule,
+                   apf_obstacle_rule=args.apf_obstacle_rule, radial_early_failure=False,
                    checkpoint_sha256=results[0]['checkpoint_sha256'])
     (args.output_dir / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     with (args.output_dir / 'episodes.csv').open('w', newline='', encoding='utf-8') as file:

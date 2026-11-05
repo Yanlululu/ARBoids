@@ -3,8 +3,8 @@
 The supported learned policy is a deterministic feedforward actor exported by
 an attacker trainer: [B,8] source observations -> [B,2] normalized commands.
 Stateful or stochastic policies need a new explicit state/RNG contract, and are
-rejected rather than silently reset during cloned branches. APF stays inside the
-provided environment, preserving its time-indexed random disturbances.
+rejected rather than silently reset during cloned branches. APF uses the task's
+versioned obstacle rule and preserves its time-indexed random disturbances.
 """
 from __future__ import annotations
 import json

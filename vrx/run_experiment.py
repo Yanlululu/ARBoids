@@ -64,10 +64,7 @@ class Trial(ExperimentManager):
                 raise ValueError('Checkpoint defender count does not match VRX robot count.')
         elif args.controller != 'Boids':
             actor_type = ActorAdap if args.controller == 'AdaRes' else ActorSAC
-            action_dim = 3 if args.controller == 'AdaRes' else 2
-            self.actor = actor_type(6, 8, action_dim, hidden_dim=512).to(self.device)
-            self.actor.load(args.checkpoint)
-            self.actor.eval()
+            self.actor = actor_type.from_checkpoint(args.checkpoint, self.device)
 
     def on_image(self, message):
         self.latest_image = message
@@ -183,9 +180,11 @@ class Trial(ExperimentManager):
         actions = np.zeros((self.num_robots, 2))
         limits = np.array([-500., 1000.]) * self.agility
         actions[0] = APF_navi_control(self.curr_pos[0], np.zeros(2), self.curr_pos[1:],
-                                      self.curr_phi[0], *limits)
+                                      self.curr_phi[0], *limits,
+                                      apf_obstacle_rule=getattr(self.args,'apf_obstacle_rule','all_obstacles'))
         boids, states = Boids_navi_control(self.curr_pos[1:], self.curr_vel[1:],
                                           self.curr_phi[1:], self.curr_pos[0])
+        boid_state = self.args.controller in ('Boids', 'MAPPO') or self.actor.feature2_dim == 8
         synchronized = self.args.controller == 'MAPPO' or getattr(self.args, 'synchronize_feedback', False)
         if synchronized:
             from mappo_controller import synchronize_kinematics
@@ -193,7 +192,8 @@ class Trial(ExperimentManager):
                 self.curr_pos, self.curr_phi, self.curr_vel, self.yaw_rates, self.last_stamp)
             positions, yaws, velocities = snapshot[:, :2], snapshot[:, 2], snapshot[:, 3:5]
             boids, states = Boids_navi_control(positions[1:], velocities[1:], yaws[1:], positions[0])
-            observation = self.get_observations(positions[1:], yaws[1:], positions[0], velocities[0], states, boids)
+            observation = self.get_observations(positions[1:], yaws[1:], positions[0], velocities[0],
+                                                states if boid_state else None, boids if boid_state else None)
         if self.args.controller == 'MAPPO':
             inference_started = time.monotonic()
             actions[1:] = self.actor.control(observation, snapshot[1:], boids, stamp)
@@ -205,7 +205,8 @@ class Trial(ExperimentManager):
         else:
             if not synchronized:
                 observation = self.get_observations(self.curr_pos[1:], self.curr_phi[1:],
-                                                    self.curr_pos[0], self.curr_vel[0], states, boids)
+                                                    self.curr_pos[0], self.curr_vel[0],
+                                                    states if boid_state else None, boids if boid_state else None)
             inference_started = time.monotonic()
             actions[1:] = RL_navi_control(self.actor, observation, boids,
                                           self.args.controller, self.device)
@@ -310,6 +311,7 @@ def main():
     parser.add_argument('--capture-frames', action='store_true', help='Save real Gazebo overview camera frames every five simulation seconds')
     parser.add_argument('--duration', type=float, default=60.)
     parser.add_argument('--termination-rule', choices=['source', 'paper'], default='source')
+    parser.add_argument('--apf-obstacle-rule', choices=['all_obstacles','legacy_ordered'], default='all_obstacles')
     parser.add_argument('--action-period', type=float, default=0.2)
     parser.add_argument('--assets-dir', type=Path, help='Read existing VRX assets without copying them into a worktree')
     parser.add_argument('--synchronize-feedback', action='store_true',
@@ -345,6 +347,7 @@ def main():
               'agility': args.agility, 'controller': args.controller, 'num_robots': args.num_robots,
               'duration_limit': args.duration, 'action_period': args.action_period,
               'termination_rule': args.termination_rule,
+              'apf_obstacle_rule': args.apf_obstacle_rule, 'radial_early_failure': False,
               'synchronize_feedback': bool(args.synchronize_feedback or args.controller == 'MAPPO'),
               'message_delay_steps': args.message_delay_steps,
               'message_drop_probability': args.message_drop_probability,
@@ -360,6 +363,10 @@ def main():
     rclpy.init()
     try:
         trial = Trial(args)
+        result['algorithm'] = {'AdaRes': 'ARBoids', 'Res': 'RP', 'RL': 'SAC',
+                               'Boids': 'Boids', 'MAPPO': 'PredictiveMAPPO'}[args.controller]
+        if args.controller in ('AdaRes', 'Res', 'RL'):
+            result['observation_variant'] = ('boids-augmented' if trial.actor.feature2_dim else 'kinematics-only')
         poses = trial.generate_init_info(args.agility, args.setting)
         result['initial_poses'] = poses
         world = 'sydney_regatta_original' + ('1' if args.setting == 1 else '')

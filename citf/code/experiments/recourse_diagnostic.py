@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from citf.bridge import World
-from citf.contracts import Protocol
+from citf.contracts import recorded_protocol
 from experiments import root_response_diagnostic as diagnostic
 from experiments.response_data import sample_response
 
@@ -25,7 +25,7 @@ def initialize(project, source, checkpoint, out, deadline, horizon_steps=16, fut
 def recollect(path):
     old = torch.load(path, map_location='cpu', weights_only=False)
     meta = dict(old['metadata']); task = meta['task']; w = diagnostic.worker
-    world = World(w['project'], Protocol(), task['defenders'])
+    world = World(w['project'], recorded_protocol(meta), task['defenders'])
     world.reset(task['scene_seed'], task['future_seed'], task['agility'])
     for force in meta['prefix_forces']:
         world.step(force)
