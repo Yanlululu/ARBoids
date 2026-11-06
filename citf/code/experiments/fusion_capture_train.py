@@ -83,7 +83,7 @@ def stack(roots, indices, device):
                   for key in roots[0][section]} for section in ['batch','target'])
 
 
-def hurdle_nll(distance, output, prefix, threshold):
+def hurdle_nll(distance, output, prefix, threshold, mask=None):
     def get(key):return output[prefix+'_'+key][:,:,None]
     below=distance<threshold
     event=F.binary_cross_entropy_with_logits(get('event_logit').expand_as(distance),below.float(),reduction='none')
@@ -94,7 +94,11 @@ def hurdle_nll(distance, output, prefix, threshold):
     excess=(distance-threshold).clamp_min(1e-4);scale=get('excess_sigma')
     outside=(.5*((excess.log()-get('excess_logmu'))/scale).square()
              +scale.log()+excess.log()+.5*math.log(2*math.pi))
-    return (event+torch.where(below,inside,outside)).mean()
+    loss=event+torch.where(below,inside,outside)
+    if mask is not None:
+        weights=mask.to(loss.dtype).expand_as(loss)
+        return (loss*weights).sum()/weights.sum().clamp_min(1)
+    return loss.mean()
 
 
 def objective(model, batch, truth, selection_weight):

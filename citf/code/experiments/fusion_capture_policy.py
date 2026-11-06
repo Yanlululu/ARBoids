@@ -306,15 +306,22 @@ class FusionOutcomeTransformer(nn.Module):
         team=self.team(pooled)
         if self.cfg.distribution=='hurdle':
             pair_distribution=hurdle_parameters(nom_pair,q,5.)
+            predicted_time=torch.sigmoid(torch.logit(nom_time.clamp(.02,.98))+team[...,10])
+            if getattr(self.cfg,'time_prediction','nominal_window')=='remaining_task':
+                remaining=batch['time_context'][:,0,None]
+                predicted_time=1-remaining+remaining*team[...,10].sigmoid()
             output={name+'_'+key:value for name,values in [
                 ('pair',pair_distribution),('team',hurdle_parameters(nom_team,team[...,:5],5.)),
                 ('radius',hurdle_parameters(nom_radius,team[...,5:10],15.))] for key,value in values.items()}
             output.update(mu=pair_distribution['mu'],sigma=pair_distribution['sigma'],
-                time_fraction=torch.sigmoid(torch.logit(nom_time.clamp(.02,.98))+team[...,10]),
+                team_parameters=team,
+                configuration_embedding=pooled,state_embedding=h.mean(-2),
+                time_fraction=predicted_time,
                 xy=nominal+6*torch.tanh(self.motion(z).reshape(B,C,E,self.cfg.horizon,2)))
             return output
         time_fraction=torch.sigmoid(torch.logit(nom_time.clamp(.02,.98))+team[...,4])
         return dict(mu=nom_pair+q[...,0],sigma=(F.softplus(q[...,1])+.05).clamp_max(8),
+            configuration_embedding=pooled,state_embedding=h.mean(-2),
             team_mu=nom_team+team[...,0],team_sigma=(F.softplus(team[...,1])+.05).clamp_max(8),
             radius_mu=nom_radius+team[...,2],radius_sigma=(F.softplus(team[...,3])+.05).clamp_max(8),
             time_fraction=time_fraction,xy=nominal+6*torch.tanh(self.motion(z).reshape(B,C,E,self.cfg.horizon,2)))

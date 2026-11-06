@@ -337,7 +337,7 @@ def runtime_identity(project,source,checkpoint,protocol,control,device,method='C
     dependencies=python_dependencies(*code_entries)
     return {'revision':RUNTIME_REVISION,'method':method,'schema':SCHEMA,
             'history_features':FEATURES,'context_features':CONTEXT,'protocol':asdict(protocol),
-            'source_sha256':file_hash(source),'checkpoint_sha256':file_hash(checkpoint) if checkpoint else None,
+            'source_sha256':file_hash(source) if source is not None else None,'checkpoint_sha256':file_hash(checkpoint) if checkpoint else None,
             'project_code':{x:file_hash(project/x) for x in source_files},
             'environment_rules':{'implementation':file_hash(here/'environment.py'),
                 'apf_obstacle_rule':protocol.apf_obstacle_rule,'radial_early_failure':protocol.radial_early_failure},

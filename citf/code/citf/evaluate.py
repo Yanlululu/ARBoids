@@ -9,6 +9,8 @@ from .collect import load_behavior
 from .opponents import load_opponent
 from .contracts import Protocol,verify_freeze,file_hash,runtime_identity,LayoutRegistry,canonical_hash,validate_task_banks
 
+SOURCE_REQUIRED = True
+
 
 def atomic_json(value,path):
     path=Path(path);temporary=path.with_suffix(path.suffix+'.pending')
@@ -29,7 +31,7 @@ def committed_rows(out,tasks):
 
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--project',required=True);ap.add_argument('--source',required=True)
+    ap=argparse.ArgumentParser();ap.add_argument('--project',required=True);ap.add_argument('--source',required=SOURCE_REQUIRED)
     ap.add_argument('--tasks',required=True);ap.add_argument('--registry',required=True);ap.add_argument('--checkpoint')
     ap.add_argument('--out',required=True);ap.add_argument('--device',default='cpu')
     ap.add_argument('--phase',choices=['development','final'],default='development');ap.add_argument('--freeze')
@@ -54,7 +56,7 @@ def main():
         control.update(search='simultaneous_common_source_center')
     if a.selection=='independent' and not a.checkpoint:raise ValueError('CITF-independent requires the matched learned predictor')
     options=ControlOptions(a.bank,a.budget,a.rounds,a.risk,a.selection)
-    checked_source=Source(a.project,a.source,a.device)
+    checked_source=Source(a.project,a.source,a.device) if SOURCE_REQUIRED else None
     checked_world=World(a.project,p,tasks['tasks'][0]['defenders'])
     checked_model=load_behavior(a.checkpoint,checked_source,checked_world,a.device)
     checked_controller=options.build(Controller,checked_source,checked_model,a.device,world=checked_world)
@@ -63,7 +65,7 @@ def main():
     control['supported_selections']=sorted(getattr(checked_controller,'supported_selections',('joint',)))
     method='CITF-independent' if a.selection=='independent' else ('CITF' if a.checkpoint else 'CITF-Phys')
     code_entries=[path for path in (inspect.getsourcefile(Controller),inspect.getsourcefile(type(checked_controller))) if path]
-    identity=runtime_identity(a.project,a.source,a.checkpoint,p,control,a.device,method,
+    identity=runtime_identity(a.project,a.source if SOURCE_REQUIRED else None,a.checkpoint,p,control,a.device,method,
         opponent=opponent.identity,code_entries=code_entries)
     if a.prepare_runtime:
         # The actual controller, including its supported modes, was checked above.

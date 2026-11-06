@@ -58,11 +58,13 @@ def merge(out):
 
 def main():
     ap = argparse.ArgumentParser()
-    for key in ('project', 'source', 'tasks', 'registry', 'out'):
+    for key in ('project', 'tasks', 'registry', 'out'):
         ap.add_argument('--' + key, required=True)
+    ap.add_argument('--source', help='Required by source-based evaluators; unused by joint direct control')
     ap.add_argument('--checkpoint')
     ap.add_argument('--evaluator', default='citf.evaluate')
     ap.add_argument('--device', default='cpu')
+    ap.add_argument('--opponent-spec', help='Frozen opponent used by every evaluation shard')
     ap.add_argument('--nominal-agility', type=float)
     ap.add_argument('--mixture-alpha', type=float)
     ap.add_argument('--guard-weight', type=float)
@@ -87,6 +89,8 @@ def main():
     ap.add_argument('--risk', default='expected', choices=['expected', 'mean_distance'])
     ap.add_argument('--resume', action='store_true')
     a = ap.parse_args()
+    if not a.source and a.evaluator != 'experiments.joint_replanning_policy':
+        ap.error('--source is required by the selected evaluator')
     out = Path(a.out).resolve()
     bank = json.loads(Path(a.tasks).read_text())
     if bank['role'] != 'validation' or a.workers < 1 or a.shard_size < 1:
@@ -115,13 +119,17 @@ def main():
         path = out / (name + '.json')
         path.write_text(json.dumps(dict(bank, tasks=bank['tasks'][start:start+a.shard_size]), indent=2))
         command = [sys.executable, '-u', '-m', a.evaluator, '--project', a.project,
-                   '--source', a.source, '--registry', a.registry, '--tasks', str(path),
+                   '--registry', a.registry, '--tasks', str(path),
                    '--out', str(out / name), '--budget', str(a.budget), '--bank', str(a.bank),
                    '--rounds', str(a.rounds), '--risk', a.risk, '--device', a.device]
+        if a.source:
+            command += ['--source', a.source]
         if a.nominal_agility is not None:
             command += ['--nominal-agility', str(a.nominal_agility)]
         if a.checkpoint:
             command += ['--checkpoint', a.checkpoint]
+        if a.opponent_spec:
+            command += ['--opponent-spec', a.opponent_spec]
         if a.risk_weight is not None:
             command += ['--risk-weight', str(a.risk_weight)]
         if a.mixture_alpha is not None:

@@ -3148,7 +3148,7 @@
       "scope": "fixed-source algorithm development; no frozen formal results",
       "source_request": "root-cause algorithm redesign plus latest continue; no renewed ten-hour period inferred",
       "original_deadline_utc": "2026-11-04T01:32:37+00:00",
-      "updated_utc": "2026-11-04T23:25:37.542517+00:00",
+      "updated_utc": "2026-11-05T05:47:50.183307+00:00",
       "local_results": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\remote-10h-20261102\\runs\\root_cause_20261103",
       "remote_results": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103",
       "complete_fresh_selected": {
@@ -3507,8 +3507,8 @@
         "radial_only_failure": 2,
         "capped_capture_time": 25.21562499999998
       },
-      "research_status": "P3: clear defensive control gains completed under old and corrected protocols; newdefense80 common553->766,rescues215,harms2; future256185->256,rescues71,harms0. Capture efficiency declines; new learned increment and formal generalization not established.",
-      "pending_experiments": "Finish actuation fixed768; evaluate finite paired-preference update on the same original training and validation schedule, then decide informative repeats or controls. Formal scope remains pending.",
+      "research_status": "Original common768 capture/time improvement is retained as development evidence; conditional selection attribution remains uncertain and capture advantage did not reproduce on the new future256. No stable added Transformer contribution established.",
+      "pending_experiments": "No running phase experiments. Next research priority: broaden fleet interception/coverage decisions and complete-candidate matched-future task feedback. No same-recipe extra seed or stage scan launched. Formal independent learning and system validation remain pending.",
       "synchronization": {
         "completed_directories": [
           "capture_window_continuations",
@@ -3781,7 +3781,28 @@
         "transfer_exit_code": 0,
         "seconds": 6.3,
         "updated_unix": 1793822047.134981,
-        "updated_utc": "2026-11-04T19:54:07.134981+00:00"
+        "updated_utc": "2026-11-04T19:54:07.134981+00:00",
+        "fusion_capture_core": {
+          "local": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\remote-10h-20261102\\runs\\root_cause_20261103\\fusion_capture_20261105",
+          "scope": "Completed summary,task outcomes,training/data metadata and run logs; raw branch tensors,weights and step traces remain in their original remote directories"
+        },
+        "live_role_core": {
+          "local": "C:\\Users\\yanluyao\\.codex\\worktrees\\21ae\\ARBoids\\citf\\runs\\remote-10h-20261102\\runs\\root_cause_20261103\\live_role_task_20261105",
+          "scope": "Initial/final/control checkpoints and all completed task outcomes,summaries,training and pipeline metadata; raw episodes and full step traces remain at original remote paths",
+          "complete_evaluations": [
+            "initial_selection",
+            "final_selection",
+            "common_fresh",
+            "common_extended",
+            "common_second",
+            "fixed_anticipatory_fresh",
+            "fixed_anticipatory_extended",
+            "fixed_anticipatory_second",
+            "repeat1_learned",
+            "repeat1_fixed_anticipatory"
+          ],
+          "active_jobs": []
+        }
       },
       "engineering_tests_this_continuation": false,
       "formal_result_ready": false,
@@ -12410,7 +12431,7 @@
           "groups_with_future_outcome_difference": 20
         }
       },
-      "latest_research_phase": "defense80-v3 eleven full evaluations completed; no phase jobs pending",
+      "latest_research_phase": "persistent fleet interception and direct task distributions",
       "retained_mass_policy_iteration": {
         "registered_utc": "2026-11-04T13:28:44.351867+00:00",
         "basis": "pair722 versus samefullbank713 confounds reduced exploration mass with removing alternatives; pair changed978/4234events versus fullbank3990/4270",
@@ -12888,14 +12909,10 @@
         }
       },
       "current_research_direction": {
-        "updated_utc": "2026-11-05T02:02:18.650542+00:00",
-        "latest_stage": "completed persistent coverage common-task and new-future evidence under corrected defense80 protocol",
-        "primary_objective": "substantial repeatable complete common-task net improvement",
-        "previous_route": "contact-only correction loss variants closed; projection 713/768 versus teacher 717",
-        "next": "Transformer interaction/prediction -> joint roles/interception targets/commands -> complete-task feedback; minimal complete coordinated method before mechanism replacements; preserve defensive benefit and improve capture efficiency",
-        "scheduler": "this chat only; other chat paused by user",
-        "scope": "development; oldsource80 and newdefense80 evidence separate; existing source and joint teacher were not retrained for the new protocol",
-        "final_deliverables": "full CITF,public baselines,five independent learning runs,core ablations,mechanisms,generalization,learned opponent,VRX,code/models/figures/paper"
+        "original_problem": "Joint multi-vessel capture and defense without collision or breach",
+        "objective": "Clear repeatable complete-task benefit attributable to the full learned control method",
+        "implementation": "Live0.2s joint teacher fusion plus learned coverage roles; candidate Transformer and explicit distance features predict task outcomes used directly for selection",
+        "decision_basis": "Role selection improved original common768 to767success354capture, but new-future256 gave119captures vs125persistent and123fixed-anticipatory. Deployment used original single guard or anticipatory guard only; broader joint interception opportunity and more reliable comparative labels take priority."
       },
       "full_bank_common_future_policy_iteration": {
         "registered_utc": "2026-11-04T14:08:30.437359+00:00",
@@ -27617,6 +27634,1778 @@
           "decision": "joint roles,interception targets,and actual fleet commands",
           "learning": "new-protocol complete capture,timeout defense,failure,and time outcomes jointly train effective representation and decision parameters",
           "integration": "evaluate minimal complete coordinated method first; effective coverage/source/teacher/physics support chosen by outcomes; then necessary mechanism replacements"
+        }
+      },
+      "fusion_capture_transformer": {
+        "phase": "P3",
+        "code": "/root/autodl-tmp/citf-10h-20261102/code_fusion_capture_20261105",
+        "directory": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fusion_capture_20261105",
+        "claim": "not established; complete learned method and matched nominal control to be evaluated",
+        "configuration": "12 joint thruster fusion plus pursuit target configurations,persistent inner guard,actual joint projection",
+        "model": "candidate-relation Transformer predicts stopped synchronous pair minima,team encounter,target breach radius and contact time",
+        "data": "128 training and32 separate model-validation geometries;one alternating agility each;roots0/8/20/40seconds;12configurations x4 common futures x32steps",
+        "selection": "complete independent256 bank: defense success first,then captures,capped capture time; checkpoints500/1500/3000; compare same-bank nominal and existing strong coverage",
+        "source_and_teacher": "retained and included in method cost; no independent end-to-end learning claim",
+        "started_utc": "2026-11-05T02:31:23.894439+00:00",
+        "early_branch_signal": {
+          "roots": 258,
+          "layouts": 76,
+          "leave_one_future_out_nominal_cost_improvement": 1.2278996715249941,
+          "positive": 156,
+          "negative": 22,
+          "capture_different_roots": 27,
+          "branches": 12384,
+          "capture": 276,
+          "collision": 14,
+          "breach": 0,
+          "scope": "incomplete training branches; conditional choice opportunity,not full-task benefit"
+        },
+        "gaussian_complete_training": {
+          "updates": 3000,
+          "seconds": 78.227674,
+          "train_roots": 468,
+          "model_validation_roots": 120
+        },
+        "distribution_revision": {
+          "code": "/root/autodl-tmp/citf-10h-20261102/code_fusion_hurdle_20261105",
+          "same_data": true,
+          "same_controller_and_score_weights": true,
+          "reason": "At final Gaussian checkpoint,chosen capture probability0.114696 vs observed0.047917 on120 independent model-validation roots; nominal0.066610 vs0.066667. The Gaussian tail is a poor control probability.",
+          "method": "candidate Transformer predicts crossing probability plus beta distance below each physical boundary and lognormal excess above; the same expected physical cost determines joint choice",
+          "comparison": "fixed final3000 hurdle versus original nominal and Gaussian stages; retain all started evaluations",
+          "started_utc": "2026-11-05T03:23:51.689224+00:00"
+        },
+        "on_policy_feedback": {
+          "code": "/root/autodl-tmp/citf-10h-20261102/code_fusion_feedback_20261105",
+          "reason": "Hurdle improved model-validation regret1.479to1.362 and distance MAE to1.280m,but complete256 harmed defense/capture; test teacher-to-deployment state shift with the model's own training trajectories",
+          "layouts": "32 existing training and8 existing model-validation families; no closed-loop selection families used for training",
+          "roots": [
+            2,
+            6,
+            18,
+            40
+          ],
+          "futures": 4,
+          "candidates": 12,
+          "data_reuse": "retain all468 original training roots; equal sampling from original and on-policy datasets",
+          "learning": "initialize from hurdle3000;1500 additional updates at1e-4; fixed final checkpoint to complete256",
+          "original_gaussian3000_evaluation": "not launched; budget redirected to actual feedback acquisition",
+          "started_utc": "2026-11-05T03:35:49.202428+00:00"
+        },
+        "execution_alignment": {
+          "confirmed_difference": "real labels hold a feedback configuration for32ticks=6.4s; first deployment reselects every5ticks=1s",
+          "hypothesis": "repeated configuration switching can invalidate otherwise useful plan forecasts and prevent coordinated pursuit; test actual commitment rather than further loss changes",
+          "experiment": "hold selected configuration for32ticks while refreshing source/rule feedback and joint projection every0.2s; same nominal,pre-feedback hurdle,and continued-feedback hurdle",
+          "comparison": "three complete256 banks; weights unchanged for duration control; record all former1s results",
+          "on_policy_source": "additional branch roots still originate from the frozen1s hurdle policy; conditional branch executor remains the same32step program",
+          "started_utc": "2026-11-05T03:44:33.293017+00:00"
+        },
+        "completed_selection_results": {
+          "committed_feedback_selection": {
+            "completed": true,
+            "N": 256,
+            "success": 241,
+            "capture": 50,
+            "collision": 14,
+            "physical_breach": 1,
+            "timeout": 191,
+            "capped_capture_time": 72.38671875000003,
+            "latency_mean_ms": 38.62839879712127,
+            "deadline_fraction": 0.025606804352251905,
+            "paired_with_persistent_coverage": {
+              "rescues": 0,
+              "harms": 15,
+              "capture_gains": 35,
+              "capture_losses": 97
+            }
+          },
+          "committed_hurdle_selection": {
+            "completed": true,
+            "N": 256,
+            "success": 248,
+            "capture": 53,
+            "collision": 7,
+            "physical_breach": 1,
+            "timeout": 195,
+            "capped_capture_time": 72.59921875000003,
+            "latency_mean_ms": 36.67214690418639,
+            "deadline_fraction": 0.02437568401154114,
+            "paired_with_persistent_coverage": {
+              "rescues": 0,
+              "harms": 8,
+              "capture_gains": 27,
+              "capture_losses": 86
+            }
+          },
+          "committed_nominal_selection": {
+            "completed": true,
+            "N": 256,
+            "success": 253,
+            "capture": 50,
+            "collision": 3,
+            "physical_breach": 0,
+            "timeout": 203,
+            "capped_capture_time": 74.05156250000005,
+            "latency_mean_ms": 39.106835679724185,
+            "deadline_fraction": 0.02590050545357808,
+            "paired_with_persistent_coverage": {
+              "rescues": 0,
+              "harms": 3,
+              "capture_gains": 26,
+              "capture_losses": 88
+            }
+          },
+          "hurdle_3000_selection": {
+            "completed": true,
+            "N": 256,
+            "success": 245,
+            "capture": 110,
+            "collision": 10,
+            "physical_breach": 1,
+            "timeout": 135,
+            "capped_capture_time": 62.37812500000005,
+            "latency_mean_ms": 93.88028153596181,
+            "deadline_fraction": 0.12971417358885473,
+            "paired_with_persistent_coverage": {
+              "rescues": 0,
+              "harms": 11,
+              "capture_gains": 63,
+              "capture_losses": 65
+            }
+          },
+          "learned_1500_selection": {
+            "completed": true,
+            "N": 256,
+            "success": 250,
+            "capture": 133,
+            "collision": 6,
+            "physical_breach": 0,
+            "timeout": 117,
+            "capped_capture_time": 59.84609375000005,
+            "latency_mean_ms": 99.53697816556003,
+            "deadline_fraction": 0.14047606297525972,
+            "paired_with_persistent_coverage": {
+              "rescues": 0,
+              "harms": 6,
+              "capture_gains": 78,
+              "capture_losses": 57
+            }
+          },
+          "learned_500_selection": {
+            "completed": true,
+            "N": 256,
+            "success": 252,
+            "capture": 128,
+            "collision": 4,
+            "physical_breach": 0,
+            "timeout": 124,
+            "capped_capture_time": 61.482031250000055,
+            "latency_mean_ms": 94.91593429508208,
+            "deadline_fraction": 0.13447861946125947,
+            "paired_with_persistent_coverage": {
+              "rescues": 0,
+              "harms": 4,
+              "capture_gains": 64,
+              "capture_losses": 48
+            }
+          },
+          "nominal_selection": {
+            "completed": true,
+            "N": 256,
+            "success": 254,
+            "capture": 131,
+            "collision": 2,
+            "physical_breach": 0,
+            "timeout": 123,
+            "capped_capture_time": 60.98828125000005,
+            "latency_mean_ms": 97.2062557303446,
+            "deadline_fraction": 0.1475989977526929,
+            "paired_with_persistent_coverage": {
+              "rescues": 0,
+              "harms": 2,
+              "capture_gains": 72,
+              "capture_losses": 53
+            }
+          }
+        },
+        "status": "completed_negative_no768_expansion"
+      },
+      "live_role_task_learning": {
+        "code": "/root/autodl-tmp/citf-10h-20261102/code_role_task_20261105",
+        "phase": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/live_role_task_20261105",
+        "seed": 9701,
+        "train_layouts": 128,
+        "train_episodes": 768,
+        "train_iterations": 24,
+        "workers": 16,
+        "initial_evaluation_workers": 4,
+        "final_evaluation_workers": 20,
+        "hypothesis": "Retain full0.2s joint teacher feedback, learn dynamic coverage roles from complete task outcomes through candidate Transformer and explicit distance features",
+        "prior_fixed_guard_route": "All committed full256 variants completed and rejected: nominal253success50capture;hurdle248success53capture;feedback241success50capture",
+        "criterion": "Complete256 defense success first; capture and capped capture time; final trained checkpoint compared with untrained same architecture and persistent coverage; expand only with positive retained full-task result",
+        "limitations": "Fixed source and retained trained joint teacher; added learning attribution requires matched initial and ablated or retrained controls; development layouts remain development",
+        "recovery": {
+          "reason": "Torch tensor IPC file descriptor transfer failed before the first optimizer update; complete episodes now commit to files and return paths; resumed stage0; initial controller evaluation unchanged",
+          "utc": "2026-11-05T04:37:13.503134+00:00"
+        },
+        "complete256": {
+          "initial": {
+            "completed": true,
+            "phase": "development",
+            "N": 256,
+            "expected_N": 256,
+            "success": 256,
+            "capture": 112,
+            "collision": 0,
+            "physical_collision": 0,
+            "physical_breach": 0,
+            "radial_only_failure": 0,
+            "timeout": 144,
+            "ever_radial_disadvantage": 0,
+            "radial_recovery": 0,
+            "runtime": {
+              "revision": "CITF-live-joint-fusion-role-task-outcomes-v1",
+              "method": "CITF-live-fusion-role-task-learning-development",
+              "schema": "citf-stopped-aware-v2",
+              "history_features": [
+                "target_frame_x/60",
+                "target_frame_y/60",
+                "measured_vx/5",
+                "measured_vy/5",
+                "sin_yaw",
+                "cos_yaw",
+                "measured_yaw_rate",
+                "attacker_flag"
+              ],
+              "context_features": [
+                "remaining_seconds/time_limit",
+                "known_prediction_steps/prediction_steps"
+              ],
+              "protocol": {
+                "name": "citf-defense80-v3",
+                "environment": "source",
+                "time_limit": 80.0,
+                "control_dt": 0.2,
+                "integration_dt": 0.05,
+                "target_radius": 15.0,
+                "capture_radius": 5.0,
+                "collision_radius": 5.0,
+                "risk_clearance": 7.0,
+                "radial_early_failure": false,
+                "apf_obstacle_rule": "all_obstacles",
+                "prediction_steps": 16,
+                "history_steps": 8,
+                "risk_weight": 64.0,
+                "prior_scale": 0.4
+              },
+              "source_sha256": "e206d56d2ee40420422326d79dd7a7f2c093de046b945100f8f99cc4c270a08a",
+              "checkpoint_sha256": "983f319c9602521ef949205f7ef66594fbeb74256c45b0e807aef0887d83baed",
+              "project_code": {
+                "train/envs/TADgame.py": "5381552392f2f0296a3a3cdb5db5b8f430e15ed31864286bc58b1ff307c39014",
+                "train/envs/modules.py": "9a1264136c32737e948de633826cb768751ab0d7e369c09c8dca82f750c7fc34",
+                "train/policy/networks.py": "bcdd1aa8d83823d7fd4a57701975510e8e73f5b6fa2b3f00007c47a65eb4eaa3"
+              },
+              "environment_rules": {
+                "implementation": "50bc62a52e50ba1474e51ca3559f0f46421053cd00a9c0081ad94d02282c4b45",
+                "apf_obstacle_rule": "all_obstacles",
+                "radial_early_failure": false
+              },
+              "runtime_code": "4c782079f2c04ae45e128da7e1b6ff9853964d2d0385b2e2629e5b5df323c29e",
+              "runtime_dependencies": {
+                "citf/__init__.py": "7e6123c2579ea732c4371acb5f31bab32c84ee6cd9475d5fb8aea6b65993f116",
+                "citf/bridge.py": "21d54baa62f827559e43a7e6041615f8d2624afe7b16021bf7d2012efc4a166a",
+                "citf/checkpointing.py": "5d10200c27c50cbc4b6f606aee5728ccb4def42214ce6c2b99b603aeaf429144",
+                "citf/collect.py": "645964c9d1abf37ea9c63651b4a1bd41d6cb6d56fff98d50e2f345cb506f92aa",
+                "citf/contracts.py": "eb89bf0ba210b745d8d1aec314716113c217deabc77e74d4c7b26966a47420a0",
+                "citf/environment.py": "50bc62a52e50ba1474e51ca3559f0f46421053cd00a9c0081ad94d02282c4b45",
+                "citf/evaluate.py": "f363cc44a20aa9a333dd7548c6ad2323210ca6a66586bcd708ead92d0b569b1c",
+                "citf/losses.py": "8cd618f1dffe465f1516e2bcfdf51576fe10d56c397f59e94b2fa68304790fbf",
+                "citf/model.py": "5d6bcaa9634b44f5c6466ec1796c6d0821317946f110591ddea3a2e9b2a25790",
+                "citf/opponents.py": "e4dd5e1efb33de34e32c5df6a6a00195061f14869725bf72d0ff329d8d98b1b0",
+                "citf/physics.py": "03b03c1ba3454b8fbd6a36e3fe941a3dc3fbd0ec60d60f904c1a47dd22df9204",
+                "citf/risk.py": "5ff5db0af4b63aa20b2d18d641900a9e84074fab183e15a87f01150594dbfcc3",
+                "citf/search.py": "95bc2ee75ce58790a24027588c5b9376d14e01f3b2cc6c12b3824f3059345867",
+                "citf/train.py": "e266ecd9f8a06d7cac9b0e263817b57522466ede44bb346fe1dd92a0e99ee702",
+                "experiments/__init__.py": "4d1d0497bf1d0738743f1c2747fc04244423ac034fb00c23790e642f8a334fdf",
+                "experiments/batched_feedback.py": "28ea79fd8d04d4b6f2751fca8feeb6a4d8a23c84b88aae3e82fff77b53679438",
+                "experiments/candidate_response.py": "750a40c712ed32333569f68b54bc3eca91ce1eefd73a5bde8ee5453b4181a3df",
+                "experiments/capture_window_diagnostic.py": "52a5e1ae849de7e65d515484b66366ee2807c500a49c424142d080319626acac",
+                "experiments/configuration_policy.py": "66e39c516daeedaae86e268a8c1b7875ce7a736e7b89bd63121ddba2a0cf9180",
+                "experiments/contact_event_policy.py": "40a2bd76edc8feb0507bebc917142bf8f2b076bbde62a72979dad708d2b27c60",
+                "experiments/continuous_interception.py": "a24b177dc2bb01892cfe21b312890150704b75f3fb7b9ab3fd37c0937dfba437",
+                "experiments/continuous_safety_projection.py": "bbb4075f27e8d730c5bbb5f1f281b8e6de3e04a3a9a0549febc0e484515a5fe6",
+                "experiments/continuous_safety_projection_fast.py": "41729a07f3711888bb056b464174f3f71a66f4fe6f77140adc568759741eab57",
+                "experiments/continuous_safety_projection_native.py": "f3a7e03f3f2a5160b0b412e79362990c76618e6b5ab620c1a2111a629b9bb049",
+                "experiments/fusion_capture_policy.py": "8a6cbbc1667ddbe0cee220b20441d83dc0729ab639dde35d5e505860826cdd6d",
+                "experiments/guard_envelope.py": "aa1cfc4c15fa2b3577677bae00a2e2cbf3c3466d2499e33b1ab1edd7d0612d80",
+                "experiments/guard_focus.py": "88d981ea439255fbe39eb041364329babc72d0e29eb11741a55ae73032b0d1cc",
+                "experiments/guard_prediction.py": "00812a5f60a3754692e3f15f273a070ec3f9fe2368feda9b4cd9cf2a93fecced",
+                "experiments/independent_select.py": "8402dd8f65f9082c63ae88100eb828dc198da567430a92d1210b74091f26b67e",
+                "experiments/interaction_dynamics.py": "40e3607ae4fae8f7651006a02a6b54fa6814f6ee4f028c41a434ea2301fe62b9",
+                "experiments/interaction_trajectories.py": "fdb546edf1b16fad6b950107fa8428475bed8dcc4be2a99aa25e53ffc2246dda",
+                "experiments/interception_reserve.py": "2a81e14706bb08b712325ccc6a0c385e251587eba2f7e78e12f7a2a986608327",
+                "experiments/joint_configuration_policy.py": "d3498bb0d911a4c8e0f71b24cdde2b5b6b219c6c6a08ca4fe408ebd17e0098e3",
+                "experiments/joint_stopped_motion.py": "0eec84f6ebbbbe41924813dc1f1c07b3b38e6a123e40bd079e4ad6d88b662361",
+                "experiments/joint_task_geometry.py": "c392a3e8d7c641344404bfc6860f5e9016c9f29778f05b06dcd6efdb61e3a701",
+                "experiments/joint_viability_projection.py": "a161e621d9c31aeffd92a9e7b04005d11aaa0974e41330bed8da43d495b1825d",
+                "experiments/ordered_guard.py": "a9520e66daf9760971499bd97e9e3f5cf7a5f6cfa1f854c5ff0cfc3bb73373d7",
+                "experiments/pair_geometry.py": "d015ede41376e97ab93aac4fba808b130f4a92a46fcc2b307bea5c97d82f39f0",
+                "experiments/priority_guard.py": "747da7f8cd56265765678fdb900b69cef88763604b9dad72d83a58171e6607f6",
+                "experiments/response_data.py": "9ec2cc5f58b394d8a89bae1611d00d31e3b9a1a65f22eef2683bfaeeba5c7108",
+                "experiments/response_policy.py": "2aa1bcd7c6089d9abddf91263b78d0b85579cfb2617954f87549e9e3e56600d4",
+                "experiments/role_task_policy.py": "58ecff089f3ad4e928dad39fa0e1b9a51c840beeb0f04100b4527d8d0fee58cc",
+                "experiments/root_response_diagnostic.py": "5ae09ae6ab9b104bd952da857b4849eb4e16dc7883f300fe45c2e998cfbc2167",
+                "experiments/synchronized_configuration_policy.py": "207c5141e49e9c6bb661edee067999b05f1fc9d03f49ff36d50d142f0d228be2",
+                "experiments/synchronized_guard.py": "161306724effd8cc0b870d65cc29a5c84e8a2b8e9d361171bb3f1a5f1f5dbfee"
+              },
+              "controller": {
+                "bank": 12,
+                "budget": 96,
+                "rounds": 1,
+                "risk": "expected",
+                "nominal_beam_width": 128,
+                "search": "whole_configuration_single_coordinate_neighbors",
+                "initializer": "source_center_reserved_inside_bank-v1",
+                "history_cache": true,
+                "supported_selections": [
+                  "joint"
+                ],
+                "configuration": {
+                  "revision": "CITF-live-joint-fusion-role-task-outcomes-v1",
+                  "width": 64,
+                  "heads": 4,
+                  "history": 8,
+                  "horizon": 32,
+                  "decision_ticks": 32,
+                  "context": true,
+                  "teacher_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt",
+                  "predictor": "learned",
+                  "collision_weight": 64.0,
+                  "breach_weight": 64.0,
+                  "capture_weight": 20.0,
+                  "progress_weight": 1.0,
+                  "failure_weight": 200.0,
+                  "distribution": "hurdle",
+                  "temperature": 0.2,
+                  "candidate_family": "all_single_guards,no_guard,two_nearest,anticipatory_guard"
+                },
+                "action": "joint selection of live teacher fusion with single,dual,anticipatory or released coverage; every0.2s source and projection feedback",
+                "selection": "predicted full-task capture,timeout,failure and capture time; explicit distance-distribution features and candidate Transformer representation",
+                "training": "complete real episodes,Monte Carlo credit,PPO and terminal-outcome likelihood; actual selected-option synchronous-distance supervision",
+                "nominal": "frozen root SAC/fusion with reactive Boids,roles and fixed2.25 APF; real executor refreshes full joint teacher"
+              },
+              "opponent": {
+                "kind": "apf",
+                "policy": "source-environment-APF",
+                "mode": "environment-feedback",
+                "observation": "source-target-nearest3-raw8-v1",
+                "future_information": false,
+                "identity_sha256": "f4b5915bf2766ab8fe42928b507a59e0de823f82c141fbb91dfe6e8a8b6142e3"
+              },
+              "software": {
+                "python": "3.12.3 | packaged by Anaconda, Inc. | (main, May  6 2024, 19:46:43) [GCC 11.2.0]",
+                "torch": "2.12.1+cu130",
+                "numpy": "1.26.4",
+                "scipy": "1.17.1"
+              },
+              "device": "cpu"
+            },
+            "tasks_sha256": "0809a8dc4256329f96bd93a1fc16fb9cf9a9f9e4ee42de2aeb53e233e2a7fa55",
+            "registry_sha256": "f22167dfdb372a8b41bb63b05b8bdac2d256af85d4c9a644bf93113a2916b3d5",
+            "capped_capture_time": 63.21640625000004,
+            "latency_mean_ms": 48.05441502108696,
+            "deadline_fraction": 0.0008032922624417613,
+            "mean_unique_candidates": 0.2947464686036309,
+            "evidence_role": "fixed-source development validation",
+            "arguments": {
+              "project": "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "source": "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "tasks": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/defense80_v3_20261105/selection_tasks.json",
+              "registry": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "out": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/live_role_task_20261105/initial_selection",
+              "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/live_role_task_20261105/model_s9701/stage_000.pt",
+              "evaluator": "experiments.role_task_policy",
+              "device": "cpu",
+              "nominal_agility": null,
+              "mixture_alpha": null,
+              "guard_weight": null,
+              "guard_margin": null,
+              "guard_sigma_scale": null,
+              "guard_sigma_floor": null,
+              "encounter_weight": null,
+              "corridor_ratio": null,
+              "pursuit_weight": null,
+              "collision_source": null,
+              "impulse_reference": false,
+              "nominal_slack": null,
+              "ensemble_checkpoints": null,
+              "guard_combination": null,
+              "workers": 4,
+              "shard_size": 4,
+              "deadline": "2026-11-05T09:35:08.075379+00:00",
+              "risk_weight": 64.0,
+              "budget": 96,
+              "bank": 12,
+              "rounds": 1,
+              "risk": "expected"
+            }
+          },
+          "final": {
+            "completed": true,
+            "phase": "development",
+            "N": 256,
+            "expected_N": 256,
+            "success": 256,
+            "capture": 114,
+            "collision": 0,
+            "physical_collision": 0,
+            "physical_breach": 0,
+            "radial_only_failure": 0,
+            "timeout": 142,
+            "ever_radial_disadvantage": 0,
+            "radial_recovery": 0,
+            "runtime": {
+              "revision": "CITF-live-joint-fusion-role-task-outcomes-v1",
+              "method": "CITF-live-fusion-role-task-learning-development",
+              "schema": "citf-stopped-aware-v2",
+              "history_features": [
+                "target_frame_x/60",
+                "target_frame_y/60",
+                "measured_vx/5",
+                "measured_vy/5",
+                "sin_yaw",
+                "cos_yaw",
+                "measured_yaw_rate",
+                "attacker_flag"
+              ],
+              "context_features": [
+                "remaining_seconds/time_limit",
+                "known_prediction_steps/prediction_steps"
+              ],
+              "protocol": {
+                "name": "citf-defense80-v3",
+                "environment": "source",
+                "time_limit": 80.0,
+                "control_dt": 0.2,
+                "integration_dt": 0.05,
+                "target_radius": 15.0,
+                "capture_radius": 5.0,
+                "collision_radius": 5.0,
+                "risk_clearance": 7.0,
+                "radial_early_failure": false,
+                "apf_obstacle_rule": "all_obstacles",
+                "prediction_steps": 16,
+                "history_steps": 8,
+                "risk_weight": 64.0,
+                "prior_scale": 0.4
+              },
+              "source_sha256": "e206d56d2ee40420422326d79dd7a7f2c093de046b945100f8f99cc4c270a08a",
+              "checkpoint_sha256": "fdb770416d90961a157cb0feac9a47848bda8b8ea24c5ccf9bc998b6499deb89",
+              "project_code": {
+                "train/envs/TADgame.py": "5381552392f2f0296a3a3cdb5db5b8f430e15ed31864286bc58b1ff307c39014",
+                "train/envs/modules.py": "9a1264136c32737e948de633826cb768751ab0d7e369c09c8dca82f750c7fc34",
+                "train/policy/networks.py": "bcdd1aa8d83823d7fd4a57701975510e8e73f5b6fa2b3f00007c47a65eb4eaa3"
+              },
+              "environment_rules": {
+                "implementation": "50bc62a52e50ba1474e51ca3559f0f46421053cd00a9c0081ad94d02282c4b45",
+                "apf_obstacle_rule": "all_obstacles",
+                "radial_early_failure": false
+              },
+              "runtime_code": "4c782079f2c04ae45e128da7e1b6ff9853964d2d0385b2e2629e5b5df323c29e",
+              "runtime_dependencies": {
+                "citf/__init__.py": "7e6123c2579ea732c4371acb5f31bab32c84ee6cd9475d5fb8aea6b65993f116",
+                "citf/bridge.py": "21d54baa62f827559e43a7e6041615f8d2624afe7b16021bf7d2012efc4a166a",
+                "citf/checkpointing.py": "5d10200c27c50cbc4b6f606aee5728ccb4def42214ce6c2b99b603aeaf429144",
+                "citf/collect.py": "645964c9d1abf37ea9c63651b4a1bd41d6cb6d56fff98d50e2f345cb506f92aa",
+                "citf/contracts.py": "eb89bf0ba210b745d8d1aec314716113c217deabc77e74d4c7b26966a47420a0",
+                "citf/environment.py": "50bc62a52e50ba1474e51ca3559f0f46421053cd00a9c0081ad94d02282c4b45",
+                "citf/evaluate.py": "f363cc44a20aa9a333dd7548c6ad2323210ca6a66586bcd708ead92d0b569b1c",
+                "citf/losses.py": "8cd618f1dffe465f1516e2bcfdf51576fe10d56c397f59e94b2fa68304790fbf",
+                "citf/model.py": "5d6bcaa9634b44f5c6466ec1796c6d0821317946f110591ddea3a2e9b2a25790",
+                "citf/opponents.py": "e4dd5e1efb33de34e32c5df6a6a00195061f14869725bf72d0ff329d8d98b1b0",
+                "citf/physics.py": "03b03c1ba3454b8fbd6a36e3fe941a3dc3fbd0ec60d60f904c1a47dd22df9204",
+                "citf/risk.py": "5ff5db0af4b63aa20b2d18d641900a9e84074fab183e15a87f01150594dbfcc3",
+                "citf/search.py": "95bc2ee75ce58790a24027588c5b9376d14e01f3b2cc6c12b3824f3059345867",
+                "citf/train.py": "e266ecd9f8a06d7cac9b0e263817b57522466ede44bb346fe1dd92a0e99ee702",
+                "experiments/__init__.py": "4d1d0497bf1d0738743f1c2747fc04244423ac034fb00c23790e642f8a334fdf",
+                "experiments/batched_feedback.py": "28ea79fd8d04d4b6f2751fca8feeb6a4d8a23c84b88aae3e82fff77b53679438",
+                "experiments/candidate_response.py": "750a40c712ed32333569f68b54bc3eca91ce1eefd73a5bde8ee5453b4181a3df",
+                "experiments/capture_window_diagnostic.py": "52a5e1ae849de7e65d515484b66366ee2807c500a49c424142d080319626acac",
+                "experiments/configuration_policy.py": "66e39c516daeedaae86e268a8c1b7875ce7a736e7b89bd63121ddba2a0cf9180",
+                "experiments/contact_event_policy.py": "40a2bd76edc8feb0507bebc917142bf8f2b076bbde62a72979dad708d2b27c60",
+                "experiments/continuous_interception.py": "a24b177dc2bb01892cfe21b312890150704b75f3fb7b9ab3fd37c0937dfba437",
+                "experiments/continuous_safety_projection.py": "bbb4075f27e8d730c5bbb5f1f281b8e6de3e04a3a9a0549febc0e484515a5fe6",
+                "experiments/continuous_safety_projection_fast.py": "41729a07f3711888bb056b464174f3f71a66f4fe6f77140adc568759741eab57",
+                "experiments/continuous_safety_projection_native.py": "f3a7e03f3f2a5160b0b412e79362990c76618e6b5ab620c1a2111a629b9bb049",
+                "experiments/fusion_capture_policy.py": "8a6cbbc1667ddbe0cee220b20441d83dc0729ab639dde35d5e505860826cdd6d",
+                "experiments/guard_envelope.py": "aa1cfc4c15fa2b3577677bae00a2e2cbf3c3466d2499e33b1ab1edd7d0612d80",
+                "experiments/guard_focus.py": "88d981ea439255fbe39eb041364329babc72d0e29eb11741a55ae73032b0d1cc",
+                "experiments/guard_prediction.py": "00812a5f60a3754692e3f15f273a070ec3f9fe2368feda9b4cd9cf2a93fecced",
+                "experiments/independent_select.py": "8402dd8f65f9082c63ae88100eb828dc198da567430a92d1210b74091f26b67e",
+                "experiments/interaction_dynamics.py": "40e3607ae4fae8f7651006a02a6b54fa6814f6ee4f028c41a434ea2301fe62b9",
+                "experiments/interaction_trajectories.py": "fdb546edf1b16fad6b950107fa8428475bed8dcc4be2a99aa25e53ffc2246dda",
+                "experiments/interception_reserve.py": "2a81e14706bb08b712325ccc6a0c385e251587eba2f7e78e12f7a2a986608327",
+                "experiments/joint_configuration_policy.py": "d3498bb0d911a4c8e0f71b24cdde2b5b6b219c6c6a08ca4fe408ebd17e0098e3",
+                "experiments/joint_stopped_motion.py": "0eec84f6ebbbbe41924813dc1f1c07b3b38e6a123e40bd079e4ad6d88b662361",
+                "experiments/joint_task_geometry.py": "c392a3e8d7c641344404bfc6860f5e9016c9f29778f05b06dcd6efdb61e3a701",
+                "experiments/joint_viability_projection.py": "a161e621d9c31aeffd92a9e7b04005d11aaa0974e41330bed8da43d495b1825d",
+                "experiments/ordered_guard.py": "a9520e66daf9760971499bd97e9e3f5cf7a5f6cfa1f854c5ff0cfc3bb73373d7",
+                "experiments/pair_geometry.py": "d015ede41376e97ab93aac4fba808b130f4a92a46fcc2b307bea5c97d82f39f0",
+                "experiments/priority_guard.py": "747da7f8cd56265765678fdb900b69cef88763604b9dad72d83a58171e6607f6",
+                "experiments/response_data.py": "9ec2cc5f58b394d8a89bae1611d00d31e3b9a1a65f22eef2683bfaeeba5c7108",
+                "experiments/response_policy.py": "2aa1bcd7c6089d9abddf91263b78d0b85579cfb2617954f87549e9e3e56600d4",
+                "experiments/role_task_policy.py": "58ecff089f3ad4e928dad39fa0e1b9a51c840beeb0f04100b4527d8d0fee58cc",
+                "experiments/root_response_diagnostic.py": "5ae09ae6ab9b104bd952da857b4849eb4e16dc7883f300fe45c2e998cfbc2167",
+                "experiments/synchronized_configuration_policy.py": "207c5141e49e9c6bb661edee067999b05f1fc9d03f49ff36d50d142f0d228be2",
+                "experiments/synchronized_guard.py": "161306724effd8cc0b870d65cc29a5c84e8a2b8e9d361171bb3f1a5f1f5dbfee"
+              },
+              "controller": {
+                "bank": 12,
+                "budget": 96,
+                "rounds": 1,
+                "risk": "expected",
+                "nominal_beam_width": 128,
+                "search": "whole_configuration_single_coordinate_neighbors",
+                "initializer": "source_center_reserved_inside_bank-v1",
+                "history_cache": true,
+                "supported_selections": [
+                  "joint"
+                ],
+                "configuration": {
+                  "revision": "CITF-live-joint-fusion-role-task-outcomes-v1",
+                  "width": 64,
+                  "heads": 4,
+                  "history": 8,
+                  "horizon": 32,
+                  "decision_ticks": 32,
+                  "context": true,
+                  "teacher_checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/innovation_20261103/configuration_policy_joint_geometry_s7101/synchronized_deployment_scale2.pt",
+                  "predictor": "learned",
+                  "collision_weight": 64.0,
+                  "breach_weight": 64.0,
+                  "capture_weight": 20.0,
+                  "progress_weight": 1.0,
+                  "failure_weight": 200.0,
+                  "distribution": "hurdle",
+                  "temperature": 0.2,
+                  "candidate_family": "all_single_guards,no_guard,two_nearest,anticipatory_guard"
+                },
+                "action": "joint selection of live teacher fusion with single,dual,anticipatory or released coverage; every0.2s source and projection feedback",
+                "selection": "predicted full-task capture,timeout,failure and capture time; explicit distance-distribution features and candidate Transformer representation",
+                "training": "complete real episodes,Monte Carlo credit,PPO and terminal-outcome likelihood; actual selected-option synchronous-distance supervision",
+                "nominal": "frozen root SAC/fusion with reactive Boids,roles and fixed2.25 APF; real executor refreshes full joint teacher"
+              },
+              "opponent": {
+                "kind": "apf",
+                "policy": "source-environment-APF",
+                "mode": "environment-feedback",
+                "observation": "source-target-nearest3-raw8-v1",
+                "future_information": false,
+                "identity_sha256": "f4b5915bf2766ab8fe42928b507a59e0de823f82c141fbb91dfe6e8a8b6142e3"
+              },
+              "software": {
+                "python": "3.12.3 | packaged by Anaconda, Inc. | (main, May  6 2024, 19:46:43) [GCC 11.2.0]",
+                "torch": "2.12.1+cu130",
+                "numpy": "1.26.4",
+                "scipy": "1.17.1"
+              },
+              "device": "cpu"
+            },
+            "tasks_sha256": "0809a8dc4256329f96bd93a1fc16fb9cf9a9f9e4ee42de2aeb53e233e2a7fa55",
+            "registry_sha256": "f22167dfdb372a8b41bb63b05b8bdac2d256af85d4c9a644bf93113a2916b3d5",
+            "capped_capture_time": 61.69765625000003,
+            "latency_mean_ms": 48.84950842290361,
+            "deadline_fraction": 0.0008230661112025629,
+            "mean_unique_candidates": 0.295506059032834,
+            "evidence_role": "fixed-source development validation",
+            "arguments": {
+              "project": "/root/autodl-tmp/citf-10h-20261102/source_archive",
+              "source": "/root/autodl-tmp/citf-10h-20261102/source_archive/train/experiments/author-source-fusion-20261011/two-hour-development-20261026/best-m1-400.pth",
+              "tasks": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/defense80_v3_20261105/selection_tasks.json",
+              "registry": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/layout_registry.json",
+              "out": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/live_role_task_20261105/final_selection",
+              "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/live_role_task_20261105/model_s9701/stage_024.pt",
+              "evaluator": "experiments.role_task_policy",
+              "device": "cpu",
+              "nominal_agility": null,
+              "mixture_alpha": null,
+              "guard_weight": null,
+              "guard_margin": null,
+              "guard_sigma_scale": null,
+              "guard_sigma_floor": null,
+              "encounter_weight": null,
+              "corridor_ratio": null,
+              "pursuit_weight": null,
+              "collision_source": null,
+              "impulse_reference": false,
+              "nominal_slack": null,
+              "ensemble_checkpoints": null,
+              "guard_combination": null,
+              "workers": 20,
+              "shard_size": 4,
+              "deadline": "2026-11-05T09:56:47.146501+00:00",
+              "risk_weight": 64.0,
+              "budget": 96,
+              "bank": 12,
+              "rounds": 1,
+              "risk": "expected"
+            }
+          },
+          "paired": {
+            "N": 256,
+            "rescues": 0,
+            "harms": 0,
+            "capture_gains": 45,
+            "capture_losses": 43,
+            "capped_time_delta": -1.5187500000000114,
+            "layout_bootstrap_95ci": {
+              "success_rate": [
+                0.0,
+                0.0
+              ],
+              "capture_rate": [
+                -0.0625,
+                0.078125
+              ],
+              "capped_capture_time": [
+                -4.423437500000001,
+                1.2906445312499915
+              ]
+            },
+            "families": 128
+          }
+        },
+        "common768_extension": {
+          "code": "/root/autodl-tmp/citf-10h-20261102/code_review_sync_20261105T045744Z",
+          "entry_resolved_once": "/root/autodl-tmp/citf-10h-20261102/code_next",
+          "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/live_role_task_20261105/model_s9701/stage_024.pt",
+          "reason": "Full256 has no defense harm and only weak capture/time gains with intervals crossing zero; one fixed-weight common768 decision follows, no extra training or parameter scan",
+          "controls": "Existing completed defense80-v3 persistent coverage766/768 and teacher553/768; role initialization was outcome-and-time identical to persistent coverage on all256 selection tasks",
+          "scope": "Fixed-source development, not frozen generalization",
+          "status": "completed"
+        },
+        "behavior_and_data": {
+          "decisions": 2593,
+          "selected_configuration_counts": {
+            "8": 929,
+            "0": 286,
+            "3": 195,
+            "4": 384,
+            "2": 260,
+            "1": 292,
+            "5": 247
+          },
+          "changes_between_role_decisions": 996,
+          "tasks_with_changed_role_program": 243,
+          "original_single_guard_decisions": 1664,
+          "training_saved_episodes": 768,
+          "training_actual_layouts": 128,
+          "training_outcomes": {
+            "success": 751,
+            "capture": 302,
+            "physical_collision": 6,
+            "physical_breach": 11,
+            "timeout": 449
+          }
+        },
+        "attribution_control_prepared": {
+          "code": "/root/autodl-tmp/citf-10h-20261102/code_role_attribution_20261105T051041Z",
+          "selection_rule": "fixed_anticipatory",
+          "purpose": "Distinguish learned conditional selection from always using the newly available anticipatory feedback; same weights, candidate programs, teacher, physical executor and forward computation",
+          "status": "completed_common768",
+          "pid": 291869,
+          "checkpoint": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/live_role_task_20261105/fixed_anticipatory.pt"
+        },
+        "complete_common768": {
+          "summary": {
+            "success": 767,
+            "capture": 354,
+            "collision": 1,
+            "physical_breach": 0,
+            "timeout": 413,
+            "N": 768,
+            "capped_capture_time": 61.46380208333337
+          },
+          "paired": {
+            "N": 768,
+            "rescues": 2,
+            "harms": 1,
+            "capture_gains": 157,
+            "capture_losses": 108,
+            "capped_time_delta": -2.4276041666666583,
+            "layout_bootstrap_95ci": {
+              "success_rate": [
+                -0.0026041666666666665,
+                0.006510416666666667
+              ],
+              "capture_rate": [
+                0.020833333333333332,
+                0.10546875
+              ],
+              "capped_capture_time": [
+                -4.187070312499998,
+                -0.6223177083333274
+              ]
+            },
+            "families": 384
+          },
+          "per_bank": {
+            "common_fresh": {
+              "N": 256,
+              "success": 256,
+              "capture": 119,
+              "collision": 0,
+              "physical_breach": 0,
+              "timeout": 137,
+              "capped_capture_time": 61.41718750000004,
+              "latency_mean_ms": 48.92962076063275,
+              "deadline_fraction": 0.0008522654997837535
+            },
+            "common_extended": {
+              "N": 256,
+              "success": 256,
+              "capture": 120,
+              "collision": 0,
+              "physical_breach": 0,
+              "timeout": 136,
+              "capped_capture_time": 61.43515625000004,
+              "latency_mean_ms": 48.75818313453405,
+              "deadline_fraction": 0.0008265829062654984
+            },
+            "common_second": {
+              "N": 256,
+              "success": 255,
+              "capture": 115,
+              "collision": 1,
+              "physical_breach": 0,
+              "timeout": 140,
+              "capped_capture_time": 61.53906250000003,
+              "latency_mean_ms": 48.58295224180108,
+              "deadline_fraction": 0.000827414139871178
+            }
+          },
+          "comparison": "same768 development tasks vs existing persistent coverage766success305capture"
+        },
+        "future_repeat": {
+          "status": "completed",
+          "pid": 293423,
+          "code": "/root/autodl-tmp/citf-10h-20261102/code_role_attribution_20261105T051041Z",
+          "tasks": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/defense80_v3_20261105/repeat1_fresh_tasks.json",
+          "scope": "same128 fresh geometries,preexisting new future pair256; not independent training or new-layout generalization",
+          "methods": [
+            "frozen_final_role9701",
+            "fixed_anticipatory_same_weights"
+          ],
+          "workers_each": 10,
+          "comparison_to_existing_persistent_coverage": "256success125capture; same future task bank",
+          "summaries": {
+            "learned": {
+              "completed": true,
+              "N": 256,
+              "success": 256,
+              "capture": 119,
+              "collision": 0,
+              "physical_breach": 0,
+              "timeout": 137,
+              "capped_capture_time": 61.38515625000003,
+              "latency_mean_ms": 47.84635036345805,
+              "deadline_fraction": 0.0008272561821490843
+            },
+            "fixed_anticipatory": {
+              "completed": true,
+              "N": 256,
+              "success": 255,
+              "capture": 123,
+              "collision": 1,
+              "physical_breach": 0,
+              "timeout": 132,
+              "capped_capture_time": 62.65703125000005,
+              "latency_mean_ms": 47.80433014055133,
+              "deadline_fraction": 0.0008385167015005694
+            },
+            "persistent_coverage": {
+              "completed": true,
+              "N": 256,
+              "success": 256,
+              "capture": 125,
+              "collision": 0,
+              "physical_breach": 0,
+              "timeout": 131,
+              "capped_capture_time": 61.545312500000044,
+              "latency_mean_ms": 46.12629211400937,
+              "deadline_fraction": 2.5387798623981314e-05
+            }
+          },
+          "paired": {
+            "persistent_coverage": {
+              "N": 256,
+              "rescues": 0,
+              "harms": 0,
+              "capture_gains": 49,
+              "capture_losses": 55,
+              "capped_time_delta": -0.16015625000001654,
+              "layout_bootstrap_95ci": {
+                "success_rate": [
+                  0.0,
+                  0.0
+                ],
+                "capture_rate": [
+                  -0.1015625,
+                  0.05078125
+                ],
+                "capped_capture_time": [
+                  -3.161093750000019,
+                  2.9476757812499788
+                ]
+              }
+            },
+            "fixed_anticipatory": {
+              "N": 256,
+              "rescues": 1,
+              "harms": 0,
+              "capture_gains": 56,
+              "capture_losses": 60,
+              "capped_time_delta": -1.2718750000000272,
+              "layout_bootstrap_95ci": {
+                "success_rate": [
+                  0.0,
+                  0.01171875
+                ],
+                "capture_rate": [
+                  -0.09765625,
+                  0.06640625
+                ],
+                "capped_capture_time": [
+                  -4.678964843750018,
+                  2.192968749999966
+                ]
+              }
+            }
+          }
+        },
+        "attribution_common768": {
+          "summaries": {
+            "common": {
+              "N": 768,
+              "success": 767,
+              "capture": 354,
+              "collision": 1,
+              "physical_breach": 0,
+              "timeout": 413,
+              "capped_capture_time": 61.46380208333337
+            },
+            "fixed_anticipatory": {
+              "N": 768,
+              "success": 766,
+              "capture": 329,
+              "collision": 2,
+              "physical_breach": 0,
+              "timeout": 437,
+              "capped_capture_time": 62.56744791666669
+            }
+          },
+          "paired": {
+            "N": 768,
+            "rescues": 2,
+            "harms": 1,
+            "capture_gains": 190,
+            "capture_losses": 165,
+            "capped_time_delta": -1.1036458333333268,
+            "layout_bootstrap_95ci": {
+              "success_rate": [
+                -0.0026041666666666665,
+                0.006510416666666667
+              ],
+              "capture_rate": [
+                -0.013020833333333334,
+                0.07942708333333333
+              ],
+              "capped_capture_time": [
+                -3.1510416666666514,
+                0.9018880208333289
+              ]
+            },
+            "families": 384
+          },
+          "per_bank": {
+            "fixed_anticipatory_fresh": {
+              "N": 256,
+              "success": 256,
+              "capture": 117,
+              "collision": 0,
+              "physical_breach": 0,
+              "timeout": 139,
+              "capped_capture_time": 61.18984375000003,
+              "latency_mean_ms": 48.376623685423375,
+              "deadline_fraction": 0.0008298967097787368
+            },
+            "fixed_anticipatory_extended": {
+              "N": 256,
+              "success": 254,
+              "capture": 97,
+              "collision": 2,
+              "physical_breach": 0,
+              "timeout": 157,
+              "capped_capture_time": 64.92343750000003,
+              "latency_mean_ms": 48.90946025477407,
+              "deadline_fraction": 0.0007752313581084355
+            },
+            "fixed_anticipatory_second": {
+              "N": 256,
+              "success": 256,
+              "capture": 115,
+              "collision": 0,
+              "physical_breach": 0,
+              "timeout": 141,
+              "capped_capture_time": 61.58906250000003,
+              "latency_mean_ms": 48.453970697183685,
+              "deadline_fraction": 0.0008118324580764644
+            }
+          }
+        },
+        "status": "completed_training_all_evaluations_and_future_repeat; conditional_learning_gain_not_yet_stable",
+        "initialization_equivalence": {
+          "N": 256,
+          "outcome_changes": 0,
+          "capped_capture_time_changes": 0
+        },
+        "next_decision": {
+          "retained": "Development implementation and all positive/negative outcomes; clear capture/time gains on original768, not a confirmed stable Transformer contribution",
+          "priority": "Broaden learned joint interception roles across the fleet and collect complete-candidate matched futures with task outcomes; improve control opportunity and comparative signal together",
+          "same_recipe_expansion": "No extra training seed or stage scan launched from this mixed result",
+          "formal_scope": "Independent full training and system validation remain pending"
+        }
+      },
+      "next_runtime": {
+        "entry": "/root/autodl-tmp/citf-10h-20261102/code_next",
+        "resolved_path": "/root/autodl-tmp/citf-10h-20261102/code_role_attribution_20261105T051041Z",
+        "adoption": "Resolve once at launch and use the same real directory for the entire next pipeline; build future variants from the full current workspace code and native kernel",
+        "current_live_role_runtime_unchanged": "/root/autodl-tmp/citf-10h-20261102/code_role_task_20261105",
+        "updated_utc": "2026-11-05T05:10:42.944860+00:00",
+        "source": "Full current1103 citf/code including all review fixes and fixed anticipatory role readout ablation",
+        "current_common768_runtime_unchanged": "/root/autodl-tmp/citf-10h-20261102/code_review_sync_20261105T045744Z"
+      },
+      "fleet_interception": {
+        "status": "training_and_complete256_finished_common768_running",
+        "launch": {
+          "phase": "fleet_interception_20261105",
+          "runtime": "/root/autodl-tmp/citf-10h-20261102/code_fleet_interception_20261105T062156Z",
+          "pid": 295752,
+          "source_files": 187,
+          "started_utc": "2026-11-05T06:21:59.371770+00:00",
+          "pipeline": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fleet_interception_20261105/pipeline.py",
+          "scope": "whole-fleet complete-candidate feedback programs; full conditional common futures; final3000 and matched complete256"
+        },
+        "scope": "development; benefit not established",
+        "local_status": "citf\\runs\\remote-10h-20261102\\runs\\root_cause_20261103\\fleet_interception_20261105\\full_future_pipeline_status.json",
+        "plan_section": "1.5.18",
+        "complete256": {
+          "learned_vs_initial": {
+            "N": 256,
+            "layouts": 128,
+            "rescues": 0,
+            "harms": 4,
+            "capture_gains": 51,
+            "capture_losses": 37,
+            "mean_difference": [
+              -0.015625,
+              0.0546875,
+              -3.4671875000000054
+            ],
+            "layout_bootstrap95": [
+              [
+                -0.03515625,
+                -0.01953125,
+                -6.977363281249998
+              ],
+              [
+                0.0,
+                0.1328125,
+                0.03148437499999174
+              ]
+            ]
+          },
+          "learned_vs_fixed": {
+            "N": 256,
+            "layouts": 128,
+            "rescues": 1,
+            "harms": 2,
+            "capture_gains": 44,
+            "capture_losses": 47,
+            "mean_difference": [
+              -0.00390625,
+              -0.01171875,
+              0.1578125000000013
+            ],
+            "layout_bootstrap95": [
+              [
+                -0.01953125,
+                -0.0859375,
+                -3.529042968749994
+              ],
+              [
+                0.0078125,
+                0.05859375,
+                3.7836523437500245
+              ]
+            ]
+          }
+        },
+        "full_future_training": {
+          "completed": true,
+          "updates": 3000,
+          "seconds": 87.96948766708374,
+          "training_roots": 128,
+          "validation_roots": 32,
+          "fixed_program_from_training": 2,
+          "scope": "trained complete-candidate model; closed-loop results remain necessary"
+        }
+      },
+      "fleet_persistent": {
+        "status": "direct256_improved_full_common_and_controls_running",
+        "scope": "fixed-source development; not formal independent learning",
+        "control_launch": {
+          "phase": "fleet_persistent",
+          "pid": 303954,
+          "runtime": "/root/autodl-tmp/citf-10h-20261102/code_fleet_persistent_20261105T084115Z",
+          "files": 189,
+          "started_utc": "2026-11-05T08:41:17.124472+00:00",
+          "experiment": "three full256 persistent joint feedback programs; compare preserved strong coverage; no newly trained Transformer claim",
+          "selection": "retain useful action programs before collecting full common-future supervision",
+          "complete256": {
+            "1": {
+              "N": 256,
+              "layouts": 128,
+              "rescues": 0,
+              "harms": 3,
+              "capture_gains": 138,
+              "capture_losses": 3,
+              "mean_difference": [
+                -0.01171875,
+                0.52734375,
+                -23.59140625000002
+              ],
+              "layout_bootstrap95": [
+                [
+                  -0.02734375,
+                  0.4609375,
+                  -26.770410156250055
+                ],
+                [
+                  0.0,
+                  0.59375,
+                  -20.409277343750013
+                ]
+              ]
+            },
+            "2": {
+              "N": 256,
+              "layouts": 128,
+              "rescues": 0,
+              "harms": 9,
+              "capture_gains": 137,
+              "capture_losses": 8,
+              "mean_difference": [
+                -0.03515625,
+                0.50390625,
+                -21.455468749999994
+              ],
+              "layout_bootstrap95": [
+                [
+                  -0.05859375,
+                  0.43359375,
+                  -24.70867187500001
+                ],
+                [
+                  -0.015625,
+                  0.57421875,
+                  -18.01552734375001
+                ]
+              ]
+            },
+            "3": {
+              "N": 256,
+              "layouts": 128,
+              "rescues": 0,
+              "harms": 3,
+              "capture_gains": 138,
+              "capture_losses": 2,
+              "mean_difference": [
+                -0.01171875,
+                0.53125,
+                -23.56796875000002
+              ],
+              "layout_bootstrap95": [
+                [
+                  -0.02734375,
+                  0.46484375,
+                  -26.482890625000024
+                ],
+                [
+                  0.0,
+                  0.59375,
+                  -20.633574218750024
+                ]
+              ]
+            }
+          },
+          "pair_program3_vs1": {
+            "N": 256,
+            "layouts": 128,
+            "rescues": 3,
+            "harms": 3,
+            "capture_gains": 9,
+            "capture_losses": 8,
+            "mean_difference": [
+              0.0,
+              0.00390625,
+              0.023437500000012684
+            ],
+            "layout_bootstrap95": [
+              [
+                -0.01953125,
+                -0.02734375,
+                -2.028144531250018
+              ],
+              [
+                0.01953125,
+                0.03515625,
+                2.021894531250033
+              ]
+            ]
+          }
+        },
+        "learning_launch": {
+          "phase": "fleet_persistent_learning",
+          "pid": 305659,
+          "runtime": "/root/autodl-tmp/citf-10h-20261102/code_fleet_switching_20261105T085713Z",
+          "files": 189,
+          "started_utc": "2026-11-05T08:57:15.029807+00:00",
+          "training_layouts": 128,
+          "validation_layouts": 32,
+          "root_times": [
+            2,
+            8,
+            16,
+            24,
+            40
+          ],
+          "common_futures": [
+            4,
+            8
+          ],
+          "capture_time_weight": 1.0,
+          "reselect_seconds": 2.0,
+          "fixed_update": 1600,
+          "seed": 9901,
+          "matched_control": "right_orbital_program3 selected by success then capture on complete256,plus retained strong coverage",
+          "physical_feedback": "same persistent state-feedback programs as complete256; all4 candidates sampled to real terminal"
+        },
+        "direct_launch": {
+          "phase": "persistent_direct_safety_time",
+          "pid": 314823,
+          "runtime": "/root/autodl-tmp/citf-10h-20261102/code_fleet_direct_20261105T124825Z",
+          "files": 189,
+          "started_utc": "2026-11-05T12:48:27.367580+00:00",
+          "seed": 9911,
+          "updates": 2000,
+          "readout": "analytic terminal utility from joint safety-minimum distribution,contact conditional on no failure,and capture time constrained to remaining task",
+          "data_reused": "564 training roots and142 validation roots; full all-candidate common futures",
+          "scope": "targeted decoder redesign after observed risk-invariant and mis-scaled timing predictions",
+          "complete256_behavior": {
+            "N": 256,
+            "initial_programs": [
+              15,
+              42,
+              72,
+              127
+            ],
+            "last_programs": [
+              238,
+              4,
+              3,
+              11
+            ],
+            "episodes_with_program_changes": 256,
+            "mean_program_changes": 8.92578125,
+            "program_selections_by_elapsed10s": {
+              "0": [
+                170,
+                174,
+                365,
+                570
+              ],
+              "10": [
+                409,
+                150,
+                336,
+                367
+              ],
+              "20": [
+                602,
+                52,
+                131,
+                190
+              ],
+              "30": [
+                141,
+                30,
+                48,
+                94
+              ],
+              "40": [
+                131,
+                23,
+                27,
+                40
+              ],
+              "50": [
+                49,
+                8,
+                15,
+                22
+              ],
+              "60": [
+                18,
+                4,
+                12,
+                10
+              ],
+              "70": [
+                20,
+                1,
+                3,
+                7
+              ]
+            }
+          },
+          "complete256_paired": {
+            "vs_fixed1": {
+              "N": 256,
+              "layouts": 128,
+              "rescues": 3,
+              "harms": 1,
+              "capture_gains": 9,
+              "capture_losses": 4,
+              "mean_difference": [
+                0.0078125,
+                0.01953125,
+                -5.332031250000017
+              ],
+              "layout_bootstrap95": [
+                [
+                  -0.0078125,
+                  -0.0078125,
+                  -7.415664062500028
+                ],
+                [
+                  0.0234375,
+                  0.046875,
+                  -3.244531249999993
+                ]
+              ]
+            },
+            "vs_fixed3": {
+              "N": 256,
+              "layouts": 128,
+              "rescues": 2,
+              "harms": 0,
+              "capture_gains": 7,
+              "capture_losses": 3,
+              "mean_difference": [
+                0.0078125,
+                0.015625,
+                -5.355468750000029
+              ],
+              "layout_bootstrap95": [
+                [
+                  0.0,
+                  -0.00390625,
+                  -7.489140625000045
+                ],
+                [
+                  0.01953125,
+                  0.0390625,
+                  -3.188281250000013
+                ]
+              ]
+            },
+            "vs_coverage": {
+              "N": 256,
+              "layouts": 128,
+              "rescues": 0,
+              "harms": 1,
+              "capture_gains": 141,
+              "capture_losses": 1,
+              "mean_difference": [
+                -0.00390625,
+                0.546875,
+                -28.923437500000055
+              ],
+              "layout_bootstrap95": [
+                [
+                  -0.01171875,
+                  0.484375,
+                  -31.941445312500047
+                ],
+                [
+                  0.0,
+                  0.609375,
+                  -25.748378906250004
+                ]
+              ]
+            }
+          }
+        },
+        "evidence_launch": {
+          "phase": "persistent_direct_evidence",
+          "pid": 317110,
+          "runtime": "/root/autodl-tmp/citf-10h-20261102/code_fleet_evidence_20261105T131404Z",
+          "files": 189,
+          "started_utc": "2026-11-05T13:14:06.134296+00:00",
+          "main": "9911 fixed2000 direct model; fullcommon768",
+          "no_context": "retrain both persistent stages1600+2000 with context disabled; seeds9901+9911",
+          "repeat": "retrain both persistent stages1600+2000 with seeds9902+9912; common frozen prior9801 and fixedsource/data; not five full independent trainings",
+          "compute": "two evaluation lanes10workers; GPU training sequential; scripted nominal source/physics kernel with unchanged state-feedback assignment",
+          "pending": "preallocated new128-layout256 repeat after these common-task results"
+        },
+        "handoff_launch": {
+          "phase": "observable_handoff_control",
+          "pid": 320905,
+          "runtime": "/root/autodl-tmp/citf-10h-20261102/code_fleet_handoff_20261105T132300Z",
+          "started_utc": "2026-11-05T13:23:02.320955+00:00",
+          "rule": "program1 until two non-guard boats are within28m and ahead of attacker radial projection minus3m; then latch program0",
+          "basis": "same readiness criterion already used by persistent feedback; no timed threshold fitted to evaluation",
+          "scope": "complete256 matched adaptive control; queued after ongoing evidence lanes to respect20CPU",
+          "completed": true
+        },
+        "direct256": {
+          "completed": true,
+          "phase": "development",
+          "N": 256,
+          "expected_N": 256,
+          "success": 255,
+          "capture": 252,
+          "collision": 1,
+          "physical_collision": 1,
+          "physical_breach": 0,
+          "radial_only_failure": 0,
+          "timeout": 3,
+          "ever_radial_disadvantage": 0,
+          "radial_recovery": 0,
+          "tasks_sha256": "0809a8dc4256329f96bd93a1fc16fb9cf9a9f9e4ee42de2aeb53e233e2a7fa55",
+          "registry_sha256": "f22167dfdb372a8b41bb63b05b8bdac2d256af85d4c9a644bf93113a2916b3d5",
+          "capped_capture_time": 34.29296874999999,
+          "latency_mean_ms": 63.40426544589788,
+          "deadline_fraction": 0.09250768031546609,
+          "mean_unique_candidates": 24.26207070475492,
+          "evidence_role": "fixed-source development validation"
+        },
+        "training_completed": {
+          "completed": true,
+          "layouts": 128,
+          "expected_layouts": 128,
+          "processed_states": 640,
+          "expected_states": 640,
+          "roots": 564,
+          "branch_steps": 2692847,
+          "prefix_steps": 54352,
+          "terminal_branches": 17024,
+          "expanded_roots": 500,
+          "seconds": 6551.702889204025,
+          "candidate_count": 4,
+          "scope": "complete conditional supervision; not independent deployment performance"
+        },
+        "validation_completed": {
+          "completed": true,
+          "layouts": 32,
+          "expected_layouts": 32,
+          "processed_states": 160,
+          "expected_states": 160,
+          "roots": 142,
+          "branch_steps": 667737,
+          "prefix_steps": 13615,
+          "terminal_branches": 4208,
+          "expanded_roots": 121,
+          "seconds": 6506.239004850388,
+          "candidate_count": 4,
+          "scope": "complete conditional supervision; not independent deployment performance"
+        },
+        "next": "candidate Transformer and matched MLP complete common768; then unused preallocated new-layout256 and necessary matched training repeat",
+        "plan_sections": [
+          "1.5.19",
+          "1.5.20",
+          "1.5.21"
+        ],
+        "adaptive_controls256": {
+          "selection_handoff": {
+            "completed": true,
+            "phase": "development",
+            "N": 256,
+            "expected_N": 256,
+            "success": 254,
+            "capture": 197,
+            "collision": 2,
+            "physical_collision": 2,
+            "physical_breach": 0,
+            "radial_only_failure": 0,
+            "timeout": 57,
+            "ever_radial_disadvantage": 0,
+            "radial_recovery": 0,
+            "tasks_sha256": "0809a8dc4256329f96bd93a1fc16fb9cf9a9f9e4ee42de2aeb53e233e2a7fa55",
+            "registry_sha256": "f22167dfdb372a8b41bb63b05b8bdac2d256af85d4c9a644bf93113a2916b3d5",
+            "capped_capture_time": 44.68359374999999,
+            "latency_mean_ms": 65.02383206424096,
+            "deadline_fraction": 0.06355176493439989,
+            "mean_unique_candidates": 33.75262665324645,
+            "evidence_role": "fixed-source development validation"
+          },
+          "selection_handoff_physical_teacher": {
+            "completed": true,
+            "phase": "development",
+            "N": 256,
+            "expected_N": 256,
+            "success": 254,
+            "capture": 189,
+            "collision": 2,
+            "physical_collision": 2,
+            "physical_breach": 0,
+            "radial_only_failure": 0,
+            "timeout": 65,
+            "ever_radial_disadvantage": 0,
+            "radial_recovery": 0,
+            "tasks_sha256": "0809a8dc4256329f96bd93a1fc16fb9cf9a9f9e4ee42de2aeb53e233e2a7fa55",
+            "registry_sha256": "f22167dfdb372a8b41bb63b05b8bdac2d256af85d4c9a644bf93113a2916b3d5",
+            "capped_capture_time": 46.62109375,
+            "latency_mean_ms": 65.6896028609314,
+            "deadline_fraction": 0.06259423015026003,
+            "mean_unique_candidates": 34.73339431823957,
+            "evidence_role": "fixed-source development validation"
+          },
+          "selection_direct_physical_teacher": {
+            "completed": true,
+            "phase": "development",
+            "N": 256,
+            "expected_N": 256,
+            "success": 253,
+            "capture": 249,
+            "collision": 3,
+            "physical_collision": 3,
+            "physical_breach": 0,
+            "radial_only_failure": 0,
+            "timeout": 4,
+            "ever_radial_disadvantage": 0,
+            "radial_recovery": 0,
+            "tasks_sha256": "0809a8dc4256329f96bd93a1fc16fb9cf9a9f9e4ee42de2aeb53e233e2a7fa55",
+            "registry_sha256": "f22167dfdb372a8b41bb63b05b8bdac2d256af85d4c9a644bf93113a2916b3d5",
+            "capped_capture_time": 33.789062499999986,
+            "latency_mean_ms": 61.64238402935632,
+            "deadline_fraction": 0.06308731170609623,
+            "mean_unique_candidates": 24.413042451716485,
+            "evidence_role": "fixed-source development validation"
+          }
+        },
+        "comparative256": {
+          "selection_comparative_transformer": {
+            "completed": true,
+            "phase": "development",
+            "N": 256,
+            "expected_N": 256,
+            "success": 256,
+            "capture": 253,
+            "collision": 0,
+            "physical_collision": 0,
+            "physical_breach": 0,
+            "radial_only_failure": 0,
+            "timeout": 3,
+            "ever_radial_disadvantage": 0,
+            "radial_recovery": 0,
+            "tasks_sha256": "0809a8dc4256329f96bd93a1fc16fb9cf9a9f9e4ee42de2aeb53e233e2a7fa55",
+            "registry_sha256": "f22167dfdb372a8b41bb63b05b8bdac2d256af85d4c9a644bf93113a2916b3d5",
+            "capped_capture_time": 33.57499999999999,
+            "latency_mean_ms": 63.34588624603217,
+            "deadline_fraction": 0.06633935219657483,
+            "mean_unique_candidates": 23.500977289650038,
+            "evidence_role": "fixed-source development validation"
+          },
+          "selection_comparative_mlp": {
+            "completed": true,
+            "phase": "development",
+            "N": 256,
+            "expected_N": 256,
+            "success": 254,
+            "capture": 253,
+            "collision": 2,
+            "physical_collision": 2,
+            "physical_breach": 0,
+            "radial_only_failure": 0,
+            "timeout": 1,
+            "ever_radial_disadvantage": 0,
+            "radial_recovery": 0,
+            "tasks_sha256": "0809a8dc4256329f96bd93a1fc16fb9cf9a9f9e4ee42de2aeb53e233e2a7fa55",
+            "registry_sha256": "f22167dfdb372a8b41bb63b05b8bdac2d256af85d4c9a644bf93113a2916b3d5",
+            "capped_capture_time": 31.605468749999968,
+            "latency_mean_ms": 63.9587613605876,
+            "deadline_fraction": 0.06685103708359523,
+            "mean_unique_candidates": 23.802514142049027,
+            "evidence_role": "fixed-source development validation"
+          }
+        },
+        "paired_analysis_20261105": {
+          "candidate_transformer_vs_selection_comparative_mlp": {
+            "N": 256,
+            "layouts": 128,
+            "rescues": 2,
+            "harms": 0,
+            "capture_gains": 3,
+            "capture_losses": 3,
+            "mean_difference": [
+              0.0078125,
+              0.0,
+              1.9695312500000213
+            ],
+            "layout_bootstrap95": [
+              [
+                0.0,
+                -0.01953125,
+                0.034257812499998826
+              ],
+              [
+                0.01953125,
+                0.01953125,
+                3.9095312500000308
+              ]
+            ]
+          },
+          "candidate_transformer_vs_selection_direct": {
+            "N": 256,
+            "layouts": 128,
+            "rescues": 1,
+            "harms": 0,
+            "capture_gains": 3,
+            "capture_losses": 2,
+            "mean_difference": [
+              0.00390625,
+              0.00390625,
+              -0.7179687500000035
+            ],
+            "layout_bootstrap95": [
+              [
+                0.0,
+                -0.01171875,
+                -2.742187500000019
+              ],
+              [
+                0.01171875,
+                0.0234375,
+                1.2797265625000174
+              ]
+            ]
+          },
+          "candidate_transformer_vs_selection_program_1": {
+            "N": 256,
+            "layouts": 128,
+            "rescues": 3,
+            "harms": 0,
+            "capture_gains": 9,
+            "capture_losses": 3,
+            "mean_difference": [
+              0.01171875,
+              0.0234375,
+              -6.05000000000002
+            ],
+            "layout_bootstrap95": [
+              [
+                0.0,
+                -0.00390625,
+                -8.207050781250043
+              ],
+              [
+                0.02734375,
+                0.05078125,
+                -3.9265039062500104
+              ]
+            ]
+          },
+          "candidate_transformer_vs_selection_handoff": {
+            "N": 256,
+            "layouts": 128,
+            "rescues": 2,
+            "harms": 0,
+            "capture_gains": 58,
+            "capture_losses": 2,
+            "mean_difference": [
+              0.0078125,
+              0.21875,
+              -11.10859375
+            ],
+            "layout_bootstrap95": [
+              [
+                0.0,
+                0.1640625,
+                -14.124316406250019
+              ],
+              [
+                0.01953125,
+                0.2734375,
+                -8.079667968749986
+              ]
+            ]
+          },
+          "direct_vs_fixed1_common768": {
+            "N": 768,
+            "layouts": 384,
+            "rescues": 7,
+            "harms": 3,
+            "capture_gains": 18,
+            "capture_losses": 11,
+            "mean_difference": [
+              0.005208333333333333,
+              0.009114583333333334,
+              -6.246614583333365
+            ],
+            "layout_bootstrap95": [
+              [
+                -0.0026041666666666665,
+                -0.00390625,
+                -7.45938151041671
+              ],
+              [
+                0.014322916666666666,
+                0.0234375,
+                -5.0221158854166905
+              ]
+            ]
+          },
+          "repeat_vs_fixed1_common768": {
+            "N": 768,
+            "layouts": 384,
+            "rescues": 8,
+            "harms": 3,
+            "capture_gains": 19,
+            "capture_losses": 9,
+            "mean_difference": [
+              0.006510416666666667,
+              0.013020833333333334,
+              -7.540885416666721
+            ],
+            "layout_bootstrap95": [
+              [
+                -0.0013020833333333333,
+                -0.0013020833333333333,
+                -8.704720052083394
+              ],
+              [
+                0.015625,
+                0.02734375,
+                -6.364837239583367
+              ]
+            ]
+          },
+          "no_context_vs_fixed1_common768": {
+            "N": 768,
+            "layouts": 384,
+            "rescues": 7,
+            "harms": 5,
+            "capture_gains": 18,
+            "capture_losses": 7,
+            "mean_difference": [
+              0.0026041666666666665,
+              0.014322916666666666,
+              -8.710416666666722
+            ],
+            "layout_bootstrap95": [
+              [
+                -0.006510416666666667,
+                0.0013020833333333333,
+                -9.884700520833398
+              ],
+              [
+                0.01171875,
+                0.02734375,
+                -7.5424283854167005
+              ]
+            ]
+          },
+          "direct_vs_no_context_common768": {
+            "N": 768,
+            "layouts": 384,
+            "rescues": 6,
+            "harms": 4,
+            "capture_gains": 8,
+            "capture_losses": 12,
+            "mean_difference": [
+              0.0026041666666666665,
+              -0.005208333333333333,
+              2.463802083333355
+            ],
+            "layout_bootstrap95": [
+              [
+                -0.005208333333333333,
+                -0.016927083333333332,
+                1.3348437500000079
+              ],
+              [
+                0.010416666666666666,
+                0.006510416666666667,
+                3.6435611979166933
+              ]
+            ]
+          }
+        },
+        "common768": {
+          "direct": {
+            "N": 768.0,
+            "success": 763.0,
+            "capture": 755.0,
+            "collision": 5.0,
+            "timeout": 8.0,
+            "capped_capture_time": 33.862500000000004
+          },
+          "repeat": {
+            "N": 768.0,
+            "success": 764.0,
+            "capture": 758.0,
+            "collision": 4.0,
+            "timeout": 6.0,
+            "capped_capture_time": 32.56822916666665
+          },
+          "no_context": {
+            "N": 768.0,
+            "success": 761.0,
+            "capture": 759.0,
+            "collision": 7.0,
+            "timeout": 2.0,
+            "capped_capture_time": 31.398697916666638
+          },
+          "fixed1": {
+            "N": 768.0,
+            "success": 759.0,
+            "capture": 748.0,
+            "collision": 9.0,
+            "timeout": 11.0,
+            "capped_capture_time": 40.10911458333336
+          },
+          "fixed3": {
+            "N": 768.0,
+            "success": 753.0,
+            "capture": 735.0,
+            "collision": 15.0,
+            "timeout": 18.0,
+            "capped_capture_time": 41.028906250000034
+          }
+        },
+        "physical_teacher_readout": {
+          "actor.3.weight_nonzero": 0,
+          "actor.3.bias_nonzero": 0,
+          "scope": "frozen teacher substitution; source SAC shared; no retrained entire-system ablation"
+        },
+        "comparative_common_launch": {
+          "name": "comparative_candidate_common768",
+          "pid": 323731,
+          "runtime": "/root/autodl-tmp/citf-10h-20261102/code_fleet_comparative_20261105T134918Z",
+          "status": "/root/autodl-tmp/citf-10h-20261102/runs/root_cause_20261103/fleet_persistent_20261105/comparative_common_pipeline_status.json",
+          "started_utc": "2026-11-05T14:06:28.550259+00:00"
         }
       }
     }
