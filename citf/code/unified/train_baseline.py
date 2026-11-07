@@ -10,6 +10,7 @@ from .baselines import PublicBaseline, BaselineLearner
 from .environment import FleetEnv, TaskConfig
 from .learner import Replay
 from . import IMPLEMENTATION_VERSION
+from .protocol import baseline_updates, bind_run, learning_counts, validate_checkpoint
 from .train import (evaluate, write_json, save, seed_policy, random_state, restore_random_state,
                     resume_arguments, prepare_output, run_generators, validate_training_arguments, rollout_count)
 
@@ -22,8 +23,11 @@ def main():
     p.add_argument('--seed', type=int, default=1101)
     p.add_argument('--envs', type=int, default=64)
     p.add_argument('--batch', type=int, default=4096)
-    p.add_argument('--updates-per-step', type=int,
-                   help='Updates per vector collection; defaults to envs, preserving the author 1:1 update-to-team-transition ratio.')
+    p.add_argument('--updates-per-joint-transition', type=float, default=1.)
+    p.add_argument('--target-entropy', type=float, help='Author target: ARBoids -3; RP/SAC -2.')
+    p.add_argument('--gamma', type=float, default=.99)
+    p.add_argument('--target-tau', type=float, default=.005)
+    p.add_argument('--registry', help='Frozen common-study registry; required for formal training.')
     p.add_argument('--eval-interval', type=int, default=50000)
     p.add_argument('--eval-count', type=int, default=100)
     p.add_argument('--eval-seed', type=int, default=73001)
@@ -42,8 +46,11 @@ def main():
     payload = torch.load(args.resume, map_location='cpu', weights_only=False) if args.resume else None
     if payload is not None:
         resume_arguments(args, payload)
-    if args.updates_per_step is None:
-        args.updates_per_step = args.envs
+        validate_checkpoint(payload)
+    if args.target_entropy is None:
+        args.target_entropy = -3. if args.method == 'arboids' else -2.
+    if not 0 < args.updates_per_joint_transition < float('inf'):
+        raise ValueError('The baseline update-to-joint-transition ratio must be positive and finite.')
     validate_training_arguments(args)
     torch.set_num_threads(2)
     torch.set_num_interop_threads(1)
@@ -52,8 +59,9 @@ def main():
     out = Path(args.out)
     prepare_output(out, payload)
     task = TaskConfig(thrust_delta=args.thrust_delta, collision_penalty=args.collision_penalty)
+    run = bind_run(args, task, payload)
     model = PublicBaseline(args.method, args.width, task.thrust_delta).to(args.device)
-    learner = BaselineLearner(model, args.lr)
+    learner = BaselineLearner(model, args.lr, args.gamma, args.target_tau, args.target_entropy)
     if payload is not None:
         learner.restore(payload)
     elif args.init_from:
@@ -80,11 +88,12 @@ def main():
     next_eval = ((transitions//args.eval_interval)+1)*args.eval_interval
     started = last_report = time.perf_counter()
     write_json(out/'configuration.json',dict(arguments=vars(args),task=asdict(task),research_stage=args.stage,
-                implementation_version=IMPLEMENTATION_VERSION, replay_unit='individual transition',
-                optimizer_updates_per_team_transition=args.updates_per_step/args.envs,
+                implementation_version=IMPLEMENTATION_VERSION, replay_unit='individual transition', run_identity=run,
+                optimizer_updates_per_team_transition=args.updates_per_joint_transition,
                architecture_source='third_party/arboids_release/train/policy/networks.py',
                 adaptations=['common task and actuator constraints','own previous actual action and remaining time in observations',
-                            'fixed physical-unit observation normalization','entropy dimension matches two stochastic coordinates']))
+                            'fixed physical-unit observation normalization'],
+                target_entropy=args.target_entropy, temperature_objective='author alpha-space'))
     try:
         while transitions < args.steps:
             count = rollout_count(args, transitions, next_eval)
@@ -103,10 +112,12 @@ def main():
                               for key, value in dict(done=done, event=env.outcome, seconds=env.elapsed).items()})
                 transitions += count
                 env.reset((done & active).nonzero().flatten(), transitions)
-            if transitions >= args.start_learning:
-                for _ in range(args.updates_per_step):
-                    batch = replay.sample(args.batch, generators['replay'])
-                    metrics = learner.update(*(batch[key] for key in ('s','a','r','next_s','done')))
+            due = baseline_updates(transitions, args.start_learning, args.updates_per_joint_transition)-learner.updates
+            if due < 0:
+                raise ValueError('Checkpoint learning count exceeds its registered transition budget.')
+            for _ in range(due):
+                batch = replay.sample(args.batch, generators['replay'])
+                metrics = learner.update(*(batch[key] for key in ('s','a','r','next_s','done')))
             if time.perf_counter()-last_report > 30:
                 record = dict(status='training',transitions=transitions,updates=learner.updates,
                               seconds=time.perf_counter()-started,metrics=metrics)
@@ -115,12 +126,15 @@ def main():
                 last_report = time.perf_counter()
             if transitions >= next_eval or transitions >= args.steps or transitions == 500000:
                 evaluation = evaluate(model,task,args.eval_count,args.eval_seed,args.policy_eval_seed,args.device)
-                evaluation.update(transitions=transitions,updates=learner.updates,role='validation')
+                counts = learning_counts(args.method, transitions, vars(args), learner.updates)
+                evaluation.update(transitions=transitions, updates=learner.updates, update_counts=counts,
+                                  run_id=run['id'], role='validation', research_stage=args.stage)
                 improved = evaluation['success_rate'] > best
                 best = max(best, evaluation['success_rate'])
                 checkpoint = dict(**learner.payload(), method=args.method, width=args.width,
                                   task=asdict(task), transitions=transitions, arguments=vars(args),
-                                  evaluation=evaluation, implementation_version=IMPLEMENTATION_VERSION)
+                                  evaluation=evaluation, implementation_version=IMPLEMENTATION_VERSION,
+                                  run_identity=run, update_counts=counts)
                 if improved:
                     save(out/'best_development.pt', checkpoint)
                 checkpoint['training_state'] = dict(replay=replay.state_dict(), environment=env.state_dict(),
@@ -132,6 +146,7 @@ def main():
                 print(json.dumps(dict(event='development_evaluation',**{k:v for k,v in evaluation.items() if k != 'rows'})),flush=True)
                 next_eval = ((transitions//args.eval_interval)+1)*args.eval_interval
         write_json(out/'status.json',dict(status='completed',transitions=transitions,updates=learner.updates,
+                   run_id=run['id'], update_counts=learning_counts(args.method, transitions, vars(args), learner.updates),
                    seconds=time.perf_counter()-started,best_development_success=best,
                    final={k:v for k,v in evaluation.items() if k != 'rows'}))
     except BaseException as error:

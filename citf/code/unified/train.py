@@ -12,6 +12,8 @@ from .environment import TaskConfig, FleetEnv, boids, execute, fusion
 from .networks import CITF, ModelConfig
 from .learner import Learner, Replay
 from . import IMPLEMENTATION_VERSION
+from .protocol import (bind_run, learning_counts, outcome_metrics, validate_metrics,
+                       validate_checkpoint, digest)
 
 
 def write_json(path, value):
@@ -68,7 +70,7 @@ def resume_arguments(args, payload):
         raise ValueError('This checkpoint has no compatible complete training state. Use --init-from for weights-only initialization in a new output directory.')
     explicit = {value.split('=', 1)[0] for value in sys.argv[1:] if value.startswith('--')}
     for key, saved in payload['arguments'].items():
-        if key in ('out', 'steps', 'device', 'resume', 'init_from') or not hasattr(args, key):
+        if key in ('out', 'steps', 'device', 'resume', 'init_from', 'registry') or not hasattr(args, key):
             continue
         if '--'+key.replace('_', '-') in explicit and getattr(args, key) != saved:
             raise ValueError(f'Exact resume cannot change --{key.replace("_", "-")}; use --init-from for a new experiment.')
@@ -84,16 +86,28 @@ def prepare_output(out, resume=None):
         raise FileExistsError(f'{out} already contains a run; choose a new run directory or use --resume.')
     if resume is not None and (out/'configuration.json').exists():
         configuration = json.loads((out/'configuration.json').read_text(encoding='utf-8'))
-        ignored = {'out', 'steps', 'device', 'resume', 'init_from'}
+        ignored = {'out', 'steps', 'device', 'resume', 'init_from', 'registry'}
         prior = {key: value for key, value in configuration['arguments'].items() if key not in ignored}
         restored = {key: value for key, value in resume['arguments'].items() if key not in ignored}
         if prior != restored or configuration.get('implementation_version') != IMPLEMENTATION_VERSION:
             raise ValueError('The output directory belongs to a different training configuration.')
     if resume is not None and (out/'evaluations.jsonl').exists():
+        nodes = []
         with (out/'evaluations.jsonl').open(encoding='utf-8') as stream:
             for line in stream:
-                if line.strip() and json.loads(line)['transitions'] > resume['transitions']:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                nodes.append(row['transitions'])
+                validate_metrics(row)
+                if row['transitions'] > resume['transitions']:
                     raise ValueError('Output already contains evaluations newer than this checkpoint; resume into a new directory.')
+        if nodes != sorted(set(nodes)):
+            raise ValueError('The learning curve contains duplicate or out-of-order evaluations.')
+        # A crash can occur between the atomic checkpoint save and JSONL append.
+        if resume['evaluation'] is not None and resume['transitions'] not in nodes:
+            with (out/'evaluations.jsonl').open('a', encoding='utf-8') as stream:
+                stream.write(json.dumps(resume['evaluation'])+'\n')
 
 
 def run_generators(seed, device):
@@ -104,7 +118,7 @@ def run_generators(seed, device):
 def validate_training_arguments(args):
     for key in ('steps', 'envs', 'batch', 'updates_per_step', 'capacity', 'start_learning',
                 'eval_interval', 'eval_count'):
-        if getattr(args, key) < 1:
+        if hasattr(args, key) and getattr(args, key) < 1:
             raise ValueError(f'--{key.replace("_", "-")} must be positive.')
     if args.lr <= 0 or args.capacity < args.start_learning:
         raise ValueError('Positive learning rate and replay capacity at least start-learning are required.')
@@ -134,6 +148,19 @@ def policy_learning_rate(recipe, transitions):
     return recipe['lr']+(end-recipe['lr'])*fraction
 
 
+def policy_schedule(recipe, transitions):
+    """All policy schedules use cumulative defender transitions, never SGD calls."""
+    noise_fraction = min(1., transitions/recipe['exploration_steps'])
+    temperature_fraction = min(1., transitions/recipe['temperature_steps'])
+    return dict(probability=max(.1, 1-.9*noise_fraction),
+                endpoint_noise=recipe['endpoint_noise_start']+(recipe['endpoint_noise_end']-recipe['endpoint_noise_start'])*noise_fraction,
+                temperature=recipe['temperature_start']+(recipe['temperature_end']-recipe['temperature_start'])*temperature_fraction,
+                feedback_scale=(0. if transitions < recipe['feedback_start'] else
+                                min(1., (transitions-recipe['feedback_start'])/recipe['feedback_ramp'])
+                                if recipe['feedback_ramp'] else 1.),
+                policy_lr=policy_learning_rate(recipe, transitions))
+
+
 def evaluate(model, cfg, count=100, scene_seed=73001, policy_seed=83001, device='cuda'):
     if count < 1:
         raise ValueError('Evaluation must contain at least one scene.')
@@ -152,15 +179,9 @@ def evaluate(model, cfg, count=100, scene_seed=73001, policy_seed=83001, device=
                 action = execute(boids(x), x[:, :-1, 6:8], cfg.thrust_delta) if model is None else model.select(x)['action']
                 env.step(action)
         rows = env.records()
-    totals = {key: sum(row[key] for row in rows) for key in ('success', 'capture', 'timeout', 'collision', 'breach')}
-    capture_seconds = [row['seconds'] for row in rows if row['capture']]
-    return dict(tasks=count, scene_seed=scene_seed, policy_seed=policy_seed,
+    return dict(scene_seed=scene_seed, policy_seed=policy_seed,
                 task=asdict(cfg), implementation_version=IMPLEMENTATION_VERSION,
-                **totals, success_rate=totals['success']/count,
-                mean_seconds=sum(row['seconds'] for row in rows)/count,
-                mean_termination_seconds=sum(row['seconds'] for row in rows)/count,
-                capture_count=len(capture_seconds),
-                mean_capture_seconds=sum(capture_seconds)/len(capture_seconds) if capture_seconds else None,
+                **outcome_metrics(rows, count, scene_seed, cfg.duration),
                 wall_seconds=time.perf_counter()-started, rows=rows)
 
 
@@ -204,6 +225,7 @@ def arguments():
     p.add_argument('--endpoint-noise-end', type=float, default=0.)
     p.add_argument('--device', default='cuda')
     p.add_argument('--resume')
+    p.add_argument('--registry', help='Frozen common-study registry; required for formal training.')
     p.add_argument('--init-from')
     p.add_argument('--exploration-steps', type=int, default=100000)
     p.add_argument('--temperature-steps', type=int, default=800000)
@@ -215,6 +237,7 @@ def main():
     payload = torch.load(args.resume, map_location='cpu', weights_only=False) if args.resume else None
     if payload is not None:
         resume_arguments(args, payload)
+        validate_checkpoint(payload)
     validate_training_arguments(args)
     if min(args.exploration_steps, args.temperature_steps) <= 0:
         raise ValueError('Exploration and temperature schedules must have positive lengths.')
@@ -238,6 +261,7 @@ def main():
                       thrust_delta=args.thrust_delta, feedback=args.feedback,
                       action_interaction=not args.no_action_interaction)
     task = TaskConfig(thrust_delta=args.thrust_delta, collision_penalty=args.collision_penalty)
+    run = bind_run(args, task, payload)
     model = CITF(cfg).to(args.device)
     learner = Learner(model, lr=args.lr, tau=args.target_tau)
     transitions = 0
@@ -265,7 +289,7 @@ def main():
         del saved
     del payload
     write_json(out/'configuration.json', dict(arguments=vars(args), model=asdict(cfg), task=asdict(task),
-               implementation_version=IMPLEMENTATION_VERSION, research_stage=args.stage,
+               implementation_version=IMPLEMENTATION_VERSION, research_stage=args.stage, run_identity=run,
                reward='unified event/formation structure; collision magnitude recorded in task',
                random_streams=dict(policy=args.seed, environment=args.seed+100000,
                                    exploration=args.seed+200000, replay=args.seed+300000,
@@ -292,9 +316,8 @@ def main():
             count = rollout_count(args, transitions, next_eval)
             active = torch.arange(args.envs, device=args.device) < count
             x = env.observation()
-            probability = max(.1, 1-.9*transitions/args.exploration_steps)
-            noise_fraction = min(1., transitions/args.exploration_steps)
-            endpoint_noise = args.endpoint_noise_start+(args.endpoint_noise_end-args.endpoint_noise_start)*noise_fraction
+            schedule = policy_schedule(vars(args), transitions)
+            probability, endpoint_noise = schedule['probability'], schedule['endpoint_noise']
             with torch.no_grad():
                 if transitions < args.start_learning:
                     rule_source = boids(x)
@@ -322,16 +345,11 @@ def main():
                 transitions += count
                 env.reset(ended.nonzero().flatten(), transitions)
             if replay.size >= args.start_learning:
-                policy_lr = policy_learning_rate(vars(args), transitions)
+                schedule = policy_schedule(vars(args), transitions)
+                policy_lr = schedule['policy_lr']
                 learner.set_policy_learning_rate(policy_lr)
                 metrics['policy_lr'] = policy_lr
-                fraction = min(1., transitions/args.temperature_steps)
-                temperature = args.temperature_start+(args.temperature_end-args.temperature_start)*fraction
-                # The base generator and endpoint keep learning throughout.
-                # Delay strong distribution fitting until values have experience.
-                feedback_scale = (0. if transitions < args.feedback_start else
-                                  min(1., (transitions-args.feedback_start)/args.feedback_ramp)
-                                  if args.feedback_ramp else 1.)
+                temperature, feedback_scale = schedule['temperature'], schedule['feedback_scale']
                 for _ in range(args.updates_per_step):
                     value_batch = replay.sample_value(args.batch, generators['replay'],
                                                       args.value_terminal_fraction, args.value_importance_exponent)
@@ -350,12 +368,14 @@ def main():
                 last_report = now
             if transitions >= next_eval or transitions >= args.steps or transitions == 500000:
                 evaluation = evaluate(model, task, args.eval_count, args.eval_seed, args.policy_eval_seed, args.device)
-                evaluation.update(transitions=transitions, updates=learner.updates, role='validation')
+                counts = learning_counts(run['method'], transitions, vars(args), learner.updates)
+                evaluation.update(transitions=transitions, updates=learner.updates, update_counts=counts,
+                                  run_id=run['id'], role='validation', research_stage=args.stage)
                 improved = evaluation['success_rate'] > best
                 best = max(best, evaluation['success_rate'])
                 checkpoint = dict(**learner.payload(), transitions=transitions, task=asdict(task),
                                   arguments=vars(args), evaluation=evaluation,
-                                  implementation_version=IMPLEMENTATION_VERSION)
+                                  implementation_version=IMPLEMENTATION_VERSION, run_identity=run, update_counts=counts)
                 if improved:
                     save(out/'best_development.pt', checkpoint)
                 if transitions == 500000:
@@ -370,6 +390,7 @@ def main():
                 print(json.dumps(dict(event='development_evaluation', **{k:v for k,v in evaluation.items() if k != 'rows'})), flush=True)
                 next_eval = ((transitions//args.eval_interval)+1)*args.eval_interval
         final = dict(status='completed', transitions=transitions, updates=learner.updates,
+                     run_id=run['id'], update_counts=learning_counts(run['method'], transitions, vars(args), learner.updates),
                      best_development_success=best, seconds=time.perf_counter()-started,
                      final={k:v for k,v in evaluation.items() if k != 'rows'})
         write_json(out/'status.json', final)

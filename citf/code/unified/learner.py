@@ -38,6 +38,8 @@ class Replay:
         self._terminal_pools = None
 
     def sample(self, count, generator=None):
+        if count < 1 or self.size < 1:
+            raise ValueError('Sampling requires a positive batch and a nonempty replay.')
         index = torch.randint(self.size, (count,), device=next(iter(self.data.values())).device, generator=generator)
         return {key: tensor[index] for key, tensor in self.data.items()}
 
@@ -48,6 +50,8 @@ class Replay:
         positive sampling probability. Partial importance weights temper the
         emphasis on rare terminal targets without changing their rewards.
         """
+        if count < 1 or self.size < 1 or not 0 <= terminal_fraction < 1 or not 0 <= importance_exponent <= 1:
+            raise ValueError('Invalid value-sampling count, mixture fraction or importance exponent.')
         terminal_count = int(count*terminal_fraction)
         if not terminal_count:
             return self.sample(count, generator)
@@ -70,9 +74,10 @@ class Replay:
         uniform_mass = uniform_count/count/self.size
         probability = torch.full((count,), uniform_mass, device=device)
         for kind, mass in masses.items():
-            probability += (self.data['event'][index] == kind)*mass
+            probability += ((self.data['event'][index] == kind) & self.data['done'][index])*mass
         batch = {key: tensor[index] for key, tensor in self.data.items()}
         batch['value_weight'] = (uniform_mass/probability).pow(importance_exponent)
+        batch['value_probability'] = probability
         return batch
 
     def state_dict(self):
@@ -203,10 +208,13 @@ class Learner:
     def payload(self):
         return dict(model=self.model.state_dict(), target=self.target.state_dict(),
                     config=asdict(self.model.cfg), updates=self.updates,
+                    learner_recipe=dict(gamma=self.gamma, tau=self.tau, policy_delay=self.policy_delay),
                     optimizers=[self.q_optimizer.state_dict(), self.endpoint_optimizer.state_dict(),
                                 self.generator_optimizer.state_dict()])
 
     def restore(self, payload):
+        if payload.get('learner_recipe') != dict(gamma=self.gamma, tau=self.tau, policy_delay=self.policy_delay):
+            raise ValueError('The saved defender discount, target rate and policy update period must match.')
         self.model.load_state_dict(payload['model'])
         self.target.load_state_dict(payload['target'])
         self.updates = payload['updates']

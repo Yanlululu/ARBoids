@@ -91,8 +91,12 @@ class PublicBaseline(nn.Module):
 
 
 class BaselineLearner:
-    def __init__(self, model, lr=1e-4):
+    def __init__(self, model, lr=1e-4, gamma=.99, tau=.005, target_entropy=None):
         self.model, self.target = model, copy.deepcopy(model.critic)
+        self.gamma, self.tau = gamma, tau
+        self.target_entropy = -float(model.action_dim) if target_entropy is None else target_entropy
+        if lr <= 0 or not 0 <= gamma <= 1 or not 0 < tau <= 1 or not math.isfinite(self.target_entropy):
+            raise ValueError('Invalid baseline learning recipe.')
         self.target.requires_grad_(False)
         self.actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=lr, eps=1e-5)
         self.critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=lr, eps=1e-5)
@@ -104,12 +108,9 @@ class BaselineLearner:
         self.updates += 1
         alpha = self.log_alpha.exp().detach()
         with torch.no_grad():
-            target = reward[:, None].clone()
-            continuing = ~done.bool()
-            if bool(continuing.any()):
-                next_a, next_logp = self.model.actor(next_s[continuing])
-                q1, q2 = self.target(next_s[continuing], next_a)
-                target[continuing] += .99*(torch.minimum(q1, q2)-alpha*next_logp)
+            next_a, next_logp = self.model.actor(next_s)
+            q1, q2 = self.target(next_s, next_a)
+            target = reward[:, None]+self.gamma*(1-done.float()[:, None])*(torch.minimum(q1, q2)-alpha*next_logp)
         q1, q2 = self.model.critic(s, a)
         critic_loss = F.mse_loss(q1, target)+F.mse_loss(q2, target)
         self.critic_optimizer.zero_grad(set_to_none=True)
@@ -124,24 +125,27 @@ class BaselineLearner:
             actor_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.actor.parameters(), float('inf'), error_if_nonfinite=True)
             self.actor_optimizer.step()
-        # There are two stochastic Gaussian coordinates; the adapter is deterministic.
-        # Retain the author's temperature optimization in alpha-space.
-        alpha_loss = -(self.log_alpha.exp()*(logp.detach()-2.)).mean()
+        # Author recipe: ARBoids -3, RP/SAC -2, with alpha-space optimization.
+        alpha_loss = -(self.log_alpha.exp()*(logp.detach()+self.target_entropy)).mean()
         self.alpha_optimizer.zero_grad(set_to_none=True)
         alpha_loss.backward()
         self.alpha_optimizer.step()
         with torch.no_grad():
             for target_parameter, parameter in zip(self.target.parameters(), self.model.critic.parameters()):
-                target_parameter.lerp_(parameter, .005)
-        return dict(q_loss=float(critic_loss.detach()), actor_loss=float(actor_loss.detach()), alpha=float(alpha))
+                target_parameter.lerp_(parameter, self.tau)
+        return dict(q_loss=float(critic_loss.detach()), actor_loss=float(actor_loss.detach()),
+                    alpha_loss=float(alpha_loss.detach()), alpha=float(self.log_alpha.exp().detach()))
 
     def payload(self):
         return dict(model=self.model.state_dict(), target=self.target.state_dict(),
                     log_alpha=self.log_alpha.detach(), updates=self.updates,
+                    learner_recipe=dict(gamma=self.gamma, tau=self.tau, target_entropy=self.target_entropy),
                     optimizers=[self.actor_optimizer.state_dict(), self.critic_optimizer.state_dict(),
                                 self.alpha_optimizer.state_dict()])
 
     def restore(self, payload):
+        if payload.get('learner_recipe') != dict(gamma=self.gamma, tau=self.tau, target_entropy=self.target_entropy):
+            raise ValueError('The saved baseline entropy, discount and target-update recipe must match.')
         self.model.load_state_dict(payload['model'])
         self.target.load_state_dict(payload['target'])
         with torch.no_grad():

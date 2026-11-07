@@ -1,8 +1,8 @@
 {
   "method": "CITF",
-  "revision": "unified-nonlocal-response-20261107-r18",
+  "revision": "unified-capacity-matched-control-20261107-r20",
   "basis": "D:/ARBoids/fromCHAT/CITF_最终统一稿_论文与研究方案.zip",
-  "scientific_status": "Development: r18 adopted after all eight fixed250k larger-fleet comparisons:6 improve,1 tie,1 loses1point; net61 additional successes. Team2-7mean74.50->79.58, main250k98/100. Three-defender computation unchanged; four r17 full/no-feedback and two common no-action runs continue1M. Mechanism stability and final500k/1M scope pending; formal study not started.",
+  "scientific_status": "Development: full architecture retains r18; no-action control now near-equal capacity. Pool-objective r19 rejected after100k83/95 versus95/94; all partial runs retained. Two fresh full and two capacity-matched no-action runs test feedback plateau1/300 after100k; existing zero-feedback3-defender computation unchanged. Formal study not started.",
   "implementation": "code/unified",
   "protocol": {
     "defenders": 3,
@@ -2150,12 +2150,16 @@
     "capacity_matched_control_candidate": {
       "source": "code_v26",
       "version": "unified-capacity-matched-control-20261107-r20",
-      "status": "prepared; not yet trained",
-      "parent": "code_v25/r19",
+      "status": "adopted control definition; fresh matched runs started",
+      "parent": "r18 expected-single-candidate learner; rejected r19 pool objective removed",
       "full_method_unchanged": true,
       "control": "two per-token LocalBlocks and own-action response, state-only neighbor geometry; no other current candidate action",
       "critic_parameter_difference": 6280,
-      "critic_relative_difference": 0.00733
+      "critic_relative_difference": 0.00733,
+      "critic_parameters": {
+        "full": 857044,
+        "no_action": 850764
+      }
     },
     "pool_objective_first50k": {
       "source": "code_v25/r19",
@@ -2187,7 +2191,59 @@
         11,
         24
       ],
-      "decision": "Continue to preregistered100k comparison before adding matched controls; not yet adopted."
+      "decision": "Followed by100k83/95; rejected at that registered decision point."
+    },
+    "pool_objective_100k": {
+      "success": [
+        83,
+        95
+      ],
+      "collision": [
+        8,
+        2
+      ],
+      "breach": [
+        9,
+        3
+      ],
+      "reference_success": [
+        95,
+        94
+      ],
+      "stopped_transitions": [
+        111840,
+        112736
+      ],
+      "adopted": false
+    },
+    "feedback_plateau_candidate": {
+      "source": "code_v26",
+      "feedback": 0.0033333333333333335,
+      "feedback_start": 50000,
+      "feedback_ramp": 50000,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "full_pids": [
+        433250,
+        433252
+      ],
+      "no_action_pids": [
+        433251,
+        433253
+      ],
+      "matched_no_feedback": [
+        "dev_no_feedback_1101_v23_teammate_response",
+        "dev_no_feedback_1102_v23_teammate_response"
+      ],
+      "scope_queue": {
+        "path": "development_scope_v26",
+        "pid": 433330,
+        "transitions": 250000,
+        "conditions": 26
+      },
+      "status": "training; new feedback schedule not yet selected for formal recipe"
     }
   },
   "generalization": {

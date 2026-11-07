@@ -378,6 +378,23 @@ class TeamCritic(nn.Module):
                                                          nn.SiLU(), nn.Linear(cfg.width//2, 2))
                 nn.init.zeros_(self.interaction_readout[-1].weight)
                 nn.init.zeros_(self.interaction_readout[-1].bias)
+        else:
+            # The ablation retains an equally deep, near-equal-capacity local
+            # action branch. Every candidate-dependent input belongs to i.
+            # State geometry can summarize neighbors, but their current
+            # candidate commands never enter this branch.
+            with torch.random.fork_rng(devices=[]):
+                torch.random.default_generator.manual_seed(torch.initial_seed()+104729*critic_index)
+                self.local_control_layers = nn.ModuleList([
+                    LocalBlock(cfg.width) for _ in range(cfg.layers)])
+                pair_width = cfg.width//2
+                self.local_control_context = nn.Sequential(nn.Linear(12, pair_width), nn.SiLU(),
+                                                           nn.Linear(pair_width, pair_width), nn.SiLU())
+                self.local_control_readout = nn.Sequential(nn.LayerNorm(cfg.width+pair_width),
+                                                          nn.Linear(cfg.width+pair_width, cfg.width//2),
+                                                          nn.SiLU(), nn.Linear(cfg.width//2, 2))
+                nn.init.zeros_(self.local_control_readout[-1].weight)
+                nn.init.zeros_(self.local_control_readout[-1].bias)
 
     def encode(self, x):
         pair = relative_geometry(x)
@@ -435,6 +452,17 @@ class TeamCritic(nn.Module):
                 remote = interaction[:, None, :].expand(-1, n, -1)
                 remote = remote.masked_fill(~outside, torch.inf).amin(-1).clamp_max(0.)
                 q = q+remote
+        else:
+            h = action_state[:, :n]
+            for layer in self.local_control_layers:
+                h = layer(h)
+            diagonal = torch.eye(n, dtype=torch.bool, device=u.device)[None]
+            allowed = (nearest_other(pair[:, :n, :n], self.neighbors)
+                       if n > self.neighbors+1 else ~diagonal)
+            geometry = pair[:, :n, :n].masked_fill(~allowed[..., None], 0.).sum(-2)/min(self.neighbors, n-1)
+            local_features = self.local_control_context(torch.cat((geometry, u/1000., rule/1000.), -1))
+            response = self.local_control_readout(torch.cat((h, local_features), -1))
+            q = q+(response*((u-rule)/1000.)).sum(-1)
         if individual:
             return q.reshape(batch, count, n) if multiple else q
         q = q.mean(-1)
