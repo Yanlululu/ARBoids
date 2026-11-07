@@ -1,5 +1,6 @@
 """One identity and metric contract for training, evaluation and paper results."""
 from dataclasses import asdict, replace
+import ast
 import hashlib
 import json
 import math
@@ -10,6 +11,7 @@ from .environment import TaskConfig
 
 SCHEMA = 1
 METRICS_VERSION = 'exclusive-outcomes-capture-time-v1'
+VRX_ADAPTER_CONTRACT = 'first-terminal-request-isolation-all-cycles-v1'
 METHODS = ('full', 'no_action', 'no_feedback', 'arboids', 'rp', 'sac')
 SEEDS = [2101, 2102, 2103, 2104, 2105]
 BASELINE_RECIPE = dict(envs=64, batch=4096, width=512, capacity=1000000,
@@ -172,7 +174,8 @@ def build_registry(recipe, baseline=None):
                     critic_capacity=dict(full=full_count, no_action=local_count,
                                          relative_difference=difference, maximum_relative_difference=.05),
                     recipe_origin_version=recipe['implementation_version'],
-                    vrx_training_seed=2101, alternating_training_seed=2101)
+                    vrx_training_seed=2101, alternating_training_seed=2101,
+                    vrx_adapter_contract=VRX_ADAPTER_CONTRACT)
     expected_task = asdict(TaskConfig(thrust_delta=chosen['thrust_delta'],
                                     collision_penalty=chosen['collision_penalty']))
     if registry['task'] != expected_task:
@@ -187,6 +190,8 @@ def load_registry(path, current_source=True):
         raise ValueError('The study registry is missing or has changed; use a newly registered study.')
     if registry.get('schema') != SCHEMA or registry.get('metrics_version') != METRICS_VERSION:
         raise ValueError('Incompatible study or metric schema.')
+    if registry.get('vrx_adapter_contract') != VRX_ADAPTER_CONTRACT:
+        raise ValueError('The formal study must register the reviewed VRX event and control contract.')
     if current_source and registry['source'] != source_identity():
         raise ValueError('The executing source differs from the frozen study, including uncommitted changes.')
     return registry
@@ -369,10 +374,13 @@ def evaluation_identity(registry, method, seed, checkpoint, task, scene_seed, po
         expected_run = run_identity(registered_arguments(registry, method, seed), registry['task'], registry)
         if checkpoint['run_id'] != expected_run['id'] or checkpoint['transitions'] != 1000000:
             raise ValueError('Wrong endpoint checkpoint for this method and training seed.')
-    return dict(schema=SCHEMA, registry_id=registry['id'], kind=kind, method=method, training_seed=seed,
+    identity = dict(schema=SCHEMA, registry_id=registry['id'], kind=kind, method=method, training_seed=seed,
                 checkpoint=checkpoint, inference_source=registry['source'], task=task,
                 scene_seed=scene_seed, scenario_indices=list(range(count)), policy_seed=policy_seed,
                 metrics_version=METRICS_VERSION)
+    if kind == 'vrx':
+        identity['adapter_contract'] = registry['vrx_adapter_contract']
+    return identity
 
 
 def attach_identity(result, identity):
@@ -388,6 +396,8 @@ def validate_result(result, expected):
         raise ValueError('Cached result belongs to a different checkpoint, method, task, source or scenario bank.')
     if expected['kind'] == 'numeric' and result.get('method') != expected['method']:
         raise ValueError('Result method label differs from the verified model.')
+    if expected['kind'] == 'vrx' and result.get('adapter_source', {}).get('contract') != expected['adapter_contract']:
+        raise ValueError('VRX results require the reviewed event-history and asynchronous-control adapter.')
     validate_metrics(result)
     return result
 
@@ -488,12 +498,25 @@ def chain_evaluation_identity(registry, phase, checkpoint, task, role):
 
 
 def vrx_source_identity(directory):
-    files = {p.name: file_digest(p) for p in sorted(Path(directory).glob('*.py'))}
-    return dict(id=digest(files), files=files)
+    directory = Path(directory)
+    required = {'unified_vrx.py', 'run_experiment.py', 'run_batch.py', 'mappo_controller.py',
+                'tad_vrx_experiment.py', 'models.py'}
+    paths = {p.name: p for p in directory.glob('*.py')}
+    if not required.issubset(paths):
+        raise ValueError('Freeze and deploy the complete reviewed VRX adapter before running formal episodes.')
+    tree = ast.parse(paths['unified_vrx.py'].read_text(encoding='utf-8-sig'))
+    contracts = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id == 'ADAPTER_CONTRACT' for target in node.targets)]
+    if contracts != [VRX_ADAPTER_CONTRACT]:
+        raise ValueError('Legacy VRX adapters lack the reviewed first-event, request-isolation and cycle-count contract.')
+    files = {name: file_digest(path) for name, path in sorted(paths.items())}
+    return dict(id=digest(files), files=files, contract=VRX_ADAPTER_CONTRACT)
 
 
 def vrx_rows(episodes, identity, adapter_source):
     rows = []
+    if adapter_source.get('contract') != identity.get('adapter_contract') or identity.get('adapter_contract') != VRX_ADAPTER_CONTRACT:
+        raise ValueError('VRX episodes must retain the adapter contract registered before formal training.')
     if len(episodes) != len(identity['scenario_indices']):
         raise ValueError('VRX must retain every registered episode directory.')
     for expected_index, episode in zip(identity['scenario_indices'], episodes):
@@ -501,6 +524,7 @@ def vrx_rows(episodes, identity, adapter_source):
         if (type(index) is not int or index != expected_index
                 or not episode.get('passed') or episode.get('identity') != identity
                 or episode.get('adapter_source') != adapter_source
+                or episode.get('adapter_contract') != VRX_ADAPTER_CONTRACT
                 or episode.get('policy_seed') != identity['policy_seed']+index
                 or episode.get('scene_seed') != identity['scene_seed'] or episode.get('task') != identity['task']):
             raise ValueError('VRX episode has a different source, checkpoint, task or policy random stream.')

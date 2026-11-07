@@ -18,7 +18,7 @@
 
 ## 实体表示、联合生成与动作价值
 
-`features()`提供15维各艇自身坐标物理特征。`EntityEncoder`另加回合生成位置j/(n−1)，攻击艇−1；该位置表示实际自回归顺序，不是永久艇身份。`relative_geometry()`为接收艇坐标下相对位置2、相对速度2、距离、径向相对速度和相对航向正余弦，共8维。每层状态注意力使用关系偏置与关系值映射。
+`features()`提供15维各艇自身坐标物理特征。`EntityEncoder`另加回合生成位置j/(n−1)，攻击艇−1；该位置表示实际自回归顺序，不是永久艇身份。`relative_geometry()`为接收艇坐标下相对位置2、相对速度2、距离、径向相对速度和相对航向正余弦，共8维。每层状态注意力使用关系偏置与关系值映射。回放保存的攻击艇上一指令供环境及攻击策略恢复；防御端`features()`通过角色掩码将该通道置零，端点、生成器、Critic及公开防御基线均不读取攻击艇控制输入。攻击机动性不作为防御策略输入。
 
 `ModelConfig.neighbors=2`固定局部汇聚规模。`nearest_other()`按当前距离选择至多两艘其他防御艇；端点均值/最大值、局部艇对响应使用该集合。状态及动作注意力保留本艇、攻击艇和这两艘队友；攻击艇token保留自身及最近三艘防御艇。全部艇仍在同一配置中接受团队评分、改进和选择。三艇时包含全部队友，扩大队伍时保持至多两艘队友。
 
@@ -83,8 +83,10 @@ VRX用 `vrx/run_batch.py --controller CITF` 或 `ARBoidsUnified`，共同3艇、
 | `test_worst_response_and_search_gradients` | 通过真实`TeamCritic.from_encoded`注入全正、全负、混合、零、并列最负、单邻居及非局部空/非空响应；屏蔽项不进入分母或最小值。零点按非负侧求导、并列负最小值均分梯度。实际完整评分的动作梯度与双精度有限差分在2/3/7艇的最大绝对误差分别4.95e−13、3.96e−12、1.64e−12；搜索选中值不低于初始候选最高分。 |
 | `test_phase_inheritance_and_cumulative_clock`（扩充） | 检查500k、1M、1.5M及相邻计数，学习率到1M后保持2.5e−5，温度/噪声/探索/反馈保持合法末值。新阶段4999条无更新、5000条才有额度；实际入口的回放就绪判断读取新回放有效数，日程另读累计防御计数。 |
 | `test_vrx_event_history_and_async_isolation` | 直接提取真实VRX类方法，覆盖0.05 s中间碰撞后分离、同刻多事件优先级、60 s后突破排除、缺帧拒收、非有限输入及负时间戳拒收；真实Future延迟、跨回合/错误请求拒收、终局无法取消的在途请求、实际旧命令与300 N增量限制均通过。未提交及跳过周期计入分母；终局后完成的请求独立记取消。 |
-| `test_system_artifact_identity_and_entry_points`（复核） | 原目录顺序、冻结适配器身份、场景/模型来源与60 s终局校验继续通过。 |
+| `test_system_artifact_identity_and_entry_points`（复核） | 原目录顺序、冻结适配器身份、场景/模型来源与60 s终局校验继续通过。交接复查又覆盖：真实正式登记/启动参数（截获启动）、缺少新VRX协议的registry拒收、远端实际旧适配器拒收、移位复制后的正确适配器接受、逐回合和汇总协议不符拒收。 |
 | `test_cuda_entry_resume` | 在实际RTX 4090、PyTorch 2.12.1+cu130、CUDA 13.0上，使用隔离冻结r22源码和真实`unified.run_study`登记/命令生成入口，再以真实`unified.train`采集、更新、评价、保存并启动新进程恢复。正式入口启动被截获，仅运行64转移、8环境、批量16的验收；网络宽度128、2层、4候选等来自活动配方。32转移、3次Critic更新的延迟策略奇数相位中断，恢复不传`--steps`；与连续64转移相比，模型/目标/Adam、环境、回放及游标、全部随机状态、验证记录和下一批采样最大差异0。真实CPU/GPU防御推理均返回有限可提交命令。 |
+
+修复交接已部署到`/root/autodl-tmp/citf-unified-20261106/reviewed_release_r22`，保持`citf/code/unified`、`vrx`及作者网络的完整相对布局。远端27个实际源码文件与1103当前内容逐文件比较完全一致。旧`code_v27`和`vrx_code`保留开发历史身份。正式登记锁定适配器协议`first-terminal-request-isolation-all-cycles-v1`，VRX开跑时再以既有共同协议文件冻结具体源码，批入口、每回合、汇总和绘图共同核对。交接用例通过（系统入口2.243 s；VRX事件/异步用例通过）。实际ROS Humble使用`/root/autodl-tmp/ARBoids/.vrx-venv/bin/python`、Python3.10.12、PyTorch2.12.1+cpu；四个实际导入模块均来自发布候选，真实`UnifiedTrial.compute_defense`输出有限CPU命令，形状1×3×2，保持300 N增量约束。没有启动Gazebo回合。
 
 运行入口为`tools/verify_unified_repairs.py`，CPU使用单线程；GPU用例显式设置`CITF_ACCEPTANCE_DEVICE=cuda`及`CITF_ACCEPTANCE_RECIPE`指向活动完整方法配置。CPU五项边界验收通过（1.603 s），GPU用例通过（67.077 s）；后续VRX终局取消/时间戳补充只重跑VRX及系统入口用例并通过。临时目录与验收产物不进入研究汇总，未运行新增Gazebo场景或正式训练。
 

@@ -46,7 +46,7 @@
       "additional_episodes": 0,
       "registered_before_formal_training": true
     },
-    "registry_contract": "unified.protocol: complete recipe, source and model content, actual optimizer state steps, task, scenarios, metric version and effective critic capacity within5%",
+    "registry_contract": "unified.protocol: complete recipe, source and model content, actual optimizer state steps, task, scenarios, metric version, effective critic capacity within5%, and reviewed VRX adapter contract",
     "resume": "restore the saved total budget unless explicitly identical; require complete state and earlier validation nodes; repair only an unwritten final validation node from its checkpoint",
     "review_acceptance": {
       "version": "unified-integrated-worst-response-20261107-r22",
@@ -130,6 +130,46 @@
         },
         "network_or_recipe_redesign": false,
         "formal_experiment_matrix": "6 learned versions x 5 seeds; exactly 2 ablations; original system experiments"
+      },
+      "version_handoff": {
+        "status": "passed_and_deployed",
+        "remote_release_root": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_r22",
+        "training_code": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_r22/citf/code",
+        "formal_entry": "python -m unified.run_study --recipe <selected complete-method configuration> --out <new formal directory>",
+        "vrx_entry": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_r22/vrx/run_batch.py",
+        "vrx_environment": "/root/autodl-tmp/ARBoids/vrx_ws/activate.bash",
+        "CITF_CODE_ROOT": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_r22/citf/code",
+        "vrx_assets": "/root/autodl-tmp/ARBoids/.vrx-assets",
+        "adapter_contract": "first-terminal-request-isolation-all-cycles-v1",
+        "adapter_freeze": "actual adapter files are pinned by the shared vrx_protocol.json before the first VRX batch",
+        "legacy_vrx_path": "/root/autodl-tmp/citf-unified-20261106/vrx_code",
+        "legacy_vrx_acceptance": "rejected by the reviewed entry",
+        "development_sources": "code_v27 and code_baseline_b3 remain unchanged",
+        "actual_formal_entry": "registry and complete launch command passed; training launch intercepted",
+        "actual_vrx_runtime": {
+          "python": "3.10.12",
+          "torch": "2.12.1+cpu",
+          "ros": "Humble",
+          "all_imports_from_release": true,
+          "finite_cpu_command_shape": [
+            1,
+            3,
+            2
+          ],
+          "gazebo_episodes": 0
+        },
+        "targeted_cases_rerun": [
+          "test_system_artifact_identity_and_entry_points",
+          "test_vrx_event_history_and_async_isolation"
+        ],
+        "formal_training_started": false,
+        "message_to_execution_chat": false,
+        "future_algorithm_changes": "refreeze the complete latest 1103 source with all reviewed corrections before formal study",
+        "source_content_comparison": {
+          "files": 27,
+          "mismatches": 0,
+          "scope": "all deployed unified/VRX Python source, existing acceptance/render tools and author policy sources"
+        }
       }
     }
   },
@@ -2399,6 +2439,10 @@
         "250000": [
           98,
           99
+        ],
+        "300000": [
+          97,
+          90
         ]
       },
       "same150k_smaller_reference": [

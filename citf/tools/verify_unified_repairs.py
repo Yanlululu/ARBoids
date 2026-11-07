@@ -39,7 +39,8 @@ from unified.protocol import (baseline_updates, build_registry, load_registry, r
     run_identity, bind_run, canonical_arguments, model_definition, learning_counts, checkpoint_identity,
     validate_checkpoint, evaluation_identity, attach_identity, validate_result, outcome_metrics,
     phase_identity, phase_counts, ATTACKER_RECIPE, collection_updates, digest, policy_digest,
-    validate_learning_curve, validate_phase_checkpoint, chain_evaluation_identity, vrx_rows, validate_optimizer_counts)
+    validate_learning_curve, validate_phase_checkpoint, chain_evaluation_identity, vrx_rows, validate_optimizer_counts,
+    vrx_source_identity, VRX_ADAPTER_CONTRACT)
 
 
 def recipe():
@@ -816,18 +817,21 @@ class Repairs(unittest.TestCase):
 
     def test_system_artifact_identity_and_entry_points(self):
         registry = build_registry(recipe())
+        self.assertEqual(registry['vrx_adapter_contract'], VRX_ADAPTER_CONTRACT)
         args = registered_arguments(registry, 'full', 2101)
         run = run_identity(args, registry['task'], registry)
         descriptor = dict(run_id=run['id'], transitions=1000000, sha256='fixed-checkpoint')
         task = dict(registry['task'], agility=2.25)
         identity = evaluation_identity(registry, 'full', 2101, descriptor, task, 74002, 84002, 100, 'vrx')
-        adapter = {'id': 'frozen-adapter'}
+        adapter = vrx_source_identity(ROOT/'vrx')
         episodes = [dict(passed=True, identity=identity, adapter_source=adapter, scene_index=i,
+                         adapter_contract=VRX_ADAPTER_CONTRACT,
                          policy_seed=84002+i, scene_seed=74002, task=task, outcome_code=i % 4+1,
                          simulation_seconds=60. if i % 4 == 3 else 12., success=i % 4 >= 2) for i in range(100)]
         data = vrx_rows(episodes, identity, adapter)
         self.assertEqual(outcome_metrics(data, 100, 74002, 60.)['success'], 50)
-        for field, value in (('policy_seed', 84002), ('adapter_source', {'id': 'changed'}), ('passed', False)):
+        for field, value in (('policy_seed', 84002), ('adapter_source', {'id': 'changed'}),
+                             ('adapter_contract', 'legacy'), ('passed', False)):
             changed = copy.deepcopy(episodes)
             changed[1][field] = value
             with self.assertRaises(ValueError):
@@ -839,6 +843,44 @@ class Repairs(unittest.TestCase):
                 vrx_rows(changed, identity, adapter)
         with self.assertRaises(ValueError):
             evaluation_identity(registry, 'full', 2102, descriptor, task, 74002, 84002, 100, 'vrx')
+        result = attach_identity(dict(outcome_metrics(data, 100, 74002, 60.), rows=data,
+            task=task, scene_seed=74002, policy_seed=84002, adapter_source=adapter), identity)
+        validate_result(result, identity)
+        with self.assertRaises(ValueError):
+            validate_result(dict(result, adapter_source=dict(adapter, contract='legacy')), identity)
+        with tempfile.TemporaryDirectory(prefix='citf-release-routing-') as temporary:
+            directory = Path(temporary)
+            registry_path = directory/'registry.json'
+            old = {k: v for k, v in registry.items() if k not in ('id', 'vrx_adapter_contract')}
+            old['id'] = digest(old); write_json(registry_path, old)
+            with self.assertRaises(ValueError):
+                load_registry(registry_path)
+            adapter_directory = directory/'vrx'; adapter_directory.mkdir()
+            for source in (ROOT/'vrx').glob('*.py'):
+                (adapter_directory/source.name).write_bytes(source.read_bytes())
+            self.assertEqual(vrx_source_identity(adapter_directory), adapter)
+            source = adapter_directory/'unified_vrx.py'
+            source.write_text(source.read_text(encoding='utf-8').replace(
+                f"ADAPTER_CONTRACT = '{VRX_ADAPTER_CONTRACT}'", "ADAPTER_CONTRACT = 'legacy'"), encoding='utf-8')
+            with self.assertRaises(ValueError):
+                vrx_source_identity(adapter_directory)
+            legacy_directory = os.environ.get('CITF_LEGACY_VRX_SOURCE')
+            if legacy_directory:
+                with self.assertRaises(ValueError):
+                    vrx_source_identity(legacy_directory)
+            # Exercise actual formal registration and its real launch command,
+            # but intercept Popen before any research training can start.
+            selected = directory/'recipe.json'
+            if os.environ.get('CITF_ACCEPTANCE_RECIPE'):
+                selected.write_bytes(Path(os.environ['CITF_ACCEPTANCE_RECIPE']).read_bytes())
+            else:
+                write_json(selected, recipe())
+            launch = subprocess.run([sys.executable, '-X', 'utf8', str(Path(__file__).resolve()),
+                '--entry-probe', 'unified.run_study', '0', '--recipe', str(selected),
+                '--out', str(directory/'study')], cwd=ROOT/'citf/code', text=True, capture_output=True, timeout=60)
+            self.assertEqual(launch.returncode, 86, launch.stdout[-3000:]+launch.stderr[-3000:])
+            self.assertEqual(load_registry(directory/'study/registry.json')['vrx_adapter_contract'], VRX_ADAPTER_CONTRACT)
+            self.assertFalse(list((directory/'study').rglob('last.pt')))
         for phase, role in ((2, 'retention'), (4, 'retention')):
             with self.assertRaises(ValueError):
                 chain_evaluation_identity(registry, phase,

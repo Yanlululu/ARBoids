@@ -27,6 +27,8 @@ from unified.protocol import (load_registry, validate_checkpoint, checkpoint_ide
 from run_experiment import Trial
 from mappo_controller import synchronize_kinematics
 
+ADAPTER_CONTRACT = 'first-terminal-request-isolation-all-cycles-v1'
+
 
 class UnifiedTrial(Trial):
     def __init__(self, args):
@@ -100,7 +102,7 @@ class UnifiedTrial(Trial):
     def protocol_metadata(self):
         return dict(research_stage=self.args.research_stage, implementation_version=IMPLEMENTATION_VERSION,
                     identity=self.result_identity, checkpoint_metadata=self.checkpoint_identity,
-                    adapter_source=self.adapter_source,
+                    adapter_source=self.adapter_source, adapter_contract=ADAPTER_CONTRACT,
                     code_directory=str(Path(sys.modules['unified'].__file__).resolve().parents[1]),
                     scene_seed=self.args.scene_seed, scene_index=self.args.scene_index,
                     policy_seed=self.args.policy_seed+self.args.scene_index,
