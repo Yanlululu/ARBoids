@@ -141,6 +141,10 @@ def main():
                                   p95=float(np.quantile(samples, .95)), maximum=float(np.max(samples)))
                              if samples else dict(count=0, mean=None, p95=None, maximum=None))
         summary['terminal_cancelled_queries'] = cancelled
+        summary['control_records'] = sum(r['control_records'] for r in results)
+        summary['skipped_control_cycles'] = sum(r['skipped_control_cycles'] for r in results)
+        summary['control_hold_cycles'] = sum(r['control_hold_cycles'] for r in results)
+        summary['control_denominator'] = 'all scheduled simulation-time cycles, including unsubmitted cycles'
         summary['control_deadline_miss_rate'] = summary['control_deadline_misses']/summary['control_steps']
     else:
         summary['checkpoint_sha256'] = results[0]['checkpoint_sha256']

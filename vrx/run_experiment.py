@@ -107,9 +107,43 @@ class Trial(ExperimentManager):
 
     def initialize_terminal_feedback(self, count):
         self.terminal_pose_history = [deque() for _ in range(count)]
+        self.terminal_start = None
+        self.terminal_tick = 0
+        self.terminal_latch = None
+
+    def start_terminal_monitor(self, stamp, interval):
+        if not np.isfinite(stamp) or stamp < 0 or not np.isfinite(interval) or interval <= 0:
+            raise ValueError('Invalid simulation-time event monitor.')
+        self.terminal_start, self.terminal_interval = float(stamp), float(interval)
+        self.terminal_tick, self.terminal_latch = 1, None
+
+    def next_terminal_snapshot(self):
+        """Consume every physical-time sample in order and latch the first event."""
+        if self.terminal_latch is not None:
+            return self.terminal_latch
+        if self.terminal_start is None:
+            raise RuntimeError('Start the event monitor after the common initial pose.')
+        latest = None
+        while all(self.terminal_pose_history):
+            elapsed = min(self.terminal_tick*self.terminal_interval, self.total_time)
+            stamp = self.terminal_start+elapsed
+            if min(history[-1][0] for history in self.terminal_pose_history) < stamp-1e-9:
+                break
+            snapshot = self.terminal_snapshot(stamp)
+            if snapshot is None:
+                raise RuntimeError('Missing earlier pose samples for terminal-event detection.')
+            if snapshot['interpolation_span'] > self.terminal_interval+1e-6:
+                raise RuntimeError('A physical-time pose sample is missing; do not score this trial.')
+            snapshot.update(elapsed=elapsed, outcome_code=self.outcome(elapsed, snapshot['positions']))
+            self.terminal_tick += 1
+            latest = snapshot
+            if snapshot['outcome_code']:
+                self.terminal_latch = snapshot
+                break
+        return latest
 
     def record_terminal_pose(self, index, stamp, position, yaw):
-        if not np.isfinite(stamp) or not np.isfinite(position).all() or not np.isfinite(yaw):
+        if not np.isfinite(stamp) or stamp < 0 or not np.isfinite(position).all() or not np.isfinite(yaw):
             raise ValueError('Non-finite pose feedback cannot determine a task outcome')
         history = self.terminal_pose_history[index]
         if not history or stamp > history[-1][0]:
@@ -155,6 +189,8 @@ class Trial(ExperimentManager):
                 continue
             index = int(name.removeprefix('wamv')) - 1
             stamp = tf.header.stamp.sec + tf.header.stamp.nanosec * 1e-9
+            if not np.isfinite(stamp) or stamp < 0:
+                raise ValueError('Invalid simulation timestamp in pose feedback.')
             if np.isfinite(self.last_stamp[index]) and stamp <= self.last_stamp[index]:
                 continue
             xyz, q = tf.transform.translation, tf.transform.rotation
@@ -171,6 +207,8 @@ class Trial(ExperimentManager):
             self.record_terminal_pose(index, stamp, position, yaw)
 
     def outcome(self, elapsed, positions):
+        if not np.isfinite(elapsed) or elapsed < 0 or not np.isfinite(positions).all():
+            raise ValueError('Non-finite state or time cannot determine a task outcome.')
         paper = getattr(self.args, 'termination_rule', 'source') == 'paper'
         breached = np.linalg.norm(positions[0]) <= self.target_r if paper else np.linalg.norm(positions[0]) < self.target_r
         if breached:
@@ -426,7 +464,8 @@ def main():
                     trial.startup_tick(output, launch_env)
                 rclpy.spin_once(trial.node, timeout_sec=0.05)
             start_sim = initial_snapshot['stamp']
-            stop_sim = start_sim + trial.total_time
+            if unified:
+                trial.start_terminal_monitor(start_sim, trial.common.cfg.integration_dt)
             last_terminal_stamp = None
             next_action = 0.
             next_frame = 0.
@@ -439,22 +478,20 @@ def main():
                     raise TimeoutError('Trial exceeded wall-clock limit')
                 if np.any(time.monotonic() - trial.last_received > 15.):
                     raise TimeoutError('A vessel stopped publishing pose feedback')
-                snapshot = trial.terminal_snapshot(stop_sim if unified else None)
+                snapshot = trial.next_terminal_snapshot() if unified else trial.terminal_snapshot()
                 if snapshot is None or (last_terminal_stamp is not None and snapshot['stamp'] <= last_terminal_stamp):
                     if snapshot is not None and hasattr(trial, 'poll_control'):
                         trial.poll_control(snapshot['stamp']-start_sim)
                     continue
                 last_terminal_stamp = snapshot['stamp']
                 positions = snapshot['positions']
-                elapsed = snapshot['stamp'] - start_sim
-                if unified and snapshot['stamp'] == stop_sim:
-                    elapsed = trial.total_time
+                elapsed = snapshot['elapsed'] if unified else snapshot['stamp'] - start_sim
                 defender_distances = np.linalg.norm(positions[1:, None] - positions[None, 1:], axis=-1)
                 np.fill_diagonal(defender_distances, np.inf)
                 collision_now = (defender_distances <= trial.collision_r if args.termination_rule == 'paper'
                                  else defender_distances < trial.collision_r)
                 trial.collision_seen |= bool(collision_now.any())
-                code = trial.outcome(elapsed, positions)
+                code = snapshot['outcome_code'] if unified else trial.outcome(elapsed, positions)
                 if code:
                     if args.capture_frames:
                         trial.save_frame(output, start_sim)
@@ -528,15 +565,16 @@ def main():
                                   ('FeedbackSkewSeconds', 'feedback_skew_seconds')]:
                     samples = arrays[key]
                     if unified and key in ('PolicyWallSeconds', 'ControlWallSeconds'):
-                        samples = samples[arrays['PolicyStarted'].astype(bool)]
+                        complete = arrays['PolicyStarted'].astype(bool) & ~arrays['TerminalCancellation'].astype(bool)
+                        samples = samples[complete]
                     result[name] = (dict(count=len(samples), mean=float(samples.mean()), median=float(np.median(samples)),
                                          p95=float(np.quantile(samples, .95)), maximum=float(samples.max()))
                                     if len(samples) else dict(count=0, mean=None, median=None, p95=None, maximum=None))
                 result['control_deadline_misses'] = int((arrays['ControlWallSeconds'] > args.action_period).sum())
                 if unified:
-                    result['control_deadline_misses'] = int(arrays['MissedDeadline'].sum())
+                    result.update(trial.control_accounting(result.get('simulation_seconds')))
                     result['discarded_late_outputs'] = int(arrays['DiscardedLateOutput'].sum())
-                    result['policy_queries'] = int(arrays['PolicyStarted'].sum())
+                    result['discarded_stale_outputs'] = int(arrays['DiscardedStaleOutput'].sum())
                     result['applied_defender_outputs'] = int(arrays['DefenderOutputApplied'].sum())
                 if args.controller == 'MAPPO':
                     network = trial.actor.communication

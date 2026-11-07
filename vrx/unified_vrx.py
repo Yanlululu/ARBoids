@@ -8,6 +8,8 @@ import re
 import subprocess
 import sys
 import time
+import math
+import uuid
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -90,6 +92,10 @@ class UnifiedTrial(Trial):
         seed_policy(args.policy_seed+args.scene_index, self.device)
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='unified-defender')
         self.pending = None
+        self.episode_id = uuid.uuid4().hex
+        self.request_id = 0
+        self.last_control_cycle = -1
+        self.controller_closed = False
 
     def protocol_metadata(self):
         return dict(research_stage=self.args.research_stage, implementation_version=IMPLEMENTATION_VERSION,
@@ -105,6 +111,10 @@ class UnifiedTrial(Trial):
                     synchronize_feedback=True, communication_scope='measured state; no impairment model',
                     thrust_increment=self.common.cfg.thrust_delta,
                     deadline_policy='one asynchronous defender query per cycle; discard late output and hold defender commands',
+                    control_clocks='monotonic wall time for computation; simulation time for task and state age; either deadline expires a request',
+                    request_identity='episode, request, control cycle, source simulation timestamp, wall and simulation deadlines',
+                    terminal_detection='consume every 0.05 s observed simulation state in order; latch first event; reject missing intervals',
+                    control_denominator='all scheduled simulation-time cycles, including unsubmitted cycles',
                     attacker_timing='APF advances each control cycle independently of defender inference',
                     synchronized_model_start=True)
 
@@ -137,43 +147,56 @@ class UnifiedTrial(Trial):
 
     def publish_commands(self, indices):
         commands = self.applied[0].detach().cpu().numpy()[[3, 0, 1, 2]][:, ::-1]
+        if self.controller_closed or not np.isfinite(commands).all():
+            raise RuntimeError('A closed controller or non-finite command cannot publish thrust.')
         for index in indices:
             for side in range(2):
                 self.publishers[2*index+side].publish(Float64(data=float(commands[index, side])))
 
-    def compute_defense(self, x):
+    def compute_defense(self, x, order, identity):
         started = time.monotonic()
         with torch.no_grad():
             ordered = self.policy.select(x.to(self.device))['action']
             physical = torch.zeros_like(ordered)
-            physical.scatter_(1, self.common.order.to(ordered.device)[..., None].expand(-1, -1, 2), ordered)
+            physical.scatter_(1, order.to(ordered.device)[..., None].expand(-1, -1, 2), ordered)
             physical = physical.cpu()
         if not bool(torch.isfinite(physical).all()):
             raise FloatingPointError('Non-finite unified VRX defender command.')
         finished = time.monotonic()
-        return physical, finished-started, finished
+        return physical, finished-started, finished, identity
 
     def poll_control(self, elapsed):
+        if not math.isfinite(elapsed) or elapsed < 0:
+            raise ValueError('Invalid simulation time for a control result.')
         if self.pending is None:
             return
         pending = self.pending
         row = self.rows[pending['row']]
-        expired = (time.monotonic()-pending['started'] > self.args.action_period
-                   or elapsed-pending['elapsed'] > self.args.action_period+1e-6)
+        identity = pending['identity']
+        if identity['episode'] == self.episode_id and elapsed < pending['elapsed']-1e-9:
+            raise ValueError('Simulation time moved backwards within the active control request.')
+        expired = (time.monotonic() > identity['wall_deadline']
+                   or elapsed > identity['sim_deadline']+1e-6)
         if expired:
             pending['expired'] = True
             row['MissedDeadline'] = 1
         if not pending['future'].done():
             return
-        physical, inference_seconds, finished = pending['future'].result()
+        physical, inference_seconds, finished, returned_identity = pending['future'].result()
         row['PolicyWallSeconds'] = inference_seconds
         row['ControlWallSeconds'] = time.monotonic()-pending['started']
-        late = pending['expired'] or finished-pending['started'] > self.args.action_period
+        late = pending['expired'] or finished > identity['wall_deadline']
+        current = (not self.controller_closed and identity['episode'] == self.episode_id
+                   and returned_identity == identity and identity['request'] == row['RequestId']
+                   and identity['cycle'] == row['ControlCycle'])
         row['DiscardedLateOutput'] = int(late)
+        row['DiscardedStaleOutput'] = int(not current)
         row['MissedDeadline'] = int(late)
-        if not late:
+        if not late and current:
+            if not bool(torch.isfinite(physical).all()):
+                raise FloatingPointError('Non-finite completed defender command.')
             with torch.no_grad():
-                self.applied[:, :-1].copy_(physical)
+                self.applied[:, :-1].copy_(execute(physical, self.applied[:, :-1], self.common.cfg.thrust_delta))
             self.publish_commands(range(1, 4))
             actions = self.applied[0].detach().cpu().numpy()[[3, 0, 1, 2]].copy()
             row['DefAct'] = actions[1:].flatten()
@@ -183,6 +206,10 @@ class UnifiedTrial(Trial):
         self.pending = None
 
     def close_controller(self, terminal_elapsed=None):
+        # Running futures may refuse cancellation. Revoke execution eligibility
+        # before waiting for their completion, then retain their timing only.
+        self.controller_closed = True
+        closed_at = time.monotonic()
         self.executor.shutdown(wait=True, cancel_futures=True)
         if self.pending is None:
             return
@@ -192,18 +219,39 @@ class UnifiedTrial(Trial):
             self.rows[pending['row']]['TerminalCancellation'] = 1
             self.pending = None
             return
-        _, inference_seconds, finished = pending['future'].result()
+        _, inference_seconds, finished, _ = pending['future'].result()
         row = self.rows[pending['row']]
         row['PolicyWallSeconds'] = inference_seconds
         row['ControlWallSeconds'] = finished-pending['started']
         row['TerminalCancellation'] = 1
         # No commands are published after the observed terminal event.
-        if terminal_elapsed is not None and terminal_elapsed-pending['elapsed'] > self.args.action_period:
+        if (closed_at > pending['identity']['wall_deadline']
+                or terminal_elapsed is not None and terminal_elapsed > pending['identity']['sim_deadline']+1e-6):
             row['MissedDeadline'] = 1
             row['DiscardedLateOutput'] = 1
         self.pending = None
 
+    def control_accounting(self, terminal_elapsed=None):
+        recorded = self.last_control_cycle+1
+        total = (recorded if terminal_elapsed is None else
+                 max(recorded, math.ceil((terminal_elapsed-1e-9)/self.args.action_period)))
+        skipped = sum(row['SkippedControlCycles'] for row in self.rows)+total-recorded
+        return dict(control_steps=total, control_records=len(self.rows),
+                    skipped_control_cycles=skipped,
+                    control_deadline_misses=sum(row['MissedDeadline'] for row in self.rows)+skipped,
+                    control_hold_cycles=sum(not row['DefenderOutputApplied'] for row in self.rows)+skipped,
+                    policy_queries=sum(row['PolicyStarted'] for row in self.rows),
+                    control_period_seconds=self.args.action_period,
+                    control_denominator='all scheduled simulation-time cycles, including cycles without a query')
+
     def control(self, elapsed):
+        if self.controller_closed or not math.isfinite(elapsed) or elapsed < 0:
+            raise ValueError('Cannot start a control cycle after termination or at invalid simulation time.')
+        cycle = math.floor((elapsed+1e-6)/self.args.action_period)
+        if cycle <= self.last_control_cycle:
+            raise ValueError('Control simulation time moved backwards or repeated a cycle.')
+        skipped = cycle-self.last_control_cycle-1
+        self.last_control_cycle = cycle
         started = time.monotonic()
         self.poll_control(elapsed)
         states, stamp, skew = synchronize_kinematics(self.curr_pos, self.curr_phi, self.curr_vel,
@@ -223,6 +271,11 @@ class UnifiedTrial(Trial):
         self.publish_commands(range(4))
         physical = actions[:, ::-1]
         available = self.pending is None
+        if available:
+            self.request_id += 1
+        identity = dict(episode=self.episode_id, request=self.request_id, cycle=cycle,
+                        source_stamp=float(stamp), wall_deadline=started+self.args.action_period,
+                        sim_deadline=float(elapsed)+self.args.action_period)
         self.rows.append(dict(timestamp=float(elapsed), AttPos=states[0, :2].copy(),
              AttPhi=states[0, 2].copy(), AttVel=states[0, 3:5].copy(), AttAct=actions[0].copy(),
              DefPos=states[1:, :2].flatten().copy(), DefPhi=states[1:, 2].copy(),
@@ -230,9 +283,13 @@ class UnifiedTrial(Trial):
              PreviousDefAct=actions[1:].flatten().copy(), AppliedTimestamp=float(elapsed),
              PhysicalThrust=physical.flatten().copy(), SimulationStamp=stamp,
              ControlWallSeconds=time.monotonic()-started, PolicyWallSeconds=0.,
-             FeedbackSkewSeconds=skew, DiscardedLateOutput=0, MissedDeadline=int(not available),
+             FeedbackSkewSeconds=skew, DiscardedLateOutput=0, DiscardedStaleOutput=0, MissedDeadline=int(not available),
+             EpisodeId=self.episode_id, RequestId=self.request_id if available else -1,
+             ControlCycle=cycle, SkippedControlCycles=skipped,
+             RequestWallDeadline=identity['wall_deadline'] if available else 0.,
+             RequestSimulationDeadline=identity['sim_deadline'] if available else 0.,
              PolicyStarted=int(available), DefenderOutputApplied=0, TerminalCancellation=0))
         if available:
-            future = self.executor.submit(self.compute_defense, x)
+            future = self.executor.submit(self.compute_defense, x, self.common.order.clone(), identity.copy())
             self.pending = dict(future=future, row=len(self.rows)-1, started=started,
-                                elapsed=elapsed, expired=False)
+                                elapsed=elapsed, identity=identity, expired=False)

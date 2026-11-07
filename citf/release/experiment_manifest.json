@@ -50,10 +50,87 @@
     "resume": "restore the saved total budget unless explicitly identical; require complete state and earlier validation nodes; repair only an unwritten final validation node from its checkpoint",
     "review_acceptance": {
       "version": "unified-integrated-worst-response-20261107-r22",
-      "checks": 10,
+      "checks": 14,
       "status": "passed",
       "entry": "tools/verify_unified_repairs.py",
-      "scope": "deterministic implementation acceptance; follow-up covers widened local gradients, actual Adam steps, resume budget, endpoint validation identity, VRX directory order and exact horizon; no research runs added"
+      "scope": "10 prior targeted checks retained; 4 new cases plus 2 expanded existing cases executed this review; isolated implementation acceptance only, no added research experiments",
+      "current_review_executed_cases": 6,
+      "boundary_acceptance": {
+        "generator_sample_likelihood": {
+          "test": "test_autoregressive_sampling_and_likelihood",
+          "vessel_counts": [
+            2,
+            3,
+            7
+          ],
+          "max_absolute_log_prob_error": 9.54e-07,
+          "cases": [
+            "actual sequential sampling versus parallel training log_prob",
+            "optimized configuration prefixes",
+            "endpoint atoms and interior density",
+            "causal prefix masks",
+            "detached score-function sampling and weights"
+          ]
+        },
+        "worst_response_and_search": {
+          "test": "test_worst_response_and_search_gradients",
+          "finite_difference_max_absolute_error_by_vessels": {
+            "2": 4.95e-13,
+            "3": 3.96e-12,
+            "7": 1.64e-12
+          },
+          "forward_masks_zero_and_tie_gradients": "passed",
+          "initial_maximum_retention": "passed"
+        },
+        "alternating_schedule": {
+          "test": "test_phase_inheritance_and_cumulative_clock",
+          "through_defender_transitions": 1500000,
+          "policy_lr_after_1m": 2.5e-05,
+          "fresh_replay_warmup": 5000,
+          "stage_and_cumulative_counters": "separate"
+        },
+        "vrx": {
+          "test": "test_vrx_event_history_and_async_isolation",
+          "event_interval_sim_seconds": 0.05,
+          "first_terminal_latch": "passed",
+          "missing_interval_and_invalid_values": "rejected",
+          "request_identity_and_terminal_cancellation": "passed",
+          "control_denominator": "all scheduled cycles including unsubmitted and skipped",
+          "validation_mode": "actual methods with synthetic event histories and Future requests; no extra Gazebo episodes"
+        },
+        "system_identity": {
+          "test": "test_system_artifact_identity_and_entry_points",
+          "status": "passed"
+        },
+        "cuda_entry_resume": {
+          "test": "test_cuda_entry_resume",
+          "device": "NVIDIA GeForce RTX 4090",
+          "torch": "2.12.1+cu130",
+          "cuda": "13.0",
+          "transitions": 64,
+          "restart_at": 32,
+          "critic_updates_at_restart": 3,
+          "envs": 8,
+          "batch_size": 16,
+          "entry": "real unified.run_study registration and command generation; real unified.train subprocesses",
+          "formal_launch": "intercepted; no formal training started",
+          "continuous_vs_restored_max_difference": 0,
+          "comparison": [
+            "model",
+            "targets",
+            "Adam",
+            "environment",
+            "replay and cursor",
+            "all random states",
+            "validation records",
+            "next replay sample"
+          ],
+          "cpu_gpu_command_output": "finite and CPU-ready",
+          "seconds": 67.077
+        },
+        "network_or_recipe_redesign": false,
+        "formal_experiment_matrix": "6 learned versions x 5 seeds; exactly 2 ablations; original system experiments"
+      }
     }
   },
   "core": {
@@ -2314,6 +2391,14 @@
         "150000": [
           90,
           97
+        ],
+        "200000": [
+          85,
+          97
+        ],
+        "250000": [
+          98,
+          99
         ]
       },
       "same150k_smaller_reference": [
@@ -2441,7 +2526,15 @@
         "conditions": 26,
         "all_fresh_including_team2": true
       },
-      "status": "training"
+      "status": "training",
+      "final_scope": {
+        "path": "development_scope_v27_final",
+        "pid": 438163,
+        "transitions": 1000000,
+        "conditions": 26,
+        "registered_before250k_scope_result": true,
+        "fixed_endpoint_only": true
+      }
     },
     "v23_superseded_training_retirement": {
       "full_transitions": [
@@ -2549,7 +2642,31 @@
       "width": 512,
       "warmup": 50000,
       "status": "training",
-      "same_task_and_development_scenes": true
+      "same_task_and_development_scenes": true,
+      "prior_b2_retirement": {
+        "transitions": 150064,
+        "last_complete_evaluation": 150000,
+        "success": 94,
+        "collision": 6,
+        "breach": 0,
+        "status": "stopped_superseded",
+        "all_records_retained": true
+      },
+      "main_nodes": {
+        "50000": {
+          "success": 72,
+          "collision": 1,
+          "breach": 27,
+          "updates": 1
+        },
+        "100000": {
+          "success": 96,
+          "collision": 4,
+          "breach": 0,
+          "updates": 50001,
+          "mean_capture_seconds": 8.26095089
+        }
+      }
     },
     "v27_matched_100k": {
       "seeds": [
@@ -2601,6 +2718,131 @@
         8.6300148
       ],
       "status": "positive fixed100k mechanism result; continue150k/full budget and250k scope, retain negative second-seed action difference"
+    },
+    "v27_selection_effect_100k": {
+      "states_per_seed": 512,
+      "states_source": "same actual full-method replay for full and no-feedback; no environment rollouts or training updates",
+      "policy_seeds": [
+        904101,
+        904102
+      ],
+      "full_unequal_coefficients_fraction": [
+        0.642578125,
+        0.65625
+      ],
+      "full_mean_coefficient_spread": [
+        0.37640199,
+        0.34715921
+      ],
+      "full_all_boids_fraction": [
+        0.17578125,
+        0.201171875
+      ],
+      "full_all_learned_fraction": [
+        0.064453125,
+        0.037109375
+      ],
+      "full_generated_beats_own_anchors_fraction": [
+        0.544921875,
+        0.5546875
+      ],
+      "no_feedback_generated_beats_own_anchors_fraction": [
+        0.0,
+        0.509765625
+      ],
+      "full_mean_solver_action_change_N": [
+        21.3897114,
+        40.0659256
+      ],
+      "interpretation": "Current policy selects heterogeneous fleet coefficients on common replayed states; generator and search both change selections. Actual control gains remain those measured by the matched100k episodes."
+    },
+    "v27_matched_150k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "full_success": [
+        98,
+        99
+      ],
+      "full_collision": [
+        1,
+        0
+      ],
+      "full_breach": [
+        1,
+        1
+      ],
+      "no_action_success": [
+        90,
+        97
+      ],
+      "no_feedback_success": [
+        100,
+        97
+      ],
+      "action_gain_pp": [
+        8,
+        2
+      ],
+      "feedback_gain_pp": [
+        -2,
+        2
+      ],
+      "mean_action_gain_pp": 5.0,
+      "mean_feedback_gain_pp": 0.0,
+      "all_three_node_mean_success": 93.0,
+      "all_three_node_action_gain_pp": 16.166666666666668,
+      "all_three_node_feedback_gain_pp": 2.5,
+      "decision": "Continue existing fixed-budget matched runs and registered250k full scope. Action effect sustained at150k; feedback benefit concentrated at100k so far. No new variant or formal study yet."
+    },
+    "v27_matched_200k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "full_success": [
+        99,
+        100
+      ],
+      "full_collision": [
+        1,
+        0
+      ],
+      "full_breach": [
+        0,
+        0
+      ],
+      "no_action_success": [
+        85,
+        97
+      ],
+      "no_feedback_success": [
+        97,
+        96
+      ],
+      "action_gain_pp": [
+        14,
+        3
+      ],
+      "feedback_gain_pp": [
+        2,
+        4
+      ],
+      "mean_action_gain_pp": 8.5,
+      "mean_feedback_gain_pp": 3.0,
+      "all_four_node_mean_success": 94.625,
+      "all_four_node_action_gain_pp": 14.25,
+      "all_four_node_feedback_gain_pp": 2.625,
+      "per_seed_all_four_node_action_gain_pp": [
+        28.5,
+        0.0
+      ],
+      "per_seed_all_four_node_feedback_gain_pp": [
+        0.25,
+        5.0
+      ],
+      "decision": "Retain current algorithm and continue complete matched budgets plus prescribed scope."
     }
   },
   "generalization": {
