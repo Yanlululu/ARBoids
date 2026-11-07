@@ -100,94 +100,16 @@ class Replay:
         self._terminal_pools = None
 
 
-class MultiStepReplay(Replay):
-    """Short returns from consecutive executed transitions in each vector lane.
-
-    A prefix ends at a real terminal event or after ``steps`` transitions.
-    Pending prefixes survive evaluation and checkpoint/resume; only the final
-    collection budget flushes shorter nonterminal returns with bootstrapping.
-    """
-    def __init__(self, capacity, n, device, envs, steps=5, gamma=.99):
-        if envs < 1 or steps < 1 or not 0 <= gamma <= 1:
-            raise ValueError('Invalid vector size, return length or discount.')
-        super().__init__(capacity, n, device)
-        self.data['discount'] = torch.empty(capacity, device=device)
-        self.envs, self.steps, self.gamma = envs, steps, gamma
-        self.pending = {key: tensor.new_zeros((steps, envs)+tuple(tensor.shape[1:]))
-                        for key, tensor in self.data.items()}
-        self.pending_count = torch.zeros(envs, dtype=torch.long, device=device)
-        self.time_index = torch.arange(steps, device=device)[:, None]
-
-    @torch.no_grad()
-    def add(self, **values):
-        if values.keys() != self.data.keys()-{'discount'}:
-            raise ValueError('Multi-step returns require complete actual one-step transitions.')
-        count = len(values['x'])
-        if not 0 < count <= self.envs:
-            raise ValueError('Each collection batch contains the active prefix of vector lanes.')
-        lanes = torch.arange(count, device=self.pending_count.device)
-        insertion = self.pending_count[:count]
-        for key, tensor in values.items():
-            self.pending[key][insertion, lanes] = tensor.detach()
-        self.pending['ri'][insertion, lanes] = 0.
-        self.pending['discount'][insertion, lanes] = 1.
-        counts = insertion+1
-        valid = self.time_index < counts[None, :]
-        discounts = self.pending['discount'][:, :count]
-        increment = discounts[..., None]*values['ri'][None, ...]
-        self.pending['ri'][:, :count] += torch.where(valid[..., None], increment, 0.)
-        self.pending['r'][:, :count] = self.pending['ri'][:, :count].mean(-1)
-        discounts.copy_(torch.where(valid, discounts*self.gamma, discounts))
-        for key in ('next_x', 'done', 'event', 'seconds'):
-            self.pending[key][:, :count] = values[key].unsqueeze(0)
-
-        terminal = values['done'].bool()
-        full = counts == self.steps
-        emit = valid & (terminal[None, :] | (full[None, :] & (self.time_index == 0)))
-        if bool(emit.any()):
-            super().add(**{key: tensor[:, :count][emit] for key, tensor in self.pending.items()})
-        # Only full, continuing lanes advance their oldest prefix. A real
-        # terminal emits every remaining prefix before its environment resets.
-        advance = full & ~terminal
-        moving = advance.nonzero().flatten()
-        for tensor in self.pending.values():
-            tensor[:-1, moving] = tensor[1:, moving]
-        self.pending_count[:count] = torch.where(terminal, 0, counts-advance.long())
-
-    @torch.no_grad()
-    def flush(self):
-        valid = self.time_index < self.pending_count[None, :]
-        if bool(valid.any()):
-            super().add(**{key: tensor[valid] for key, tensor in self.pending.items()})
-        self.pending_count.zero_()
-
-    def state_dict(self):
-        saved = super().state_dict()
-        saved['multistep'] = dict(envs=self.envs, steps=self.steps, gamma=self.gamma,
-                                 count=self.pending_count.detach().cpu().clone(),
-                                 pending={key: tensor.detach().cpu().clone()
-                                          for key, tensor in self.pending.items()})
-        return saved
-
-    @torch.no_grad()
-    def load_state_dict(self, saved):
-        pending = saved.get('multistep', {})
-        if any(pending.get(key) != value for key, value in
-               dict(envs=self.envs, steps=self.steps, gamma=self.gamma).items()):
-            raise ValueError('Resume requires the same vector lanes and multi-step return recipe.')
-        super().load_state_dict(saved)
-        self.pending_count.copy_(pending['count'])
-        for key, tensor in self.pending.items():
-            tensor.copy_(pending['pending'][key])
-
-
 class Learner:
-    def __init__(self, model, lr=1e-4, gamma=.99, tau=.005, policy_delay=2):
+    def __init__(self, model, lr=1e-4, gamma=.99, tau=.005, policy_delay=2, value_huber_delta=20.):
         if lr <= 0 or not 0 <= gamma <= 1 or not 0 < tau <= 1 or policy_delay < 1:
             raise ValueError('Invalid learner learning rate, discount, target rate or policy delay.')
+        if not 0 < value_huber_delta < float('inf'):
+            raise ValueError('The robust value loss needs a positive finite TD-error threshold.')
         self.model, self.target = model, copy.deepcopy(model)
         self.target.requires_grad_(False)
         self.gamma, self.tau, self.policy_delay = gamma, tau, policy_delay
+        self.value_huber_delta = value_huber_delta
         self.q_parameters = list(model.q1.parameters())+list(model.q2.parameters())
         self.q_optimizer = torch.optim.Adam(self.q_parameters, lr=lr)
         self.endpoint_optimizer = torch.optim.Adam(model.endpoint.parameters(), lr=lr)
@@ -199,7 +121,7 @@ class Learner:
             for group in optimizer.param_groups:
                 group['lr'] = learning_rate
 
-    def update(self, batch, temperature=1., feedback_scale=1., policy_batch=None):
+    def update(self, batch, temperature=1., feedback_scale=1., policy_batch=None, robust_value=True):
         if temperature <= 0:
             raise ValueError('Configuration weights need a positive temperature.')
         if not 0 <= feedback_scale <= 1:
@@ -218,11 +140,17 @@ class Learner:
                 # The same per-vessel clipped value drives deployment, target
                 # control and all policy objectives.
                 continuation = torch.minimum(first, second)
-                discount = batch['discount'][continuing, None] if 'discount' in batch else self.gamma
-                target[continuing] += discount*continuation
+                target[continuing] += self.gamma*continuation
         q1 = self.model.q1(x, u, individual=True)
         q2 = self.model.q2(x, u, individual=True)
-        per_transition_loss = ((q1-target).square()+(q2-target).square()).mean(-1)
+        # Keep the original squared loss near the target while bounding each
+        # extreme residual's influence. Rewards and Bellman targets are intact.
+        if robust_value:
+            absolute = torch.stack((q1-target, q2-target)).abs()
+            quadratic = absolute.clamp_max(self.value_huber_delta)
+            per_transition_loss = (quadratic.square()+2*self.value_huber_delta*(absolute-quadratic)).sum(0).mean(-1)
+        else:
+            per_transition_loss = ((q1-target).square()+(q2-target).square()).mean(-1)
         if 'value_weight' in batch:
             q_loss = (batch['value_weight']*per_transition_loss).mean()
         else:
@@ -231,7 +159,8 @@ class Learner:
         q_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.q_parameters, 100., error_if_nonfinite=True)
         self.q_optimizer.step()
-        report = dict(q_loss=q_loss.detach(), q_mean=q1.detach().mean(), target_mean=target.mean())
+        report = dict(q_loss=q_loss.detach(), q_mean=q1.detach().mean(), target_mean=target.mean(),
+                      value_robust=float(robust_value))
         if self.updates % self.policy_delay:
             return report
 
@@ -290,13 +219,15 @@ class Learner:
     def payload(self):
         return dict(model=self.model.state_dict(), target=self.target.state_dict(),
                     config=asdict(self.model.cfg), updates=self.updates,
-                    learner_recipe=dict(gamma=self.gamma, tau=self.tau, policy_delay=self.policy_delay),
+                    learner_recipe=dict(gamma=self.gamma, tau=self.tau, policy_delay=self.policy_delay,
+                                        value_huber_delta=self.value_huber_delta),
                     optimizers=[self.q_optimizer.state_dict(), self.endpoint_optimizer.state_dict(),
                                 self.generator_optimizer.state_dict()])
 
     def restore(self, payload):
-        if payload.get('learner_recipe') != dict(gamma=self.gamma, tau=self.tau, policy_delay=self.policy_delay):
-            raise ValueError('The saved defender discount, target rate and policy update period must match.')
+        if payload.get('learner_recipe') != dict(gamma=self.gamma, tau=self.tau, policy_delay=self.policy_delay,
+                                                 value_huber_delta=self.value_huber_delta):
+            raise ValueError('The saved defender discount, target rate, update period and value loss must match.')
         self.model.load_state_dict(payload['model'])
         self.target.load_state_dict(payload['target'])
         self.updates = payload['updates']

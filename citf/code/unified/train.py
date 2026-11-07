@@ -10,7 +10,7 @@ import torch
 
 from .environment import TaskConfig, FleetEnv, boids, execute, fusion
 from .networks import CITF, ModelConfig
-from .learner import Learner, MultiStepReplay
+from .learner import Learner, Replay
 from . import IMPLEMENTATION_VERSION
 from .protocol import (bind_run, learning_counts, outcome_metrics, validate_metrics,
                        validate_checkpoint, policy_digest)
@@ -179,7 +179,8 @@ def policy_schedule(recipe, transitions):
                 feedback_scale=(0. if transitions < recipe['feedback_start'] else
                                 min(1., (transitions-recipe['feedback_start'])/recipe['feedback_ramp'])
                                 if recipe['feedback_ramp'] else 1.),
-                policy_lr=policy_learning_rate(recipe, transitions))
+                policy_lr=policy_learning_rate(recipe, transitions),
+                robust_value=transitions > recipe['value_huber_start'])
 
 
 def evaluate(model, cfg, count=100, scene_seed=73001, policy_seed=83001, device='cuda'):
@@ -215,7 +216,8 @@ def arguments():
     p.add_argument('--batch', type=int, default=512)
     p.add_argument('--value-terminal-fraction', type=float, default=.5)
     p.add_argument('--value-importance-exponent', type=float, default=.5)
-    p.add_argument('--return-steps', type=int, default=5)
+    p.add_argument('--value-huber-delta', type=float, default=20.)
+    p.add_argument('--value-huber-start', type=int, default=100000)
     p.add_argument('--updates-per-step', type=int, default=4)
     p.add_argument('--capacity', type=int, default=1000000)
     p.add_argument('--start-learning', type=int, default=5000)
@@ -261,8 +263,8 @@ def main():
         resume_arguments(args, payload)
         validate_checkpoint(payload)
     validate_training_arguments(args)
-    if args.return_steps < 1 or args.start_learning <= (args.return_steps-1)*args.envs:
-        raise ValueError('Learning warmup must exceed the maximum number of pending return prefixes.')
+    if args.value_huber_start < 0:
+        raise ValueError('The robust value-loss start uses a nonnegative cumulative transition count.')
     if min(args.exploration_steps, args.temperature_steps) <= 0:
         raise ValueError('Exploration and temperature schedules must have positive lengths.')
     if min(args.feedback_start, args.feedback_ramp) < 0:
@@ -287,7 +289,7 @@ def main():
     task = TaskConfig(thrust_delta=args.thrust_delta, collision_penalty=args.collision_penalty)
     run = bind_run(args, task, payload)
     model = CITF(cfg).to(args.device)
-    learner = Learner(model, lr=args.lr, tau=args.target_tau)
+    learner = Learner(model, lr=args.lr, tau=args.target_tau, value_huber_delta=args.value_huber_delta)
     transitions = 0
     if payload is not None:
         learner.restore(payload)
@@ -297,8 +299,7 @@ def main():
         model.load_state_dict(initialized['model'])
         learner.target.load_state_dict(model.state_dict())
         del initialized
-    replay = MultiStepReplay(args.capacity, task.defenders, args.device, args.envs,
-                             args.return_steps, learner.gamma)
+    replay = Replay(args.capacity, task.defenders, args.device)
     env = FleetEnv(args.envs, task, seed=args.seed+100000, device=args.device, curriculum=True)
     generators = run_generators(args.seed, args.device)
     best, metrics, outcomes, episode_count = -1., {}, torch.zeros(5, device=args.device), 0
@@ -369,8 +370,6 @@ def main():
                 episode_count += int(ended.sum())
                 transitions += count
                 env.reset(ended.nonzero().flatten(), transitions)
-            if transitions == args.steps:
-                replay.flush()
             if transitions >= args.start_learning:
                 schedule = policy_schedule(vars(args), transitions)
                 policy_lr = schedule['policy_lr']
@@ -383,7 +382,8 @@ def main():
                     policy_batch = (replay.sample(args.batch, generators['replay'])
                                     if args.value_terminal_fraction and
                                     (learner.updates+1) % learner.policy_delay == 0 else None)
-                    metrics.update(learner.update(value_batch, temperature, feedback_scale, policy_batch))
+                    metrics.update(learner.update(value_batch, temperature, feedback_scale, policy_batch,
+                                                  robust_value=schedule['robust_value']))
             now = time.perf_counter()
             if now-last_report >= 30:
                 record = dict(status='training', transitions=transitions, updates=learner.updates,

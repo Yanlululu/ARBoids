@@ -137,10 +137,18 @@ y_i&=r_i+\gamma(1-d)\min_{m=1,2}\mathcal Q_{\bar\omega_m,i}(X',\overline U^*).
 各艇目标均值为\(r+\gamma(1-d)\widehat Q_{\bar\omega}(X',\overline U^*)\)，与部署评分保持一致。分别拟合实际奖励分量，使碰撞参与者、捕获者及协助艇的信用信息进入学习。两个Critic最小化
 
 \[
-\mathcal L_Q=\mathbb E_{\zeta\sim p_V}\left[\frac{w_V(\zeta)}n\sum_{m=1}^{2}\sum_{i=1}^n
-\left[\mathcal Q_{\omega_m,i}(X,U)-\operatorname{sg}(y_i)\right]^2\right].
+\begin{aligned}
+\mathcal L_Q&=\mathbb E_{\zeta\sim p_V}\left[\frac{w_V(\zeta)}n\sum_{m=1}^{2}\sum_{i=1}^n
+\ell_{\delta_Q}\!\left(\mathcal Q_{\omega_m,i}(X,U)-\operatorname{sg}(y_i)\right)\right],\\
+\ell_{\delta_Q}(e)&=\begin{cases}
+e^2,&|e|\le\delta_Q,\\
+2\delta_Q|e|-\delta_Q^2,&|e|>\delta_Q.
+\end{cases}
+\end{aligned}
 \tag{8}
 \]
+
+价值学习在前10万次累计整队转移使用平方误差，之后采用式(8)的二倍Huber损失；切换时保留网络、优化器、目标与回放状态。\(\delta_Q=20\)。较小误差按平方损失拟合，损失对极端TD误差的导数幅值限制为\(2\delta_Q\)，减小其对价值更新的影响；任务奖励与式(7)目标保持原值。
 
 价值批量一半从完整回放均匀采样，另一半在已出现的终局类型间尽量等分、类内均匀采样。若\(N_D\)为回放大小、\(N_e\)为终局类型样本数、\(\nu_0,\nu_e\)为实际采样比例，则\(p_V(\zeta)=\nu_0/N_D+\nu_{e(\zeta)}/N_{e(\zeta)}\)，非终止转移第二项为零。取\(w_V=(\nu_0/(N_Dp_V))^{1/2}\)缓和终局过采样；无终局时均匀采样并取单位权重。上述比例按实际批量取整及已出现终局类别计算，形成保留终局强调的部分校正加权TD目标。端点与生成器使用另外均匀抽取的状态。三种CITF版本共用此训练配方。
 
@@ -428,6 +436,7 @@ F_A=0.1(p_T-p_A)+
 | 空间/前缀队友数 | 最近至多2艘；防御艇另读取本艇和攻击艇，攻击艇token读取最近至多3艘防御艇 |
 | Critic学习率、回放批量 | \(10^{-4}\)；512个整队转移 |
 | Critic采样、校正指数 | 1/2均匀回放与1/2终局分层；0.5；策略状态均匀采样 |
+| 价值损失 | 前100k平方误差，其后二倍Huber、阈值20；一步实际转移目标 |
 | 端点与生成器学习率 | 前50万转移为\(10^{-4}\)，其后50万线性降至\(2.5\times10^{-5}\)，此后保持 |
 | 折扣、目标软更新、策略更新间隔 | 0.99；0.02；每2次Critic更新 |
 | CITF并行采样与价值更新 | 64个环境，每轮采样后4次Critic更新 |

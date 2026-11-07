@@ -9,7 +9,7 @@ import torch
 from . import IMPLEMENTATION_VERSION
 from .environment import FleetEnv, TaskConfig, fusion
 from .networks import CITF, ModelConfig
-from .learner import Learner, Replay, MultiStepReplay
+from .learner import Learner, Replay
 from .adversary import Attacker, AttackerLearner, observation, attacker_reward
 from .train import (write_json, save, append_evaluation, seed_policy, device_index, run_generators,
                     random_state, restore_random_state, resume_arguments,
@@ -129,7 +129,8 @@ def main():
     phase_seed = args.seed+10000*args.phase
     seed_policy(phase_seed, args.device)
     defender = CITF(ModelConfig(**defender_payload['config'])).to(args.device)
-    defender_learner = Learner(defender, lr=recipe['lr'], tau=recipe['target_tau'])
+    defender_learner = Learner(defender, lr=recipe['lr'], tau=recipe['target_tau'],
+                               value_huber_delta=recipe['value_huber_delta'])
     defender_learner.restore(defender_payload)
     attacker = Attacker(task.defenders, delta=task.thrust_delta).to(args.device)
     attacker_learner = AttackerLearner(attacker, attacker_recipe['lr'])
@@ -145,9 +146,7 @@ def main():
     env = FleetEnv(args.envs, task, seed=phase_seed+100000, device=args.device)
     shapes = None if train_defender else dict(s=(8+7*task.defenders,), a=(2,), u=(2,), r=(),
                                                next_s=(8+7*task.defenders,), done=(), event=(), seconds=())
-    replay = (MultiStepReplay(args.capacity, task.defenders, args.device, args.envs,
-                              recipe['return_steps'], defender_learner.gamma)
-              if train_defender else Replay(args.capacity, task.defenders, args.device, shapes=shapes))
+    replay = Replay(args.capacity, task.defenders, args.device, shapes=shapes)
     generators = run_generators(phase_seed, args.device)
     transitions, metrics, evaluation = 0, {}, None
     last_checkpoint = None
@@ -211,8 +210,6 @@ def main():
                 transitions += count
                 counts[active_side] += count
                 env.reset((done & active).nonzero().flatten())
-            if train_defender and transitions == args.steps:
-                replay.flush()
             if transitions >= args.start_learning:
                 if train_defender:
                     schedule = policy_schedule(recipe, counts['defender'])
@@ -227,7 +224,8 @@ def main():
                         policy_batch = (replay.sample(args.batch, generators['replay'])
                                         if fraction and (defender_learner.updates+1) % defender_learner.policy_delay == 0
                                         else None)
-                        update = defender_learner.update(batch, schedule['temperature'], schedule['feedback_scale'], policy_batch)
+                        update = defender_learner.update(batch, schedule['temperature'], schedule['feedback_scale'], policy_batch,
+                                                        robust_value=schedule['robust_value'])
                     else:
                         update = attacker_learner.update(replay.sample(args.batch, generators['replay']))
                     metrics.update(update)

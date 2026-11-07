@@ -1,8 +1,8 @@
 {
   "method": "CITF",
-  "revision": "unified-multistep-value-learning-20261107-r23",
+  "revision": "unified-warmup-robust-td-20261107-r25",
   "basis": "D:/ARBoids/fromCHAT/CITF_最终统一稿_论文与研究方案.zip",
-  "scientific_status": "Fresh code_v28/r23 full-method repetitions train with five executed-step returns to reduce critic bootstrap drift. Prior r21 recovers to99/99 at300k and97/99 at350k, but250k collapse and absent stable feedback gain remain in full curves. No formal study started.",
+  "scientific_status": "r25 first150k99/97 after100k99/95. Same-recipe no-action/no-feedback each two fresh repetitions now training. Full runs continue registered250k scope and later learning budget; no formal study launched.",
   "implementation": "code/unified",
   "protocol": {
     "defenders": 3,
@@ -181,13 +181,14 @@
     "value": "Per-vessel actual-return twin critics: own-action local value plus mean positive nearest2 directed teammate responses and most adverse negative response; add minimum of zero and responses outside self+nearest2. Shared sign split selects only nonnegative derivative at zero. All control and learning use mean per-vessel twin minima.",
     "solver": "finite projected gradient steps",
     "feedback": "weighted joint distribution fitting with independent base generator learning",
-    "spatial_aggregation": "defender self+attacker+nearest2 teammates; attacker self+nearest3 defenders; prefix nearest2 already generated defenders; whole-fleet joint scoring and choice"
+    "spatial_aggregation": "defender self+attacker+nearest2 teammates; attacker self+nearest3 defenders; prefix nearest2 already generated defenders; whole-fleet joint scoring and choice",
+    "value_learning": "One-step actual target; squared residual through100000 cumulative team transitions, then2*Huber(delta20), retaining all learning state. Shared schedule for full and both ablations; alternating defenders continue their cumulative count."
   },
   "development": {
     "seed": 1101,
     "scene_seed": 73001,
     "scenarios": 100,
-    "full_run": "dev_full_1101_v27_worst_response",
+    "full_run": "dev_full_1101_v30_warm_robust",
     "baseline_run": "dev_arboids_1101_v9",
     "transitions": 1000000,
     "envs": 64,
@@ -196,12 +197,12 @@
     "baseline_individual_batch": 4096,
     "state_frame": "per-vessel body frame with current state and action relational attention",
     "mechanism_runs": [
-      "dev_no_action_1101_v27_wide_local",
-      "dev_no_feedback_1101_v27_worst_response",
-      "dev_no_action_1102_v27_wide_local",
-      "dev_no_feedback_1102_v27_worst_response"
+      "dev_no_action_1101_v30_warm_robust",
+      "dev_no_feedback_1101_v30_warm_robust",
+      "dev_no_action_1102_v30_warm_robust",
+      "dev_no_feedback_1102_v30_warm_robust"
     ],
-    "source_snapshot": "code_v27",
+    "source_snapshot": "code_v30",
     "endpoint_noise_N": [
       200,
       50
@@ -214,13 +215,13 @@
     "temperature_steps": 100000,
     "boids_success": 87,
     "collision_penalty": 50,
-    "candidate_run": "dev_full_1101_v28_multistep_return",
-    "candidate_source": "/root/autodl-tmp/citf-unified-20261106/code_v28",
+    "candidate_run": "dev_full_1101_v30_warm_robust",
+    "candidate_source": "/root/autodl-tmp/citf-unified-20261106/code_v30",
     "candidate_adjustments": {
-      "relative_to": "code_v27/r21 one-step value learning",
-      "return_steps": 5,
-      "unchanged": "joint fusion, current-action Transformer, min scoring, generator base objective, feedback, search, task and transition/update budgets",
-      "status": "Two fresh full-method1M repeats active;50k86/80 versus85/82, continue100k and250k stability. Fresh matching ablations after retaining the recipe."
+      "relative_to": "code_v29/r24",
+      "value_huber_start": 100000,
+      "unchanged": "one-step targets,delta20 after warmup,task,networks,feedback,temperature,replay and update budgets",
+      "status": "two fresh runs active"
     },
     "second_seed_runs": [
       "dev_full_1102_v23_teammate_response"
@@ -301,8 +302,8 @@
       "reason": "Explicitly restore attacker relative heading and yaw rate in the simplified local endpoint; v14 restarts from zero."
     },
     "active_full_comparisons": [
-      "dev_full_1101_v27_worst_response",
-      "dev_full_1102_v27_worst_response"
+      "dev_full_1101_v30_warm_robust",
+      "dev_full_1102_v30_warm_robust"
     ],
     "completed_v11_endpoints": {
       "transitions": 1000000,
@@ -351,8 +352,8 @@
       "dev_full_1101_v20_entity_return": 300128,
       "dev_full_1102_v20_entity_return": 300128
     },
-    "mechanism_source_snapshot": "code_v27",
-    "mechanism_full_reference_run": "dev_full_1101_v27_worst_response",
+    "mechanism_source_snapshot": "code_v30",
+    "mechanism_full_reference_run": "dev_full_1101_v30_warm_robust",
     "v18_development_team7_100k": {
       "scene_seed": 73005,
       "policy_seed": 83001,
@@ -1065,7 +1066,7 @@
       }
     },
     "inference_source_snapshot": "code_v27",
-    "training_source_snapshot": "code_v27",
+    "training_source_snapshot": "code_v30",
     "v21_main_250k": {
       "seeds": [
         1101,
@@ -2612,15 +2613,18 @@
         "team_mean_success_percent": 73.83333333333333,
         "agility_mean_success_percent": 83.42857142857143
       },
-      "status": "training",
+      "status": "stopped_superseded_after_common600k",
       "final_scope": {
         "path": "development_scope_v27_final",
         "pid": 438163,
         "transitions": 1000000,
         "conditions": 26,
         "registered_before250k_scope_result": true,
-        "fixed_endpoint_only": true
-      }
+        "fixed_endpoint_only": true,
+        "status": "cancelled_source_superseded",
+        "completed_conditions": 0
+      },
+      "completed_registered_budget": false
     },
     "v23_superseded_training_retirement": {
       "full_transitions": [
@@ -3167,7 +3171,7 @@
       "scene_seed": 73001,
       "policy_seed": 83001,
       "episodes_per_node": 100,
-      "status": "training",
+      "status": "stopped_superseded",
       "hypothesis": "Short actual multi-step returns reduce dependence on drifting critic bootstraps while preserving executed joint-control learning.",
       "target": "sum(k=0..h-1) gamma^k r_i,t+k + gamma^h (1-d) min(Qtarget1_i,Qtarget2_i)(X_t+h,Utarget*)",
       "truncation": "h<=5; real terminal ends all prefixes in that lane; final budget tails bootstrap; intermediate evaluations retain pending prefixes",
@@ -3183,7 +3187,16 @@
         "sampling and update budgets"
       ],
       "control_plan": "Fresh no-action and no-feedback repetitions with identical multi-step learning if this full candidate is retained.",
-      "comparison": "all registered same-seed r21 development nodes; final budget endpoints retained"
+      "comparison": "all registered same-seed r21 development nodes; final budget endpoints retained",
+      "last_reported_transitions": [
+        154864,
+        155120
+      ],
+      "last_complete_checkpoint_transitions": [
+        150000,
+        150000
+      ],
+      "completed_registered_budget": false
     },
     "v28_main_50k": {
       "full": [
@@ -3249,7 +3262,7 @@
       "pid": 442822,
       "source": "code_v28",
       "fixed_transitions": 250000,
-      "status": "waiting_for_registered_checkpoint",
+      "status": "cancelled_source_superseded",
       "seeds": [
         1101,
         1102
@@ -3272,7 +3285,8 @@
         6,
         7
       ],
-      "decision": "Fixed milestone registered after50k, before later outcomes. Same prescribed ranges and development scenes; no extra ablation scope. Cancel if candidate is retired."
+      "decision": "Fixed milestone registered after50k, before later outcomes. Same prescribed ranges and development scenes; no extra ablation scope. Cancel if candidate is retired.",
+      "completed": 0
     },
     "v27_matched_450k": {
       "full": [
@@ -3295,6 +3309,552 @@
         -1,
         1
       ]
+    },
+    "v28_main_100k": {
+      "full": [
+        89,
+        73
+      ],
+      "original_one_step": [
+        99,
+        95
+      ],
+      "gain_pp": [
+        -10,
+        -22
+      ],
+      "mean_gain_pp": -16.0,
+      "full_outcomes": [
+        [
+          89,
+          1,
+          10
+        ],
+        [
+          73,
+          0,
+          27
+        ]
+      ],
+      "outcomes_order": [
+        "success",
+        "collision",
+        "breach"
+      ],
+      "tasks_per_seed": 100
+    },
+    "v27_matched_500k": {
+      "full": [
+        100,
+        95
+      ],
+      "no_action": [
+        100,
+        95
+      ],
+      "no_feedback": [
+        99,
+        99
+      ],
+      "action_gain_pp": [
+        0,
+        0
+      ],
+      "feedback_gain_pp": [
+        1,
+        -4
+      ]
+    },
+    "v27_no_feedback_550k": {
+      "success": [
+        100,
+        75
+      ],
+      "collision": [
+        0,
+        25
+      ],
+      "breach": [
+        0,
+        0
+      ]
+    },
+    "robust_td_refinement": {
+      "source": "dev_full_1102_v27_worst_response/value_learning_source_250000.pt",
+      "path": "/root/autodl-tmp/citf-unified-20261106/value_learning_refinement_v27",
+      "pid": 443648,
+      "variant": "robust_delta20",
+      "status": "completed",
+      "critic_updates": 1000,
+      "new_environment_training_transitions": 0,
+      "loss": "2*Huber(delta=20); same squared loss for abs(error)<=20",
+      "target_tau": 0.02,
+      "value_importance_exponent": 0.5,
+      "frozen": "endpoint and generator",
+      "comparison": "completed original_target002 on the identical source and replay RNG",
+      "adopted": "development learning candidate; fresh complete learning remains to be evaluated",
+      "main": [
+        88,
+        4,
+        8
+      ],
+      "team7": [
+        55,
+        45,
+        0
+      ],
+      "outcomes_order": [
+        "success",
+        "collision",
+        "breach"
+      ],
+      "original_source_main": [
+        67,
+        12,
+        21
+      ],
+      "original_source_team7": [
+        49,
+        51,
+        0
+      ],
+      "ordinary_refit_main": [
+        64,
+        11,
+        25
+      ],
+      "ordinary_refit_team7": [
+        51,
+        49,
+        0
+      ]
+    },
+    "v28_main_150k": {
+      "full": [
+        84,
+        92
+      ],
+      "original_one_step": [
+        98,
+        99
+      ],
+      "mean_gain_pp": -10.5,
+      "full_outcomes": [
+        [
+          84,
+          0,
+          16
+        ],
+        [
+          92,
+          1,
+          7
+        ]
+      ],
+      "outcomes_order": [
+        "success",
+        "collision",
+        "breach"
+      ]
+    },
+    "v29_training": {
+      "source": "code_v29",
+      "implementation_version": "unified-robust-td-learning-20261107-r24",
+      "value_huber_delta": 20.0,
+      "target": "one-step",
+      "full_runs": [
+        "dev_full_1101_v29_robust_td",
+        "dev_full_1102_v29_robust_td"
+      ],
+      "pids": [
+        444026,
+        444027
+      ],
+      "seeds": [
+        1101,
+        1102
+      ],
+      "registered_transitions": 1000000,
+      "evaluation_interval": 50000,
+      "scene_seed": 73001,
+      "policy_seed": 83001,
+      "episodes_per_node": 100,
+      "status": "retired_at150k_decision",
+      "hypothesis": "Bound extreme TD-residual influence to improve actual joint-control learning and stability.",
+      "control_plan": "Fresh no-action and no-feedback repetitions with this same robust value loss if retained; existing squared-loss controls are historical references.",
+      "last_reported_transitions": [
+        153072,
+        155440
+      ],
+      "restorable_checkpoint_transitions": [
+        150000,
+        150000
+      ],
+      "registered_budget_completed": false,
+      "scope_status": "cancelled_source_superseded",
+      "scope_completed": 0
+    },
+    "v29_scope_250k": {
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v29",
+      "pid": 444296,
+      "source": "code_v29",
+      "fixed_transitions": 250000,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "conditions": 26,
+      "status": "waiting_for_registered_checkpoint",
+      "agility": [
+        1.5,
+        1.75,
+        2.0,
+        2.25,
+        2.5,
+        2.75,
+        3.0
+      ],
+      "defenders": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "decision": "Fixed milestone registered before first50k results; original prescribed ranges only. Cancel if candidate retired."
+    },
+    "v27_matched_550k": {
+      "full": [
+        100,
+        98
+      ],
+      "no_action": [
+        96,
+        99
+      ],
+      "no_feedback": [
+        100,
+        75
+      ],
+      "action_gain_pp": [
+        4,
+        -1
+      ],
+      "feedback_gain_pp": [
+        0,
+        23
+      ]
+    },
+    "v29_main_50k": {
+      "full": [
+        74,
+        87
+      ],
+      "original_squared": [
+        85,
+        82
+      ],
+      "gain_pp": [
+        -11,
+        5
+      ],
+      "mean_gain_pp": -3.0,
+      "full_outcomes": [
+        [
+          74,
+          6,
+          20
+        ],
+        [
+          87,
+          0,
+          13
+        ]
+      ],
+      "outcomes_order": [
+        "success",
+        "collision",
+        "breach"
+      ],
+      "tasks_per_seed": 100,
+      "next_decision": "Continue100k complete learning and registered250k stability/scope; no matching ablations launched yet."
+    },
+    "v27_main_600k": {
+      "full": [
+        100,
+        100
+      ],
+      "no_feedback": [
+        100,
+        100
+      ]
+    },
+    "v27_retirement_after_600k": {
+      "common_transitions": 600000,
+      "nodes_per_seed": 12,
+      "mean_learning_success_percent": {
+        "full": [
+          97.91666666666667,
+          94.33333333333333
+        ],
+        "no_action": [
+          87.41666666666667,
+          94.58333333333333
+        ],
+        "no_feedback": [
+          98.0,
+          93.25
+        ]
+      },
+      "mean_mechanism_gain_pp": {
+        "action_interaction": 5.125,
+        "generator_feedback": 0.5
+      },
+      "restorable_checkpoint_transitions": {
+        "full": [
+          600000,
+          600000
+        ],
+        "no_action": [
+          800000,
+          800000
+        ],
+        "no_feedback": [
+          650000,
+          650000
+        ]
+      },
+      "last_reported_transitions": {
+        "full": [
+          624384,
+          627200
+        ],
+        "no_action": [
+          831360,
+          832064
+        ],
+        "no_feedback": [
+          652752,
+          650064
+        ]
+      },
+      "reported_count_note": "Last live statuses, not exact termination counters. Complete restorable checkpoints are recorded separately.",
+      "status": "stopped_superseded",
+      "registered_transitions_per_run": 1000000,
+      "completed_registered_budget": false,
+      "decision": "Preserve all observed nodes, regressions and states; prioritize robust-TD development and its fresh matched controls. Original1M scope cancelled with0 completed."
+    },
+    "v29_main_100k": {
+      "full": [
+        89,
+        82
+      ],
+      "original_squared": [
+        99,
+        95
+      ],
+      "mean_gain_pp": -11.5,
+      "full_outcomes": [
+        [
+          89,
+          3,
+          8
+        ],
+        [
+          82,
+          5,
+          13
+        ]
+      ],
+      "outcomes_order": [
+        "success",
+        "collision",
+        "breach"
+      ]
+    },
+    "v30_training": {
+      "source": "code_v30",
+      "implementation_version": "unified-warmup-robust-td-20261107-r25",
+      "seeds": [
+        1101,
+        1102
+      ],
+      "pids": [
+        445382,
+        445383
+      ],
+      "full_runs": [
+        "dev_full_1101_v30_warm_robust",
+        "dev_full_1102_v30_warm_robust"
+      ],
+      "registered_transitions": 1000000,
+      "evaluation_interval": 50000,
+      "scene_seed": 73001,
+      "policy_seed": 83001,
+      "episodes_per_node": 100,
+      "value_huber_start": 100000,
+      "value_huber_delta": 20.0,
+      "transition": "Squared loss for transitions<=100000; robust loss afterwards; no optimizer, replay or network reset.",
+      "status": "training",
+      "rationale": "Mature-model robust refit improved real control; cold robust learning lost early performance. Preserve effective early squared learning and then bound extreme residual influence.",
+      "controls": "Two fresh repetitions of each specified ablation launched after150k99/97; same frozen recipe.",
+      "retained_switch_state": "value_learning_source_100000.pt: complete actual100k state, preceding robust update; preserved in both runs for controlled learning refinement if needed."
+    },
+    "v29_main_150k": {
+      "full": [
+        96,
+        93
+      ],
+      "original_squared": [
+        98,
+        99
+      ],
+      "mean_gain_pp": -4.0,
+      "full_outcomes": [
+        [
+          96,
+          1,
+          3
+        ],
+        [
+          93,
+          3,
+          4
+        ]
+      ],
+      "outcomes_order": [
+        "success",
+        "collision",
+        "breach"
+      ]
+    },
+    "v30_scope": {
+      "root": "development_scope_v30",
+      "pid": 445670,
+      "fixed_transitions": 250000,
+      "conditions": 26,
+      "agility_scene": 73004,
+      "team_scene": 73005,
+      "policy_seed": 83001,
+      "status": "waiting_for_registered_checkpoint"
+    },
+    "b3_main_250k_300k": [
+      {
+        "transitions": 250000,
+        "success": 97,
+        "collision": 3,
+        "breach": 0,
+        "updates": 200001
+      },
+      {
+        "transitions": 300000,
+        "success": 100,
+        "collision": 0,
+        "breach": 0,
+        "updates": 250001
+      }
+    ],
+    "v30_main_50k_100k": [
+      {
+        "transitions": 50000,
+        "outcomes": [
+          [
+            85,
+            0,
+            15
+          ],
+          [
+            82,
+            0,
+            18
+          ]
+        ]
+      },
+      {
+        "transitions": 100000,
+        "outcomes": [
+          [
+            99,
+            0,
+            1
+          ],
+          [
+            95,
+            0,
+            5
+          ]
+        ]
+      }
+    ],
+    "v30_controls": {
+      "status": "training",
+      "source": "code_v30",
+      "registered_transitions": 1000000,
+      "entries": [
+        {
+          "method": "no_action",
+          "seed": 1101,
+          "run": "dev_no_action_1101_v30_warm_robust",
+          "pid": 446715
+        },
+        {
+          "method": "no_feedback",
+          "seed": 1101,
+          "run": "dev_no_feedback_1101_v30_warm_robust",
+          "pid": 446716
+        },
+        {
+          "method": "no_action",
+          "seed": 1102,
+          "run": "dev_no_action_1102_v30_warm_robust",
+          "pid": 446717
+        },
+        {
+          "method": "no_feedback",
+          "seed": 1102,
+          "run": "dev_no_feedback_1102_v30_warm_robust",
+          "pid": 446718
+        }
+      ],
+      "recipe": "Same100k squared warmup then2*Huber(delta20); only specified mechanism removed."
+    },
+    "v30_main_150k": {
+      "full_outcomes": [
+        [
+          99,
+          1,
+          0
+        ],
+        [
+          97,
+          1,
+          2
+        ]
+      ],
+      "original_squared": [
+        98,
+        99
+      ],
+      "mean_gain_vs_squared_pp": -0.5,
+      "cold_robust": [
+        96,
+        93
+      ],
+      "mean_gain_vs_cold_pp": 3.5,
+      "outcomes_order": [
+        "success",
+        "collision",
+        "breach"
+      ]
+    },
+    "b3_final_scope": {
+      "root": "development_scope_b3_final",
+      "pid": 446624,
+      "fixed_transitions": 1000000,
+      "conditions": 13,
+      "source": "code_baseline_b3",
+      "status": "waiting_for_registered_checkpoint"
     }
   },
   "generalization": {

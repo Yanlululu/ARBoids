@@ -22,7 +22,8 @@ FULL_KEYS = ('envs', 'updates_per_step', 'lr', 'batch', 'capacity', 'start_learn
              'target_tau', 'temperature_start', 'temperature_end', 'temperature_steps',
              'endpoint_noise_start', 'endpoint_noise_end', 'exploration_steps', 'feedback',
              'feedback_start', 'feedback_ramp', 'policy_lr_end', 'policy_lr_decay_start',
-             'policy_lr_decay_steps', 'value_terminal_fraction', 'value_importance_exponent', 'return_steps')
+             'policy_lr_decay_steps', 'value_terminal_fraction', 'value_importance_exponent',
+             'value_huber_delta', 'value_huber_start')
 RUNTIME_ARGUMENTS = {'out', 'resume', 'init_from', 'device', 'registry', 'previous'}
 
 
@@ -256,7 +257,8 @@ def validate_checkpoint(payload, registry=None, method=None, seed=None, transiti
     validate_optimizer_counts(payload, keys, counts)
     recipe = run['arguments']
     expected_learner = (dict(gamma=recipe['gamma'], tau=recipe['target_tau'], target_entropy=recipe['target_entropy'])
-                        if run['method'] in METHODS[3:] else dict(gamma=.99, tau=recipe['target_tau'], policy_delay=2))
+                        if run['method'] in METHODS[3:] else dict(gamma=.99, tau=recipe['target_tau'], policy_delay=2,
+                                                                value_huber_delta=recipe['value_huber_delta']))
     if payload.get('learner_recipe') != expected_learner:
         raise ValueError('Checkpoint learning rule differs from its registered recipe.')
     evaluation = payload.get('evaluation')
