@@ -12,6 +12,7 @@ from dataclasses import asdict
 import json
 import math
 import multiprocessing
+import os
 from pathlib import Path
 import time
 
@@ -78,8 +79,10 @@ def independent_pursuit(world):
 
 def remember_predecessors(recent, chosen, now, severity, reason):
     # Include time to change course, not just the last unavoidable collision tick.
-    for seconds in (2., 4., 8.):
+    for seconds in (1., 2., 4., 8.):
         eligible = [state for state in recent if state['elapsed'] <= now-seconds+1e-7]
+        if not eligible:
+            eligible = list(recent)[:1]
         if not eligible:
             continue
         entry = eligible[-1]
@@ -154,7 +157,7 @@ def collect(job):
                               'collision' if result['collision'] else 'breach')
     snapshots = sorted(chosen.values(), key=lambda x: (-x['severity'], x['elapsed']))[:6]
     for entry in snapshots:
-        entry.update(key=f"{job['update']}:{job['ordinal']}:{entry['elapsed']:.6f}", visits=0)
+        entry.update(key=f"{job['version']}:{job['ordinal']}:{entry['elapsed']:.6f}", visits=0)
     row = dict(update=job['update'], ordinal=job['ordinal'], kind=job['kind'], task=task,
                future_seed=job['future_seed'], policy_seed=job['policy_seed'], steps=step,
                start_time=start_time, snapshot_key=job.get('snapshot', {}).get('key'),
@@ -326,6 +329,9 @@ def main():
             or min(args.lr, args.target_kl) <= 0 or min(args.dual_lr, args.initial_dual, args.entropy) < 0
             or min(args.warmstart_episodes, args.warmstart_updates) < 0):
         parser.error('Invalid optimization or curriculum setting')
+    if not all(math.isfinite(value) for value in (args.danger_fraction, args.failure_budget,
+            args.dual_lr, args.initial_dual, args.lr, args.gae_lambda, args.clip, args.target_kl, args.entropy)):
+        parser.error('Training settings must be finite')
     out = Path(args.out).resolve()
     args.out = str(out)
     args.project = str(Path(args.project).resolve())
@@ -339,10 +345,15 @@ def main():
     cfg = JointConfig(history=physical['history_steps'], width=args.width, heads=args.heads,
                       joint_context=not args.without_joint_context, exploration_rank=args.exploration_rank)
     torch.set_num_threads(1)
+    for key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+        os.environ[key] = '1'
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
     # Register the archived environment classes before restoring curriculum worlds.
     source_modules(args.project)
+    environment = World(args.project, Protocol(**physical), min(sizes))
+    environment_identity = dict(base=environment.base_environment_sha256,
+                                effective=environment.effective_environment_sha256)
     model = JointReplanningTransformer(cfg).to(args.device)
     model.physical_protocol = physical
     opponent = load_opponent(args.opponent_spec)
@@ -354,6 +365,7 @@ def main():
     parameters = {key: value for key, value in vars(args).items()
                   if key not in ('out', 'resume', 'workers', 'device', 'stop_file')}
     contract = immutable_run_contract(dict(arguments=parameters, config=asdict(cfg), physical_protocol=physical,
+        environment_identity=environment_identity,
         opponent=opponent.identity), files=files, code=[__file__, Path(__file__).with_name('joint_replanning_policy.py')])
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     update, steps, warm_steps, pool, history, best = 0, 0, 0, [], [], None
@@ -377,7 +389,7 @@ def main():
         out.mkdir(parents=True, exist_ok=False)
         if args.initial:
             initial = load_policy(args.initial)
-            initial.validate_runtime(None, World(args.project, Protocol(**physical), min(sizes)))
+            initial.validate_runtime(None, environment)
             if asdict(initial.cfg) != asdict(cfg):
                 raise ValueError('Initial joint policy architecture/configuration differs')
             model.load_state_dict(initial.state_dict())
@@ -388,8 +400,11 @@ def main():
 
     def policy_payload():
         return dict(config=asdict(cfg), state={key: value.detach().cpu() for key, value in model.state_dict().items()},
-                    physical_protocol=physical, update=update, environment_steps=steps,
-                    warmstart_environment_steps=warm_steps, opponent=opponent.identity)
+                    physical_protocol=physical, environment_identity=environment_identity,
+                    update=update, environment_steps=steps,
+                    warmstart_environment_steps=warm_steps, opponent=opponent.identity,
+                    learning=dict(danger_fraction=args.danger_fraction, failure_budget=args.failure_budget,
+                                  warmstart='independent_pursuit' if args.warmstart_episodes else 'none'))
 
     def save_checkpoint():
         payload = policy_payload()
@@ -407,7 +422,7 @@ def main():
         for ordinal in range(count):
             task = validation['tasks'][ordinal] if kind == 'validation' else train['tasks'][int(rng.integers(len(train['tasks'])))]
             job = dict(kind=kind, task=task, ordinal=ordinal, update=update, version=version,
-                       policy_seed=int(rng.integers(2**31-1)),
+                       policy_seed=(args.seed+ordinal) % (2**31-1) if kind == 'validation' else int(rng.integers(2**31-1)),
                        future_seed=task['future_seed'] if kind == 'validation' else int(rng.integers(2**31-1)))
             if kind == 'on_policy' and pool and ordinal < min(count-1, int(count*args.danger_fraction)):
                 weights = np.asarray([p['severity']/math.sqrt(1+p['visits']) for p in pool])

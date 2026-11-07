@@ -145,6 +145,10 @@ class JointReplanningTransformer(nn.Module):
         if self.cfg.history > world.protocol.history_steps:
             raise ValueError('Policy history does not fit the deployment buffer')
         trained = getattr(self, 'physical_protocol', None)
+        environment = getattr(self, 'environment_identity', None)
+        if environment is not None and environment != dict(base=world.base_environment_sha256,
+                                                          effective=world.effective_environment_sha256):
+            raise ValueError('Joint policy dynamics/environment implementation differs from training')
         if trained is not None:
             before, after = asdict(Protocol(**trained)), asdict(world.protocol)
             ignored = {'history_steps', 'prediction_steps', 'risk_weight', 'risk_clearance', 'prior_scale'}
@@ -173,6 +177,7 @@ def load_policy(path, device='cpu'):
     model = JointReplanningTransformer(JointConfig(**payload['config'])).to(device)
     model.load_state_dict(payload['state'])
     model.physical_protocol = payload['physical_protocol']
+    model.environment_identity = payload.get('environment_identity')
     return model.eval()
 
 
@@ -204,7 +209,13 @@ def main():
         result = original(*args, **kwargs)
         checkpoint = args[2] if len(args) > 2 else kwargs['checkpoint']
         payload = torch.load(checkpoint, map_location='cpu', weights_only=False)
-        result.update(method='CITF-joint-continuous-replanning', revision=payload['config']['revision'])
+        method = ('CITF-joint-continuous-replanning' if payload['config']['joint_context']
+                  else 'CITF-joint-no-context')
+        if payload['config']['joint_context'] and payload.get('learning', {}).get('danger_fraction') == 0:
+            method = 'CITF-joint-no-danger'
+        result.update(method=method, revision=payload['config']['revision'], schema='citf-joint-feedback-v1',
+                      context_features=['remaining_seconds/time_limit', 'previous_applied_left_right_thrust'],
+                      training_environment=payload.get('environment_identity'))
         result['controller'] = dict(configuration=payload['config'],
             action='Transformer joint continuous left/right thrust for every boat,[-500,1000]N',
             control='same decide() at every real control tick in training and deployment',
@@ -213,6 +224,7 @@ def main():
             projection_applied=False, training_update=payload.get('update'),
             training_environment_steps=payload.get('environment_steps'),
             learning='fresh complete rollouts and danger-state continuations under the current policy',
+            learning_configuration=payload.get('learning'),
             warmstart_environment_steps=payload.get('warmstart_environment_steps', 0),
             supported_selections=['joint'])
         return result

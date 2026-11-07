@@ -3,14 +3,12 @@ from pathlib import Path
 import sys
 import numpy as np
 
-TRAIN = Path(__file__).resolve().parents[1] / 'train'
-if str(TRAIN) not in sys.path:
-    sys.path.insert(0, str(TRAIN))
-
-
 class MAPPOController:
     """Legacy controller name for PredictiveMAPPO checkpoints."""
     def __init__(self, checkpoint, device='cpu', delay_steps=0, drop_probability=0., communication_seed=0):
+        train = Path(__file__).resolve().parents[1] / 'train'
+        if str(train) not in sys.path:
+            sys.path.insert(0, str(train))
         from policy.mappo import PredictiveMAPPO
         from policy.message_stress import MessageStress
         self.agent = PredictiveMAPPO.from_checkpoint(checkpoint, device)

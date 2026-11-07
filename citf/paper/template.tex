@@ -1,10 +1,10 @@
 \documentclass[UTF8,fontset=none,a4paper,10pt]{ctexart}
 \usepackage[margin=2.05cm,top=2.05cm,bottom=2cm,headheight=14pt]{geometry}
-\setmainfont{Liberation Serif}
-\setsansfont{Liberation Sans}
-\setmonofont{DejaVu Sans Mono}
-\setCJKmainfont{Noto Serif CJK SC}[BoldFont={Noto Serif CJK SC Bold}]
-\setCJKsansfont{Noto Sans CJK SC}
+\setmainfont{texgyretermes-regular.otf}[BoldFont=texgyretermes-bold.otf,ItalicFont=texgyretermes-italic.otf,BoldItalicFont=texgyretermes-bolditalic.otf]
+\setsansfont{texgyreheros-regular.otf}[BoldFont=texgyreheros-bold.otf]
+\setmonofont{lmmono10-regular.otf}
+\setCJKmainfont{FandolSong-Regular.otf}[BoldFont=FandolSong-Bold.otf]
+\setCJKsansfont{FandolHei-Regular.otf}[BoldFont=FandolHei-Bold.otf]
 \usepackage{amsmath,amssymb,bm}
 \usepackage{graphicx,xcolor,booktabs,longtable,array,calc,multirow}
 \usepackage{etoolbox,setspace,fancyhdr,hyperref,caption,float,needspace}
@@ -30,6 +30,7 @@
 \def\maxheight{\ifdim\Gin@nat@height>.6\textheight.6\textheight\else\Gin@nat@height\fi}
 \makeatother
 \setkeys{Gin}{width=\maxwidth,height=\maxheight,keepaspectratio}
+\providecommand{\pandocbounded}[1]{#1}
 \allowdisplaybreaks[2]
 \begin{document}
 \begin{center}

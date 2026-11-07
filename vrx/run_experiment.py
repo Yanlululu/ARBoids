@@ -24,7 +24,6 @@ from rclpy.qos import qos_profile_sensor_data
 from ament_index_python.packages import get_package_share_directory
 import torch
 
-from models import ActorAdap, ActorSAC
 from tad_vrx_experiment import (
     ExperimentManager, APF_navi_control, Boids_navi_control, RL_navi_control,
 )
@@ -52,6 +51,7 @@ class Trial(ExperimentManager):
         self.rows = []
         self.latest_image = None
         self.frames = []
+        self.frame_pixels = []
         if args.capture_frames:
             self.image_subscription = self.node.create_subscription(
                 Image, '/arboids/overview/image', self.on_image, qos_profile_sensor_data)
@@ -63,6 +63,7 @@ class Trial(ExperimentManager):
             if self.actor.agent.defender_num != args.num_robots - 1:
                 raise ValueError('Checkpoint defender count does not match VRX robot count.')
         elif args.controller != 'Boids':
+            from models import ActorAdap, ActorSAC
             actor_type = ActorAdap if args.controller == 'AdaRes' else ActorSAC
             self.actor = actor_type.from_checkpoint(args.checkpoint, self.device)
 
@@ -87,14 +88,22 @@ class Trial(ExperimentManager):
             pixels = pixels[:, :, ::-1]
         if np.ptp(pixels) < 10:
             return
+        # Capture a bounded set of real camera frames during the task. PNG
+        # compression and file writes run after physics stops, so figure
+        # collection cannot stall the control/attacker update loop.
+        path = output / f'frame-{len(self.frames):03d}.png'
+        self.frame_pixels.append(pixels.copy())
+        self.frames.append({'file': path.name, 'simulation_seconds': stamp-start_sim, 'gazebo_timestamp': stamp})
+
+    def flush_frames(self, output):
         def chunk(tag, payload):
             return struct.pack('!I', len(payload)) + tag + payload + struct.pack('!I', zlib.crc32(tag+payload) & 0xffffffff)
-        raw = b''.join(b'\0' + row.tobytes() for row in pixels)
-        png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!IIBBBBB', message.width, message.height, 8, 2, 0, 0, 0))
-               + chunk(b'IDAT', zlib.compress(raw, 3)) + chunk(b'IEND', b''))
-        path = output / f'frame-{len(self.frames):03d}.png'
-        path.write_bytes(png)
-        self.frames.append({'file': path.name, 'simulation_seconds': stamp-start_sim, 'gazebo_timestamp': stamp})
+        for frame, pixels in zip(self.frames, self.frame_pixels):
+            raw = b''.join(b'\0' + row.tobytes() for row in pixels)
+            png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!IIBBBBB', pixels.shape[1], pixels.shape[0], 8, 2, 0, 0, 0))
+                   + chunk(b'IDAT', zlib.compress(raw, 3)) + chunk(b'IEND', b''))
+            (output / frame['file']).write_bytes(png)
+        self.frame_pixels.clear()
 
     def initialize_terminal_feedback(self, count):
         self.terminal_pose_history = [deque() for _ in range(count)]
@@ -301,7 +310,11 @@ def prepare_world(world, origin, output, capture_frames, assets_dir=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', '--modelname', dest='checkpoint')
-    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids', 'MAPPO'], default='AdaRes')
+    parser.add_argument('--controller', choices=['AdaRes', 'Res', 'RL', 'Boids', 'MAPPO', 'CITF', 'ARBoidsUnified'], default='AdaRes')
+    parser.add_argument('--scene-seed', type=int, default=74002)
+    parser.add_argument('--scene-index', type=int, default=0)
+    parser.add_argument('--policy-seed', type=int, default=84002)
+    parser.add_argument('--research-stage', choices=['development', 'formal'], default='formal')
     parser.add_argument('--setting', type=int, choices=[0, 1], default=1)
     parser.add_argument('--num-robots', '--num_robots', dest='num_robots', type=int, default=4)
     parser.add_argument('--agility', type=float, default=2.25)
@@ -356,15 +369,22 @@ def main():
               'terminal_feedback_alignment': 'common-time interpolation of bracketing measured poses; no extrapolation',
               'checkpoint': args.checkpoint,
               'thruster_mapping': 'policy[0]->starboard; policy[1]->port (ENU yaw matching training)'}
-    if args.checkpoint:
+    unified = args.controller in ('CITF', 'ARBoidsUnified')
+    if args.checkpoint and not unified:
         result['checkpoint_sha256'] = hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest()
     process = image_bridge = trial = None
     started = time.monotonic()
     rclpy.init()
     try:
-        trial = Trial(args)
+        if unified:
+            from unified_vrx import UnifiedTrial
+            trial = UnifiedTrial(args)
+            result.update(trial.protocol_metadata())
+        else:
+            trial = Trial(args)
         result['algorithm'] = {'AdaRes': 'ARBoids', 'Res': 'RP', 'RL': 'SAC',
-                               'Boids': 'Boids', 'MAPPO': 'PredictiveMAPPO'}[args.controller]
+                               'Boids': 'Boids', 'MAPPO': 'PredictiveMAPPO',
+                               'CITF': 'CITF', 'ARBoidsUnified': 'ARBoids'}[args.controller]
         if args.controller in ('AdaRes', 'Res', 'RL'):
             result['observation_variant'] = ('boids-augmented' if trial.actor.feature2_dim else 'kinematics-only')
         poses = trial.generate_init_info(args.agility, args.setting)
@@ -417,6 +437,8 @@ def main():
                     raise TimeoutError('A vessel stopped publishing pose feedback')
                 snapshot = trial.terminal_snapshot()
                 if snapshot is None or (last_terminal_stamp is not None and snapshot['stamp'] <= last_terminal_stamp):
+                    if snapshot is not None and hasattr(trial, 'poll_control'):
+                        trial.poll_control(snapshot['stamp']-start_sim)
                     continue
                 last_terminal_stamp = snapshot['stamp']
                 positions = snapshot['positions']
@@ -452,9 +474,13 @@ def main():
                                   terminal_feedback_skew_seconds=snapshot['feedback_skew'],
                                   terminal_interpolation_span_seconds=snapshot['interpolation_span'])
                     break
+                if hasattr(trial, 'poll_control'):
+                    # Observe task termination before applying a completed query.
+                    trial.poll_control(elapsed)
                 if elapsed + 1e-6 >= next_action:
                     trial.control(elapsed)
-                    next_action = elapsed + args.action_period
+                    next_action = ((np.floor((elapsed+1e-6)/args.action_period)+1)*args.action_period
+                                   if unified else elapsed + args.action_period)
                     if len(trial.rows) % 25 == 0:
                         print(f'[CONTROL] t={elapsed:.2f}s commands={len(trial.rows)}', flush=True)
                 if args.capture_frames and elapsed >= next_frame:
@@ -468,6 +494,11 @@ def main():
     finally:
         stop_process(image_bridge)
         stop_process(process)
+        if trial is not None and hasattr(trial, 'close_controller'):
+            try:
+                trial.close_controller(result.get('simulation_seconds'))
+            except BaseException as error:
+                result.update(passed=False, error=f'{type(error).__name__}: {error}')
         log_path = output / 'gazebo.log'
         if log_path.exists():
             log_text = re.sub(r'\x1b\[[0-9;]*m', '', log_path.read_text(encoding='utf-8', errors='replace'))
@@ -478,6 +509,10 @@ def main():
                               gazebo_errors=diagnostics[:20])
         result['wall_seconds'] = time.monotonic() - started
         if trial is not None:
+            try:
+                trial.flush_frames(output)
+            except BaseException as error:
+                result.update(passed=False, error=f'Frame export failed: {type(error).__name__}: {error}')
             result['control_steps'] = len(trial.rows)
             result['frames'] = trial.frames
             if trial.rows:
@@ -486,9 +521,17 @@ def main():
                                   ('ControlWallSeconds', 'control_seconds'),
                                   ('FeedbackSkewSeconds', 'feedback_skew_seconds')]:
                     samples = arrays[key]
-                    result[name] = dict(mean=float(samples.mean()), median=float(np.median(samples)),
-                                        p95=float(np.quantile(samples, .95)), maximum=float(samples.max()))
+                    if unified and key in ('PolicyWallSeconds', 'ControlWallSeconds'):
+                        samples = samples[arrays['PolicyStarted'].astype(bool)]
+                    result[name] = (dict(count=len(samples), mean=float(samples.mean()), median=float(np.median(samples)),
+                                         p95=float(np.quantile(samples, .95)), maximum=float(samples.max()))
+                                    if len(samples) else dict(count=0, mean=None, median=None, p95=None, maximum=None))
                 result['control_deadline_misses'] = int((arrays['ControlWallSeconds'] > args.action_period).sum())
+                if unified:
+                    result['control_deadline_misses'] = int(arrays['MissedDeadline'].sum())
+                    result['discarded_late_outputs'] = int(arrays['DiscardedLateOutput'].sum())
+                    result['policy_queries'] = int(arrays['PolicyStarted'].sum())
+                    result['applied_defender_outputs'] = int(arrays['DefenderOutputApplied'].sum())
                 if args.controller == 'MAPPO':
                     network = trial.actor.communication
                     result.update(message_attempts=network.attempts, message_drops=network.drops,

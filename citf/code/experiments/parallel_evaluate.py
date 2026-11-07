@@ -49,7 +49,9 @@ def merge(out):
                    latency_mean_ms=sum(r['latency_mean_ms']*r['steps'] for r in rows)/sum(r['steps'] for r in rows),
                    deadline_fraction=sum(r['deadline_fraction']*r['steps'] for r in rows)/sum(r['steps'] for r in rows),
                    mean_unique_candidates=sum(r['mean_unique_candidates']*r['steps'] for r in rows)/sum(r['steps'] for r in rows),
-                   evidence_role='fixed-source development validation', arguments=arguments)
+                   evidence_role=('source-independent development validation' if arguments['evaluator'] ==
+                                  'experiments.joint_replanning_policy' else 'fixed-source development validation'),
+                   arguments=arguments)
     pending = out / 'summary.json.pending'
     pending.write_text(json.dumps(summary, indent=2))
     pending.replace(out / 'summary.json')
@@ -81,7 +83,7 @@ def main():
     ap.add_argument('--guard-combination', choices=['envelope', 'learned'])
     ap.add_argument('--workers', type=int, default=12)
     ap.add_argument('--shard-size', type=int, default=4)
-    ap.add_argument('--deadline', default='2026-11-02T22:40:28+00:00')
+    ap.add_argument('--deadline', help='UTC deadline; defaults to twelve hours after launch')
     ap.add_argument('--risk-weight', type=float)
     ap.add_argument('--budget', type=int, default=96)
     ap.add_argument('--bank', type=int, default=12)
@@ -89,6 +91,8 @@ def main():
     ap.add_argument('--risk', default='expected', choices=['expected', 'mean_distance'])
     ap.add_argument('--resume', action='store_true')
     a = ap.parse_args()
+    if a.deadline is None:
+        a.deadline = (datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=12)).isoformat()
     if not a.source and a.evaluator != 'experiments.joint_replanning_policy':
         ap.error('--source is required by the selected evaluator')
     out = Path(a.out).resolve()

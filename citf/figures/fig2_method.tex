@@ -1,37 +1,37 @@
 \documentclass[tikz,border=5pt]{standalone}
-\usepackage[UTF8,fontset=none]{ctex}\setCJKmainfont{Noto Serif CJK SC}
+\usepackage[UTF8,fontset=none]{ctex}\setCJKmainfont{FandolSong-Regular.otf}[BoldFont=FandolSong-Bold.otf]
 \usepackage{amsmath,amssymb}\usetikzlibrary{arrows.meta,positioning,calc,fit}
 \definecolor{ink}{RGB}{36,55,69}\definecolor{blue}{RGB}{48,109,139}\definecolor{gold}{RGB}{161,113,44}
-\tikzset{every node/.style={font=\footnotesize,text=ink},box/.style={draw=ink!65,rounded corners=2pt,minimum height=1.0cm,text width=2.25cm,align=center,fill=white},learn/.style={box,fill=blue!9,draw=blue,line width=.8pt},arr/.style={-{Stealth[length=2mm]},line width=.7pt,draw=ink},train/.style={arr,draw=gold,dashed}}
+\tikzset{every node/.style={font=\footnotesize,text=ink},box/.style={draw=ink!65,rounded corners=2pt,minimum height=1.05cm,text width=2.1cm,align=center,fill=white},learn/.style={box,fill=blue!9,draw=blue,line width=.8pt},arr/.style={-{Stealth[length=2mm]},line width=.7pt,draw=ink},train/.style={arr,draw=gold,dashed}}
 \begin{document}
 \begin{tikzpicture}
-\fill[ink!3](-1.5,0.1) rectangle(14.1,5.2);
-\node[anchor=west,font=\small\bfseries]at(-1.28,4.92){当前配置的预测与执行};
-\node[box](src) at(0,3.45){学习与规则控制\\$u_i^L,u_i^B,\bar g_i$};
-\node[box](cand) at(3.0,3.45){整队当前候选\\$\boldsymbol k=(k_1,\ldots,k_n)$};
-\node[box](nom) at(6.0,3.45){合法区间名义运动\\$\bar X^{\boldsymbol k}_{1:H_t}$};
-\node[learn](net) at(9.1,3.45){候选关系注意力\\整队条件表示};
-\node[learn](dist) at(12.5,3.45){对称距离读出\\$P_\theta(D_{ij}\mid\mathcal I_t,\boldsymbol k)$};
-\draw[arr](src)--(cand);\draw[arr](cand)--(nom);\draw[arr](nom)--(net);\draw[arr](net)--(dist);
-\node[learn,text width=3.75cm,minimum height=.85cm](hist) at(6.2,5.95){共享历史编码与已知时间\\$\mathcal H_t,\ T_{\rm rem},\ H_t$};
-\draw[arr](hist.east)-|(net.north);
-\node[learn](motion) at(9.1,1.25){辅助运动头\\$\widehat X^{\boldsymbol k}_{1:H_t}$};
-\draw[arr](net)--(motion);
-\node[box](risk)at(12.5,1.25){期望接近代价\\$\rho_{r_s}(\mu_{ij},\sigma_{ij})$};
-\draw[arr](dist)--(risk);
-\node[box](joint)at(6.0,1.25){联合配置搜索\\$\boldsymbol k_t^\star$};
-\draw[arr](risk.south)--(12.5,.36)--(6.0,.36)--(joint.south);
-\node[box](exec)at(3.0,1.25){执行首个控制周期\\下一周期重新选择};
-\draw[arr](joint)--(exec);
-\draw[arr](joint.north)--(6.0,2.2)-|node[pos=.5,above,font=\scriptsize]{完整候选重新评价}(cand.south);
-\draw[arr](exec.west)--(-1.35,1.25)--(-1.35,5.95)--node[pos=.54,above,font=\scriptsize]{新观测与物理时间}(hist.west);
-\fill[gold!5](-1.5,-2.65) rectangle(14.1,-.3);
-\node[anchor=west,font=\small\bfseries]at(-1.28,-.6){真实短分支监督};
-\node[box,text width=3.4cm](branch)at(1.15,-1.65){共同根状态与完整候选\\固定系数、源动作持续反馈};
-\node[box,text width=3.4cm](label)at(5.75,-1.65){有效运动与停止距离\\真实终止后的标签被屏蔽};
-\node[learn,text width=4.3cm](loss)at(11.35,-1.65){运动、规范距离似然\\几何风险与候选选择监督};
-\draw[train](branch)--(label);\draw[train](label)--(loss);
-\draw[train](loss.north)--(11.35,-.03)--(10.55,-.03)--(10.55,2.35)--node[pos=.15,right,font=\scriptsize]{参数更新}(net.south east);
-\node[font=\scriptsize,align=center,text=ink!80]at(7.25,-3.15){距离分布直接描述停止区间最小间距；辅助轨迹的未观测后段不进入距离读出。\\实线为在线计算，虚线为短时物理监督。};
+\fill[ink!3](-1.4,-.2) rectangle(14.4,5.5);
+\node[anchor=west,font=\small\bfseries]at(-1.15,5.15){联合融合控制：每个控制周期};
+\node[box](state) at(0,3.7){当前状态 $X$\\上一实际推力、\\回合固定艇序};
+\node[learn](ends) at(3,3.7){共享学习端点 $a_i$\\Boids端点 $b_i$};
+\node[learn](gen) at(6,3.7){自回归联合生成\\$G^{k,0}\sim q_\psi$\\$K$组样本＋2锚点};
+\node[box](execmap) at(9.1,3.7){实际联合动作\\$U(X,G)=\mathcal P_X$\\$[B+G\odot(A-B)]$};
+\node[learn](value) at(13,3.7){动作条件团队价值\\$Q_1(X,U)$\\配置内跨艇注意力};
+\draw[arr](state)--(ends);\draw[arr](ends)--(gen);\draw[arr](gen)--(execmap);\draw[arr](execmap)--(value);
+\node[learn](search)at(11.05,1.1){连续联合改进\\有限步投影梯度\\保留链内最佳配置};
+\node[box](choose)at(7.5,1.1){选择整队最优配置\\$G^\star$及实际$U^\star$};
+\node[box](env)at(3.3,1.1){施加$U^\star$\\环境转移与任务奖励};
+\draw[arr](value.south)|-(search.east);
+\draw[arr](search.north)--(11.05,2.2)-|(execmap.south);
+\draw[arr](search)--(choose);\draw[arr](choose)--(env);
+\draw[arr](env.west)--(0,1.1)--(state.south);
+\fill[gold!5](-1.4,-4.6) rectangle(14.4,-.6);
+\node[anchor=west,font=\small\bfseries]at(-1.15,-.95){离策略学习：真实执行转移与同快照策略更新};
+\node[box](replay)at(0,-2){团队回放\\$(X,U,r,X',d)$};
+\node[learn](critic)at(4,-2){双Q价值回归\\目标端完整生成、\\改进与选择};
+\node[learn,text width=2.7cm](feedback)at(8,-2){优化配置反馈\\加权联合似然\\＋基础生成学习};
+\node[learn,text width=2.8cm](endpoint)at(12.7,-2){学习端点更新\\沿实际融合与投影\\求团队价值梯度};
+\draw[train](env.south)--(3.3,-.35)-|(replay.north);
+\draw[train](replay)--(critic);\draw[train](critic)--(feedback);
+\draw[train](critic.south east)--(5.4,-2.85)--(12.7,-2.85)--(endpoint.south);
+\draw[train](critic.south)--(4,-3.2)--(14.1,-3.2)--(14.1,2.8)--(value.south east);
+\draw[train](feedback.north)--(8,-.05)--(5.55,-.05)--(5.55,2.8)--(gen.south west);
+\draw[train](endpoint.south)--(12.7,-3.65)--(-1.1,-3.65)--(-1.1,4.65)-|(ends.north);
+\node[font=\scriptsize,align=center,text=ink!80]at(6.5,-4.15){实线：在线控制。虚线：数据与参数更新。策略分支共用更新前快照，端点与生成器分别求梯度。\\两项核心消融仅分别删除当前候选动作交互、生成器的优化配置反馈。};
 \end{tikzpicture}
 \end{document}

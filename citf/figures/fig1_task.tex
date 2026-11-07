@@ -1,6 +1,6 @@
 \documentclass[tikz,border=5pt]{standalone}
 \usepackage[UTF8,fontset=none]{ctex}
-\setCJKmainfont{Noto Serif CJK SC}
+\setCJKmainfont{FandolSong-Regular.otf}[BoldFont=FandolSong-Bold.otf]
 \usepackage{amsmath,amssymb}
 \usetikzlibrary{arrows.meta,calc,positioning,patterns}
 \definecolor{ink}{RGB}{36,55,69}\definecolor{blue}{RGB}{48,109,139}\definecolor{red}{RGB}{164,70,53}
@@ -13,7 +13,7 @@
  \fill (0,0) circle(1.5pt);\node[below left] at(0,0){$O$};\node at(-.05,-.5){保护区域};
  \draw[->] (0,0)--(1.18,.55) node[midway,above]{$r_T$};
  \draw[->,gray](-1.8,-2.35)--(-.6,-2.35) node[right]{$x$};\draw[->,gray](-1.8,-2.35)--(-1.8,-1.25) node[above]{$y$};
- \foreach \a/\n in {25/1,80/2,140/3,200/4,255/5,315/6}{
+ \foreach \a/\n in {25/1,140/2,255/3}{
    \coordinate (d\n) at(\a:2.1);\pic[rotate=\a+10] at(d\n){boat};
    \node[shift={(\a:.48)}] at(d\n){$D_{\n}$};
  }
@@ -23,7 +23,7 @@
  \draw[blue] (d1)..controls(2.5,.8)and(3.2,.5)..(4.1,.75);
  \draw[blue,densely dotted] (d1)..controls(2.5,.9)and(3.25,1.4)..(4.1,1.55);
  \node[align=left,font=\footnotesize] at(3.75,2.55){同一防御艇的\quad\ \ \\不同融合候选运动};
- \draw[<->,ink!70] (1.8,.6)--(.45,2.0) node[midway,sloped,above]{$d_{12}$};
+ \draw[<->,ink!70] (d1)--(d2) node[midway,sloped,above]{$d_{12}$};
  \draw[<->,ink!70] (2.15,.87)--(5.55,1.27) node[pos=.68,below]{$d_{1A}$};
  \draw[rounded corners,ink!35,fill=white](7.35,-2.8) rectangle(13.5,3.05);
  \node[font=\small\bfseries] at(10.4,2.65){单艇双推进器融合};
@@ -32,9 +32,9 @@
  \draw[->,line width=1pt,blue](7.8,-.05)--(8.8,-.05) node[below]{$u_{i,R}$};
  \draw[->,line width=1pt,blue](7.8,1.35)--(8.8,1.35) node[above]{$u_{i,L}$};
  \draw[->,ink](10.0,.65)--(12.6,.65) node[right]{$x_i$};
- \draw[<->,ink!65](9.6,.0)--(9.6,1.3) node[midway,right]{$b$};
- \node[align=center,font=\small] at(10.4,-1.15){$u_{i,a}=g_{i,a}u^L_{i,a}+(1-g_{i,a})u^B_{i,a}$\\[3pt]$a\in\{L,R\},\quad 0\leq g_{i,a}\leq1$};
- \node[font=\footnotesize,ink!75] at(10.4,-2.2){候选改变推进合力与差动转向};
- \node[font=\footnotesize,ink!65] at(2.4,-2.6){任务与候选运动几何示意};
+ \draw[<->,ink!65](9.6,.0)--(9.6,1.3) node[midway,right]{$2\ell$};
+ \node[align=center,font=\small] at(10.4,-1.15){$\mathbf u_i=\mathcal P_X[\mathbf b_i+g_i(\mathbf a_i-\mathbf b_i)]$\\[3pt]$0\leq g_i\leq1$，两推进器共用一个系数};
+ \node[font=\footnotesize,ink!75] at(10.4,-2.2){整队同时选择 $G=(g_1,\ldots,g_n)$};
+ \node[font=\footnotesize,align=center,ink!65] at(2.4,-2.55){捕获：$d_{iA}<r_c$；碰撞：$d_{ij}\leq r_{\rm col}$\\防御过程示意，非初始位置或实验轨迹};
 \end{tikzpicture}
 \end{document}

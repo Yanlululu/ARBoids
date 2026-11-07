@@ -1,6 +1,6 @@
 """Build the unnumbered-equation Chinese manuscript with native LaTeX math.
 
-Requires system pandoc, xelatex, Noto CJK, Liberation fonts. No fonts bundled.
+Requires pandoc and XeLaTeX with TeX Live Fandol/TeX Gyre fonts.
 """
 from pathlib import Path
 import re,shutil,subprocess,tempfile
@@ -11,7 +11,7 @@ for name in ('pandoc','xelatex'):
     if not shutil.which(name):raise SystemExit(f'Missing executable: {name}')
 source=(paper/'CITF_中文独立论文_修订稿.md').read_text(encoding='utf8')
 body=source[source.index('## 摘要'):]
-for stem in ('fig1_task','fig2_method','fig3_geometry'):
+for stem in ('fig1_task','fig2_method','fig3_vrx','fig4_learning','fig5_applicability','fig6_alternating'):
     body=body.replace(stem+'.png',stem+'.pdf')
 with tempfile.TemporaryDirectory() as tmp:
     md=Path(tmp)/'body.md';md.write_text(body,encoding='utf8')
@@ -19,6 +19,9 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(['pandoc',str(md),'-f','markdown+tex_math_single_backslash','-t','latex','-s',
         '--template='+str(paper/'template.tex'),'--lua-filter='+str(paper/'red_pending.lua'),'-o',str(target)],check=True)
     tex=target.read_text(encoding='utf8').replace('\n\n\\[\n','\n\\nopagebreak[4]\n\\[\n')
+    # Captions are explicit manuscript paragraphs; older longtable releases
+    # still require an existing counter for Pandoc's uncaptioned tables.
+    tex=tex.replace(r'\def\LTcaptype{none}',r'\def\LTcaptype{table}')
     tex=re.sub(r'(?m)^(\\textbf\{表[1-5].*)$',r'\\Needspace{8\\baselineskip}\n\1',tex)
     tex=re.sub(r'\\Needspace\{8\\baselineskip\}\n(?=\\textbf\{表4)',r'\\Needspace{14\\baselineskip}\n',tex)
     tex=re.sub(r'(?m)^(\{\[\}\d+\{\]\})',r'\\Needspace{3\\baselineskip}\n\1',tex)

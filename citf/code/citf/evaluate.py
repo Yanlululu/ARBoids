@@ -44,6 +44,7 @@ def main():
     ap.add_argument('--selection',choices=['joint','independent'],default='joint')
     ap.add_argument('--stop-file',help='Commit the current task, then stop at its boundary')
     ap.add_argument('--prepare-runtime');a=ap.parse_args();out=Path(a.out)
+    if not SOURCE_REQUIRED and not a.checkpoint:ap.error('Direct learned control requires --checkpoint')
     if a.max_tasks<0:raise ValueError('Invalid task limit')
     if out.exists() and not (a.prepare_runtime or a.resume):raise ValueError('Refuse result overwrite; use --resume')
     tasks=json.loads(Path(a.tasks).read_text());p=Protocol(**tasks.get('protocol',{}));torch.set_num_threads(1)

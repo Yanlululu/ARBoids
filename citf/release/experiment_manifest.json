@@ -1,192 +1,1919 @@
 {
   "method": "CITF",
-  "revision": "CITF-execution-closed-v3",
-  "specification_role": "editable reference recipe; per-run protocol/runtime records define executed methods; update the formal matrix after method selection",
-  "research_priority": "maximize useful closed-loop improvement per development and experiment cost",
-  "scientific_status": "active P3 research; prioritize clear closed-loop gains and an effective paper method",
-  "method_frozen": false,
-  "primary_training_team_size": 6,
-  "source_protocol": {
-    "name": "citf-defense80-v3",
-    "environment": "source",
-    "time_limit": 80.0,
+  "revision": "unified-teammate-response-20261107-r17",
+  "basis": "D:/ARBoids/fromCHAT/CITF_最终统一稿_论文与研究方案.zip",
+  "scientific_status": "Development: r17 full100k95/94 versus unchanged no-action82/93; seven-vessel100k40/36. Current four r17 full/no-feedback runs plus two unchanged no-action controls continue. Old r15 full/no-feedback four runs retired after dense-fleet decline; their incomplete records retained and old r16 final scope cancelled. r17 fixed250k scope pending.",
+  "implementation": "code/unified",
+  "protocol": {
+    "defenders": 3,
+    "time_limit": 60,
     "control_dt": 0.2,
     "integration_dt": 0.05,
-    "target_radius": 15.0,
-    "capture_radius": 5.0,
-    "collision_radius": 5.0,
-    "risk_clearance": 7.0,
-    "radial_early_failure": false,
-    "apf_obstacle_rule": "all_obstacles",
-    "prediction_steps": 16,
-    "history_steps": 8,
-    "risk_weight": 32.0,
-    "prior_scale": 0.4
-  },
-  "scope": {
-    "prediction": "reference recipe: short motion and stopped geometry; research may redesign prediction, dynamics, value, outcome and policy learning",
-    "decision": "reference recipe: joint source fusion; research may redesign sources, action space, horizon, planning and execution",
-    "forbidden": [],
-    "authorization": "2026-11-05 user authorization opens all research methods and technical routes; choose by expected task benefit and cost"
-  },
-  "network": {
-    "variant": "candidate_graph",
-    "width": 56,
-    "heads": 4,
-    "history": 8,
-    "horizon": 16,
-    "dt": 0.2,
-    "clearance": 7.0,
-    "residual_scale": 9.0,
-    "fleet_candidate_context": true,
-    "revision": "CITF-stopped-direct-v2"
-  },
-  "parameter_count_reference": 151354,
-  "schema": "citf-stopped-aware-v2",
-  "history_features": [
-    "target_frame_x/60",
-    "target_frame_y/60",
-    "measured_vx/5",
-    "measured_vy/5",
-    "sin_yaw",
-    "cos_yaw",
-    "measured_yaw_rate",
-    "attacker_flag"
-  ],
-  "context_features": [
-    "remaining_seconds/time_limit",
-    "known_prediction_steps/prediction_steps"
-  ],
-  "training": {
-    "source_seeds": [
-      101,
-      102,
-      103,
-      104,
-      105
-    ],
-    "source_steps": 1000000,
-    "source_lr": 0.0001,
-    "source_batch": 4096,
-    "source_gamma": 0.99,
-    "source_tau": 0.005,
-    "source_curriculum_mean0": 2.0,
-    "source_curriculum_increment": 0.25,
-    "source_curriculum_period": 250000,
-    "source_curriculum_halfwidth": 0.25,
-    "predictor_seeds": [
-      1101,
-      1102,
-      1103,
-      1104,
-      1105
-    ],
-    "predictor_updates": 12000,
-    "batch_roots": 6,
-    "optimizer": "AdamW",
-    "lr": 0.0003,
-    "weight_decay": 0.0001,
-    "cosine_eta_min": 3e-05,
-    "gradient_clip": 5,
-    "validate_every": 200,
-    "save_every": 100,
-    "loss": {
-      "motion": 1.0,
-      "nll": 0.08,
-      "risk": 0.25,
-      "choice": 0.05,
-      "temperature": 8.0
-    },
-    "selection": "complete closed-loop validation: success first, important costs and capped capture time next, earlier-stage tie; prediction metrics support diagnosis and screening; record the effective rule for each study",
-    "snapshot_updates": [
-      0,
-      400,
-      1200,
-      2400,
-      6000,
-      12000
-    ],
-    "snapshot_role": "current weights at update, immutable; separate from selected best.pt",
-    "loss_cli": {
-      "nll": "--distance-weight",
-      "risk": "--risk-loss-weight",
-      "choice": "--rank-weight",
-      "temperature": "--temperature"
-    }
-  },
-  "data": {
-    "round1_train_layouts": 1500,
-    "round2_train_layouts": 1500,
-    "validation_layouts": 300,
-    "predictive_holdout_layouts": 300,
-    "max_roots_per_layout": 4,
-    "root_times_s": [
-      0,
-      2,
-      4,
-      8,
-      12,
-      20,
-      30,
-      40,
-      60,
-      75,
-      79.8
-    ],
-    "candidates_per_root": 12,
-    "futures_per_candidate": 3,
-    "split_unit": "physical geometry family including all times/agilities/futures/behaviors",
-    "round2_behavior": "trained round1 CITF; identity recorded",
-    "candidate_initialization": "six nominal slots including source centre; six random slots; deduplicate",
-    "round1_behavior": "CITF-Phys, current no-learning nominal-prediction variant; not CI-original"
-  },
-  "controller": {
-    "bank": 12,
-    "budget": 96,
-    "rounds": 1,
-    "nominal_beam_width": 128,
-    "risk": "expected",
-    "history_cache": true,
-    "initializer": "source_center_reserved_inside_bank-v1",
-    "unique_evaluations_upper_bound_at_primary_settings": 60,
-    "budget_semantics": "96 is a cap; log actual unique configurations; no forced redundant evaluations"
+    "target_radius": 15,
+    "capture_radius": 5,
+    "collision_radius": 5,
+    "thrust_min": -500,
+    "thrust_max": 1000,
+    "thrust_increment": 300,
+    "main_agility": 2.0,
+    "apf_support_center_distance": 15
   },
   "main_methods": [
     "CITF",
     "ARBoids",
     "RP",
     "SAC",
-    "Boids",
-    "MAPPO"
+    "Boids"
   ],
-  "main_ablations": {
-    "no-context": "retrained without candidate cross-entity propagation; full history retained",
-    "predictive": "same network and all data; motion+nll only"
-  },
-  "mechanism_table": [
-    "same-structure other-candidate information replacement",
-    "common-reference one-pass independent selection",
-    "information-matched physical feedback predictor",
-    "GRU",
-    "action-conditioned Perceiver"
+  "main_ablations": [
+    "CITF-no-action-interaction",
+    "CITF-no-generator-feedback"
   ],
-  "primary_evaluation": {
-    "full_independent_runs": 5,
-    "agilities": [
-      2.0,
-      2.5
-    ],
-    "geometric_layouts": 100,
-    "tasks_per_model": 200,
-    "paired_across_methods": true,
-    "bootstrap_unit": [
-      "training_run",
-      "geometry_family"
-    ],
-    "bootstrap_draws": 10000
+  "formal_training": {
+    "independent_seeds": 5,
+    "learning_versions": 6,
+    "main_runs": 30,
+    "team_transitions_per_run": 1000000,
+    "evaluation_interval": 5000,
+    "learning_curve_summary": {
+      "definition": "per-seed arithmetic mean of success rates at all 200 registered validation nodes from 5k through 1M",
+      "aggregation": "five training-seed mean and sample standard deviation; paired full-minus-ablation differences",
+      "additional_episodes": 0,
+      "registered_before_formal_training": true
+    }
   },
-  "system_evaluation": {
-    "agility_levels": [
+  "core": {
+    "scalar_per_defender": true,
+    "shared_scalar_for_two_thrusters": true,
+    "source": "shared local endpoint jointly trained through actual team-action value",
+    "generator": "autoregressive endpoint atoms plus Beta",
+    "value": "twin per-vessel actual-return critics; shared own-action local values plus Transformer-conditioned directed responses dotted with teammate departures from executable Boids, averaged over nearest2; mean of per-vessel twin minima drives all selection and policy objectives",
+    "solver": "finite projected gradient steps",
+    "feedback": "weighted joint distribution fitting with independent base generator learning",
+    "spatial_aggregation": "defender self+attacker+nearest2 teammates; attacker self+nearest3 defenders; prefix nearest2 already generated defenders; whole-fleet joint scoring and choice"
+  },
+  "development": {
+    "seed": 1101,
+    "scene_seed": 73001,
+    "scenarios": 100,
+    "full_run": "dev_full_1101_v23_teammate_response",
+    "baseline_run": "dev_arboids_1101_v9",
+    "transitions": 1000000,
+    "envs": 64,
+    "critic_updates_per_collection": 4,
+    "batch": 512,
+    "baseline_individual_batch": 4096,
+    "state_frame": "per-vessel body frame with current state and action relational attention",
+    "mechanism_runs": [
+      "dev_no_action_1101_v21_local_pair_value",
+      "dev_no_action_1102_v21_local_pair_value",
+      "dev_no_feedback_1101_v23_teammate_response",
+      "dev_no_feedback_1102_v23_teammate_response"
+    ],
+    "source_snapshot": "code_v23",
+    "endpoint_noise_N": [
+      200,
+      50
+    ],
+    "target_tau": 0.02,
+    "feedback_temperature": [
+      1,
+      0.05
+    ],
+    "temperature_steps": 100000,
+    "boids_success": 87,
+    "collision_penalty": 50,
+    "candidate_run": "dev_full_1101_v23_teammate_response",
+    "candidate_source": "/root/autodl-tmp/citf-unified-20261106/code_v23",
+    "candidate_adjustments": {
+      "relative_to": "v22/r16 same physical task, rewards, endpoint, generator, nearest2 neighborhoods, search, feedback, replay and schedules",
+      "value_response": "LayerNorm plus192-to64-to2 directed response head on receiving-vessel action-Transformer context and the shared64-dimensional current pair encoding; dot with teammate(u_j-b_j)/1000; average over nearest2 other defenders",
+      "reference_property": "interaction vanishes when relevant teammates keep executable Boids; remains responsive to teammate changes when the receiving vessel keeps Boids",
+      "supervision": "actual per-vessel TD returns only",
+      "status": "Two fresh full1M runs started; fixed250k26-condition scope registered; new mechanism benefit pending."
+    },
+    "second_seed_runs": [
+      "dev_full_1102_v23_teammate_response"
+    ],
+    "samples": 4,
+    "feedback": 0.01,
+    "feedback_start": 50000,
+    "feedback_ramp": 150000,
+    "previous_recipe_comparison": {
+      "source_snapshot": "code_v9",
+      "fixed_budget": 1000000,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "successes": {
+        "full": [
+          91,
+          100
+        ],
+        "no_action": [
+          85,
+          93
+        ],
+        "no_feedback": [
+          99,
+          97
+        ],
+        "arboids": [
+          97,
+          94
+        ]
+      },
+      "decision": "Feedback scale and value coverage revised in v10; all fixed-budget outcomes retained."
+    },
+    "previous_v10_endpoints": {
+      "transitions": 1000000,
+      "full_1101": [
+        99,
+        1,
+        0
+      ],
+      "full_1102": [
+        94,
+        6,
+        0
+      ],
+      "no_action_1101": [
+        86,
+        14,
+        0
+      ],
+      "no_feedback_1101": [
+        94,
+        6,
+        0
+      ]
+    },
+    "completed_scope_v10": {
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v10",
+      "conditions_completed": 91,
+      "scene_seeds": [
+        73004,
+        73005
+      ],
+      "decision": "Main development advantage did not persist across the planned scope; dense-fleet collision degradation motivates relational control representation."
+    },
+    "retired_v13": {
+      "source_snapshot": "code_v13",
+      "stopped_transitions": [
+        70608,
+        70864
+      ],
+      "success_at_50000": [
+        48,
+        20
+      ],
+      "reason": "Explicitly restore attacker relative heading and yaw rate in the simplified local endpoint; v14 restarts from zero."
+    },
+    "active_full_comparisons": [
+      "dev_full_1101_v21_local_pair_value",
+      "dev_full_1102_v21_local_pair_value",
+      "dev_full_1101_v23_teammate_response",
+      "dev_full_1102_v23_teammate_response"
+    ],
+    "completed_v11_endpoints": {
+      "transitions": 1000000,
+      "full_1101": [
+        98,
+        2,
+        0
+      ],
+      "full_1102": [
+        92,
+        8,
+        0
+      ],
+      "no_action_1101": [
+        93,
+        7,
+        0
+      ],
+      "no_feedback_1101": [
+        97,
+        2,
+        1
+      ]
+    },
+    "stopped_superseded_runs": {
+      "dev_full_1101_v12_relational": 720480,
+      "dev_full_1102_v12_relational": 719520,
+      "dev_no_action_1101_v12_relational": 588656,
+      "dev_no_feedback_1101_v12_relational": 535904,
+      "dev_full_1101_v14_local_kinematics": 212672,
+      "dev_full_1102_v14_local_kinematics": 208832,
+      "dev_full_1101_v15_physical_prefix": 330656,
+      "dev_full_1102_v15_physical_prefix": 330144,
+      "dev_full_1101_v16_feasible_fusion": 351856,
+      "dev_full_1102_v16_feasible_fusion": 356976,
+      "dev_no_action_1102_v16_feasible_fusion": 261072,
+      "dev_no_feedback_1102_v16_feasible_fusion": 229824,
+      "dev_full_1101_v17_local_relations": 266128,
+      "dev_full_1102_v17_local_relations": 265360,
+      "dev_no_action_1101_v18_interaction_residual": 124576,
+      "dev_no_action_1102_v18_interaction_residual": 236992,
+      "dev_no_feedback_1101_v18_interaction_residual": 109664,
+      "dev_no_feedback_1102_v18_interaction_residual": 203008,
+      "dev_full_1101_v18_interaction_residual": 303328,
+      "dev_full_1102_v18_interaction_residual": 303136,
+      "dev_full_1101_v20_entity_return": 300128,
+      "dev_full_1102_v20_entity_return": 300128
+    },
+    "mechanism_source_snapshot": "code_v19",
+    "mechanism_full_reference_run": "dev_full_1101_v21_local_pair_value",
+    "v18_development_team7_100k": {
+      "scene_seed": 73005,
+      "policy_seed": 83001,
+      "success_collision_breach": {
+        "1101": [
+          20,
+          79,
+          1
+        ],
+        "1102": [
+          39,
+          61,
+          0
+        ]
+      },
+      "fixed_checkpoint_transitions": 100000
+    },
+    "value_learning_diagnosis": {
+      "path": "runs/value_learning_150k_seed1101",
+      "source_transitions": 150000,
+      "additional_environment_transitions": 0,
+      "value_updates_each": 1000,
+      "uniform_success": 55,
+      "stratified_success": 74,
+      "uniform_collision_mae": 44.62757110595703,
+      "stratified_collision_mae": 18.69706916809082,
+      "scope_success_uniform_stratified": [
+        1,
+        3
+      ]
+    },
+    "value_terminal_fraction": 0.5,
+    "value_importance_exponent": 0.5,
+    "scope_milestone": {
+      "source_snapshot": "code_v21",
+      "transitions": 250000,
+      "full_conditions": 26,
+      "defenders": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "agility": [
+        1.5,
+        1.75,
+        2,
+        2.25,
+        2.5,
+        2.75,
+        3
+      ],
+      "scene_seeds": [
+        73005,
+        73004
+      ],
+      "policy_seed": 83001,
+      "count": 100,
+      "status": "registered_waiting",
+      "scope_path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v21",
+      "scope_pid": 402694
+    },
+    "v19_matched_100k": {
+      "transitions": 100000,
+      "scene_seed": 73001,
+      "count": 100,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": {
+        "full": [
+          61,
+          90
+        ],
+        "no_action": [
+          56,
+          44
+        ],
+        "no_feedback": [
+          55,
+          77
+        ]
+      },
+      "mean_paired_percentage_points": {
+        "action_interaction": 25.5,
+        "generator_feedback": 9.5
+      },
+      "stage": "early development; final budget and scope pending"
+    },
+    "prior_v19_full_runs": [
+      "dev_full_1101_v19_terminal_value",
+      "dev_full_1102_v19_terminal_value"
+    ],
+    "v19_scope_250k": {
+      "transitions": 250000,
+      "defenders": 7,
+      "count": 100,
+      "scene_seed": 73005,
+      "policy_seed": 83001,
+      "success_collision_breach": {
+        "1101": [
+          11,
+          89,
+          0
+        ],
+        "1102": [
+          1,
+          99,
+          0
+        ]
+      },
+      "mean_discounted_return": [
+        -15.817898750305176,
+        -18.6206111907959
+      ],
+      "frozen_pair_average_success": [
+        16,
+        5
+      ],
+      "frozen_pair_and_role_average_success": [
+        16,
+        2
+      ],
+      "decision": "Neither frozen normalization variant adopted. Improve vessel-specific value credit inside the Adapter."
+    },
+    "v19_matched_150k": {
+      "transitions": 150000,
+      "scene_seed": 73001,
+      "count": 100,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": {
+        "full": [
+          82,
+          92
+        ],
+        "no_action": [
+          43,
+          69
+        ],
+        "no_feedback": [
+          43,
+          76
+        ]
+      },
+      "mean_paired_percentage_points": {
+        "action_interaction": 31,
+        "generator_feedback": 27.5
+      },
+      "stage": "development; registered 1M pending"
+    },
+    "v19_scope_500k_registration": {
+      "transitions": 500000,
+      "checkpoint": "defender_stage1.pt",
+      "seeds": [
+        1101,
+        1102
+      ],
+      "defenders": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "agility": [
+        1.5,
+        1.75,
+        2,
+        2.25,
+        2.5,
+        2.75,
+        3
+      ],
+      "scene_seeds": [
+        73005,
+        73004
+      ],
+      "policy_seed": 83001,
+      "count": 100,
+      "status": "completed",
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v19"
+    },
+    "v20_early_results": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success_collision_breach": {
+        "50000": [
+          [
+            36,
+            24,
+            40
+          ],
+          [
+            23,
+            22,
+            55
+          ]
+        ],
+        "100000": [
+          [
+            79,
+            11,
+            10
+          ],
+          [
+            57,
+            20,
+            23
+          ]
+        ],
+        "150000": [
+          [
+            91,
+            7,
+            2
+          ],
+          [
+            91,
+            8,
+            1
+          ]
+        ],
+        "200000": [
+          [
+            88,
+            9,
+            3
+          ],
+          [
+            90,
+            9,
+            1
+          ]
+        ],
+        "250000": [
+          [
+            86,
+            6,
+            8
+          ],
+          [
+            92,
+            8,
+            0
+          ]
+        ],
+        "300000": [
+          [
+            99,
+            1,
+            0
+          ],
+          [
+            96,
+            3,
+            1
+          ]
+        ]
+      },
+      "decision": "Continue registered 250k scope milestone and budget; matched v20 ablations pending actual complete-method benefit."
+    },
+    "v19_scope_500k_results": {
+      "seed_order": [
+        1101,
+        1102
+      ],
+      "agility_success": [
+        [
+          98,
+          99,
+          99,
+          99,
+          100,
+          99,
+          98
+        ],
+        [
+          94,
+          91,
+          90,
+          93,
+          91,
+          88,
+          89
+        ]
+      ],
+      "team_2_to_7_success": [
+        [
+          99,
+          99,
+          97,
+          85,
+          68,
+          33
+        ],
+        [
+          89,
+          91,
+          81,
+          56,
+          18,
+          4
+        ]
+      ],
+      "mean_difference_vs_existing_1M_ARBoids_percentage_points": {
+        "agility": -2.5,
+        "team_size": -2.75
+      },
+      "decision": "Main-task development gain is not repeated across complete prescribed scope; retain both outcomes and continue the entity-credit candidate before formal study."
+    },
+    "prior_v20_full_runs": [
+      "dev_full_1101_v20_entity_return",
+      "dev_full_1102_v20_entity_return"
+    ],
+    "v20_scope_250k": {
+      "status": "completed",
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v20",
+      "conditions": 26,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "agility_success": [
+        [
+          97,
+          95,
+          94,
+          90,
+          84,
+          82,
+          77
+        ],
+        [
+          94,
+          94,
+          95,
+          94,
+          94,
+          93,
+          92
+        ]
+      ],
+      "team_2_to_7_success": [
+        [
+          88,
+          83,
+          80,
+          57,
+          41,
+          25
+        ],
+        [
+          98,
+          98,
+          78,
+          56,
+          17,
+          9
+        ]
+      ]
+    },
+    "v20_entity_min_inference": {
+      "checkpoint_transitions": 250000,
+      "environment_transitions_used_for_training": 0,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "original_main_success": [
+        86,
+        92
+      ],
+      "entity_min_main_success": [
+        92,
+        94
+      ],
+      "original_team7_success": [
+        25,
+        9
+      ],
+      "entity_min_team7_success": [
+        19,
+        8
+      ],
+      "decision": "Main control improvement motivates consistent clipped learning; local pair representation is also revised to address continuing dense-fleet collision failures."
+    },
+    "planned_stops": {
+      "dev_full_1101_v20_entity_return": {
+        "after_evaluation_transitions": 300000,
+        "reason": "Preserve the registered comparison point; resources move to v21 local-pair clipped value learning.",
+        "status": "completed",
+        "actual_stopped_transitions": 300128
+      },
+      "dev_full_1102_v20_entity_return": {
+        "after_evaluation_transitions": 300000,
+        "reason": "Preserve the registered comparison point; resources move to v21 local-pair clipped value learning.",
+        "status": "completed",
+        "actual_stopped_transitions": 300128
+      }
+    },
+    "v20_team7_300k": {
+      "status": "completed",
+      "checkpoint_transitions": 300000,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        34,
+        13
+      ],
+      "collision": [
+        66,
+        87
+      ],
+      "breach": [
+        0,
+        0
+      ],
+      "scene_seed": 73005,
+      "policy_seed": 83001,
+      "decision": "The registered 300k main-task improvement also improves seven-vessel success, while dense-fleet collisions remain; continue the v21 candidate without resuming v20."
+    },
+    "v21_main_50k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        83,
+        80
+      ],
+      "collision": [
+        0,
+        0
+      ],
+      "breach": [
+        17,
+        20
+      ],
+      "feedback_active_before_checkpoint": false
+    },
+    "v21_main_100k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        99,
+        93
+      ],
+      "collision": [
+        1,
+        7
+      ],
+      "breach": [
+        0,
+        0
+      ]
+    },
+    "v21_team7_100k": {
+      "status": "completed",
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        40,
+        21
+      ],
+      "collision": [
+        60,
+        79
+      ],
+      "breach": [
+        0,
+        0
+      ],
+      "scene_seed": 73005,
+      "policy_seed": 83001
+    },
+    "v21_matched_mechanisms": {
+      "status": "all_four_runs_started",
+      "runs": [
+        "dev_no_action_1101_v21_local_pair_value",
+        "dev_no_feedback_1101_v21_local_pair_value",
+        "dev_no_action_1102_v21_local_pair_value",
+        "dev_no_feedback_1102_v21_local_pair_value"
+      ],
+      "registered_transitions_per_run": 1000000,
+      "pids": [
+        403864,
+        403865,
+        406139,
+        405127
+      ],
+      "decision": "Main success 99/93 and seven-vessel success 40/21 at fixed100k justify starting prescribed matched ablations before the complete250k scope. Same source and full recipe, changing only the named mechanism. Seed1102 follows released capacity.",
+      "second_seed_queue": {
+        "pid": 404534,
+        "script": "/root/autodl-tmp/citf-unified-20261106/development_mechanisms_v21.py",
+        "predecessors": [
+          "dev_no_action_1101_v19_terminal_value",
+          "dev_no_action_1102_v19_terminal_value"
+        ],
+        "jobs": [
+          "dev_no_feedback_1102_v21_local_pair_value",
+          "dev_no_action_1102_v21_local_pair_value"
+        ],
+        "kind": "finite two-job dependency queue",
+        "started": {
+          "dev_no_feedback_1102_v21_local_pair_value": 405127,
+          "dev_no_action_1102_v21_local_pair_value": 406139
+        },
+        "status": "completed_and_exited"
+      }
+    },
+    "prior_v19_mechanism_runs": [
+      "dev_no_action_1101_v19_terminal_value",
+      "dev_no_feedback_1101_v19_terminal_value",
+      "dev_no_action_1102_v19_terminal_value",
+      "dev_no_feedback_1102_v19_terminal_value"
+    ],
+    "v19_scope_1M": {
+      "status": "completed",
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v19_final",
+      "pid": 404184,
+      "fixed_transitions": 1000000,
+      "conditions": 26,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "decision": "Fixed endpoint and dense-fleet scope are insufficient; retire as a completed reference, retain all results.",
+      "agility_success": [
+        [
+          95,
+          97,
+          99,
+          98,
+          98,
+          97,
+          98
+        ],
+        [
+          100,
+          100,
+          99,
+          97,
+          96,
+          99,
+          98
+        ]
+      ],
+      "team_2_to_7_success": [
+        [
+          100,
+          97,
+          74,
+          33,
+          12,
+          1
+        ],
+        [
+          95,
+          100,
+          73,
+          29,
+          2,
+          0
+        ]
+      ]
+    },
+    "v21_main_150k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        100,
+        83
+      ],
+      "collision": [
+        0,
+        15
+      ],
+      "breach": [
+        0,
+        2
+      ]
+    },
+    "v21_mechanisms_1101_50k": {
+      "methods": [
+        "full",
+        "no_action",
+        "no_feedback"
+      ],
+      "success": [
+        83,
+        87,
+        83
+      ],
+      "collision": [
+        0,
+        0,
+        0
+      ],
+      "breach": [
+        17,
+        13,
+        17
+      ]
+    },
+    "v21_action_mechanism_1101_100k": {
+      "full_success": 99,
+      "no_action_success": 82,
+      "rescued": 18,
+      "harmed": 1,
+      "both_success": 81,
+      "both_failure": 0,
+      "net_success_gain_percentage_points": 17,
+      "tasks": 100,
+      "scene_seed": 73001,
+      "policy_seed": 83001
+    },
+    "v21_main_200k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        95,
+        95
+      ],
+      "collision": [
+        5,
+        5
+      ],
+      "breach": [
+        0,
+        0
+      ]
+    },
+    "v21_mechanisms_1101_100k": {
+      "methods": [
+        "full",
+        "no_action",
+        "no_feedback"
+      ],
+      "success": [
+        99,
+        82,
+        98
+      ],
+      "collision": [
+        1,
+        9,
+        2
+      ],
+      "breach": [
+        0,
+        9,
+        0
+      ]
+    },
+    "v19_completed_endpoints": {
+      "dev_no_action_1101_v19_terminal_value": {
+        "transitions": 1000000,
+        "success": 96,
+        "collision": 3,
+        "breach": 1
+      },
+      "dev_no_action_1102_v19_terminal_value": {
+        "transitions": 1000000,
+        "success": 100,
+        "collision": 0,
+        "breach": 0
+      },
+      "dev_no_feedback_1101_v19_terminal_value": {
+        "transitions": 1000000,
+        "success": 100,
+        "collision": 0,
+        "breach": 0
+      },
+      "dev_full_1101_v19_terminal_value": {
+        "transitions": 1000000,
+        "success": 93,
+        "collision": 7,
+        "breach": 0
+      },
+      "dev_full_1102_v19_terminal_value": {
+        "transitions": 1000000,
+        "success": 99,
+        "collision": 1,
+        "breach": 0
+      },
+      "dev_no_feedback_1102_v19_terminal_value": {
+        "transitions": 1000000,
+        "success": 100,
+        "collision": 0,
+        "breach": 0
+      }
+    },
+    "inference_source_snapshot": "code_v23",
+    "training_source_snapshot": "code_v23",
+    "v21_main_250k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        96,
+        100
+      ],
+      "collision": [
+        4,
+        0
+      ],
+      "breach": [
+        0,
+        0
+      ]
+    },
+    "v21_main_300k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        100,
+        98
+      ],
+      "collision": [
+        0,
+        2
+      ],
+      "breach": [
+        0,
+        0
+      ]
+    },
+    "v21_scope_250k": {
+      "status": "completed",
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v21",
+      "conditions": 26,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "agility_success": [
+        [
+          90,
+          94,
+          97,
+          97,
+          97,
+          96,
+          96
+        ],
+        [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          99
+        ]
+      ],
+      "team_2_to_7_success": [
+        [
+          100,
+          95,
+          81,
+          61,
+          38,
+          14
+        ],
+        [
+          98,
+          99,
+          88,
+          61,
+          25,
+          11
+        ]
+      ]
+    },
+    "bounded_neighborhood_250k": {
+      "status": "completed_and_adopted_in_r16",
+      "training_source": "code_v21/r15",
+      "checkpoint_transitions": 250000,
+      "additional_training_transitions": 0,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "team_2_to_7_success": [
+        [
+          100,
+          95,
+          95,
+          92,
+          63,
+          42
+        ],
+        [
+          98,
+          99,
+          94,
+          76,
+          47,
+          22
+        ]
+      ],
+      "original_mean_success_percent": 64.25,
+      "bounded_mean_success_percent": 76.91666666666667,
+      "ARBoids_reference_transitions": 1000000,
+      "ARBoids_mean_success_percent": 71.08333333333333,
+      "probe_source": "/root/autodl-tmp/citf-unified-20261106/local_neighborhood_probe.py",
+      "result_file_pattern": "runs/dev_full_{seed}_v21_local_pair_value/development_team{4,5,6,7}_250000_nearest2.json",
+      "unchanged_conditions": "N<=3 uses original arithmetic; no repeated evaluation"
+    },
+    "v22_scope_1M": {
+      "status": "cancelled_superseded_source",
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v22_final",
+      "pid": 406986,
+      "fixed_transitions": 1000000,
+      "training_source": "code_v21/r15",
+      "inference_source": "code_v22/r16",
+      "conditions": 26,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "reason": "Old r15 full sources retired after dense-fleet decline; no1M results generated."
+    },
+    "v21_feedback_diagnostic_300k": {
+      "states_per_seed": 1024,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "weight_on_global_improvements": [
+        0.4506843537092209,
+        0.5359520763158798
+      ],
+      "mean_max_gain": [
+        0.026794016361236572,
+        0.03241534857079387
+      ],
+      "base_gradient_norm": [
+        0.043715961277484894,
+        0.030455616768449545
+      ],
+      "weighted_feedback_gradient_norm": [
+        0.07054728455841541,
+        0.11656547151505947
+      ],
+      "gradient_cosine": [
+        0.31684692669659853,
+        0.2548623140901327
+      ]
+    },
+    "feedback_increment_refinement": {
+      "status": "completed_not_adopted",
+      "source": "/root/autodl-tmp/citf-unified-20261106/feedback_increment_refinement.py",
+      "output": "/root/autodl-tmp/citf-unified-20261106/feedback_increment_refinement",
+      "updates": 500,
+      "batch": 512,
+      "additional_training_transitions": 0,
+      "variants": [
+        "unchanged",
+        "original_feedback",
+        "search_increment_feedback",
+        "base_only"
+      ],
+      "evaluation_conditions": [
+        "main",
+        "team7"
+      ],
+      "seeds": [
+        1101,
+        1102
+      ],
+      "decision": "Incremental feedback improves relative to further original feedback fitting, but not relative to matched base-only updates. Later actual matched training shows+12/+33 main-task feedback gains. Retain existing full training recipe.",
+      "source_transitions": 350000,
+      "success_main_team7": {
+        "1101": {
+          "unchanged": [
+            95,
+            46
+          ],
+          "original_feedback": [
+            93,
+            44
+          ],
+          "search_increment_feedback": [
+            95,
+            45
+          ],
+          "base_only": [
+            93,
+            48
+          ]
+        },
+        "1102": {
+          "unchanged": [
+            99,
+            17
+          ],
+          "original_feedback": [
+            99,
+            13
+          ],
+          "search_increment_feedback": [
+            99,
+            16
+          ],
+          "base_only": [
+            99,
+            17
+          ]
+        }
+      }
+    },
+    "v21_main_350k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        95,
+        99
+      ],
+      "collision": [
+        4,
+        1
+      ],
+      "breach": [
+        1,
+        0
+      ]
+    },
+    "v21_main_400k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        99,
+        99
+      ],
+      "collision": [
+        0,
+        1
+      ],
+      "breach": [
+        1,
+        0
+      ]
+    },
+    "v21_feedback_later_matched_nodes": {
+      "1101_300k": {
+        "full_success": 100,
+        "no_feedback_success": 88
+      },
+      "1102_200k": {
+        "full_success": 95,
+        "no_feedback_success": 62
+      }
+    },
+    "search_rate_02_350k": {
+      "status": "completed_not_adopted",
+      "steps": 2,
+      "source_transitions": 350000,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "original_main": [
+        95,
+        99
+      ],
+      "changed_main": [
+        93,
+        99
+      ],
+      "original_team7": [
+        46,
+        17
+      ],
+      "changed_team7": [
+        45,
+        12
+      ],
+      "additional_training_transitions": 0
+    },
+    "v19_complete_learning_curves": {
+      "nodes": 20,
+      "from": 50000,
+      "through": 1000000,
+      "all_success_counts": {
+        "1101": {
+          "full": [
+            86,
+            61,
+            82,
+            89,
+            97,
+            96,
+            98,
+            100,
+            96,
+            99,
+            78,
+            97,
+            96,
+            98,
+            100,
+            100,
+            85,
+            100,
+            100,
+            93
+          ],
+          "no_action": [
+            14,
+            56,
+            43,
+            70,
+            69,
+            67,
+            77,
+            89,
+            92,
+            95,
+            96,
+            98,
+            97,
+            97,
+            98,
+            98,
+            98,
+            99,
+            98,
+            96
+          ],
+          "no_feedback": [
+            86,
+            55,
+            43,
+            75,
+            96,
+            97,
+            92,
+            97,
+            100,
+            95,
+            99,
+            100,
+            100,
+            99,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ]
+        },
+        "1102": {
+          "full": [
+            86,
+            90,
+            92,
+            84,
+            86,
+            98,
+            100,
+            100,
+            100,
+            97,
+            98,
+            100,
+            96,
+            99,
+            100,
+            99,
+            98,
+            100,
+            98,
+            99
+          ],
+          "no_action": [
+            26,
+            44,
+            69,
+            80,
+            72,
+            81,
+            90,
+            95,
+            96,
+            94,
+            91,
+            96,
+            99,
+            100,
+            100,
+            99,
+            99,
+            100,
+            100,
+            100
+          ],
+          "no_feedback": [
+            86,
+            77,
+            76,
+            82,
+            95,
+            95,
+            97,
+            98,
+            98,
+            99,
+            99,
+            93,
+            97,
+            98,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ]
+        }
+      },
+      "per_seed_means_percent": {
+        "1101": {
+          "full": 92.55,
+          "no_action": 82.35,
+          "no_feedback": 91.7
+        },
+        "1102": {
+          "full": 96.0,
+          "no_action": 86.55,
+          "no_feedback": 94.5
+        }
+      },
+      "paired_mean_gains_percentage_points": {
+        "no_action": 9.825000000000003,
+        "no_feedback": 1.1749999999999972
+      }
+    },
+    "v22_team7_500k": {
+      "status": "completed",
+      "pid": 408938,
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_team7_v22_500k",
+      "fixed_transitions": 500000,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "source_name": "defender_stage1.pt",
+      "conditions": 2,
+      "scene_seed": 73005,
+      "policy_seed": 83001,
+      "scenarios": 100,
+      "training_source": "code_v21/r15",
+      "inference_source": "code_v22/r16",
+      "purpose": "Determine whether dense-fleet performance degrades during learning before the1M full-scope comparison.",
+      "success": [
+        46,
+        8
+      ],
+      "collision": [
+        54,
+        92
+      ],
+      "breach": [
+        0,
+        0
+      ],
+      "decision": "Seed1102 dense-fleet success continues to deteriorate while the main task reaches100; revise the interaction representation in r17, retain all source-specific outcomes."
+    },
+    "vrx_joint_fusion": {
+      "status": "completed",
+      "pid": 409142,
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_vrx_joint_fusion",
+      "episodes_per_method": 10,
+      "scene_seed": 73002,
+      "policy_seed": 83002,
+      "training_seed": 1101,
+      "CITF_transitions": 350000,
+      "CITF_source": "code_v21/r15; three-defender computation identical to r16",
+      "ARBoids_transitions": 1000000,
+      "ARBoids_source": "code_v9",
+      "task": {
+        "defenders": 3,
+        "agility": 2.25,
+        "duration": 60,
+        "control_dt": 0.2
+      },
+      "completed_episodes": 20,
+      "successes": {
+        "CITF": 10,
+        "ARBoids": 10
+      },
+      "deadline_misses": {
+        "CITF": 0,
+        "ARBoids": 0
+      },
+      "mean_capture_seconds": {
+        "CITF": 8.435,
+        "ARBoids": 7.61
+      },
+      "mean_inference_seconds": {
+        "CITF": 0.05410637879541135,
+        "ARBoids": 0.0023599546742237485
+      },
+      "p95_inference_seconds": {
+        "CITF": 0.06303195958025753,
+        "ARBoids": 0.0034477647859603093
+      },
+      "decision": "CITF executes within the200ms control period and completes all development tasks; both methods have equal success here and CITF capture time is0.825s longer. Preserve results; formal100-scene comparison remains pending."
+    },
+    "prior_v21_full_runs": [
+      "dev_full_1101_v21_local_pair_value",
+      "dev_full_1102_v21_local_pair_value"
+    ],
+    "prior_v21_candidate_adjustments": {
+      "relative_to": "v20 same physical task, reward, endpoint, generator, candidate/search budget, feedback and replay recipe",
+      "score": "mean_i min(Q1_i,Q2_i), used consistently for selection, search, endpoint gradients, generator learning and target returns",
+      "local_pair_representation": "shared 12-to-64-to-64 current pair-effect encoder; per-feature maximum over other defenders concatenated with the action-Transformer token in the same zero-initialized value residual",
+      "status": "Two unchanged no-action controls continue1M. Four old full/no-feedback runs retired with partial records preserved; original250k scope and neighborhood comparisons retained; old1M r16 scope cancelled.",
+      "spatial_aggregation": "nearest2 teammates and nearest2 generated predecessors; no new parameters, original arithmetic retained for <=3 defenders"
+    },
+    "v23_training": {
+      "status": "training",
+      "runs": [
+        "dev_full_1101_v23_teammate_response",
+        "dev_full_1102_v23_teammate_response"
+      ],
+      "pids": [
+        427084,
+        427085
+      ],
+      "registered_transitions_per_run": 1000000,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "initialization": "fresh, no source weights",
+      "no_action_reuse": "branch removed: same common forward, parameters, initialization and learning as v21 no_action; formal versions still train independently",
+      "no_feedback": {
+        "status": "training",
+        "runs": [
+          "dev_no_feedback_1101_v23_teammate_response",
+          "dev_no_feedback_1102_v23_teammate_response"
+        ],
+        "pids": [
+          428412,
+          428413
+        ],
+        "transitions_per_run": 1000000,
+        "initialization": "fresh, same registered seeds; only feedback coefficient changed to0"
+      }
+    },
+    "v23_scope_250k": {
+      "status": "waiting_for_registered_checkpoint",
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v23",
+      "pid": 427142,
+      "fixed_transitions": 250000,
+      "conditions": 26,
+      "seeds": [
+        1101,
+        1102
+      ]
+    },
+    "v21_main_500k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        99,
+        100
+      ],
+      "collision": [
+        0,
+        0
+      ],
+      "breach": [
+        1,
+        0
+      ]
+    },
+    "v23_main_50k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        53,
+        86
+      ],
+      "collision": [
+        10,
+        1
+      ],
+      "breach": [
+        37,
+        13
+      ],
+      "feedback_active_before_checkpoint": false,
+      "decision": "First seed is worse than the preceding source at this early node; continue to the registered100k comparison before another algorithm change."
+    },
+    "v23_actual_reference_coverage_50k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "actual_transitions_per_seed": 50000,
+      "rule_command_tolerance_N": 0.0001,
+      "per_vessel_rule_fraction": [
+        0.10635333508253098,
+        0.10040666908025742
+      ],
+      "all_rule_fraction": [
+        0.06648000329732895,
+        0.04075999930500984
+      ],
+      "other_vessels_all_rule_fraction": [
+        0.07863333076238632,
+        0.05316000059247017
+      ],
+      "nearest_pair_below7_5m_fraction": [
+        0.028119999915361404,
+        0.030260000377893448
+      ],
+      "decision": "Actual rule-reference coverage exists; no exploration-distribution or sampling change introduced."
+    },
+    "v23_main_100k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        95,
+        94
+      ],
+      "collision": [
+        2,
+        0
+      ],
+      "breach": [
+        3,
+        6
+      ],
+      "matched_no_action_success": [
+        82,
+        93
+      ],
+      "paired_action_gain_pp": [
+        13,
+        1
+      ],
+      "preceding_v21_full_success": [
+        99,
+        93
+      ],
+      "decision": "Retain both50k and100k nodes, continue fixed250k prescribed scope; start matched no-feedback learning to complete the two core mechanism comparisons."
+    },
+    "v21_main_600k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        100,
+        100
+      ],
+      "collision": [
+        0,
+        0
+      ],
+      "breach": [
+        0,
+        0
+      ]
+    },
+    "team7_bounded_500k_event_timing": {
+      "source": "existing development_team7_500000_nearest2.json rows; no new evaluation",
+      "seeds": [
+        1101,
+        1102
+      ],
+      "collision_count": [
+        54,
+        92
+      ],
+      "collision_before4s": [
+        49,
+        85
+      ],
+      "median_collision_seconds": [
+        2.1749991178512573,
+        2.2499990463256836
+      ],
+      "decision": "Most failures occur during the dense initial departure; use the registered next scope to assess joint-action response there."
+    },
+    "v21_superseded_training_retirement": {
+      "runs": [
+        "dev_full_1101_v21_local_pair_value",
+        "dev_full_1102_v21_local_pair_value",
+        "dev_no_feedback_1101_v21_local_pair_value",
+        "dev_no_feedback_1102_v21_local_pair_value"
+      ],
+      "stopped_transitions": [
+        645632,
+        647360,
+        554480,
+        459216
+      ],
+      "last_complete_checkpoints": [
+        600000,
+        600000,
+        550000,
+        450000
+      ],
+      "last_complete_success": [
+        100,
+        100,
+        100,
+        100
+      ],
+      "original_budget": 1000000,
+      "reason": "Concentrate computation on r17 after dense-fleet decline already observed at250k,350k,500k. Preserve all records and checkpoint states; no1M completion claim."
+    },
+    "v23_team7_100k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        40,
+        36
+      ],
+      "collision": [
+        60,
+        64
+      ],
+      "breach": [
+        0,
+        0
+      ],
+      "collision_before4s": [
+        51,
+        56
+      ],
+      "scene_seed": 73005,
+      "policy_seed": 83001,
+      "fixed_transitions": 100000,
+      "source_script": "/root/autodl-tmp/citf-unified-20261106/dense_departure_v23.py",
+      "observed_prefix": "development_team7_100000_prefix.pt in each full run",
+      "decision": "Current-action interactions actively change observed candidate rankings. Continue fixed250k full scope; no extra gate, auxiliary loss or sampling modification adopted from this diagnostic."
+    },
+    "rule_context_value_refinement": {
+      "status": "completed_not_adopted",
+      "pid": 429199,
+      "path": "/root/autodl-tmp/citf-unified-20261106/rule_context_refinement",
+      "source_version": "code_v23/r17",
+      "seeds": [
+        1101,
+        1102
+      ],
+      "source_transitions": 150000,
+      "variants": [
+        "original_value",
+        "rule_context"
+      ],
+      "value_updates": 1000,
+      "additional_environment_transitions": 0,
+      "endpoint_generator": "frozen",
+      "optimizer": "fresh Adam1e-4 in both variants",
+      "new_state_input": "4D nominal and executable Boids commands, new input columns zero initialized",
+      "conditions": [
+        3,
+        7
+      ],
+      "scenes_per_condition": 100,
+      "unrefined_controls": "reuse actual150k main; same150k seven-vessel evaluation",
+      "adoption": "pending real closed-loop comparison with both matched original-value refinement and unrefined source",
+      "unrefined_main_team7": [
+        [
+          92,
+          21
+        ],
+        [
+          100,
+          46
+        ]
+      ],
+      "original_value_main_team7": [
+        [
+          98,
+          13
+        ],
+        [
+          99,
+          35
+        ]
+      ],
+      "rule_context_main_team7": [
+        [
+          96,
+          16
+        ],
+        [
+          99,
+          41
+        ]
+      ],
+      "decision": "No consistent actual-control improvement over unrefined source; current r17 unchanged."
+    },
+    "motion_effect_value_refinement": {
+      "status": "completed_not_adopted",
+      "pid": 429951,
+      "path": "/root/autodl-tmp/citf-unified-20261106/motion_effect_refinement",
+      "source_transitions": 150000,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "value_updates": 1000,
+      "additional_environment_transitions": 0,
+      "matched_controls": "completed rule_context_refinement/original_value and unrefined, same source/data/seeds/update settings",
+      "new_features": [
+        "kinematic closest-approach distance",
+        "transverse-motion curvature",
+        "input-induced radial relative acceleration",
+        "input-induced tangential relative acceleration"
+      ],
+      "zero_initialized_extra_columns": true,
+      "common_state_endpoint_generator": "unchanged; endpoint and generator frozen during refinement",
+      "formal_experiment_added": false,
+      "adoption": "pending actual main and seven-vessel results",
+      "motion_effect_main_team7": [
+        [
+          99,
+          12
+        ],
+        [
+          99,
+          41
+        ]
+      ],
+      "decision": "Seven-vessel results remain below unrefined21/46; no adoption or change to current r17."
+    },
+    "v23_main_150k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        92,
+        100
+      ],
+      "collision": [
+        8,
+        0
+      ],
+      "breach": [
+        0,
+        0
+      ],
+      "matched_no_action_success": [
+        83,
+        96
+      ]
+    },
+    "global_response_frozen_150k": {
+      "status": "completed",
+      "source": "code_v23/r17, unchanged150k weights",
+      "prototype": "/root/autodl-tmp/citf-unified-20261106/global_response_probe.py",
+      "definition": "Q_i=local_i+I_i+min({0} union {I_j: j outside self+nearest2(i)}); empty complement gives0. Existing per-vessel twin-min team scoring retained.",
+      "new_parameters": 0,
+      "additional_training": 0,
+      "unchanged_defenders": [
+        2,
+        3
+      ],
+      "seeds": [
+        1101,
+        1102
+      ],
+      "original_success": [
+        21,
+        46
+      ],
+      "modified_success": [
+        42,
+        49
+      ],
+      "modified_collision": [
+        58,
+        49
+      ],
+      "modified_breach": [
+        0,
+        2
+      ],
+      "rescues": [
+        22,
+        6
+      ],
+      "harms": [
+        1,
+        3
+      ],
+      "decision": "Promising fixed-weight improvement; evaluate all changed4-7vessel conditions at registered250k before adoption."
+    },
+    "global_response_scope_250k": {
+      "status": "waiting_for_fixed250k_original_scope",
+      "pid": 430386,
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v23_global_response",
+      "fixed_transitions": 250000,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "changed_conditions": 8,
+      "unchanged_conditions_reused": "both seeds, agility1.5:0.25:3, team2/team3 from development_scope_v23",
+      "formal_experiment_added": false
+    },
+    "v23_main_200k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        97,
+        99
+      ],
+      "collision": [
+        2,
+        0
+      ],
+      "breach": [
+        1,
+        1
+      ],
+      "matched_no_action_success": [
+        81,
+        99
+      ]
+    },
+    "v23_feedback_100k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "full_success": [
+        95,
+        94
+      ],
+      "no_feedback_success": [
+        91,
+        91
+      ],
+      "paired_gain_pp": [
+        4,
+        3
+      ]
+    }
+  },
+  "generalization": {
+    "attacker_agility": [
       1.5,
       1.75,
       2.0,
@@ -195,191 +1922,62 @@
       2.75,
       3.0
     ],
-    "size_training": 6,
-    "size_test": [
+    "defenders": [
+      2,
       3,
       4,
       5,
-      7,
-      8
+      6,
+      7
     ],
-    "layouts_per_condition": 100,
-    "freeze_all_parameters": true
-  },
-  "attacker": {
-    "algorithm": "SAC",
-    "seeds": [
-      301,
-      302,
-      303
-    ],
-    "reference_defender": "fixed development CITF-Phys as defined in this paper",
-    "observation": "target and nearest three sensed defenders",
-    "actor_widths": [
-      256,
-      256
-    ],
-    "gamma": 0.99,
-    "lr": 0.0003,
-    "batch": 256,
-    "tau": 0.005,
-    "stages": [
-      "fixed defender",
-      "attack250k",
-      "defender-predictor adaptation",
-      "attack250k",
-      "defender-predictor adaptation"
-    ],
-    "adaptation_max_branch_steps": 100000,
-    "adaptation_updates": 4000,
-    "APF_replay_fraction": 0.5,
-    "eval_layouts": 100,
-    "status": "frozen deterministic actor execution in behavior/branches/evaluation implemented and tested; SAC training pending",
-    "export_interface": "source-target-nearest3-raw8-v1 -> normalized two-channel deterministic mean",
-    "execution_spec": "opponent_spec.schema.json",
-    "reward": {
-      "radial_progress_scale": 0.016666666666666666,
-      "per_step": -0.01,
-      "outcome_terminal_bonus": {
-        "0": 0,
-        "1": 100,
-        "2": 0,
-        "3": -100,
-        "4": -100
-      },
-      "code1_definition": "physical breach OR radial early failure; add only once"
-    },
-    "mixing_unit": "actual branch transitions, equal APF/current learned-opponent shares",
-    "reference_update": "same registered common reference for attacker pool; cross-method adversaries are identical",
-    "reference_transition_note": "Previous CI-original reference is an internal development record only; formal adversaries require the registered CITF-Phys reference identity."
-  },
-  "vrx": {
-    "defenders": 6,
-    "agility": 2.5,
-    "paired_layouts": 100,
+    "retrain": false,
     "methods": [
-      "CITF",
-      "CITF-Phys",
-      "ARBoids"
-    ],
-    "run_selection": "before any numerical final_test/VRX: sort five final complete CITF validation successes ascending, then run index ascending; choose third; matched baseline run index",
-    "deadline_s": 0.2,
-    "late_control": "hold last legal command; discard stale-observation control; log actual simulator clock",
-    "status": "adapter and formal trials pending"
-  },
-  "paper": {
-    "chapters": 5,
-    "main_figures": 7,
-    "pending_results": "red 待补",
-    "historical_48_task_results": "development appendix only",
-    "public_method_comparison": [
       "CITF",
       "ARBoids",
       "RP",
       "SAC",
-      "Boids",
-      "MAPPO"
+      "Boids"
+    ]
+  },
+  "vrx": {
+    "methods": [
+      "CITF",
+      "ARBoids"
     ],
-    "internal_method_history": "implementation/provenance only; no standalone unpublished CI in the manuscript",
-    "mechanism_comparison": "CITF-Phys and other author-constructed controls, explicitly defined in IV-C",
-    "method_registry": "release/method_registry.json"
+    "common_scenarios": 100,
+    "defenders": 3,
+    "agility": 2.25,
+    "model_seeds": 1
   },
-  "implemented": [
-    "core stopped-distance model",
-    "known time context",
-    "physical layout registry",
-    "learned behavior collection",
-    "resume",
-    "complete runtime freeze",
-    "step trace",
-    "attacker action hook",
-    "source centre preserved within existing bank",
-    "four online risk-weight compatibility with immutable final identity",
-    "CLI loss coefficients",
-    "immutable stage snapshots with resume",
-    "validation-only stage evaluator",
-    "frozen external-opponent branches and behavior",
-    "specified attacker terminal reward",
-    "experiment dependency-matrix runner",
-    "common-reference independent selection",
-    "paired crossed bootstrap across runs and shared layout families"
-  ],
-  "codex_pending": [
-    "source retraining adapters",
-    "original baseline loaders",
-    "MAPPO trainer",
-    "same-structure information diagnostic",
-    "attacker SAC trainer",
-    "VRX adapter",
-    "final paper result aggregation and figures"
-  ],
-  "sensitivity": {
-    "online_risk_weight": [
-      0,
-      8,
-      32,
-      64
+  "learning_attacker": {
+    "phases": [
+      "Def",
+      "Att",
+      "Def",
+      "Att",
+      "Def"
     ],
-    "training_choice_weight": [
-      0,
-      0.025,
-      0.05,
-      0.1
-    ],
-    "design": "one-factor at a time; development only; supplementary table S1",
-    "online_compatibility": "reference stopped-distance predictor supports its implemented risk_weight sweep; redesigned models declare their actual loading and runtime compatibility",
-    "training_weights_must_reach_loss": true
+    "transitions_per_phase": 500000,
+    "first_phase_reused": true,
+    "additional_transitions": 2000000,
+    "final_apf_recheck": true
   },
-  "matched_architecture_widths": {
-    "candidate_graph": 56,
-    "transformer": 64,
-    "gru": 72,
-    "perceiver": 56
-  },
-  "matched_parameter_counts": {
-    "candidate_graph": 151354,
-    "transformer": 161250,
-    "gru": 149722,
-    "perceiver": 150282
-  },
-  "phases": {
-    "P0": "source and task definitions as needed",
-    "P1": "targeted execution review under current user instructions",
-    "P2": "implementation support as required by experiments",
-    "P3": "gain-driven algorithm development and recipe selection",
-    "P4": "five independent full trainings and final freeze",
-    "P5": "main evidence",
-    "P6": "system evaluation",
-    "P7": "paper result closure"
-  },
-  "document_revision": "CITF-independent-narrative-v4",
-  "author_constructed_controls": [
-    "CITF-Phys",
-    "CITF-no-context",
-    "CITF-predictive",
-    "CITF-independent",
-    "CITF-GRU",
-    "CITF-Perceiver",
-    "CITF-physical-feedback"
+  "pending": [
+    "stable complete-method gain across development repeats",
+    "matched mechanism comparison for the retained recipe",
+    "formal comparison and frozen generalization",
+    "learning attacker",
+    "VRX"
   ],
-  "formal_primary_evaluation_methods": [
-    "CITF",
-    "ARBoids",
-    "RP",
-    "SAC",
-    "Boids",
-    "MAPPO",
-    "CITF-Phys",
-    "CITF-no-context",
-    "CITF-predictive"
-  ],
-  "internal_development_references": [
-    {
-      "id": "CI-original",
-      "publication_status": "internal unpublished manuscript per user; no public source supplied",
-      "paper_main_table": false,
-      "results_relabel_allowed": false
-    }
-  ],
-  "unimplemented_modules_role_note": "Module plans are reference responsibilities; reuse implemented code and fill dependencies as needed. Current module status is described in the module specification and actual artifacts."
+  "baseline_recipe": {
+    "source": "third_party/arboids_release/train/configs/train.yaml",
+    "width": 512,
+    "batch": 4096,
+    "start_learning": 50000,
+    "lr": 0.0001,
+    "temperature_loss": "alpha-space as in author SAC.py",
+    "stochastic_entropy_dimensions": 2
+  },
+  "dynamics_integration": "old-heading world-to-body; Euler update of body velocity and heading; new-heading body-to-world",
+  "retired_development": "v1-v8 used the inherited frame-update ordering; retained as development history"
 }

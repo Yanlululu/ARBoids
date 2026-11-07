@@ -1,6 +1,6 @@
 {
-  "document_revision": "CITF-reference-roles-v6",
-  "basis": "User identifies CI as their earlier draft method. No CI public publication was supplied for this revision.",
+  "document_revision": "unified-dynamics-20261107-r3",
+  "basis": "User-selected CITF_最终统一稿_论文与研究方案.zip",
   "author_method": "CITF",
   "roles": {
     "proposed_method": [
@@ -10,23 +10,13 @@
       "ARBoids",
       "RP",
       "SAC",
-      "Boids",
-      "MAPPO",
-      "MAAC"
+      "Boids"
     ],
     "author_constructed_control": [
-      "CITF-Phys",
-      "CITF-no-context",
-      "CITF-predictive",
-      "CITF-independent",
-      "CITF-GRU",
-      "CITF-Perceiver",
-      "CITF-physical-feedback"
+      "CITF-no-action-interaction",
+      "CITF-no-generator-feedback"
     ],
-    "internal_development_reference": [
-      "CI-original",
-      "retained-joint-policy-teacher"
-    ]
+    "internal_development_reference": []
   },
   "paper_main_table": [
     "CITF",
@@ -34,9 +24,76 @@
     "RP",
     "SAC",
     "Boids",
-    "MAPPO"
+    "CITF-no-action-interaction",
+    "CITF-no-generator-feedback"
   ],
   "definitions": {
+    "CITF": {
+      "implementation": "unified.networks.CITF; unified.train",
+      "control": "Joint scalar fusion, actual-action Transformer Q, projected coefficient refinement",
+      "learning": "Actual-transition twin Q; endpoint gradient; autoregressive base learning and optimized-configuration feedback",
+      "status": "development training in progress"
+    },
+    "CITF-no-action-interaction": {
+      "implementation": "unified.train --no-action-interaction",
+      "definition": "Retrain with action-separable Q, same state encoder, generation, search and feedback",
+      "status": "implemented; training pending"
+    },
+    "CITF-no-generator-feedback": {
+      "implementation": "unified.train --feedback 0",
+      "definition": "Retrain without generator optimization feedback; retain base generator learning, search and endpoint updates",
+      "status": "implemented; training pending"
+    },
+    "ARBoids": {
+      "role": "published_baseline",
+      "implementation": "unified.train_baseline --method arboids",
+      "architecture": "author ActorAdap/CriticSAC; width 512; common task and actuator mapping; from scratch"
+    },
+    "RP": {
+      "role": "published_baseline",
+      "implementation": "unified.train_baseline --method rp",
+      "architecture": "author ActorSAC/CriticSAC; width 512; residual sum; from scratch"
+    },
+    "SAC": {
+      "role": "published_baseline",
+      "implementation": "unified.train_baseline --method sac",
+      "architecture": "author ActorSAC/CriticSAC; width 512; no Boids action input; from scratch"
+    },
+    "Boids": {
+      "role": "published_baseline",
+      "implementation": "unified.environment.boids and common execute mapping",
+      "trained": false
+    }
+  },
+  "benefit_reporting": {
+    "complete_method": "Compare the full deployed method with public algorithms on the common task.",
+    "mechanism": "Two independently trained single-mechanism ablations: action interaction and generator configuration feedback; same task, information, budgets and recipe.",
+    "protocol_change": "Reevaluate methods and references under the same corrected environment; retain historical scores under their original protocol."
+  },
+  "registry_scope": "definitions and paper_main_table are current. historical_definitions are retired and do not supply policies, teachers, results or dependencies to this standalone paper.",
+  "historical_definitions": {
+    "CITF-joint-continuous-replanning": {
+      "role": "proposed_method_development_revision",
+      "implementation": "experiments.joint_replanning_policy; experiments.joint_replanning_train",
+      "execution": "Joint observed-history Transformer directly commands all physical thrusters every control tick; no program bank, source actor, online teacher, reserved guard or external control projection.",
+      "learning": "Current-policy complete rollouts and fresh continuations from reachable dangerous training states; exact joint-action PPO and task failure constraint.",
+      "initialization": "Optional training-only independent pursuit imitation, then independent learned control; count initialization steps.",
+      "status": "Implemented and manually reviewed; new training and complete-task results pending."
+    },
+    "CITF-joint-no-context": {
+      "role": "author_constructed_control",
+      "implementation": "experiments.joint_replanning_train --without-joint-context",
+      "definition": "Retrain with identical measured inputs, temporal encoder, full physical action domain and joint exploration; replace cross-entity attention with per-entity transforms.",
+      "retraining_required": true,
+      "status": "Implemented; new training pending."
+    },
+    "CITF-joint-no-danger": {
+      "role": "author_constructed_control",
+      "implementation": "experiments.joint_replanning_train --danger-fraction 0",
+      "definition": "Retrain the same direct joint actor from ordinary task starts without danger-state continuation; report actual environment steps and cost.",
+      "retraining_required": true,
+      "status": "Implemented; new training pending."
+    },
     "MAPPO": {
       "role": "published_baseline",
       "implementation": "citf.baselines.SourceMAPPO; experiments.public_baselines train/evaluate",
@@ -105,13 +162,5 @@
       "role_selection": "Use complete-task results and cost to retain, fine-tune, replace or remove teacher dependence."
     }
   },
-  "benefit_reporting": {
-    "complete_method": "Compare the full deployed method with public algorithms on the common task.",
-    "added_module": "Compare against the exact teacher/reference used by that method on the same tasks.",
-    "mechanism": "Match shared components, control domain and reasonable resources for the mechanism being claimed.",
-    "protocol_change": "Reevaluate methods and references under the same corrected environment; retain historical scores under their original protocol."
-  },
-  "public_prior_status_rule": "If a public CI paper/preprint/report is later supplied, audit overlap and update citations and contribution attribution before submission; do not conceal it.",
-  "no_new_empirical_results": true,
-  "registry_scope": "Existing method identities and historical results retain these definitions; register revised controls for the selected research method. Current research authority is in AGENTS.md and CODEX_TASK.md."
+  "formal_results_available": false
 }

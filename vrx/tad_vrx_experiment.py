@@ -3,10 +3,6 @@ import numpy as np
 import torch
 from pathlib import Path
 import sys
-_CONTROL_CODE = Path(__file__).resolve().parents[1] / 'citf' / 'code'
-if str(_CONTROL_CODE) not in sys.path:
-    sys.path.insert(0, str(_CONTROL_CODE))
-from citf.environment import apf_force
 
 def force_to_thruster(force, phi, is_attacker=True, min_thrust=-500.0, max_thrust=1000.0):
     force = np.asarray(force, dtype=float)
@@ -45,6 +41,11 @@ def APF_navi_control(position, goal, obstacles, phi, min_thrust=-500.0, max_thru
     else:
         alpha = 0.0
 
+    # This historical controller is not loaded by the unified VRX task.
+    control_code = Path(__file__).resolve().parents[1] / 'citf' / 'code'
+    if str(control_code) not in sys.path:
+        sys.path.insert(0, str(control_code))
+    from citf.environment import apf_force
     force = apf_force(position, goal, obstacles, [7.] * len(obstacles), influence=20.,
                       repulsion=2000., tangential=alpha, rule=apf_obstacle_rule)
     return force_to_thruster(force, phi, True, min_thrust, max_thrust)
