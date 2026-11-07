@@ -2,7 +2,7 @@
   "method": "CITF",
   "revision": "unified-integrated-worst-response-20261107-r22",
   "basis": "D:/ARBoids/fromCHAT/CITF_最终统一稿_论文与研究方案.zip",
-  "scientific_status": "Development r21 worst-teammate response adopted after matched frozen-weight prescribed scope; six fresh1M full/no-action/no-feedback runs active. Local r22 integrates existing baseline and formal-interface repairs. Formal study not started.",
+  "scientific_status": "Development r21: main200k99/100, but250k100/67 and full prescribed scope73.83% team /83.43% agility reveal second-seed critic drift. Restoring only preceding200k critics recovers98. Current work targets critic stability; local r22 integration retained, formal study not started.",
   "implementation": "code/unified",
   "protocol": {
     "defenders": 3,
@@ -2568,7 +2568,49 @@
         "pid": 435299,
         "transitions": 250000,
         "conditions": 26,
-        "all_fresh_including_team2": true
+        "all_fresh_including_team2": true,
+        "status": "completed",
+        "completed_conditions": 26,
+        "team_success": {
+          "1101": [
+            98,
+            100,
+            98,
+            94,
+            67,
+            49
+          ],
+          "1102": [
+            54,
+            64,
+            71,
+            81,
+            61,
+            49
+          ]
+        },
+        "agility_success": {
+          "1101": [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            96
+          ],
+          "1102": [
+            75,
+            74,
+            71,
+            66,
+            65,
+            60,
+            61
+          ]
+        },
+        "team_mean_success_percent": 73.83333333333333,
+        "agility_mean_success_percent": 83.42857142857143
       },
       "status": "training",
       "final_scope": {
@@ -2887,6 +2929,67 @@
         5.0
       ],
       "decision": "Retain current algorithm and continue complete matched budgets plus prescribed scope."
+    },
+    "v27_matched_250k": {
+      "full_success": [
+        100,
+        67
+      ],
+      "full_collision": [
+        0,
+        12
+      ],
+      "full_breach": [
+        0,
+        21
+      ],
+      "no_action_success": [
+        98,
+        99
+      ],
+      "no_feedback_success": [
+        99,
+        97
+      ],
+      "mean_action_gain_pp": -15.0,
+      "mean_feedback_gain_pp": -14.5,
+      "all_five_node_mean_action_gain_pp": 8.4,
+      "all_five_node_mean_feedback_gain_pp": -0.8,
+      "decision": "Second full run collapses after200k; formal study remains unstarted. Localize and improve critic learning rather than generator-only tuning."
+    },
+    "v27_critic_drift_250k": {
+      "seed": 1102,
+      "previous_fixed_node": 200000,
+      "current_fixed_node": 250000,
+      "previous_success": 100,
+      "current_success": 67,
+      "replace_only_generator_with200k": [
+        72,
+        3,
+        25
+      ],
+      "replace_only_endpoint_with200k": [
+        68,
+        18,
+        14
+      ],
+      "replace_only_critics_with200k": [
+        98,
+        1,
+        1
+      ],
+      "role": "failure localization only; not formal or independently trained ablations",
+      "current_terminal_mean_errors": {
+        "breach": 0.1515687,
+        "collision": -15.8709202,
+        "capture": -9.4865255
+      },
+      "previous_critics_on_same_terminal_data_mean_errors": {
+        "breach": 2.7727127,
+        "collision": 3.4511914,
+        "capture": -5.9976077
+      },
+      "next": "Fixed250k actual-control comparison of .75 min+.25 max twin score, both seeds main and7 boats; no adoption before results."
     }
   },
   "generalization": {
