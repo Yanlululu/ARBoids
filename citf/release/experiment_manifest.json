@@ -2,7 +2,7 @@
   "method": "CITF",
   "revision": "unified-warmup-robust-td-20261107-r25",
   "basis": "D:/ARBoids/fromCHAT/CITF_最终统一稿_论文与研究方案.zip",
-  "scientific_status": "r25 matched full and two ablations continue. Dense-fleet collisions limit current capabilities; matched actual-replay relative-action representation refits, early reviewed VRX and a short learned-opponent segment now run alongside the registered numerical comparisons. Formal held-out study not launched.",
+  "scientific_status": "r25 continues toward1M with common250k mechanism differences +11.3/+2.6pp and fixed500k team7=45/52. Balanced interaction normalization completed without sustained gain and was not adopted. Next finite candidate aligns per-receiver values to the common actual team return while sharing the adverse pair term during training. Formal study not launched.",
   "implementation": "code/unified",
   "protocol": {
     "defenders": 3,
@@ -35,6 +35,56 @@
     "CITF-no-generator-feedback"
   ],
   "formal_training": {
+    "current_source_handoff": {
+      "status": "reviewed_base_preserved",
+      "branch": "codex/citf-root-cause-20261103",
+      "release_root": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_20261108_r25_complete",
+      "launcher": "/root/autodl-tmp/citf-unified-20261106/launch_current.py",
+      "active_pointer": "/root/autodl-tmp/citf-unified-20261106/current_source.json",
+      "release_id": "20261108-r25-complete",
+      "source_files": 44,
+      "all_review_fixes_migrated": true,
+      "pending_migrations": [],
+      "actual_entry_verification": "/root/autodl-tmp/citf-review-bthducju/release_handoff/verification.json",
+      "verified_entries": [
+        "CUDA full-state fork",
+        "ordinary learner isolation",
+        "balanced-interaction online update",
+        "active default launcher",
+        "legacy all-condition resume",
+        "import-style tool alias",
+        "formal study imports",
+        "VRX in its actual ROS environment"
+      ],
+      "existing_processes_preserved": [
+        436312,
+        445382,
+        445383,
+        446624
+      ],
+      "source_policy": "new jobs use the complete paired release through launch_current.py; running jobs and their matching legacy evaluation queues retain their original snapshots; the r22 deployment below is historical",
+      "candidate_policy": "integrate a retained structural candidate into the unified model and prescribed ablations before formal registration",
+      "active_training_restart_required_by_this_review": false,
+      "message_to_execution_chat": false
+    },
+    "development_entry_review_20261107": {
+      "status": "passed",
+      "scope": "full-state development branching, checkpoint-boundary pause, matched online candidates, diagnostic recipe fidelity, candidate identity and same-side opponent warmup",
+      "actual_entry_checks": 19,
+      "existing_tests_passed": [
+        "test_checkpoint_curve_recovery",
+        "test_phase_inheritance_and_cumulative_clock",
+        "test_registry_checkpoint_cache_and_metrics"
+      ],
+      "validation_root": "/root/autodl-tmp/citf-review-bthducju",
+      "actual_entry_verification": "/root/autodl-tmp/citf-review-bthducju/verification.json",
+      "device": "CPU and actual RTX 4090 CUDA; isolated small-state training with all evaluation conditions retained",
+      "gpu_state_comparison": "continuous, exact resume and full-state fork matched every model/target/Adam/replay/environment/RNG/update-phase state after 16 actual transitions",
+      "main_algorithm_redesigned": false,
+      "formal_experiments_added": 0,
+      "ablations_added": 0,
+      "running_snapshots_modified": false
+    },
     "independent_seeds": 5,
     "learning_versions": 6,
     "main_runs": 30,
@@ -171,6 +221,19 @@
           "scope": "all deployed unified/VRX Python source, existing acceptance/render tools and author policy sources"
         }
       }
+    },
+    "active_development_source": {
+      "release_root": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_20261108_joint_team_return",
+      "release_id": "20261108-joint-team-return-candidate",
+      "source_files": 45,
+      "base_review_release": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_20261108_r25_complete",
+      "main_method": "r25 unchanged; candidate only through registered study entry",
+      "existing_processes_preserved": [
+        436312,
+        445382,
+        445383,
+        446624
+      ]
     }
   },
   "core": {
@@ -4054,5 +4117,458 @@
     }
   },
   "dynamics_integration": "old-heading world-to-body; Euler update of body velocity and heading; new-heading body-to-world",
-  "retired_development": "v1-v8 used the inherited frame-update ordering; retained as development history"
+  "retired_development": "v1-v8 used the inherited frame-update ordering; retained as development history",
+  "shared_team_online_development": {
+    "status": "completed_not_adopted",
+    "entry": "tools/train_shared_team_interaction.py",
+    "output": "/root/autodl-tmp/citf-unified-20261106/shared_team_online_v30_150k",
+    "seeds": [
+      1101,
+      1102
+    ],
+    "variants": [
+      "ordinary",
+      "shared_team"
+    ],
+    "source_transitions": 150000,
+    "additional_transitions": 50000,
+    "evaluation_transitions": [
+      175000,
+      200000
+    ],
+    "conditions": [
+      {
+        "n": 3,
+        "agility": 2,
+        "scene": 73001
+      },
+      {
+        "n": 7,
+        "agility": 2,
+        "scene": 73005
+      },
+      {
+        "n": 3,
+        "agility": 3,
+        "scene": 73004
+      }
+    ],
+    "episodes": 100,
+    "policy_seed": 83001,
+    "migration": "all tensors, target, Adam, replay, environment, RNG retained; only common adverse interaction aggregation changes",
+    "selection": "repeated dense-collision reduction with retained main and agility defense, considering both nodes and both repetitions",
+    "formal_matrix_expanded": false,
+    "pids": [
+      466596,
+      466597,
+      466598,
+      466599
+    ],
+    "resource_decision": "Pause four r25 ablations after their complete common 250k checkpoint; full r25 runs continue.",
+    "ablation_holds": {
+      "no_action_1101": {
+        "checkpoint": 250000,
+        "success": 99,
+        "collision": 1,
+        "breach": 0
+      },
+      "no_action_1102": {
+        "checkpoint": 250000,
+        "success": 98,
+        "collision": 1,
+        "breach": 1
+      },
+      "no_feedback": "awaiting registered250k"
+    },
+    "final_transitions": 200000,
+    "ordinary_200k": [
+      [
+        99,
+        51,
+        98
+      ],
+      [
+        99,
+        47,
+        96
+      ]
+    ],
+    "shared_200k": [
+      [
+        99,
+        48,
+        96
+      ],
+      [
+        98,
+        45,
+        95
+      ]
+    ],
+    "condition_order": [
+      "main",
+      "team7",
+      "agility3"
+    ]
+  },
+  "system_development_completed_v30": {
+    "vrx": {
+      "citf_source": 150000,
+      "arboids_source": 400000,
+      "captures": [
+        10,
+        10
+      ],
+      "mean_seconds": [
+        7.91,
+        7.57
+      ]
+    },
+    "attack_50k": {
+      "success": 39,
+      "capture": 14,
+      "timeout": 25,
+      "collision": 61,
+      "breach": 0
+    },
+    "defender_50k": {
+      "success": 94,
+      "capture": 86,
+      "timeout": 8,
+      "collision": 6,
+      "breach": 0
+    },
+    "apf_retention": {
+      "success": 80,
+      "capture": 80,
+      "timeout": 0,
+      "collision": 8,
+      "breach": 12
+    }
+  },
+  "joint_value_order_v30": {
+    "status": "completed",
+    "entry": "tools/measure_joint_value_order.py",
+    "one_cycle_intervention_only": true,
+    "training_targets_generated": false,
+    "team7": {
+      "states": 16,
+      "continuations": 384,
+      "selected_failures": 16,
+      "alternative_successes": 1,
+      "all_failed": 15,
+      "mean_actual_search_return_gain": 0.02027556300163269
+    },
+    "opponent": {
+      "states": 16,
+      "continuations": 384,
+      "selected_failures": 17,
+      "alternative_successes": 6,
+      "all_failed": 11,
+      "mean_actual_search_return_gain": 0.10038745403289795
+    }
+  },
+  "corrected_baseline_early_scope": {
+    "source_transitions": 500000,
+    "source": "/root/autodl-tmp/citf-unified-20261106/development_scope_b3_final/early_500k/source_500000.pt",
+    "team7": {
+      "success": 4,
+      "collision": 96,
+      "breach": 0
+    },
+    "agility3": {
+      "success": 99,
+      "collision": 1,
+      "breach": 0
+    },
+    "final_1M_scope_pending": true
+  },
+  "softsign_endpoint_online_development": {
+    "status": "completed_not_adopted",
+    "entry": "tools/train_endpoint_learning.py",
+    "output": "/root/autodl-tmp/citf-unified-20261106/endpoint_online_v30_150k",
+    "seeds": [
+      1101,
+      1102
+    ],
+    "variant": "softsign_endpoint",
+    "source_transitions": 150000,
+    "additional_transitions": 50000,
+    "evaluation_transitions": [
+      175000,
+      200000
+    ],
+    "ordinary_reference": "shared_team_online_v30_150k/{seed}_ordinary",
+    "motivation": "actual replay endpoint tanh derivatives <1e-4 in99.45%/90.15% of outputs; test slower-tail bounded output derivatives with complete joint online learning",
+    "parameter_migration": "all model/target tensors and Adam moments, replay, environment and RNG retained; output operator changes in both model and target",
+    "critic": "original r25",
+    "formal_matrix_expanded": false,
+    "pids": [
+      467808,
+      467809
+    ],
+    "results_175k": [
+      [
+        98,
+        51,
+        98
+      ],
+      [
+        100,
+        49,
+        95
+      ]
+    ],
+    "results_200k": [
+      [
+        98,
+        49,
+        97
+      ],
+      [
+        99,
+        52,
+        96
+      ]
+    ],
+    "condition_order": [
+      "main",
+      "team7",
+      "agility3"
+    ],
+    "logit_magnitude_median_175k": [
+      647.456,
+      60.958
+    ]
+  },
+  "r25_common_250k": {
+    "nodes": [
+      50000,
+      100000,
+      150000,
+      200000,
+      250000
+    ],
+    "full_seed_means": [
+      96.4,
+      94.2
+    ],
+    "no_action_seed_means": [
+      73.0,
+      95.0
+    ],
+    "no_feedback_seed_means": [
+      94.8,
+      90.6
+    ],
+    "combined_means": [
+      95.3,
+      84.0,
+      92.7
+    ],
+    "mechanism_differences_pp": [
+      11.3,
+      2.6
+    ],
+    "four_ablations": "paused after complete250k checkpoints; registered1M not completed",
+    "full": "continuing"
+  },
+  "endpoint_interior_online_development": {
+    "status": "completed_not_adopted",
+    "entry": "tools/train_endpoint_interior.py",
+    "source_code": "code_endpoint_interior",
+    "source_transitions": 150000,
+    "additional_transitions": 50000,
+    "seeds": [
+      1101,
+      1102
+    ],
+    "evaluation_transitions": [
+      175000,
+      200000
+    ],
+    "ordinary_reference": "shared_team_online_v30_150k/{seed}_ordinary",
+    "loss_weight": 0.001,
+    "penalty": "mean(-log(1-tanh(z)^2))",
+    "reward_and_value_targets": "unchanged ordinary task returns",
+    "formal_matrix_expanded": false,
+    "pids": [
+      469147,
+      469148
+    ],
+    "output": "/root/autodl-tmp/citf-unified-20261106/endpoint_interior_v30_150k",
+    "failed_launches": {
+      "pids": [
+        468936,
+        468937
+      ],
+      "additional_transitions": 0,
+      "reason": "runner keyword unsupported by frozen protocol; resumed using prior completed study runner"
+    },
+    "runner_basis": "endpoint_online_v30_150k/continuation_runner.py plus learner factory",
+    "results_175k": [
+      [
+        79,
+        15,
+        91
+      ],
+      [
+        97,
+        45,
+        95
+      ]
+    ],
+    "results_200k": [
+      [
+        100,
+        21,
+        99
+      ],
+      [
+        81,
+        25,
+        89
+      ]
+    ],
+    "condition_order": [
+      "main",
+      "team7",
+      "agility3"
+    ]
+  },
+  "r25_late_critical_scope": {
+    "status": "completed",
+    "pid": 469313,
+    "output": "development_scope_v30/later_500k",
+    "seeds": [
+      1101,
+      1102
+    ],
+    "conditions": [
+      [
+        7,
+        2,
+        73005
+      ],
+      [
+        3,
+        3,
+        73004
+      ]
+    ],
+    "count": 100,
+    "policy_seed": 83001,
+    "source": "defender_stage1.pt at500000",
+    "team7": [
+      45,
+      52
+    ],
+    "agility3": [
+      97,
+      96
+    ],
+    "main": [
+      96,
+      100
+    ]
+  },
+  "balanced_interaction_online_development": {
+    "status": "completed_not_adopted",
+    "entry": "tools/train_balanced_interaction.py",
+    "source_code": "code_v30",
+    "source_transitions": 150000,
+    "additional_transitions": 50000,
+    "seeds": [
+      1101,
+      1102
+    ],
+    "evaluation_transitions": [
+      175000,
+      200000
+    ],
+    "ordinary_reference": "shared_team_online_v30_150k/{seed}_ordinary",
+    "architecture": "separate parameter-free normalization of receiver and existing pair-action representation before original affine LayerNorm",
+    "parameters_added": 0,
+    "formal_matrix_expanded": false,
+    "pids": [
+      469919,
+      469920
+    ],
+    "output": "/root/autodl-tmp/citf-unified-20261106/balanced_interaction_v30_150k",
+    "results_175k": [
+      [
+        99,
+        53,
+        99
+      ],
+      [
+        100,
+        48,
+        96
+      ]
+    ],
+    "condition_order": [
+      "main",
+      "team7",
+      "agility3"
+    ],
+    "results_200k": [
+      [
+        99,
+        51,
+        96
+      ],
+      [
+        98,
+        45,
+        96
+      ]
+    ],
+    "ordinary_200k": [
+      [
+        99,
+        51,
+        98
+      ],
+      [
+        99,
+        47,
+        96
+      ]
+    ],
+    "decision": "175k gains did not persist at200k; retain all nodes and complete state; no long normalization branch"
+  },
+  "joint_team_return_online_development": {
+    "status": "running",
+    "entry": "tools/train_joint_team_return.py",
+    "source_transitions": 150000,
+    "additional_transitions": 50000,
+    "seeds": [
+      1101,
+      1102
+    ],
+    "evaluation_transitions": [
+      175000,
+      200000
+    ],
+    "ordinary_reference": "shared_team_online_v30_150k/{seed}_ordinary",
+    "condition_order": [
+      "main",
+      "team7",
+      "agility3"
+    ],
+    "episodes_per_condition": 100,
+    "architecture": "existing action-conditioned receiver views with positive local response plus shared worst adverse pair at every team size",
+    "value_target": "one actual team-reward Bellman target broadcast to every receiver value; target and policy use mean of per-receiver clipped double Q",
+    "parameters_added": 0,
+    "new_rewards": 0,
+    "formal_matrix_expanded": false,
+    "output": "/root/autodl-tmp/citf-unified-20261106/joint_team_return_v30_150k",
+    "pids": [
+      471746,
+      471747
+    ],
+    "release_root": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_20261108_joint_team_return",
+    "release_id": "20261108-joint-team-return-candidate"
+  }
 }

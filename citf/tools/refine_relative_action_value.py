@@ -20,6 +20,7 @@ sys.path.insert(0, os.environ.get('CITF_CODE_ROOT', str(Path(__file__).resolve()
 from unified.environment import TaskConfig
 from unified.learner import Learner, Replay
 from unified.networks import CITF, ModelConfig
+from unified.protocol import require_standard_controller
 from unified.train import evaluate, seed_policy, write_json, save
 
 
@@ -96,6 +97,7 @@ def main():
     results = []
     for path in args.checkpoint:
         source = torch.load(path, map_location='cpu', weights_only=False, mmap=True)
+        require_standard_controller(source)
         recipe, seed = source['arguments'], source['arguments']['seed']
         for variant in ('ordinary_refit', 'relative_action_refit'):
             seed_policy(953000+seed, args.device)

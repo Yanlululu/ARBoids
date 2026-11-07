@@ -24,7 +24,7 @@ FULL_KEYS = ('envs', 'updates_per_step', 'lr', 'batch', 'capacity', 'start_learn
              'feedback_start', 'feedback_ramp', 'policy_lr_end', 'policy_lr_decay_start',
              'policy_lr_decay_steps', 'value_terminal_fraction', 'value_importance_exponent',
              'value_huber_delta', 'value_huber_start')
-RUNTIME_ARGUMENTS = {'out', 'resume', 'init_from', 'device', 'registry', 'previous'}
+RUNTIME_ARGUMENTS = {'out', 'resume', 'init_from', 'fork_from', 'stop_at', 'device', 'registry', 'previous'}
 
 
 def digest(value):
@@ -63,9 +63,9 @@ def baseline_updates(transitions, start_learning, ratio=1.):
     return math.floor(max(0, transitions-start_learning+1)*ratio)
 
 
-def collection_updates(transitions, recipe):
+def collection_updates(transitions, recipe, start=0):
     """CITF's vector-collection clock, including evaluation and 500k boundaries."""
-    position, updates = 0, 0
+    position, updates = start, 0
     while position < transitions:
         boundary = min(transitions, (position//recipe['eval_interval']+1)*recipe['eval_interval'])
         if position < 500000:
@@ -76,8 +76,17 @@ def collection_updates(transitions, recipe):
     return updates
 
 
-def learning_counts(method, transitions, recipe, updates):
+def learning_counts(method, transitions, recipe, updates, prefix=None):
     baseline = method in METHODS[3:]
+    if prefix is not None:
+        if baseline or not 0 <= prefix['transitions'] <= transitions:
+            raise ValueError('A development fork must retain a valid CITF training prefix.')
+        prior = prefix['update_counts']
+        expected = prior['critic']+collection_updates(transitions, recipe, start=prefix['transitions'])
+        if updates != expected:
+            raise ValueError(f'Incomplete fork learning budget: {updates} updates, expected {expected}.')
+        policy_updates = updates//2-prior['critic']//2
+        return dict(critic=updates, **{key: prior[key]+policy_updates for key in ('endpoint', 'generator', 'target')})
     expected = (baseline_updates(transitions, recipe['start_learning'], recipe['updates_per_joint_transition'])
                 if baseline else collection_updates(transitions, recipe))
     if updates != expected:
@@ -85,6 +94,12 @@ def learning_counts(method, transitions, recipe, updates):
     if baseline:
         return dict(critic=updates, actor=updates, temperature=updates, target=updates)
     return dict(critic=updates, endpoint=updates//2, generator=updates//2, target=updates//2)
+
+
+def development_prefix(run):
+    initialization = run.get('initialization')
+    return (initialization if isinstance(initialization, dict)
+            and initialization.get('kind') == 'development_fork' else None)
 
 
 def validate_optimizer_counts(payload, keys, counts):
@@ -206,7 +221,7 @@ def run_identity(arguments, task, registry=None):
             raise ValueError('Formal training must use the exact registered method, seed and complete recipe.')
         if task != registry['task']:
             raise ValueError('The formal training task must match the registry.')
-        if arguments.get('init_from'):
+        if arguments.get('init_from') or arguments.get('fork_from'):
             raise ValueError('Formal methods are trained independently from scratch.')
     result = dict(schema=SCHEMA, method=method, seed=arguments['seed'], arguments=canonical,
                   task=task, model=model_definition(arguments), source=source_identity(),
@@ -216,11 +231,19 @@ def run_identity(arguments, task, registry=None):
     return result
 
 
-def bind_run(args, task, resumed=None):
+def bind_run(args, task, resumed=None, forked=None):
     if args.registry is None and resumed is not None:
         args.registry = resumed['arguments'].get('registry')
     registry = load_registry(args.registry) if args.registry else None
     run = run_identity(vars(args), asdict(task), registry)
+    if forked is not None:
+        if resumed is not None or args.stage != 'development':
+            raise ValueError('Full-state branching is only available for a new development run.')
+        run['initialization'] = dict(kind='development_fork',
+            parent_run_id=forked['run_identity']['id'], parent_source=forked['run_identity']['source'],
+            transitions=forked['transitions'], update_counts=forked['update_counts'],
+            source_checkpoint=str(Path(args.fork_from).resolve()))
+        run['id'] = digest({k: v for k, v in run.items() if k != 'id'})
     if resumed is not None:
         run['initialization'] = resumed.get('run_identity', {}).get('initialization')
         run['id'] = digest({k: v for k, v in run.items() if k != 'id'})
@@ -229,11 +252,18 @@ def bind_run(args, task, resumed=None):
     return run
 
 
-def validate_checkpoint(payload, registry=None, method=None, seed=None, transitions=None):
+def require_standard_controller(payload):
+    variant = payload.get('controller_variant', payload.get('continuation', {}).get('variant', 'ordinary'))
+    if variant != 'ordinary' or payload.get('representation', 'ordinary_refit') != 'ordinary_refit':
+        raise ValueError('This checkpoint requires its candidate-specific controller; loading it as ordinary CITF would change its decisions.')
+
+
+def validate_checkpoint(payload, registry=None, method=None, seed=None, transitions=None, current_source=True):
+    require_standard_controller(payload)
     run = payload.get('run_identity')
     if not run or run.get('id') != digest({k: v for k, v in run.items() if k != 'id'}):
         raise ValueError('Checkpoint has no verified run identity; preserve it as historical development evidence.')
-    if run['source'] != source_identity() or payload.get('implementation_version') != IMPLEMENTATION_VERSION:
+    if current_source and (run['source'] != source_identity() or payload.get('implementation_version') != IMPLEMENTATION_VERSION):
         raise ValueError('Use the frozen training and inference source for this checkpoint.')
     if run['arguments'] != canonical_arguments(payload['arguments']) or run['task'] != payload['task']:
         raise ValueError('Checkpoint metadata differs from its registered run.')
@@ -249,7 +279,10 @@ def validate_checkpoint(payload, registry=None, method=None, seed=None, transiti
             raise ValueError('Wrong method, seed, source or recipe for this registered checkpoint.')
     if transitions is not None and payload['transitions'] != transitions:
         raise ValueError('Use the registered fixed-budget checkpoint.')
-    counts = learning_counts(run['method'], payload['transitions'], run['arguments'], payload['updates'])
+    prefix = development_prefix(run)
+    if prefix is not None and run['arguments']['stage'] != 'development':
+        raise ValueError('A development fork cannot be reused as an independent formal training run.')
+    counts = learning_counts(run['method'], payload['transitions'], run['arguments'], payload['updates'], prefix)
     if payload.get('update_counts') != counts:
         raise ValueError('Checkpoint optimizer update counts are incomplete.')
     keys = (('actor', 'critic', 'temperature') if run['method'] in METHODS[3:]
@@ -295,7 +328,7 @@ def validate_learning_node(row, run):
     policy_id = row.get('policy_id', '')
     if len(policy_id) != 64 or any(ch not in '0123456789abcdef' for ch in policy_id):
         raise ValueError('Learning-curve node has no model-content identity.')
-    if row.get('update_counts') != learning_counts(run['method'], row['transitions'], recipe, row['updates']):
+    if row.get('update_counts') != learning_counts(run['method'], row['transitions'], recipe, row['updates'], development_prefix(run)):
         raise ValueError('Learning-curve node has inconsistent optimizer counts.')
     validate_metrics(row)
 
@@ -303,7 +336,11 @@ def validate_learning_node(row, run):
 def validate_learning_curve(path, run, until=1000000, endpoint=None):
     rows = [json.loads(line) for line in Path(path).read_text(encoding='utf-8').splitlines() if line.strip()]
     recipe = run['arguments']
-    grid = list(range(recipe['eval_interval'], until+1, recipe['eval_interval']))
+    prefix = development_prefix(run)
+    start = 0 if prefix is None else prefix['transitions']
+    grid = list(range((start//recipe['eval_interval']+1)*recipe['eval_interval'], until+1, recipe['eval_interval']))
+    grid = sorted(set(grid) | ({500000} if start < 500000 <= until else set())
+                  | ({until} if until == recipe['steps'] and until > start else set()))
     if [row['transitions'] for row in rows] != grid:
         raise ValueError('The learning curve must retain every registered node once, in order.')
     for row in rows:

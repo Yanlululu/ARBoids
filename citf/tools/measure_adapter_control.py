@@ -4,7 +4,7 @@ Uses fixed trained models and their actual replay. This does not add a formal
 ablation, generate learning targets, or change an active training process.
 """
 import argparse
-from dataclasses import replace
+from dataclasses import asdict, replace
 import gc
 import json
 import os
@@ -16,10 +16,11 @@ import torch
 sys.path.insert(0, os.environ.get('CITF_CODE_ROOT', str(Path(__file__).resolve().parents[1]/'code')))
 from unified.environment import TaskConfig
 from unified.networks import CITF, ModelConfig
-from unified.train import evaluate, seed_policy, write_json
+from unified.protocol import require_standard_controller
+from unified.train import evaluate, seed_policy, write_json, policy_schedule
 
 
-def learning_signal(model, states, seed, device):
+def learning_signal(model, states, seed, device, temperature=.05, feedback_scale=1.):
     rng = torch.Generator(device='cpu').manual_seed(951000+seed)
     index = torch.randint(len(states), (1024,), generator=rng)
     parameters = list(model.generator.parameters())
@@ -32,13 +33,13 @@ def learning_signal(model, states, seed, device):
         duplicate = (g[:, :, None] == g[:, None, :]).all(-1)
         earlier = torch.ones(count, count, dtype=torch.bool, device=device).tril(-1)
         keep = ~(duplicate & earlier).any(-1)
-        weights = (scores/.05).masked_fill(~keep, -torch.inf).softmax(-1).detach()
+        weights = (scores/temperature).masked_fill(~keep, -torch.inf).softmax(-1).detach()
         initial = result['initial_scores']/100.
         advantage = (initial-(initial.sum(-1, keepdim=True)-initial)/(model.cfg.samples-1)).detach()
         base = -(advantage*model.generator.log_prob(x, result['a'], result['b'], result['initial'])).mean()
         feedback = -(weights*model.generator.log_prob(x, result['a'], result['b'], g)).sum(-1).mean()
         first = torch.autograd.grad(base, parameters)
-        second = torch.autograd.grad(model.cfg.feedback*feedback, parameters)
+        second = torch.autograd.grad(model.cfg.feedback*feedback_scale*feedback, parameters)
         square1 = sum(a.square().sum() for a in first)
         square2 = sum(b.square().sum() for b in second)
         dot = sum((a*b).sum() for a, b in zip(first, second))
@@ -54,12 +55,17 @@ def learning_signal(model, states, seed, device):
             gradient_cosine=float(dot/(square1*square2).sqrt().clamp_min(1e-12)),
             combined_norm_ratio=float((square1+square2+2*dot).clamp_min(0).sqrt() /
                                       (square1.sqrt()+square2.sqrt()).clamp_min(1e-12))))
-    return dict(states=1024, batches=observations,
+    return dict(states=1024, temperature=temperature, feedback_scale=feedback_scale, batches=observations,
                 means={key: sum(row[key] for row in observations)/len(observations)
                        for key in observations[0]})
 
 
 def paired(initial, optimized):
+    if (initial['task'] != optimized['task'] or initial['scene_seed'] != optimized['scene_seed']
+            or initial['policy_seed'] != optimized['policy_seed'] or initial['tasks'] != optimized['tasks']
+            or len(initial['rows']) != initial['tasks'] or len(optimized['rows']) != optimized['tasks']
+            or [r['scene_index'] for r in initial['rows']] != [r['scene_index'] for r in optimized['rows']]):
+        raise ValueError('Paired control comparisons require the same complete ordered scene bank and task.')
     pairs = list(zip(initial['rows'], optimized['rows']))
     return dict(
         optimized_minus_initial=optimized['success']-initial['success'],
@@ -91,6 +97,7 @@ def main():
     summaries = []
     for source in args.checkpoint:
         payload = torch.load(source, map_location='cpu', weights_only=False, mmap=True)
+        require_standard_controller(payload)
         if payload['transitions'] != args.transitions:
             raise ValueError('Use the prospectively selected training node.')
         seed = payload['arguments']['seed']
@@ -99,7 +106,9 @@ def main():
         model.load_state_dict(payload['model'])
         model.eval()
         original = model.cfg
-        signal = learning_signal(model, payload['training_state']['replay']['data']['x'], seed, args.device)
+        schedule = policy_schedule(payload['arguments'], args.transitions)
+        signal = learning_signal(model, payload['training_state']['replay']['data']['x'], seed, args.device,
+                                 schedule['temperature'], schedule['feedback_scale'])
         write_json(args.out/f'{seed}_learning_signal.json', signal)
         comparisons = []
         for defenders, scene_seed in ((3, 73001), (7, 73005)):
@@ -112,7 +121,9 @@ def main():
             model.cfg = original
             if defenders == 3:
                 optimized = payload['evaluation']
-                if optimized['scene_seed'] != scene_seed or optimized['policy_seed'] != 83001 or optimized['tasks'] != 100:
+                if (optimized['scene_seed'] != scene_seed or optimized['policy_seed'] != 83001
+                        or optimized['tasks'] != 100 or optimized['task'] != asdict(task)
+                        or optimized['transitions'] != args.transitions):
                     raise ValueError('The saved validation must use the same registered development condition.')
             else:
                 optimized = evaluate(model, task, 100, scene_seed, 83001, args.device)

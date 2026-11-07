@@ -11,17 +11,19 @@ import os
 from pathlib import Path
 import sys
 import time
+from types import SimpleNamespace
 
 import torch
 
 sys.path.insert(0, os.environ.get('CITF_CODE_ROOT', str(Path(__file__).resolve().parents[1]/'code')))
 from unified.adversary import Attacker, AttackerLearner, observation, attacker_reward
+from unified import IMPLEMENTATION_VERSION
 from unified.environment import FleetEnv, TaskConfig, fusion
 from unified.learner import Learner, Replay
 from unified.networks import CITF, ModelConfig
-from unified.protocol import ATTACKER_RECIPE
+from unified.protocol import ATTACKER_RECIPE, require_standard_controller
 from unified.train import (seed_policy, run_generators, random_state, restore_random_state,
-                           policy_schedule, write_json, save)
+                           policy_schedule, write_json, save, validate_training_arguments, append_evaluation)
 from unified.train_alternating import evaluate_pair
 
 
@@ -38,11 +40,15 @@ def main():
     torch.set_num_threads(2)
     torch.set_num_interop_threads(1)
     torch.set_float32_matmul_precision('high')
-    source = torch.load(args.previous, map_location='cpu', weights_only=False)
+    source = torch.load(args.previous, map_location='cpu', weights_only=False, mmap=True)
     continuation = source.get('role') == args.role
     previous_pair = 'defender' in source
     defender_payload = source['defender'] if previous_pair else source
+    require_standard_controller(source)
+    require_standard_controller(defender_payload)
     recipe = source['defender_recipe'] if previous_pair else source['arguments']
+    if recipe.get('stage') != 'development':
+        raise ValueError('Development opponent selection uses development training sources.')
     attacker_recipe = source['attacker_recipe'] if previous_pair else dict(ATTACKER_RECIPE)
     counts = source['side_transitions'].copy() if previous_pair else dict(defender=source['transitions'], attacker=0)
     starting_counts = counts.copy()
@@ -62,6 +68,12 @@ def main():
         attacker_learner.target.load_state_dict(attacker.state_dict())
     train_defender = args.role == 'defender'
     active_recipe = recipe if train_defender else attacker_recipe
+    validate_training_arguments(SimpleNamespace(**dict(active_recipe, steps=args.steps,
+        eval_interval=args.eval_interval, eval_count=100, resume=None, init_from=None, fork_from=None, stop_at=None)))
+    if task.defenders != 3 or task.agility != 2.:
+        raise ValueError('Development alternating stages retain the three-vessel agility-2 task.')
+    if defender.cfg.thrust_delta != task.thrust_delta:
+        raise ValueError('The controller and alternating task must use the same command constraint.')
     defender.requires_grad_(train_defender)
     attacker.requires_grad_(not train_defender)
     env = FleetEnv(active_recipe['envs'], task, phase_seed+100000, args.device)
@@ -76,6 +88,9 @@ def main():
     configuration = dict(research_stage='development', role=args.role, source=str(args.previous),
                          registered_additional_transitions=args.steps, starting_side_transitions=starting_counts,
                          same_side_continuation=continuation, task=asdict(task), training_seed=seed,
+                         implementation_version=IMPLEMENTATION_VERSION,
+                         code_root=str(Path(sys.modules[CITF.__module__].__file__).resolve().parent),
+                         source_implementation_version=source.get('implementation_version'),
                          scene_seed=73003, policy_seed=83003, episodes=100,
                          defender_recipe=recipe, attacker_recipe=attacker_recipe)
     write_json(args.out/'configuration.json', configuration)
@@ -104,7 +119,7 @@ def main():
             else:
                 defense = defender.select(x)['action']
                 result = attacker.select(x, env.agility, deterministic=False)
-                if not continuation and transitions < active_recipe['start_learning']:
+                if replay.size < active_recipe['start_learning']:
                     result['latent'] = 2*torch.rand(active_recipe['envs'], 2, device=args.device, generator=generators['exploration'])-1
                     result['action'] = attacker.command(x, result['latent'], env.agility)
                 attack = result['action']
@@ -148,17 +163,21 @@ def main():
                          registered_transitions=args.steps, side_transitions=counts.copy(), source=str(args.previous),
                          defender=defender_learner.payload(), attacker=attacker_learner.payload(),
                          defender_recipe=recipe, attacker_recipe=attacker_recipe, task=asdict(task),
+                         implementation_version=IMPLEMENTATION_VERSION,
+                         code_root=configuration['code_root'],
                          apf_baseline=apf_baseline, evaluation=result,
                          training_state=dict(replay=replay.state_dict(), environment=env.state_dict(),
                                              random=random_state(args.device, generators)))
             save(args.out/'last.pt', state)
             del state
-            with (args.out/'evaluations.jsonl').open('a', encoding='utf-8') as stream:
-                stream.write(json.dumps(result)+'\n')
+            append_evaluation(args.out, result)
             print(json.dumps({k: v for k, v in result.items() if k != 'rows'}), flush=True)
             next_eval = min(next_eval+args.eval_interval, args.steps)
     if train_defender:
         retention = evaluate_pair(defender, None, task, 100, 73003, 83003, args.device)
+        retention.update(research_stage='development', role='original_apf_retention',
+                         transitions=transitions, side_transitions=counts.copy(),
+                         source=str(args.previous))
         write_json(args.out/'apf_retention.json', retention)
     write_json(args.out/'status.json', dict(status='completed', role=args.role, transitions=transitions,
                side_transitions=counts, final={k: v for k, v in result.items() if k != 'rows'}))

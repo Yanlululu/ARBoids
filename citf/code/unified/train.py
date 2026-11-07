@@ -11,13 +11,17 @@ import torch
 from .environment import TaskConfig, FleetEnv, boids, execute, fusion
 from .networks import CITF, ModelConfig
 from .learner import Learner, Replay
-from . import IMPLEMENTATION_VERSION
+from . import IMPLEMENTATION_VERSION, runtime_release
 from .protocol import (bind_run, learning_counts, outcome_metrics, validate_metrics,
-                       validate_checkpoint, policy_digest)
+                       validate_checkpoint, policy_digest, FULL_KEYS, RUNTIME_ARGUMENTS, development_prefix,
+                       require_standard_controller)
 
 
 def write_json(path, value):
     path = Path(path)
+    release = runtime_release()
+    if release is not None and path.name == 'configuration.json':
+        value = dict(value, source_release=release)
     temporary = path.with_suffix('.pending')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
     temporary.replace(path)
@@ -78,13 +82,33 @@ def resume_arguments(args, payload):
         raise ValueError('This checkpoint has no compatible complete training state. Use --init-from for weights-only initialization in a new output directory.')
     explicit = {value.split('=', 1)[0] for value in sys.argv[1:] if value.startswith('--')}
     for key, saved in payload['arguments'].items():
-        if key in ('out', 'device', 'resume', 'init_from', 'registry', 'previous') or not hasattr(args, key):
+        if key in RUNTIME_ARGUMENTS or not hasattr(args, key):
             continue
         if '--'+key.replace('_', '-') in explicit and getattr(args, key) != saved:
             raise ValueError(f'Exact resume cannot change --{key.replace("_", "-")}; use --init-from for a new experiment.')
         setattr(args, key, saved)
     if args.steps < payload['transitions']:
         raise ValueError('--steps is the total run budget and is smaller than the saved transition count.')
+
+
+def fork_arguments(args, payload):
+    """Inherit a complete development prefix; change only explicit candidate choices."""
+    if (args.stage != 'development' or payload['arguments']['stage'] != 'development'
+            or 'training_state' not in payload or 'method' in payload):
+        raise ValueError('--fork-from needs a complete developmental CITF checkpoint.')
+    validate_checkpoint(payload, current_source=False)
+    explicit = {value.split('=', 1)[0] for value in sys.argv[1:] if value.startswith('--')}
+    mutable = (set(FULL_KEYS)-{'width', 'layers', 'capacity', 'envs'}) | {'steps'}
+    for key, saved in payload['arguments'].items():
+        if key in RUNTIME_ARGUMENTS or not hasattr(args, key):
+            continue
+        if '--'+key.replace('_', '-') in explicit:
+            if getattr(args, key) != saved and key not in mutable:
+                raise ValueError(f'A matched full-state fork retains --{key.replace("_", "-")}; structural changes need an explicit state migration.')
+        else:
+            setattr(args, key, saved)
+    if args.steps <= payload['transitions']:
+        raise ValueError('--steps is the cumulative endpoint and must exceed the inherited prefix.')
 
 
 def prepare_output(out, resume=None):
@@ -94,7 +118,7 @@ def prepare_output(out, resume=None):
         raise FileExistsError(f'{out} already contains a run; choose a new run directory or use --resume.')
     if resume is not None and (out/'configuration.json').exists():
         configuration = json.loads((out/'configuration.json').read_text(encoding='utf-8'))
-        ignored = {'out', 'device', 'resume', 'init_from', 'registry', 'previous'}
+        ignored = RUNTIME_ARGUMENTS
         prior = {key: value for key, value in configuration['arguments'].items() if key not in ignored}
         restored = {key: value for key, value in resume['arguments'].items() if key not in ignored}
         if prior != restored or configuration.get('implementation_version') != IMPLEMENTATION_VERSION:
@@ -145,14 +169,20 @@ def validate_training_arguments(args):
         raise ValueError('Value replay must retain a positive uniform sampling component.')
     if not 0 <= getattr(args, 'value_importance_exponent', .5) <= 1:
         raise ValueError('The value importance exponent must lie between zero and one.')
-    if args.resume and args.init_from:
-        raise ValueError('Choose exact resume or weights-only initialization, not both.')
+    if sum(bool(getattr(args, key, None)) for key in ('resume', 'init_from', 'fork_from')) > 1:
+        raise ValueError('Choose exact resume, a development fork, or weights-only initialization.')
+    stop = getattr(args, 'stop_at', None)
+    if stop is not None and (not 0 < stop <= args.steps or
+                            stop not in (args.steps, 500000) and stop % args.eval_interval):
+        raise ValueError('--stop-at must be an existing evaluation node within the registered budget.')
 
 
 def rollout_count(args, transitions, next_eval):
     # Stop exactly at evaluations, the reusable 500k defender stage and the
     # requested budget, even when those counts are not divisible by envs.
     boundary = min(args.steps, next_eval)
+    if getattr(args, 'stop_at', None) is not None:
+        boundary = min(boundary, args.stop_at)
     if transitions < 500000:
         boundary = min(boundary, 500000)
     if hasattr(args, 'updates_per_joint_transition') and transitions < args.start_learning:
@@ -251,6 +281,8 @@ def arguments():
     p.add_argument('--resume')
     p.add_argument('--registry', help='Frozen common-study registry; required for formal training.')
     p.add_argument('--init-from')
+    p.add_argument('--fork-from', help='New development run retaining the complete training prefix; --steps is cumulative.')
+    p.add_argument('--stop-at', type=int, help='Save and pause at this existing evaluation node without changing --steps.')
     p.add_argument('--exploration-steps', type=int, default=100000)
     p.add_argument('--temperature-steps', type=int, default=100000)
     return p.parse_args()
@@ -258,10 +290,15 @@ def arguments():
 
 def main():
     args = arguments()
-    payload = torch.load(args.resume, map_location='cpu', weights_only=False) if args.resume else None
-    if payload is not None:
+    if sum(bool(getattr(args, key)) for key in ('resume', 'init_from', 'fork_from')) > 1:
+        raise ValueError('Resume, fork and weights-only initialization are mutually exclusive.')
+    source_path = args.resume or args.fork_from
+    payload = torch.load(source_path, map_location='cpu', weights_only=False, mmap=True) if source_path else None
+    if args.resume:
         resume_arguments(args, payload)
         validate_checkpoint(payload)
+    elif args.fork_from:
+        fork_arguments(args, payload)
     validate_training_arguments(args)
     if args.value_huber_start < 0:
         raise ValueError('The robust value-loss start uses a nonnegative cumulative transition count.')
@@ -277,7 +314,7 @@ def main():
             or any(not math.isfinite(value) or value < 0 for value in (args.endpoint_noise_start, args.endpoint_noise_end))):
         raise ValueError('Temperatures must be positive and endpoint noise scales nonnegative and finite.')
     out = Path(args.out)
-    prepare_output(out, payload)
+    prepare_output(out, payload if args.resume else None)
     torch.set_num_threads(2)
     torch.set_num_interop_threads(1)
     torch.set_float32_matmul_precision('high')
@@ -287,15 +324,26 @@ def main():
                       thrust_delta=args.thrust_delta, feedback=args.feedback,
                       action_interaction=not args.no_action_interaction)
     task = TaskConfig(thrust_delta=args.thrust_delta, collision_penalty=args.collision_penalty)
-    run = bind_run(args, task, payload)
+    run = bind_run(args, task, payload if args.resume else None, payload if args.fork_from else None)
+    prefix = development_prefix(run)
     model = CITF(cfg).to(args.device)
     learner = Learner(model, lr=args.lr, tau=args.target_tau, value_huber_delta=args.value_huber_delta)
     transitions = 0
     if payload is not None:
-        learner.restore(payload)
+        if args.fork_from:
+            inherited = payload['learner_recipe']
+            learner = Learner(model, lr=args.lr, gamma=inherited['gamma'], tau=inherited['tau'],
+                              policy_delay=inherited['policy_delay'], value_huber_delta=inherited['value_huber_delta'])
+            learner.restore(payload)
+            learner.tau, learner.value_huber_delta = args.target_tau, args.value_huber_delta
+            for group in learner.q_optimizer.param_groups:
+                group['lr'] = args.lr
+        else:
+            learner.restore(payload)
         transitions = payload['transitions']
     elif args.init_from:
         initialized = torch.load(args.init_from, map_location='cpu', weights_only=False)
+        require_standard_controller(initialized)
         model.load_state_dict(initialized['model'])
         learner.target.load_state_dict(model.state_dict())
         del initialized
@@ -309,11 +357,14 @@ def main():
         replay.load_state_dict(saved['replay'])
         env.load_state_dict(saved['environment'])
         restore_random_state(saved['random'], args.device, generators)
-        best, episode_count = saved['best'], saved['episodes']
+        best, episode_count = (-1. if args.fork_from else saved['best']), saved['episodes']
         outcomes.copy_(saved['outcomes'])
-        evaluation = payload['evaluation']
+        evaluation = None if args.fork_from else payload['evaluation']
         del saved
     del payload
+    endpoint = args.steps if args.stop_at is None else args.stop_at
+    if transitions > endpoint or args.fork_from and transitions == endpoint:
+        raise ValueError('--stop-at precedes the saved transition count.')
     write_json(out/'configuration.json', dict(arguments=vars(args), model=asdict(cfg), task=asdict(task),
                implementation_version=IMPLEMENTATION_VERSION, research_stage=args.stage, run_identity=run,
                reward='unified event/formation structure; collision magnitude recorded in task',
@@ -338,7 +389,7 @@ def main():
     start_transitions = transitions
     next_eval = ((transitions//args.eval_interval)+1)*args.eval_interval
     try:
-        while transitions < args.steps:
+        while transitions < endpoint:
             count = rollout_count(args, transitions, next_eval)
             active = torch.arange(args.envs, device=args.device) < count
             x = env.observation()
@@ -370,7 +421,7 @@ def main():
                 episode_count += int(ended.sum())
                 transitions += count
                 env.reset(ended.nonzero().flatten(), transitions)
-            if transitions >= args.start_learning:
+            if transitions >= args.start_learning and replay.size >= args.start_learning:
                 schedule = policy_schedule(vars(args), transitions)
                 policy_lr = schedule['policy_lr']
                 learner.set_policy_learning_rate(policy_lr)
@@ -393,9 +444,9 @@ def main():
                 write_json(out/'status.json', record)
                 print(json.dumps(record), flush=True)
                 last_report = now
-            if transitions >= next_eval or transitions >= args.steps or transitions == 500000:
+            if transitions >= next_eval or transitions >= endpoint or transitions == 500000:
                 evaluation = evaluate(model, task, args.eval_count, args.eval_seed, args.policy_eval_seed, args.device)
-                counts = learning_counts(run['method'], transitions, vars(args), learner.updates)
+                counts = learning_counts(run['method'], transitions, vars(args), learner.updates, prefix)
                 evaluation.update(transitions=transitions, updates=learner.updates, update_counts=counts,
                                   run_id=run['id'], policy_id=policy_digest(model.state_dict()),
                                   role='validation', research_stage=args.stage)
@@ -416,8 +467,9 @@ def main():
                 append_evaluation(out, evaluation)
                 print(json.dumps(dict(event='development_evaluation', **{k:v for k,v in evaluation.items() if k != 'rows'})), flush=True)
                 next_eval = ((transitions//args.eval_interval)+1)*args.eval_interval
-        final = dict(status='completed', transitions=transitions, updates=learner.updates,
-                     run_id=run['id'], update_counts=learning_counts(run['method'], transitions, vars(args), learner.updates),
+        final = dict(status='completed' if transitions == args.steps else 'paused', transitions=transitions, updates=learner.updates,
+                     registered_transitions=args.steps,
+                     run_id=run['id'], update_counts=learning_counts(run['method'], transitions, vars(args), learner.updates, prefix),
                      best_development_success=best, seconds=time.perf_counter()-started,
                      final={k:v for k,v in evaluation.items() if k != 'rows'})
         write_json(out/'status.json', final)

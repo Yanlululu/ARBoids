@@ -5,7 +5,7 @@ case set. Candidate continuations share future random streams. These returns
 are measurements for choosing the next mechanism change, not learning targets.
 """
 import argparse
-from dataclasses import replace
+from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
@@ -15,8 +15,10 @@ import torch
 
 sys.path.insert(0, os.environ.get('CITF_CODE_ROOT', str(Path(__file__).resolve().parents[1]/'code')))
 from unified.adversary import Attacker
+from unified import IMPLEMENTATION_VERSION
 from unified.environment import FleetEnv, TaskConfig, fusion
 from unified.networks import CITF, ModelConfig
+from unified.protocol import require_standard_controller
 from unified.train import seed_policy, write_json
 
 
@@ -37,27 +39,46 @@ def main():
     torch.set_float32_matmul_precision('high')
     text = args.reference.read_text()
     reference = json.loads(text.splitlines()[-1] if args.reference.suffix == '.jsonl' else text)
-    selected = [r['scene_index'] for r in reference['rows'] if r['collision']][:4]
-    selected += [r['scene_index'] for r in reference['rows'] if r['capture']][:4]
+    evaluation_count = reference['tasks']
+    if (reference['scene_seed'] != args.scene_seed or reference['policy_seed'] != args.policy_seed
+            or len(reference['rows']) != evaluation_count
+            or sorted(r['scene_index'] for r in reference['rows']) != list(range(evaluation_count))):
+        raise ValueError('The reference must contain the complete matching scene and policy stream.')
+    reference_rows = {r['scene_index']: r for r in reference['rows']}
+    ordered_rows = [reference_rows[i] for i in range(evaluation_count)]
+    selected = [r['scene_index'] for r in ordered_rows if r['collision']][:4]
+    selected += [r['scene_index'] for r in ordered_rows if r['capture']][:4]
+    if not selected:
+        raise ValueError('The reference contains no collision or capture cases for this diagnosis.')
     futures = [956101, 956102]
+    payload = torch.load(args.checkpoint, map_location='cpu', weights_only=False, mmap=True)
+    require_standard_controller(payload)
+    model = CITF(ModelConfig(**payload['config'])).to(args.device)
+    model.load_state_dict(payload['model']); model.requires_grad_(False); model.eval()
+    task = TaskConfig(**reference['task'])
+    if task.defenders != args.defenders or asdict(task) != asdict(replace(
+            TaskConfig(**payload['task']), defenders=args.defenders, agility=task.agility)):
+        raise ValueError('The reference may vary fleet size and agility, not the shared task definition.')
+    initial_count = model.cfg.samples+2
+    gamma = payload.get('learner_recipe', {}).get('gamma', .99)
     write_json(args.out/'configuration.json', dict(research_stage='development', checkpoint=str(args.checkpoint),
         reference=str(args.reference), opponent=None if args.opponent is None else str(args.opponent),
+        task=asdict(task), source_transitions=payload.get('transitions'),
+        implementation_version=IMPLEMENTATION_VERSION, code_root=str(Path(sys.modules[CITF.__module__].__file__).resolve().parent),
+        evaluation_count=evaluation_count, initial_candidate_count=initial_count,
+        retained_candidate_count=initial_count, intervention_control_steps=1, gamma=gamma,
         selected_scenes=selected, selection='first four collisions and first four captures in recorded scene order',
         state_times=['initial', 'five control decisions before termination'], future_policy_seeds=futures,
-        candidates='all six initial and six chain-best optimized configurations',
+        candidates='all initial samples and two anchors, followed by all chain-best configurations; duplicates retained',
         continuation='one candidate action followed by the original frozen complete controller',
         use='control-relevant development diagnosis; no target fitting or new formal ablation'))
-    payload = torch.load(args.checkpoint, map_location='cpu', weights_only=False, mmap=True)
-    model = CITF(ModelConfig(**payload['config'])).to(args.device)
-    model.load_state_dict(payload['model']); model.requires_grad_(False)
-    task = replace(TaskConfig(**payload['task']), defenders=args.defenders, agility=2.)
     attacker = None
     if args.opponent:
         opponent = torch.load(args.opponent, map_location='cpu', weights_only=False, mmap=True)['attacker']
         attacker = Attacker(opponent['defenders'], opponent['width'], opponent['delta']).to(args.device)
         attacker.load_state_dict(opponent['model']); attacker.requires_grad_(False)
     seed_policy(args.policy_seed, args.device)
-    env = FleetEnv(100, task, args.scene_seed, args.device)
+    env = FleetEnv(evaluation_count, task, args.scene_seed, args.device)
     index = torch.tensor(selected, device=args.device)
     traces, terminal_steps = [], {}
     step = 0
@@ -80,12 +101,14 @@ def main():
                     terminal_steps[scene] = step
         step += 1
     write_json(args.out/'traced_outcomes.json', dict(rows=env.records()))
+    if any(int(env.outcome[i]) != reference_rows[i]['outcome'] for i in selected):
+        raise ValueError('The frozen controller/opponent did not reproduce the selected reference outcomes.')
     rows, origins = [], []
     for position, scene in enumerate(selected):
         for label, tick in (('initial', 0), ('preterminal', max(0, terminal_steps[scene]-4))):
             rows.append({key: value[position] for key, value in traces[tick].items()})
             origins.append(dict(scene_index=scene, state=label, control_step=tick,
-                                recorded_outcome=reference['rows'][scene]['outcome']))
+                                recorded_outcome=reference_rows[scene]['outcome']))
     count = len(rows)
     stacked = {key: torch.stack([row[key] for row in rows]).to(args.device) for key in rows[0]}
     saved = env.state_dict()
@@ -95,7 +118,7 @@ def main():
     saved['noise'] = env.noise[torch.tensor([row['scene_index'] for row in origins], device=args.device)].cpu()
     candidates = stacked['candidates']
     choices = (candidates == stacked['chosen'][:, None]).all(-1).long().argmax(-1)
-    initial_best = stacked['scores'][:, :6].argmax(-1)
+    initial_best = stacked['scores'][:, :initial_count].argmax(-1)
     continuation_results = []
     for future_seed in futures:
         returns, outcomes = [], []
@@ -113,7 +136,7 @@ def main():
                     attack = None if attacker is None else attacker.select(x, branch.agility)['action']
                     _, reward, _, _ = branch.step(action, attack)
                     total += discount*reward
-                discount *= .99
+                discount *= gamma
                 iteration += 1
             returns.append(total.cpu())
             outcomes.append(branch.outcome.cpu())
@@ -124,6 +147,7 @@ def main():
     for i, origin in enumerate(origins):
         chosen, initial = int(choices[i]), int(initial_best[i])
         record = dict(**origin, predicted_values=stacked['scores'][i].tolist(), coefficients=candidates[i].tolist(),
+                      unique_configurations=len(torch.unique(candidates[i], dim=0)),
                       chosen_index=chosen, best_initial_index=initial, futures=[])
         for future in continuation_results:
             values, events = future['returns'][i], future['outcomes'][i]
@@ -135,11 +159,19 @@ def main():
         records.append(record)
     cells = [future for record in records for future in record['futures']]
     summary = dict(states=len(records), continuations=len(cells)*candidates.shape[1],
+        intervention_control_steps=1, initial_candidate_count=initial_count,
         selected_failures=sum(not c['selected_success'] for c in cells),
         failures_with_successful_candidate=sum(not c['selected_success'] and c['any_candidate_success'] for c in cells),
         all_candidates_failed=sum(not c['any_candidate_success'] for c in cells),
         mean_return_regret=sum(c['best_pool_return']-c['selected_return'] for c in cells)/len(cells),
         mean_actual_search_return_gain=sum(c['optimized_minus_initial_return'] for c in cells)/len(cells))
+    summary['by_state'] = {}
+    for label in ('initial', 'preterminal'):
+        subset = [future for record in records if record['state'] == label for future in record['futures']]
+        summary['by_state'][label] = dict(continuation_streams=len(subset),
+            selected_failures=sum(not c['selected_success'] for c in subset),
+            failures_with_successful_candidate=sum(not c['selected_success'] and c['any_candidate_success'] for c in subset),
+            all_candidates_failed=sum(not c['any_candidate_success'] for c in subset))
     write_json(args.out/'results.json', dict(status='completed', summary=summary, records=records))
     write_json(args.out/'status.json', dict(status='completed', **summary))
     print(json.dumps(summary), flush=True)

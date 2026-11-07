@@ -121,26 +121,30 @@ class Learner:
             for group in optimizer.param_groups:
                 group['lr'] = learning_rate
 
+    def endpoint_objective(self, x, a, weights, value):
+        return -(weights*value/100.).sum(-1).mean()
+
+    @torch.no_grad()
+    def critic_target(self, batch):
+        target = batch['ri'].clone()
+        continuing = ~batch['done'].bool()
+        if bool(continuing.any()):
+            next_state = batch['next_x'][continuing]
+            # select enables the configuration derivatives required by search.
+            next_u = self.target.select(next_state)['action']
+            first = self.target.q1(next_state, next_u, individual=True)
+            second = self.target.q2(next_state, next_u, individual=True)
+            target[continuing] += self.gamma*torch.minimum(first, second)
+        return target
+
     def update(self, batch, temperature=1., feedback_scale=1., policy_batch=None, robust_value=True):
         if temperature <= 0:
             raise ValueError('Configuration weights need a positive temperature.')
         if not 0 <= feedback_scale <= 1:
             raise ValueError('The feedback ramp must stay between zero and one.')
         self.updates += 1
-        x, u, individual_reward, next_x, done = (batch[key] for key in ('x', 'u', 'ri', 'next_x', 'done'))
-        # The target search needs derivatives of G even with frozen parameters.
-        with torch.no_grad():
-            target = individual_reward.clone()
-            continuing = ~done.bool()
-            if bool(continuing.any()):
-                next_state = next_x[continuing]
-                next_u = self.target.select(next_state)['action']
-                first = self.target.q1(next_state, next_u, individual=True)
-                second = self.target.q2(next_state, next_u, individual=True)
-                # The same per-vessel clipped value drives deployment, target
-                # control and all policy objectives.
-                continuation = torch.minimum(first, second)
-                target[continuing] += self.gamma*continuation
+        x, u = batch['x'], batch['u']
+        target = self.critic_target(batch)
         q1 = self.model.q1(x, u, individual=True)
         q2 = self.model.q2(x, u, individual=True)
         # Keep the original squared loss near the target while bounding each
@@ -184,7 +188,7 @@ class Learner:
                 encoded = self.model.encode_value(x)
             actions = fusion(x, a, result['b'], g, self.model.cfg.thrust_delta)
             value = self.model.value_from_encoded(encoded, actions)
-            endpoint_loss = -(weights*value/100.).sum(-1).mean()
+            endpoint_loss = self.endpoint_objective(x, a, weights, value)
             endpoint_loss.backward()
 
         initial = result['initial']

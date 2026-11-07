@@ -544,7 +544,8 @@ class Repairs(unittest.TestCase):
         payload = dict(run_identity=run, arguments=args, task=run['task'], config=run['model'],
                        model={'fixture': torch.tensor([1.])}, updates=updates, transitions=1000000,
                        update_counts=learning_counts('full', 1000000, args, updates),
-                       learner_recipe=dict(gamma=.99, tau=args['target_tau'], policy_delay=2),
+                       learner_recipe=dict(gamma=.99, tau=args['target_tau'], policy_delay=2,
+                                           value_huber_delta=args['value_huber_delta']),
                        implementation_version=IMPLEMENTATION_VERSION)
         validation_rows = rows(seed=73001)
         payload['evaluation'] = dict(rows=validation_rows, task=run['task'], scene_seed=73001, policy_seed=83001,

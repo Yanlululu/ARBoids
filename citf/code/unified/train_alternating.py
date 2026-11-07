@@ -210,7 +210,7 @@ def main():
                 transitions += count
                 counts[active_side] += count
                 env.reset((done & active).nonzero().flatten())
-            if transitions >= args.start_learning:
+            if replay.size >= args.start_learning:
                 if train_defender:
                     schedule = policy_schedule(recipe, counts['defender'])
                     policy_lr = schedule['policy_lr']
