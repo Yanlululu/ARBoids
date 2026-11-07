@@ -10,7 +10,7 @@ import torch
 
 from .environment import TaskConfig, FleetEnv, boids, execute, fusion
 from .networks import CITF, ModelConfig
-from .learner import Learner, Replay
+from .learner import Learner, MultiStepReplay
 from . import IMPLEMENTATION_VERSION
 from .protocol import (bind_run, learning_counts, outcome_metrics, validate_metrics,
                        validate_checkpoint, policy_digest)
@@ -215,6 +215,7 @@ def arguments():
     p.add_argument('--batch', type=int, default=512)
     p.add_argument('--value-terminal-fraction', type=float, default=.5)
     p.add_argument('--value-importance-exponent', type=float, default=.5)
+    p.add_argument('--return-steps', type=int, default=5)
     p.add_argument('--updates-per-step', type=int, default=4)
     p.add_argument('--capacity', type=int, default=1000000)
     p.add_argument('--start-learning', type=int, default=5000)
@@ -260,6 +261,8 @@ def main():
         resume_arguments(args, payload)
         validate_checkpoint(payload)
     validate_training_arguments(args)
+    if args.return_steps < 1 or args.start_learning <= (args.return_steps-1)*args.envs:
+        raise ValueError('Learning warmup must exceed the maximum number of pending return prefixes.')
     if min(args.exploration_steps, args.temperature_steps) <= 0:
         raise ValueError('Exploration and temperature schedules must have positive lengths.')
     if min(args.feedback_start, args.feedback_ramp) < 0:
@@ -294,7 +297,8 @@ def main():
         model.load_state_dict(initialized['model'])
         learner.target.load_state_dict(model.state_dict())
         del initialized
-    replay = Replay(args.capacity, task.defenders, args.device)
+    replay = MultiStepReplay(args.capacity, task.defenders, args.device, args.envs,
+                             args.return_steps, learner.gamma)
     env = FleetEnv(args.envs, task, seed=args.seed+100000, device=args.device, curriculum=True)
     generators = run_generators(args.seed, args.device)
     best, metrics, outcomes, episode_count = -1., {}, torch.zeros(5, device=args.device), 0
@@ -365,7 +369,9 @@ def main():
                 episode_count += int(ended.sum())
                 transitions += count
                 env.reset(ended.nonzero().flatten(), transitions)
-            if replay.size >= args.start_learning:
+            if transitions == args.steps:
+                replay.flush()
+            if transitions >= args.start_learning:
                 schedule = policy_schedule(vars(args), transitions)
                 policy_lr = schedule['policy_lr']
                 learner.set_policy_learning_rate(policy_lr)

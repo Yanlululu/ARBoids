@@ -1,8 +1,8 @@
 {
   "method": "CITF",
-  "revision": "unified-integrated-worst-response-20261107-r22",
+  "revision": "unified-multistep-value-learning-20261107-r23",
   "basis": "D:/ARBoids/fromCHAT/CITF_最终统一稿_论文与研究方案.zip",
-  "scientific_status": "Development r21: main200k99/100, but250k100/67 and full prescribed scope73.83% team /83.43% agility reveal second-seed critic drift. Restoring only preceding200k critics recovers98. Current work targets critic stability; local r22 integration retained, formal study not started.",
+  "scientific_status": "Fresh code_v28/r23 full-method repetitions train with five executed-step returns to reduce critic bootstrap drift. Prior r21 recovers to99/99 at300k and97/99 at350k, but250k collapse and absent stable feedback gain remain in full curves. No formal study started.",
   "implementation": "code/unified",
   "protocol": {
     "defenders": 3,
@@ -214,13 +214,13 @@
     "temperature_steps": 100000,
     "boids_success": 87,
     "collision_penalty": 50,
-    "candidate_run": "dev_full_1101_v27_worst_response",
-    "candidate_source": "/root/autodl-tmp/citf-unified-20261106/code_v27",
+    "candidate_run": "dev_full_1101_v28_multistep_return",
+    "candidate_source": "/root/autodl-tmp/citf-unified-20261106/code_v28",
     "candidate_adjustments": {
-      "relative_to": "r18 plus feedback plateau1/300",
-      "value_response": "Per-vessel actual-return twin critics: own-action local value plus mean positive nearest2 directed teammate responses and most adverse negative response; add minimum of zero and responses outside self+nearest2. Shared sign split selects only nonnegative derivative at zero. All control and learning use mean per-vessel twin minima.",
-      "control": "Widen original two local FF hidden layers512->1072, preserving initial local function; critic856810 versus857044 parameters",
-      "status": "Six fresh matched1M development runs active; fixed250k26-condition full scope registered; formal recipe pending actual mechanism and stability evidence"
+      "relative_to": "code_v27/r21 one-step value learning",
+      "return_steps": 5,
+      "unchanged": "joint fusion, current-action Transformer, min scoring, generator base objective, feedback, search, task and transition/update budgets",
+      "status": "Two fresh full-method1M repeats active;50k86/80 versus85/82, continue100k and250k stability. Fresh matching ablations after retaining the recipe."
     },
     "second_seed_runs": [
       "dev_full_1102_v23_teammate_response"
@@ -2990,6 +2990,311 @@
         "capture": -5.9976077
       },
       "next": "Fixed250k actual-control comparison of .75 min+.25 max twin score, both seeds main and7 boats; no adoption before results."
+    },
+    "v27_matched_300k": {
+      "full": [
+        99,
+        99
+      ],
+      "no_action": [
+        97,
+        90
+      ],
+      "no_feedback": [
+        98,
+        99
+      ],
+      "action_gain_pp": [
+        2,
+        9
+      ],
+      "feedback_gain_pp": [
+        1,
+        0
+      ]
+    },
+    "v27_matched_350k": {
+      "full": [
+        97,
+        99
+      ],
+      "no_action": [
+        97,
+        90
+      ],
+      "no_feedback": [
+        100,
+        97
+      ],
+      "action_gain_pp": [
+        0,
+        9
+      ],
+      "feedback_gain_pp": [
+        -3,
+        2
+      ]
+    },
+    "v27_critic_refinement_250k": {
+      "source": "dev_full_1102_v27_worst_response/value_learning_source_250000.pt",
+      "fixed_critic_updates": 1000,
+      "new_environment_transitions": 0,
+      "original_target002": {
+        "main": [
+          64,
+          11,
+          25
+        ],
+        "team7": [
+          51,
+          49,
+          0
+        ]
+      },
+      "slow_target0005": {
+        "main": [
+          56,
+          18,
+          26
+        ],
+        "team7": [
+          53,
+          46,
+          1
+        ]
+      },
+      "terminal_uncorrected": {
+        "main": [
+          56,
+          10,
+          34
+        ],
+        "team7": [
+          52,
+          48,
+          0
+        ]
+      },
+      "outcomes_order": [
+        "success",
+        "collision",
+        "breach"
+      ],
+      "adopted": false,
+      "result_path": "/root/autodl-tmp/citf-unified-20261106/value_learning_refinement_v27"
+    },
+    "v27_frozen_value_alternatives_250k": {
+      "target_critics_1102": {
+        "main": [
+          69,
+          7,
+          24
+        ]
+      },
+      "blend075min025max": {
+        "main": [
+          [
+            100,
+            0,
+            0
+          ],
+          [
+            74,
+            10,
+            16
+          ]
+        ],
+        "team7": [
+          [
+            48,
+            51,
+            1
+          ],
+          [
+            49,
+            50,
+            1
+          ]
+        ]
+      },
+      "soft_negative_response": {
+        "main": [
+          [
+            100,
+            0,
+            0
+          ],
+          [
+            64,
+            14,
+            22
+          ]
+        ],
+        "team7": [
+          [
+            47,
+            52,
+            1
+          ],
+          [
+            49,
+            51,
+            0
+          ]
+        ]
+      },
+      "adopted": false,
+      "kind": "targeted critic-drift localization; not additional formal ablations"
+    },
+    "v28_training": {
+      "source": "code_v28",
+      "implementation_version": "unified-multistep-value-learning-20261107-r23",
+      "return_steps": 5,
+      "full_runs": [
+        "dev_full_1101_v28_multistep_return",
+        "dev_full_1102_v28_multistep_return"
+      ],
+      "pids": [
+        441307,
+        441308
+      ],
+      "seeds": [
+        1101,
+        1102
+      ],
+      "registered_transitions": 1000000,
+      "evaluation_interval": 50000,
+      "scene_seed": 73001,
+      "policy_seed": 83001,
+      "episodes_per_node": 100,
+      "status": "training",
+      "hypothesis": "Short actual multi-step returns reduce dependence on drifting critic bootstraps while preserving executed joint-control learning.",
+      "target": "sum(k=0..h-1) gamma^k r_i,t+k + gamma^h (1-d) min(Qtarget1_i,Qtarget2_i)(X_t+h,Utarget*)",
+      "truncation": "h<=5; real terminal ends all prefixes in that lane; final budget tails bootstrap; intermediate evaluations retain pending prefixes",
+      "off_policy_note": "Intermediate actions are actual behavior actions; short-return targets trade reduced bootstrap depth against behavior-policy bias.",
+      "fixed_components": [
+        "task",
+        "endpoints",
+        "joint generator",
+        "current-action Transformer",
+        "twin minimum scoring",
+        "search",
+        "feedback",
+        "sampling and update budgets"
+      ],
+      "control_plan": "Fresh no-action and no-feedback repetitions with identical multi-step learning if this full candidate is retained.",
+      "comparison": "all registered same-seed r21 development nodes; final budget endpoints retained"
+    },
+    "v28_main_50k": {
+      "full": [
+        86,
+        80
+      ],
+      "original_one_step": [
+        85,
+        82
+      ],
+      "gain_pp": [
+        1,
+        -2
+      ],
+      "mean_gain_pp": -0.5,
+      "full_outcomes": [
+        [
+          86,
+          0,
+          14
+        ],
+        [
+          80,
+          1,
+          19
+        ]
+      ],
+      "outcomes_order": [
+        "success",
+        "collision",
+        "breach"
+      ],
+      "episodes_per_seed": 100,
+      "scene_seed": 73001,
+      "policy_seed": 83001,
+      "updates": 2816,
+      "next_decision": "100k complete control and250k stability; feedback starts at50k and ramps through100k"
+    },
+    "v27_matched_400k": {
+      "full": [
+        99,
+        99
+      ],
+      "no_action": [
+        98,
+        91
+      ],
+      "no_feedback": [
+        100,
+        98
+      ],
+      "action_gain_pp": [
+        1,
+        8
+      ],
+      "feedback_gain_pp": [
+        -1,
+        1
+      ]
+    },
+    "v28_scope_250k": {
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v28",
+      "pid": 442822,
+      "source": "code_v28",
+      "fixed_transitions": 250000,
+      "status": "waiting_for_registered_checkpoint",
+      "seeds": [
+        1101,
+        1102
+      ],
+      "conditions": 26,
+      "agility": [
+        1.5,
+        1.75,
+        2.0,
+        2.25,
+        2.5,
+        2.75,
+        3.0
+      ],
+      "defenders": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "decision": "Fixed milestone registered after50k, before later outcomes. Same prescribed ranges and development scenes; no extra ablation scope. Cancel if candidate is retired."
+    },
+    "v27_matched_450k": {
+      "full": [
+        99,
+        99
+      ],
+      "no_action": [
+        98,
+        96
+      ],
+      "no_feedback": [
+        100,
+        98
+      ],
+      "action_gain_pp": [
+        1,
+        3
+      ],
+      "feedback_gain_pp": [
+        -1,
+        1
+      ]
     }
   },
   "generalization": {
@@ -3085,6 +3390,22 @@
       "success": 94,
       "collision": 6,
       "breach": 0
+    },
+    "development_150k": {
+      "run": "dev_arboids_1101_b3_exact_author",
+      "success": 97,
+      "collision": 3,
+      "breach": 0,
+      "updates": 100001,
+      "tasks": 100
+    },
+    "development_200k": {
+      "run": "dev_arboids_1101_b3_exact_author",
+      "success": 93,
+      "collision": 7,
+      "breach": 0,
+      "updates": 150001,
+      "tasks": 100
     }
   },
   "dynamics_integration": "old-heading world-to-body; Euler update of body velocity and heading; new-heading body-to-world",

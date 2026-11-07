@@ -22,7 +22,7 @@ FULL_KEYS = ('envs', 'updates_per_step', 'lr', 'batch', 'capacity', 'start_learn
              'target_tau', 'temperature_start', 'temperature_end', 'temperature_steps',
              'endpoint_noise_start', 'endpoint_noise_end', 'exploration_steps', 'feedback',
              'feedback_start', 'feedback_ramp', 'policy_lr_end', 'policy_lr_decay_start',
-             'policy_lr_decay_steps', 'value_terminal_fraction', 'value_importance_exponent')
+             'policy_lr_decay_steps', 'value_terminal_fraction', 'value_importance_exponent', 'return_steps')
 RUNTIME_ARGUMENTS = {'out', 'resume', 'init_from', 'device', 'registry', 'previous'}
 
 

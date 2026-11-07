@@ -9,7 +9,7 @@ import torch
 from . import IMPLEMENTATION_VERSION
 from .environment import FleetEnv, TaskConfig, fusion
 from .networks import CITF, ModelConfig
-from .learner import Learner, Replay
+from .learner import Learner, Replay, MultiStepReplay
 from .adversary import Attacker, AttackerLearner, observation, attacker_reward
 from .train import (write_json, save, append_evaluation, seed_policy, device_index, run_generators,
                     random_state, restore_random_state, resume_arguments,
@@ -145,7 +145,9 @@ def main():
     env = FleetEnv(args.envs, task, seed=phase_seed+100000, device=args.device)
     shapes = None if train_defender else dict(s=(8+7*task.defenders,), a=(2,), u=(2,), r=(),
                                                next_s=(8+7*task.defenders,), done=(), event=(), seconds=())
-    replay = Replay(args.capacity, task.defenders, args.device, shapes=shapes)
+    replay = (MultiStepReplay(args.capacity, task.defenders, args.device, args.envs,
+                              recipe['return_steps'], defender_learner.gamma)
+              if train_defender else Replay(args.capacity, task.defenders, args.device, shapes=shapes))
     generators = run_generators(phase_seed, args.device)
     transitions, metrics, evaluation = 0, {}, None
     last_checkpoint = None
@@ -209,7 +211,9 @@ def main():
                 transitions += count
                 counts[active_side] += count
                 env.reset((done & active).nonzero().flatten())
-            if replay.size >= args.start_learning:
+            if train_defender and transitions == args.steps:
+                replay.flush()
+            if transitions >= args.start_learning:
                 if train_defender:
                     schedule = policy_schedule(recipe, counts['defender'])
                     policy_lr = schedule['policy_lr']
