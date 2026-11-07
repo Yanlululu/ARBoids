@@ -1,8 +1,8 @@
 {
   "method": "CITF",
-  "revision": "unified-teammate-response-20261107-r17",
+  "revision": "unified-nonlocal-response-20261107-r18",
   "basis": "D:/ARBoids/fromCHAT/CITF_最终统一稿_论文与研究方案.zip",
-  "scientific_status": "Development: r17 full100k95/94 versus unchanged no-action82/93; seven-vessel100k40/36. Current four r17 full/no-feedback runs plus two unchanged no-action controls continue. Old r15 full/no-feedback four runs retired after dense-fleet decline; their incomplete records retained and old r16 final scope cancelled. r17 fixed250k scope pending.",
+  "scientific_status": "Development: r18 adopted after all eight fixed250k larger-fleet comparisons:6 improve,1 tie,1 loses1point; net61 additional successes. Team2-7mean74.50->79.58, main250k98/100. Three-defender computation unchanged; four r17 full/no-feedback and two common no-action runs continue1M. Mechanism stability and final500k/1M scope pending; formal study not started.",
   "implementation": "code/unified",
   "protocol": {
     "defenders": 3,
@@ -47,7 +47,7 @@
     "shared_scalar_for_two_thrusters": true,
     "source": "shared local endpoint jointly trained through actual team-action value",
     "generator": "autoregressive endpoint atoms plus Beta",
-    "value": "twin per-vessel actual-return critics; shared own-action local values plus Transformer-conditioned directed responses dotted with teammate departures from executable Boids, averaged over nearest2; mean of per-vessel twin minima drives all selection and policy objectives",
+    "value": "Per-vessel actual-return twin critics: own-action local values, Transformer-conditioned directed teammate responses averaged over nearest2, plus minimum of zero and existing interaction responses outside self+nearest2. Mean per-vessel twin minima drives all selection and policy objectives.",
     "solver": "finite projected gradient steps",
     "feedback": "weighted joint distribution fitting with independent base generator learning",
     "spatial_aggregation": "defender self+attacker+nearest2 teammates; attacker self+nearest3 defenders; prefix nearest2 already generated defenders; whole-fleet joint scoring and choice"
@@ -1505,7 +1505,7 @@
       }
     },
     "v23_scope_250k": {
-      "status": "waiting_for_registered_checkpoint",
+      "status": "completed",
       "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v23",
       "pid": 427142,
       "fixed_transitions": 250000,
@@ -1859,7 +1859,7 @@
       "decision": "Promising fixed-weight improvement; evaluate all changed4-7vessel conditions at registered250k before adoption."
     },
     "global_response_scope_250k": {
-      "status": "waiting_for_fixed250k_original_scope",
+      "status": "completed_adopted_r18",
       "pid": 430386,
       "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v23_global_response",
       "fixed_transitions": 250000,
@@ -1869,7 +1869,70 @@
       ],
       "changed_conditions": 8,
       "unchanged_conditions_reused": "both seeds, agility1.5:0.25:3, team2/team3 from development_scope_v23",
-      "formal_experiment_added": false
+      "formal_experiment_added": false,
+      "original_team_curves": [
+        [
+          99,
+          100,
+          92,
+          76,
+          36,
+          8
+        ],
+        [
+          100,
+          100,
+          91,
+          85,
+          67,
+          40
+        ]
+      ],
+      "retained_team_curves": [
+        [
+          99,
+          100,
+          95,
+          84,
+          60,
+          30
+        ],
+        [
+          100,
+          100,
+          92,
+          84,
+          67,
+          44
+        ]
+      ],
+      "changed_condition_deltas_pp": [
+        [
+          3,
+          8,
+          24,
+          22
+        ],
+        [
+          1,
+          -1,
+          0,
+          4
+        ]
+      ],
+      "rescues": [
+        66,
+        13
+      ],
+      "harms": [
+        9,
+        9
+      ],
+      "net_additional_success": 61,
+      "collision_reduction": 65,
+      "additional_breaches": 4,
+      "old_team_mean_percent": 74.5,
+      "new_team_mean_percent": 79.58333333333333
     },
     "v23_main_200k": {
       "seeds": [
@@ -1910,6 +1973,221 @@
         4,
         3
       ]
+    },
+    "current_inference_source": "code_v24/r18; compatible development training source code_v23/r17 with three defenders",
+    "v24_team7_500k": {
+      "status": "waiting_for_fixed500k",
+      "pid": 431315,
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_team7_v24_500k",
+      "fixed_transitions": 500000,
+      "conditions": 2,
+      "seeds": [
+        1101,
+        1102
+      ]
+    },
+    "v24_scope_final": {
+      "status": "waiting_for_registered_checkpoint",
+      "pid": 431314,
+      "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v24_final",
+      "fixed_transitions": 1000000,
+      "conditions": 26,
+      "seeds": [
+        1101,
+        1102
+      ]
+    },
+    "v23_main_250k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        98,
+        100
+      ],
+      "collision": [
+        2,
+        0
+      ],
+      "breach": [
+        0,
+        0
+      ],
+      "matched_no_action_success": [
+        96,
+        100
+      ]
+    },
+    "v23_feedback_150k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "full_success": [
+        92,
+        100
+      ],
+      "no_feedback_success": [
+        98,
+        99
+      ],
+      "paired_gain_pp": [
+        -6,
+        1
+      ]
+    },
+    "v23_agility_250k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        [
+          100,
+          100,
+          100,
+          99,
+          99,
+          98,
+          97
+        ],
+        [
+          99,
+          99,
+          98,
+          99,
+          98,
+          95,
+          95
+        ]
+      ],
+      "mean_percent": 98.28571428571429,
+      "r18_reuse": "same three-defender forward"
+    },
+    "generator_diagnostic_300k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "actual_states_per_seed": 512,
+      "generated_initial_best_beats_anchors": [
+        0.708984375,
+        0.791015625
+      ],
+      "mean_max_component_probability": [
+        0.7353154420852661,
+        0.7433706521987915
+      ],
+      "mean_beta_concentration": [
+        3.179126739501953,
+        3.557638168334961
+      ],
+      "decision": "No distribution collapse observed; no entropy/concentration/temperature change. Trial initial-pool objective to align base generation with best-of-pool selection."
+    },
+    "pool_objective_candidate": {
+      "status": "training_not_adopted",
+      "source": "code_v25/unified-candidate-pool-learning-20261107-r19",
+      "runs": [
+        "dev_full_1101_v25_pool_objective",
+        "dev_full_1102_v25_pool_objective"
+      ],
+      "pids": [
+        431820,
+        431821
+      ],
+      "registered_transitions_per_run": 1000000,
+      "initialization": "fresh, seeds1101/1102",
+      "decision_nodes": [
+        50000,
+        100000
+      ],
+      "change": "Base generator objective E[max(initial iid K candidates and two fixed anchors)], score-function SUM with leave-one-sample-out maximum baselines. Optimized configurations remain exclusively in explicit feedback.",
+      "other_components": "same r18 architecture, endpoint objective, actual-return TD, replay, search, schedules and parameters",
+      "matched_ablation_requirement": "Both ablations require fresh training with this base objective if adopted; old controls cannot be reused for r19.",
+      "authoritative_local_method": "r18 until actual improvement is established"
+    },
+    "v23_feedback_200k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "full_success": [
+        97,
+        99
+      ],
+      "no_feedback_success": [
+        100,
+        99
+      ],
+      "paired_gain_pp": [
+        -3,
+        0
+      ]
+    },
+    "v23_main_300k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        98,
+        94
+      ],
+      "collision": [
+        2,
+        5
+      ],
+      "breach": [
+        0,
+        1
+      ],
+      "matched_no_action_success": [
+        99,
+        100
+      ]
+    },
+    "capacity_matched_control_candidate": {
+      "source": "code_v26",
+      "version": "unified-capacity-matched-control-20261107-r20",
+      "status": "prepared; not yet trained",
+      "parent": "code_v25/r19",
+      "full_method_unchanged": true,
+      "control": "two per-token LocalBlocks and own-action response, state-only neighbor geometry; no other current candidate action",
+      "critic_parameter_difference": 6280,
+      "critic_relative_difference": 0.00733
+    },
+    "pool_objective_first50k": {
+      "source": "code_v25/r19",
+      "seeds": [
+        1101,
+        1102
+      ],
+      "success": [
+        80,
+        69
+      ],
+      "collision": [
+        0,
+        0
+      ],
+      "breach": [
+        20,
+        31
+      ],
+      "reference_success": [
+        53,
+        86
+      ],
+      "rescues": [
+        38,
+        7
+      ],
+      "harms": [
+        11,
+        24
+      ],
+      "decision": "Continue to preregistered100k comparison before adding matched controls; not yet adopted."
     }
   },
   "generalization": {
@@ -1976,7 +2254,13 @@
     "start_learning": 50000,
     "lr": 0.0001,
     "temperature_loss": "alpha-space as in author SAC.py",
-    "stochastic_entropy_dimensions": 2
+    "stochastic_entropy_dimensions": 2,
+    "envs": 64,
+    "updates_per_collection": 64,
+    "optimizer_updates_per_team_transition": 1.0,
+    "development_reference": "dev_arboids_1101_b2_author_updates",
+    "development_source": "code_baseline_b2",
+    "development_pid": 432124
   },
   "dynamics_integration": "old-heading world-to-body; Euler update of body velocity and heading; new-heading body-to-world",
   "retired_development": "v1-v8 used the inherited frame-update ordering; retained as development history"

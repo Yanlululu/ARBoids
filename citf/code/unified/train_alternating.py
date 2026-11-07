@@ -29,9 +29,15 @@ def evaluate_pair(defender, attacker, task, count, scene_seed, policy_seed, devi
                 env.step(command, attack)
         rows = env.records()
     totals = {key: sum(row[key] for row in rows) for key in ('success', 'capture', 'timeout', 'collision', 'breach')}
+    capture_seconds = [row['seconds'] for row in rows if row['capture']]
     return dict(tasks=count, scene_seed=scene_seed, policy_seed=policy_seed, task=asdict(task),
+                implementation_version=IMPLEMENTATION_VERSION,
                 **totals, success_rate=totals['success']/count,
-                mean_seconds=sum(row['seconds'] for row in rows)/count, rows=rows)
+                mean_seconds=sum(row['seconds'] for row in rows)/count,
+                mean_termination_seconds=sum(row['seconds'] for row in rows)/count,
+                capture_count=len(capture_seconds),
+                mean_capture_seconds=sum(capture_seconds)/len(capture_seconds) if capture_seconds else None,
+                rows=rows)
 
 
 def main():
@@ -41,12 +47,12 @@ def main():
     parser.add_argument('--out', required=True)
     parser.add_argument('--steps', type=int, default=500000)
     parser.add_argument('--seed', type=int, default=2101)
-    parser.add_argument('--envs', type=int, default=64)
-    parser.add_argument('--batch', type=int, default=256)
-    parser.add_argument('--updates-per-step', type=int, default=4)
-    parser.add_argument('--capacity', type=int, default=1000000)
-    parser.add_argument('--start-learning', type=int, default=5000)
-    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--envs', type=int)
+    parser.add_argument('--batch', type=int)
+    parser.add_argument('--updates-per-step', type=int)
+    parser.add_argument('--capacity', type=int)
+    parser.add_argument('--start-learning', type=int)
+    parser.add_argument('--lr', type=float)
     parser.add_argument('--eval-interval', type=int, default=50000)
     parser.add_argument('--eval-count', type=int, default=100)
     parser.add_argument('--eval-seed', type=int, default=73003)
@@ -60,9 +66,9 @@ def main():
     resumed = torch.load(args.resume, map_location='cpu', weights_only=False) if args.resume else None
     if resumed is not None:
         resume_arguments(args, resumed)
-    validate_training_arguments(args)
-    if args.stage == 'formal' and (args.steps != 500000 or args.test_seed == args.eval_seed):
-        raise ValueError('Formal phases use 500000 team transitions and a separate fixed test bank.')
+    if args.stage == 'formal' and (args.steps != 500000 or args.seed != 2101 or args.eval_count != 100
+            or args.eval_seed != 73003 or args.test_seed != 74003 or args.policy_eval_seed != 83003):
+        raise ValueError('Formal phases retain seed2101, 500000 team transitions and the registered 100-scene banks.')
     source = torch.load(args.previous, map_location='cpu', weights_only=False)
     if source.get('implementation_version') != IMPLEMENTATION_VERSION:
         raise ValueError('Continue the unified controller with its matching implementation version.')
@@ -77,6 +83,19 @@ def main():
             raise ValueError('Continue directly from the preceding completed 500k phase.')
         defender_payload, attacker_payload = source['defender'], source['attacker']
         recipe, counts = source['defender_recipe'], source['side_transitions'].copy()
+    train_defender = args.phase in (3, 5)
+    defaults = dict(envs=64, batch=256, updates_per_step=4, capacity=1000000,
+                    start_learning=5000, lr=1e-4)
+    training_overrides = {}
+    for key, default in defaults.items():
+        inherited = recipe[key] if train_defender else default
+        if getattr(args, key) is None:
+            setattr(args, key, inherited)
+        elif getattr(args, key) != inherited:
+            training_overrides[key] = dict(inherited=inherited, actual=getattr(args, key))
+    if train_defender and training_overrides:
+        raise ValueError('Defender phases retain the selected main-training recipe; change that recipe before registering the chain.')
+    validate_training_arguments(args)
     if args.stage == 'formal' and source['arguments']['stage'] != 'formal':
         raise ValueError('The registered formal chain starts from a formal main training seed.')
     if args.seed != recipe['seed']:
@@ -102,7 +121,6 @@ def main():
     defender_learner.target.load_state_dict(defender.state_dict())
     attacker_learner.target.load_state_dict(attacker.state_dict())
     del source, defender_payload, attacker_payload
-    train_defender = args.phase in (3, 5)
     active_side = 'defender' if train_defender else 'attacker'
     defender.requires_grad_(train_defender)
     attacker.requires_grad_(not train_defender)
@@ -124,12 +142,13 @@ def main():
         del saved, resumed
     write_json(out/'configuration.json', dict(arguments=vars(args), task=asdict(task),
                implementation_version=IMPLEMENTATION_VERSION, active_side=active_side,
-               defender_recipe=recipe, phase_seed=phase_seed,
+               defender_recipe=recipe, phase_seed=phase_seed, training_overrides=training_overrides,
                attacker_reward='breach +100; capture/timeout -100; defender collision 0; otherwise radial progress/15',
                stage_transition='retain both policies and optimizers; new active replay; synchronize targets'))
     if args.phase == 2 and not args.resume:
         baseline = evaluate_pair(defender, None, task, args.eval_count, args.test_seed, args.policy_eval_seed, args.device)
-        baseline.update(phase=1, opponent='APF', role='fixed-stage-endpoint', research_stage=args.stage)
+        baseline.update(phase=1, transitions=500000, training_seed=args.seed, opponent='APF',
+                        role='fixed-stage-endpoint', research_stage=args.stage)
         write_json(out/'phase1_apf.json', baseline)
     started = last_report = time.perf_counter()
     next_eval = ((transitions//args.eval_interval)+1)*args.eval_interval
@@ -206,11 +225,13 @@ def main():
                 print(json.dumps({key: value for key, value in evaluation.items() if key != 'rows'}), flush=True)
                 next_eval = ((transitions//args.eval_interval)+1)*args.eval_interval
         endpoint = evaluate_pair(defender, attacker, task, args.eval_count, args.test_seed, args.policy_eval_seed, args.device)
-        endpoint.update(phase=args.phase, transitions=transitions, role='fixed-stage-endpoint', research_stage=args.stage)
+        endpoint.update(phase=args.phase, transitions=transitions, training_seed=args.seed,
+                        role='fixed-stage-endpoint', research_stage=args.stage)
         write_json(out/'endpoint.json', endpoint)
         if args.phase == 5:
             retention = evaluate_pair(defender, None, task, args.eval_count, args.test_seed, args.policy_eval_seed, args.device)
-            retention.update(phase=5, opponent='APF', role='retention', research_stage=args.stage)
+            retention.update(phase=5, transitions=transitions, training_seed=args.seed,
+                             opponent='APF', role='retention', research_stage=args.stage)
             write_json(out/'apf_retention.json', retention)
         write_json(out/'status.json', dict(status='completed', phase=args.phase, active_side=active_side,
                    transitions=transitions, side_transitions=counts, seconds=time.perf_counter()-started,

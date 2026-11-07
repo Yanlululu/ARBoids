@@ -28,10 +28,34 @@ def read(path):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-def formal_result(path):
+def formal_result(path, registry=None):
     result = read(path)
     if result.get('research_stage') != 'formal' or result['tasks'] != 100:
         raise ValueError(f'Use the registered 100-scenario formal result: {path}')
+    if len(result.get('rows', [])) != 100:
+        raise ValueError(f'Keep all 100 recorded outcomes: {path}')
+    for key in ('success', 'capture', 'timeout', 'collision', 'breach'):
+        if result[key] != sum(row[key] for row in result['rows']):
+            raise ValueError(f'Outcome count differs from recorded episodes: {path}')
+    if registry is not None:
+        boids = path.parent.name == 'boids'
+        method = 'boids' if boids else path.parent.parent.name
+        seed = None if boids else int(path.parent.name)
+        label = dict(full='citf', no_action='citf-no-action-interaction',
+                     no_feedback='citf-no-generator-feedback').get(method, method)
+        metadata = (None if boids else dict(transitions=registry['team_transitions'], seed=seed,
+                    implementation_version=registry['implementation_version']))
+        scene, defenders, agility = registry['main_test_seed'], 3, 2.
+        if path.stem.startswith('agility_'):
+            scene, agility = registry['agility_seed'], float(path.stem.split('_')[1])
+        elif path.stem.startswith('team_'):
+            scene, defenders = registry['team_size_seed'], int(path.stem.split('_')[1])
+        policy = registry['policy_seeds'][0 if boids else registry['seeds'].index(seed)]
+        if (result.get('method') != label or result.get('checkpoint_metadata') != metadata
+                or result.get('implementation_version') != registry['implementation_version']
+                or result.get('task') != dict(registry['recipe']['task'], defenders=defenders, agility=agility)
+                or result.get('scene_seed') != scene or result.get('policy_seed') != policy):
+            raise ValueError(f'Result identity differs from the registered method and condition: {path}')
     return result
 
 
@@ -61,9 +85,9 @@ def main_figures(study, directory):
     seeds = registry['seeds']
     if len(seeds) != 5 or read(study / 'status.json')['status'] != 'numeric_study_completed':
         raise ValueError('The main figures require the complete registered five-seed numeric study.')
-    data = {method: [formal_result(study / method / str(seed) / 'main_test.json') for seed in seeds]
+    data = {method: [formal_result(study / method / str(seed) / 'main_test.json', registry) for seed in seeds]
             for method in METHODS}
-    reference = formal_result(study / 'boids' / 'main_test.json')
+    reference = formal_result(study / 'boids' / 'main_test.json', registry)
     table = ['表II：五个独立训练种子的均值 ± 标准差（%）；Boids为无训练参照。', '',
              '| 方法 | 防御成功率 | 捕获／到时防守 | 碰撞／突破 |', '|---|---|---|---|']
     for method in MAIN + ['no_action', 'no_feedback']:
@@ -116,10 +140,10 @@ def main_figures(study, directory):
         for method in MAIN:
             names = [f'agility_{x:.2f}.json' if setting == 'agility' else f'team_{x}.json' for x in xs]
             if method == 'boids':
-                y = [100*formal_result(study / method / name)['success_rate'] for name in names]
+                y = [100*formal_result(study / method / name, registry)['success_rate'] for name in names]
                 ax.plot(xs, y, color=COLORS[method], label=LABELS[method], marker='o', markersize=3.5, lw=1.2)
             else:
-                values = [[formal_result(study / method / str(seed) / name)['success_rate'] for name in names]
+                values = [[formal_result(study / method / str(seed) / name, registry)['success_rate'] for name in names]
                           for seed in seeds]
                 band(ax, xs, values, method, 'o')
         ax.set(xlabel=xlabel, ylabel='Defense success (%)', xticks=xs, ylim=(0, 100))
@@ -129,10 +153,17 @@ def main_figures(study, directory):
     finish(fig, directory, 'fig5_applicability', study / 'registry.json')
 
 
-def alternating_figure(root, directory):
+def alternating_figure(root, directory, registry):
     rows = [formal_result(root / 'phase2' / 'phase1_apf.json')]
     rows += [formal_result(root / f'phase{i}' / 'endpoint.json') for i in range(2, 6)]
     rows += [formal_result(root / 'phase5' / 'apf_retention.json')]
+    for result, phase in zip(rows, [1, 2, 3, 4, 5, 5]):
+        if (result.get('phase') != phase or result.get('transitions') != 500000
+                or result.get('training_seed') != registry['alternating_training_seed']
+                or result.get('implementation_version') != registry['implementation_version']
+                or result.get('task') != registry['recipe']['task']
+                or result.get('scene_seed') != 74003 or result.get('policy_seed') != 83003):
+            raise ValueError('Use the registered consecutive five-stage chain and APF revisit.')
     fig, ax = plt.subplots(figsize=(7.1, 3.3), layout='constrained')
     bottom = np.zeros(6)
     for outcome, label, color in [('capture', 'Capture', '#125F93'), ('timeout', 'Safe timeout', '#55A6A4'),
@@ -147,10 +178,17 @@ def alternating_figure(root, directory):
     finish(fig, directory, 'fig6_alternating', root)
 
 
-def vrx_figure(root, directory):
-    summary = read(root / 'full' / 'summary.json')
-    if summary.get('research_stage') != 'formal' or summary['episodes'] != 100:
-        raise ValueError('Use the completed 100-episode formal VRX batch.')
+def vrx_figure(root, directory, registry):
+    for method, controller in [('full', 'CITF'), ('arboids', 'ARBoidsUnified')]:
+        record = read(root / method / 'summary.json')
+        task = dict(registry['recipe']['task'], agility=2.25)
+        if (record.get('research_stage') != 'formal' or record.get('episodes') != 100
+                or record.get('controller') != controller or record.get('training_seed') != registry['vrx_training_seed']
+                or record.get('training_transitions') != registry['team_transitions']
+                or record.get('implementation_version') != registry['implementation_version']
+                or record.get('task') != task or record.get('scene_seed') != 74002
+                or record.get('policy_seed') != 84002):
+            raise ValueError('Use both registered, completed 100-episode formal VRX batches.')
     # The first registered episode is captured during the actual batch.
     # Keep its outcome; do not pick a different episode after viewing results.
     episode = root / 'full' / 'episode-000'
@@ -201,9 +239,9 @@ def main():
                          'pdf.fonttype': 42, 'ps.fonttype': 42})
     main_figures(args.study, args.out)
     if args.alternating:
-        alternating_figure(args.alternating, args.out)
+        alternating_figure(args.alternating, args.out, read(args.study / 'registry.json'))
     if args.vrx:
-        vrx_figure(args.vrx, args.out)
+        vrx_figure(args.vrx, args.out, read(args.study / 'registry.json'))
 
 
 if __name__ == '__main__':

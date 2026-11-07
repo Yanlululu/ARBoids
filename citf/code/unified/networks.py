@@ -420,12 +420,21 @@ class TeamCritic(nn.Module):
             allowed = (nearest_other(edge[:, :n, :n], self.neighbors)
                        if n > self.neighbors+1 else ~diagonal)
             interaction = pair_value.masked_fill(~allowed, 0.).sum(-1)/min(self.neighbors, n-1)
-            # This branch is zero when the relevant teammates keep their
+            # This local response is zero when its neighbors keep their
             # rule commands. It remains active when this receiving vessel
             # itself keeps Boids while another vessel changes its command.
             # Only actual-return TD supervision is used; there are no extra
             # intervention rollouts, return-difference labels or value heads.
             q = q+interaction
+            if n > self.neighbors+1:
+                # A remote interaction can terminate the whole fleet episode.
+                # Carry its adverse learned response beyond the local graph.
+                # The complement is empty in the three-defender training task,
+                # so that task retains the existing forward and learning path.
+                outside = ~(allowed | diagonal)
+                remote = interaction[:, None, :].expand(-1, n, -1)
+                remote = remote.masked_fill(~outside, torch.inf).amin(-1).clamp_max(0.)
+                q = q+remote
         if individual:
             return q.reshape(batch, count, n) if multiple else q
         q = q.mean(-1)

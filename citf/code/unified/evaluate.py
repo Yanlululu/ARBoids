@@ -34,12 +34,23 @@ def main():
     model, method, task = None, 'boids', TaskConfig(thrust_delta=300. if args.thrust_delta is None else args.thrust_delta,
                                                   collision_penalty=50. if args.collision_penalty is None else args.collision_penalty)
     checkpoint_metadata = None
+    checkpoint_compatibility = None
     if args.checkpoint:
         payload = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
-        if payload.get('implementation_version') != IMPLEMENTATION_VERSION:
-            raise ValueError('Use the checkpoint source; the teammate-response value head has its own training version.')
+        source_version = payload.get('implementation_version')
+        compatible_r17 = (source_version == 'unified-teammate-response-20261107-r17'
+                          and IMPLEMENTATION_VERSION == 'unified-nonlocal-response-20261107-r18'
+                          and payload.get('task', {}).get('defenders') == 3
+                          and 'method' not in payload and args.stage == 'development')
+        if source_version != IMPLEMENTATION_VERSION and not compatible_r17:
+            raise ValueError('Use the checkpoint source or a registered compatible three-defender development model.')
+        if compatible_r17:
+            checkpoint_compatibility = ('r17 three-defender training; r18 preserves that computation '
+                                        'and adds nonlocal adverse responses for larger fleets')
         if args.stage == 'formal':
-            if payload['arguments']['stage'] != 'formal' or payload['transitions'] != payload['arguments']['steps']:
+            if (payload['arguments']['stage'] != 'formal' or payload['transitions'] != 1000000
+                    or payload['arguments']['steps'] != 1000000
+                    or payload['arguments']['seed'] not in (2101, 2102, 2103, 2104, 2105)):
                 raise ValueError('Formal tables use the final fixed-budget checkpoint of a formal run.')
             if args.scene_seed in (payload['arguments']['eval_seed'], payload['arguments']['seed']+100000):
                 raise ValueError('Formal test scenes must be separate from training and development validation.')
@@ -67,9 +78,20 @@ def main():
         task = replace(task, defenders=args.defenders)
     if args.agility is not None:
         task = replace(task, agility=args.agility)
+    if args.stage == 'formal':
+        expected_policy_seed = 84001 if model is None else 84001+checkpoint_metadata['seed']-2101
+        main = args.scene_seed == 74001 and task.defenders == 3 and task.agility == 2.
+        agility = (args.scene_seed == 74004 and task.defenders == 3
+                   and task.agility in (1.5, 1.75, 2., 2.25, 2.5, 2.75, 3.))
+        team = args.scene_seed == 74005 and task.defenders in range(2, 8) and task.agility == 2.
+        if args.count != 100 or args.policy_seed != expected_policy_seed or not (main or agility or team):
+            raise ValueError('Use the registered formal scenario bank, policy seed, task and 100 episodes.')
+        if method.startswith('citf-no-') and not main:
+            raise ValueError('The registered two ablations are evaluated only in the main condition.')
     result = evaluate(model, task, args.count, args.scene_seed, args.policy_seed, args.device)
     result.update(method=method, task=asdict(task), checkpoint=args.checkpoint,
                   checkpoint_metadata=checkpoint_metadata,
+                  checkpoint_compatibility=checkpoint_compatibility,
                   inference_model_config=asdict(model.cfg) if isinstance(model, CITF) else None,
                   scene_seed=args.scene_seed, policy_seed=args.policy_seed, research_stage=args.stage,
                   code_directory=str(Path(__file__).resolve().parents[1]))

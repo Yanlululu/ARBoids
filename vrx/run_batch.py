@@ -32,6 +32,9 @@ def main():
     unified = args.controller in ('CITF', 'ARBoidsUnified')
     if args.episodes <= 0:
         parser.error('episodes must be positive')
+    if unified and args.research_stage == 'formal' and (args.episodes != 100
+            or args.scene_seed != 74002 or args.policy_seed != 84002):
+        parser.error('Formal unified VRX retains all 100 registered scenes with seeds 74002/84002.')
     args.output_dir.mkdir(parents=True, exist_ok=False)
     results = []
     for i in range(args.episodes):
@@ -77,6 +80,8 @@ def main():
     if unified:
         summary.update(scene_seed=args.scene_seed, policy_seed=args.policy_seed, research_stage=args.research_stage,
                        checkpoint=str(args.checkpoint.resolve()), training_seed=results[0]['training_seed'],
+                       training_transitions=results[0]['training_transitions'],
+                       implementation_version=results[0]['implementation_version'], task=results[0]['task'],
                        control_deadline_misses=sum(r['control_deadline_misses'] for r in results),
                        discarded_late_outputs=sum(r['discarded_late_outputs'] for r in results),
                        control_steps=sum(r['control_steps'] for r in results))

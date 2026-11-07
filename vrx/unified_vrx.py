@@ -1,7 +1,7 @@
 """Measured-state VRX deployment of the final unified CITF task and policies."""
 from argparse import Namespace
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 import os
 import re
@@ -39,7 +39,9 @@ class UnifiedTrial(Trial):
         if payload.get('implementation_version') != IMPLEMENTATION_VERSION:
             raise ValueError('Use the matching unified checkpoint implementation.')
         if args.research_stage == 'formal' and (payload['arguments']['stage'] != 'formal'
-                or payload['transitions'] != payload['arguments']['steps']):
+                or payload['transitions'] != 1000000 or payload['arguments']['steps'] != 1000000
+                or payload['arguments']['seed'] != 2101 or args.scene_seed != 74002
+                or args.policy_seed != 84002 or args.scene_index not in range(100)):
             raise ValueError('Formal VRX uses the registered fixed-budget final main-training checkpoint.')
         task = replace(TaskConfig(**payload['task']), agility=args.agility)
         if task.defenders != 3 or task.duration != 60. or task.control_dt != .2:
@@ -80,6 +82,7 @@ class UnifiedTrial(Trial):
                     scene_seed=self.args.scene_seed, scene_index=self.args.scene_index,
                     policy_seed=self.args.policy_seed+self.args.scene_index,
                     training_seed=self.model_seed, training_transitions=self.model_steps,
+                    task=asdict(self.common.cfg),
                     matmul_precision=torch.get_float32_matmul_precision(),
                     apf_obstacle_rule='unified 15 m center-distance support',
                     synchronize_feedback=True, communication_scope='measured state; no impairment model',

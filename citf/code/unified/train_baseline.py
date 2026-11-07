@@ -22,7 +22,8 @@ def main():
     p.add_argument('--seed', type=int, default=1101)
     p.add_argument('--envs', type=int, default=64)
     p.add_argument('--batch', type=int, default=4096)
-    p.add_argument('--updates-per-step', type=int, default=4)
+    p.add_argument('--updates-per-step', type=int,
+                   help='Updates per vector collection; defaults to envs, preserving the author 1:1 update-to-team-transition ratio.')
     p.add_argument('--eval-interval', type=int, default=50000)
     p.add_argument('--eval-count', type=int, default=100)
     p.add_argument('--eval-seed', type=int, default=73001)
@@ -41,6 +42,8 @@ def main():
     payload = torch.load(args.resume, map_location='cpu', weights_only=False) if args.resume else None
     if payload is not None:
         resume_arguments(args, payload)
+    if args.updates_per_step is None:
+        args.updates_per_step = args.envs
     validate_training_arguments(args)
     torch.set_num_threads(2)
     torch.set_num_interop_threads(1)
@@ -78,6 +81,7 @@ def main():
     started = last_report = time.perf_counter()
     write_json(out/'configuration.json',dict(arguments=vars(args),task=asdict(task),research_stage=args.stage,
                 implementation_version=IMPLEMENTATION_VERSION, replay_unit='individual transition',
+                optimizer_updates_per_team_transition=args.updates_per_step/args.envs,
                architecture_source='third_party/arboids_release/train/policy/networks.py',
                 adaptations=['common task and actuator constraints','own previous actual action and remaining time in observations',
                             'fixed physical-unit observation normalization','entropy dimension matches two stochastic coordinates']))

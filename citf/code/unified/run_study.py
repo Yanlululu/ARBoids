@@ -19,17 +19,24 @@ from . import IMPLEMENTATION_VERSION
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--recipe', required=True, help='Chosen development configuration.json')
+    parser.add_argument('--baseline-recipe', help='Chosen public-baseline configuration.json; omitted uses author-width/batch and 1:1 updates.')
     parser.add_argument('--out', required=True)
     parser.add_argument('--parallel', type=int, default=3)
     parser.add_argument('--seeds', type=int, nargs=5, default=[2101, 2102, 2103, 2104, 2105])
     parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
-    if args.parallel < 1 or len(set(args.seeds)) != 5:
-        raise ValueError('Use a positive job count and five distinct registered training seeds.')
+    if args.parallel < 1 or args.seeds != [2101, 2102, 2103, 2104, 2105]:
+        raise ValueError('Use a positive job count and the five preregistered formal training seeds 2101 through 2105.')
     recipe = json.loads(Path(args.recipe).read_text(encoding='utf-8'))
     if recipe.get('implementation_version') != IMPLEMENTATION_VERSION:
         raise ValueError('Use the frozen recipe with its matching implementation version.')
     chosen = recipe['arguments']
+    baseline_recipe = dict(envs=64, updates_per_step=64, width=512, batch=4096,
+                           capacity=1000000, start_learning=50000, lr=1e-4)
+    if args.baseline_recipe:
+        baseline_source = json.loads(Path(args.baseline_recipe).read_text(encoding='utf-8'))
+        baseline_arguments = baseline_source['arguments']
+        baseline_recipe = {key: baseline_arguments[key] for key in baseline_recipe}
     if chosen.get('no_action_interaction') or chosen.get('feedback', 0) <= 0:
         raise ValueError('Freeze a complete-method development recipe for the common formal study.')
     root = Path(args.out).resolve()
@@ -39,6 +46,7 @@ def main():
                     seeds=args.seeds, methods=methods, team_transitions=1000000,
                     validation_seed=73001, main_test_seed=74001, agility_seed=74004, team_size_seed=74005,
                     policy_seeds=[84001+i for i in range(5)], recipe=recipe,
+                    baseline_recipe=baseline_recipe,
                     vrx_training_seed=args.seeds[0], alternating_training_seed=args.seeds[0])
     registry_path = root/'registry.json'
     if root.exists():
@@ -50,8 +58,8 @@ def main():
         root.mkdir(parents=True)
         write_json(registry_path, registry)
     environment = dict(os.environ, OMP_NUM_THREADS='2', MKL_NUM_THREADS='2', OPENBLAS_NUM_THREADS='2')
-    common_keys = ['envs', 'updates_per_step', 'thrust_delta', 'collision_penalty', 'lr']
-    full_keys = ['batch', 'capacity', 'start_learning', 'width', 'layers', 'neighbors', 'samples', 'search_steps',
+    common_keys = ['thrust_delta', 'collision_penalty']
+    full_keys = ['envs', 'updates_per_step', 'lr', 'batch', 'capacity', 'start_learning', 'width', 'layers', 'neighbors', 'samples', 'search_steps',
                  'search_rate', 'target_tau', 'temperature_start', 'temperature_end', 'temperature_steps',
                  'endpoint_noise_start', 'endpoint_noise_end', 'exploration_steps', 'feedback',
                  'feedback_start', 'feedback_ramp', 'policy_lr_end', 'policy_lr_decay_start', 'policy_lr_decay_steps',
@@ -69,18 +77,36 @@ def main():
     for seed in args.seeds:
         for method in methods:
             out = root/method/str(seed)
+            full = method in methods[:3]
+            expected_arguments = dict(seed=seed, steps=1000000, stage='formal', eval_interval=5000,
+                                      eval_count=100, eval_seed=73001, policy_eval_seed=83001)
+            expected_arguments.update({key: chosen[key] for key in common_keys if key in chosen})
+            if full:
+                expected_arguments.update({key: chosen[key] for key in full_keys
+                                           if key in chosen and chosen[key] is not None})
+                expected_arguments.update(no_action_interaction=method == 'no_action',
+                                          feedback=0 if method == 'no_feedback' else chosen['feedback'])
+            else:
+                expected_arguments.update(baseline_recipe, method=method)
             status_path = out/'status.json'
             launch_path = out/'launch.json'
+            configuration_path = out/'configuration.json'
+            if configuration_path.exists():
+                configuration = json.loads(configuration_path.read_text())
+                recorded = configuration['arguments']
+                if (configuration.get('implementation_version') != IMPLEMENTATION_VERSION
+                        or configuration.get('task') != recipe['task']
+                        or any(recorded.get(key) != value for key, value in expected_arguments.items())):
+                    raise ValueError(f'{out} does not match the registered method, seed, task and learning recipe.')
             if launch_path.exists():
                 prior_pid = json.loads(launch_path.read_text())['pid']
                 process_command = Path(f'/proc/{prior_pid}/cmdline')
                 if process_command.exists() and str(out).encode() in process_command.read_bytes():
                     raise RuntimeError(f'{out} still has an active training process; do not start a duplicate campaign.')
             if status_path.exists() and json.loads(status_path.read_text()).get('status') == 'completed':
-                if json.loads(status_path.read_text())['transitions'] != 1000000:
+                if not configuration_path.exists() or json.loads(status_path.read_text())['transitions'] != 1000000:
                     raise ValueError(f'{out} has a different completed training budget.')
                 continue
-            full = method in methods[:3]
             command = [sys.executable, '-u', '-m', 'unified.train' if full else 'unified.train_baseline',
                        '--out', str(out), '--steps', '1000000', '--seed', str(seed), '--stage', 'formal',
                        '--eval-interval', '5000', '--eval-count', '100', '--eval-seed', '73001']+options(common_keys)
@@ -90,7 +116,9 @@ def main():
                 if method == 'no_action':
                     command += ['--no-action-interaction']
             else:
-                command += ['--method', method, '--width', '512', '--batch', '4096', '--start-learning', '50000']
+                command += ['--method', method]
+                for key, value in baseline_recipe.items():
+                    command += ['--'+key.replace('_', '-'), str(value)]
             if (out/'last.pt').exists():
                 command += ['--resume', str(out/'last.pt')]
             elif (out/'configuration.json').exists():
@@ -123,8 +151,31 @@ def main():
             time.sleep(5)
 
     def evaluate(checkpoint, output, scene_seed, policy_seed, defenders=3, agility=2.):
+        def read_registered_result():
+            result = json.loads(output.read_text())
+            task = dict(recipe['task'], defenders=defenders, agility=agility)
+            labels = dict(full='citf', no_action='citf-no-action-interaction',
+                          no_feedback='citf-no-generator-feedback', arboids='arboids', rp='rp', sac='sac')
+            method = 'boids' if checkpoint is None else labels[checkpoint.parent.parent.name]
+            metadata = (None if checkpoint is None else dict(transitions=1000000,
+                        seed=int(checkpoint.parent.name), implementation_version=IMPLEMENTATION_VERSION))
+            if (result.get('method') != method or result.get('checkpoint_metadata') != metadata
+                    or result.get('implementation_version') != IMPLEMENTATION_VERSION
+                    or result.get('checkpoint') != (None if checkpoint is None else str(checkpoint))
+                    or result.get('task') != task or result.get('scene_seed') != scene_seed
+                    or result.get('policy_seed') != policy_seed or result.get('research_stage') != 'formal'
+                    or result.get('tasks') != 100 or len(result.get('rows', [])) != 100):
+                raise ValueError(f'{output} belongs to a different registered evaluation.')
+            for key in ('success', 'capture', 'timeout', 'collision', 'breach'):
+                if result[key] != sum(row[key] for row in result['rows']):
+                    raise ValueError(f'{output}: outcome totals must include all recorded episodes.')
+            if (sum(result[key] for key in ('capture', 'timeout', 'collision', 'breach')) != 100
+                    or result['success'] != result['capture']+result['timeout']
+                    or result['success_rate'] != result['success']/100):
+                raise ValueError(f'{output}: inconsistent task denominator or success definition.')
+            return result
         if output.exists():
-            return json.loads(output.read_text())
+            return read_registered_result()
         command = [sys.executable, '-u', '-m', 'unified.evaluate', '--out', str(output), '--count', '100',
                    '--stage', 'formal', '--scene-seed', str(scene_seed), '--policy-seed', str(policy_seed),
                    '--defenders', str(defenders), '--agility', str(agility),
@@ -134,7 +185,7 @@ def main():
             command += ['--checkpoint', str(checkpoint)]
         with (root/'evaluation.log').open('a') as log:
             subprocess.run(command, cwd=code, env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
-        return json.loads(output.read_text())
+        return read_registered_result()
 
     table = []
     for method in methods:

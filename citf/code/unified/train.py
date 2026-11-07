@@ -153,10 +153,14 @@ def evaluate(model, cfg, count=100, scene_seed=73001, policy_seed=83001, device=
                 env.step(action)
         rows = env.records()
     totals = {key: sum(row[key] for row in rows) for key in ('success', 'capture', 'timeout', 'collision', 'breach')}
+    capture_seconds = [row['seconds'] for row in rows if row['capture']]
     return dict(tasks=count, scene_seed=scene_seed, policy_seed=policy_seed,
                 task=asdict(cfg), implementation_version=IMPLEMENTATION_VERSION,
                 **totals, success_rate=totals['success']/count,
                 mean_seconds=sum(row['seconds'] for row in rows)/count,
+                mean_termination_seconds=sum(row['seconds'] for row in rows)/count,
+                capture_count=len(capture_seconds),
+                mean_capture_seconds=sum(capture_seconds)/len(capture_seconds) if capture_seconds else None,
                 wall_seconds=time.perf_counter()-started, rows=rows)
 
 
