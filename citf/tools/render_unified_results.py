@@ -5,7 +5,15 @@ The supplied study is the output directory of unified.run_study.
 """
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, os.environ.get('CITF_CODE_ROOT', str(Path(__file__).resolve().parents[1]/'code')))
+from unified.protocol import (load_registry, read_endpoint, evaluation_identity, validate_result,
+                              registered_arguments, run_identity, validate_learning_curve,
+                              validate_phase_checkpoint, phase_checkpoint_identity, chain_evaluation_identity,
+                              vrx_source_identity, vrx_rows, digest)
 
 import matplotlib
 matplotlib.use('Agg')
@@ -28,35 +36,32 @@ def read(path):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-def formal_result(path, registry=None):
-    result = read(path)
-    if result.get('research_stage') != 'formal' or result['tasks'] != 100:
-        raise ValueError(f'Use the registered 100-scenario formal result: {path}')
-    if len(result.get('rows', [])) != 100:
-        raise ValueError(f'Keep all 100 recorded outcomes: {path}')
-    for key in ('success', 'capture', 'timeout', 'collision', 'breach'):
-        if result[key] != sum(row[key] for row in result['rows']):
-            raise ValueError(f'Outcome count differs from recorded episodes: {path}')
-    if registry is not None:
-        boids = path.parent.name == 'boids'
-        method = 'boids' if boids else path.parent.parent.name
-        seed = None if boids else int(path.parent.name)
-        label = dict(full='citf', no_action='citf-no-action-interaction',
-                     no_feedback='citf-no-generator-feedback').get(method, method)
-        metadata = (None if boids else dict(transitions=registry['team_transitions'], seed=seed,
-                    implementation_version=registry['implementation_version']))
-        scene, defenders, agility = registry['main_test_seed'], 3, 2.
-        if path.stem.startswith('agility_'):
-            scene, agility = registry['agility_seed'], float(path.stem.split('_')[1])
-        elif path.stem.startswith('team_'):
-            scene, defenders = registry['team_size_seed'], int(path.stem.split('_')[1])
-        policy = registry['policy_seeds'][0 if boids else registry['seeds'].index(seed)]
-        if (result.get('method') != label or result.get('checkpoint_metadata') != metadata
-                or result.get('implementation_version') != registry['implementation_version']
-                or result.get('task') != dict(registry['recipe']['task'], defenders=defenders, agility=agility)
-                or result.get('scene_seed') != scene or result.get('policy_seed') != policy):
-            raise ValueError(f'Result identity differs from the registered method and condition: {path}')
-    return result
+_endpoints = {}
+
+
+def endpoint(path, registry, method, seed, transitions=1000000):
+    key = (str(path), registry['id'], method, seed, transitions)
+    if key not in _endpoints:
+        _endpoints[key] = read_endpoint(path, registry, method, seed, transitions)
+    return _endpoints[key]
+
+
+def formal_result(path, registry):
+    boids = path.parent.name == 'boids'
+    method = 'boids' if boids else path.parent.parent.name
+    seed = None if boids else int(path.parent.name)
+    checkpoint = None if boids else endpoint(path.parent/'last.pt', registry, method, seed)
+    scene, defenders, agility = registry['main_test_seed'], 3, 2.
+    if path.stem.startswith('agility_'):
+        scene, agility = registry['agility_seed'], float(path.stem.split('_')[1])
+    elif path.stem.startswith('team_'):
+        scene, defenders = registry['team_size_seed'], int(path.stem.split('_')[1])
+    elif path.name != 'main_test.json':
+        raise ValueError(f'Unregistered numerical result: {path}')
+    policy = registry['policy_seeds'][0 if boids else registry['seeds'].index(seed)]
+    identity = evaluation_identity(registry, method, seed, checkpoint,
+        dict(registry['task'], defenders=defenders, agility=agility), scene, policy, 100)
+    return validate_result(read(path), identity)
 
 
 def finish(fig, directory, name, source):
@@ -81,9 +86,11 @@ def rate_summary(values):
 
 
 def main_figures(study, directory):
-    registry = read(study / 'registry.json')
+    registry = load_registry(study / 'registry.json')
     seeds = registry['seeds']
-    if len(seeds) != 5 or read(study / 'status.json')['status'] != 'numeric_study_completed':
+    status = read(study / 'status.json')
+    if (len(seeds) != 5 or status['status'] != 'numeric_study_completed'
+            or status.get('registry_id') != registry['id']):
         raise ValueError('The main figures require the complete registered five-seed numeric study.')
     data = {method: [formal_result(study / method / str(seed) / 'main_test.json', registry) for seed in seeds]
             for method in METHODS}
@@ -110,7 +117,9 @@ def main_figures(study, directory):
     for method in METHODS:
         values = []
         for seed in seeds:
-            rows = [json.loads(line) for line in (study / method / str(seed) / 'evaluations.jsonl').read_text().splitlines()]
+            run = run_identity(registered_arguments(registry, method, seed), registry['task'], registry)
+            descriptor = endpoint(study / method / str(seed) / 'last.pt', registry, method, seed)
+            rows = validate_learning_curve(study / method / str(seed) / 'evaluations.jsonl', run, endpoint=descriptor)
             grid = np.array([row['transitions'] for row in rows])
             if common_grid is None:
                 common_grid = grid
@@ -153,17 +162,27 @@ def main_figures(study, directory):
     finish(fig, directory, 'fig5_applicability', study / 'registry.json')
 
 
-def alternating_figure(root, directory, registry):
-    rows = [formal_result(root / 'phase2' / 'phase1_apf.json')]
-    rows += [formal_result(root / f'phase{i}' / 'endpoint.json') for i in range(2, 6)]
-    rows += [formal_result(root / 'phase5' / 'apf_retention.json')]
-    for result, phase in zip(rows, [1, 2, 3, 4, 5, 5]):
-        if (result.get('phase') != phase or result.get('transitions') != 500000
-                or result.get('training_seed') != registry['alternating_training_seed']
-                or result.get('implementation_version') != registry['implementation_version']
-                or result.get('task') != registry['recipe']['task']
-                or result.get('scene_seed') != 74003 or result.get('policy_seed') != 83003):
-            raise ValueError('Use the registered consecutive five-stage chain and APF revisit.')
+def alternating_figure(root, directory, registry, study):
+    import torch
+    previous = endpoint(study/'full'/'2101'/'defender_stage1.pt', registry, 'full', 2101, 500000)
+    initial = chain_evaluation_identity(registry, 1, previous, registry['task'], 'fixed-stage-endpoint')
+    rows = [validate_result(read(root/'phase2'/'phase1_apf.json'), initial)]
+    for phase in range(2, 6):
+        path = root/f'phase{phase}'/'last.pt'
+        payload = torch.load(path, map_location='cpu', weights_only=False, mmap=True)
+        identity = validate_phase_checkpoint(payload, registry, phase)
+        if identity['previous_checkpoint'] != previous:
+            raise ValueError('The alternating phases do not form one consecutive registered chain.')
+        status = read(path.parent/'status.json')
+        if (status.get('status') != 'completed' or status.get('phase_id') != identity['id']
+                or status.get('update_counts') != payload['update_counts']):
+            raise ValueError('The alternating phase completion record is inconsistent.')
+        previous = phase_checkpoint_identity(path, payload)
+        expected = chain_evaluation_identity(registry, phase, previous, registry['task'], 'fixed-stage-endpoint')
+        rows.append(validate_result(read(path.parent/'endpoint.json'), expected))
+        del payload
+    expected = chain_evaluation_identity(registry, 5, previous, registry['task'], 'retention')
+    rows.append(validate_result(read(root/'phase5'/'apf_retention.json'), expected))
     fig, ax = plt.subplots(figsize=(7.1, 3.3), layout='constrained')
     bottom = np.zeros(6)
     for outcome, label, color in [('capture', 'Capture', '#125F93'), ('timeout', 'Safe timeout', '#55A6A4'),
@@ -178,17 +197,24 @@ def alternating_figure(root, directory, registry):
     finish(fig, directory, 'fig6_alternating', root)
 
 
-def vrx_figure(root, directory, registry):
+def vrx_figure(root, directory, registry, study):
+    protocol = read(root/'vrx_protocol.json')
+    adapter = vrx_source_identity(Path(__file__).resolve().parents[2]/'vrx')
+    if (protocol.get('id') != digest({k: v for k, v in protocol.items() if k != 'id'})
+            or protocol.get('registry_id') != registry['id'] or protocol.get('adapter_source') != adapter):
+        raise ValueError('VRX results must use the registered study and frozen adapter source.')
     for method, controller in [('full', 'CITF'), ('arboids', 'ARBoidsUnified')]:
-        record = read(root / method / 'summary.json')
-        task = dict(registry['recipe']['task'], agility=2.25)
-        if (record.get('research_stage') != 'formal' or record.get('episodes') != 100
-                or record.get('controller') != controller or record.get('training_seed') != registry['vrx_training_seed']
-                or record.get('training_transitions') != registry['team_transitions']
-                or record.get('implementation_version') != registry['implementation_version']
-                or record.get('task') != task or record.get('scene_seed') != 74002
-                or record.get('policy_seed') != 84002):
-            raise ValueError('Use both registered, completed 100-episode formal VRX batches.')
+        checkpoint = endpoint(study/method/'2101'/'last.pt', registry, method, 2101)
+        expected = evaluation_identity(registry, method, 2101, checkpoint,
+                                      dict(registry['task'], agility=2.25), 74002, 84002, 100, kind='vrx')
+        record = validate_result(read(root/method/'summary.json'), expected)
+        if (record.get('episodes') != 100 or record.get('controller') != controller
+                or record.get('vrx_protocol_id') != protocol['id'] or record.get('adapter_source') != adapter):
+            raise ValueError('Use both completed, registered 100-episode VRX batches.')
+        episodes = [read(root/method/f'episode-{index:03d}'/'result.json') for index in range(100)]
+        rows = vrx_rows(episodes, expected, adapter)
+        if record['rows'] != rows:
+            raise ValueError('VRX summary differs from its complete per-episode records.')
     # The first registered episode is captured during the actual batch.
     # Keep its outcome; do not pick a different episode after viewing results.
     episode = root / 'full' / 'episode-000'
@@ -239,9 +265,9 @@ def main():
                          'pdf.fonttype': 42, 'ps.fonttype': 42})
     main_figures(args.study, args.out)
     if args.alternating:
-        alternating_figure(args.alternating, args.out, read(args.study / 'registry.json'))
+        alternating_figure(args.alternating, args.out, load_registry(args.study / 'registry.json'), args.study)
     if args.vrx:
-        vrx_figure(args.vrx, args.out, read(args.study / 'registry.json'))
+        vrx_figure(args.vrx, args.out, load_registry(args.study / 'registry.json'), args.study)
 
 
 if __name__ == '__main__':

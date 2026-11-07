@@ -10,8 +10,8 @@ from .baselines import PublicBaseline, BaselineLearner
 from .environment import FleetEnv, TaskConfig
 from .learner import Replay
 from . import IMPLEMENTATION_VERSION
-from .protocol import baseline_updates, bind_run, learning_counts, validate_checkpoint
-from .train import (evaluate, write_json, save, seed_policy, random_state, restore_random_state,
+from .protocol import baseline_updates, bind_run, learning_counts, validate_checkpoint, policy_digest
+from .train import (evaluate, write_json, save, append_evaluation, seed_policy, random_state, restore_random_state,
                     resume_arguments, prepare_output, run_generators, validate_training_arguments, rollout_count)
 
 
@@ -19,7 +19,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--out', required=True)
     p.add_argument('--method', choices=['arboids','rp','sac'], default='arboids')
-    p.add_argument('--steps', type=int, default=300000)
+    p.add_argument('--steps', type=int, default=1000000)
     p.add_argument('--seed', type=int, default=1101)
     p.add_argument('--envs', type=int, default=64)
     p.add_argument('--batch', type=int, default=4096)
@@ -128,7 +128,8 @@ def main():
                 evaluation = evaluate(model,task,args.eval_count,args.eval_seed,args.policy_eval_seed,args.device)
                 counts = learning_counts(args.method, transitions, vars(args), learner.updates)
                 evaluation.update(transitions=transitions, updates=learner.updates, update_counts=counts,
-                                  run_id=run['id'], role='validation', research_stage=args.stage)
+                                  run_id=run['id'], policy_id=policy_digest(model.state_dict()),
+                                  role='validation', research_stage=args.stage)
                 improved = evaluation['success_rate'] > best
                 best = max(best, evaluation['success_rate'])
                 checkpoint = dict(**learner.payload(), method=args.method, width=args.width,
@@ -141,8 +142,7 @@ def main():
                                                      random=random_state(args.device, generators), best=best)
                 save(out/'last.pt', checkpoint)
                 del checkpoint
-                with (out/'evaluations.jsonl').open('a',encoding='utf-8') as stream:
-                    stream.write(json.dumps(evaluation)+'\n')
+                append_evaluation(out, evaluation)
                 print(json.dumps(dict(event='development_evaluation',**{k:v for k,v in evaluation.items() if k != 'rows'})),flush=True)
                 next_eval = ((transitions//args.eval_interval)+1)*args.eval_interval
         write_json(out/'status.json',dict(status='completed',transitions=transitions,updates=learner.updates,

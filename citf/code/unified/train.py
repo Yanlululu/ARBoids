@@ -13,13 +13,21 @@ from .networks import CITF, ModelConfig
 from .learner import Learner, Replay
 from . import IMPLEMENTATION_VERSION
 from .protocol import (bind_run, learning_counts, outcome_metrics, validate_metrics,
-                       validate_checkpoint, digest)
+                       validate_checkpoint, policy_digest)
 
 
 def write_json(path, value):
     path = Path(path)
     temporary = path.with_suffix('.pending')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
+    temporary.replace(path)
+
+
+def append_evaluation(out, evaluation):
+    path = Path(out)/'evaluations.jsonl'
+    previous = path.read_text(encoding='utf-8') if path.exists() else ''
+    temporary = path.with_suffix('.pending')
+    temporary.write_text(previous+json.dumps(evaluation)+'\n', encoding='utf-8')
     temporary.replace(path)
 
 
@@ -70,7 +78,7 @@ def resume_arguments(args, payload):
         raise ValueError('This checkpoint has no compatible complete training state. Use --init-from for weights-only initialization in a new output directory.')
     explicit = {value.split('=', 1)[0] for value in sys.argv[1:] if value.startswith('--')}
     for key, saved in payload['arguments'].items():
-        if key in ('out', 'steps', 'device', 'resume', 'init_from', 'registry') or not hasattr(args, key):
+        if key in ('out', 'device', 'resume', 'init_from', 'registry', 'previous') or not hasattr(args, key):
             continue
         if '--'+key.replace('_', '-') in explicit and getattr(args, key) != saved:
             raise ValueError(f'Exact resume cannot change --{key.replace("_", "-")}; use --init-from for a new experiment.')
@@ -86,28 +94,39 @@ def prepare_output(out, resume=None):
         raise FileExistsError(f'{out} already contains a run; choose a new run directory or use --resume.')
     if resume is not None and (out/'configuration.json').exists():
         configuration = json.loads((out/'configuration.json').read_text(encoding='utf-8'))
-        ignored = {'out', 'steps', 'device', 'resume', 'init_from', 'registry'}
+        ignored = {'out', 'device', 'resume', 'init_from', 'registry', 'previous'}
         prior = {key: value for key, value in configuration['arguments'].items() if key not in ignored}
         restored = {key: value for key, value in resume['arguments'].items() if key not in ignored}
         if prior != restored or configuration.get('implementation_version') != IMPLEMENTATION_VERSION:
             raise ValueError('The output directory belongs to a different training configuration.')
-    if resume is not None and (out/'evaluations.jsonl').exists():
+    if resume is not None:
         nodes = []
-        with (out/'evaluations.jsonl').open(encoding='utf-8') as stream:
-            for line in stream:
-                if not line.strip():
-                    continue
-                row = json.loads(line)
-                nodes.append(row['transitions'])
-                validate_metrics(row)
-                if row['transitions'] > resume['transitions']:
-                    raise ValueError('Output already contains evaluations newer than this checkpoint; resume into a new directory.')
+        path = out/'evaluations.jsonl'
+        lines = path.read_text(encoding='utf-8').splitlines() if path.exists() else []
+        for line in lines:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            nodes.append(row['transitions'])
+            validate_metrics(row)
+            identity_key = 'phase_id' if 'phase' in resume else 'run_id'
+            identity = resume['phase_identity'] if 'phase' in resume else resume['run_identity']
+            if row.get(identity_key) != identity['id']:
+                raise ValueError('The learning curve contains evaluations from a different run.')
+            if row['transitions'] > resume['transitions']:
+                raise ValueError('Output already contains evaluations newer than this checkpoint; resume into a new directory.')
+            if row['transitions'] == resume['transitions'] and row != resume['evaluation']:
+                raise ValueError('The latest evaluation differs from its saved checkpoint record.')
         if nodes != sorted(set(nodes)):
             raise ValueError('The learning curve contains duplicate or out-of-order evaluations.')
+        if resume['arguments']['stage'] == 'formal':
+            interval = resume['arguments']['eval_interval']
+            grid = list(range(interval, resume['transitions']+1, interval))
+            if nodes not in (grid, grid[:-1]):
+                raise ValueError('Formal resume requires its complete earlier learning curve.')
         # A crash can occur between the atomic checkpoint save and JSONL append.
         if resume['evaluation'] is not None and resume['transitions'] not in nodes:
-            with (out/'evaluations.jsonl').open('a', encoding='utf-8') as stream:
-                stream.write(json.dumps(resume['evaluation'])+'\n')
+            append_evaluation(out, resume['evaluation'])
 
 
 def run_generators(seed, device):
@@ -136,6 +155,8 @@ def rollout_count(args, transitions, next_eval):
     boundary = min(args.steps, next_eval)
     if transitions < 500000:
         boundary = min(boundary, 500000)
+    if hasattr(args, 'updates_per_joint_transition') and transitions < args.start_learning:
+        boundary = min(boundary, args.start_learning)
     return min(args.envs, boundary-transitions)
 
 
@@ -188,16 +209,16 @@ def evaluate(model, cfg, count=100, scene_seed=73001, policy_seed=83001, device=
 def arguments():
     p = argparse.ArgumentParser()
     p.add_argument('--out', required=True)
-    p.add_argument('--steps', type=int, default=100000)
+    p.add_argument('--steps', type=int, default=1000000)
     p.add_argument('--seed', type=int, default=1101)
     p.add_argument('--envs', type=int, default=64)
-    p.add_argument('--batch', type=int, default=256)
+    p.add_argument('--batch', type=int, default=512)
     p.add_argument('--value-terminal-fraction', type=float, default=.5)
     p.add_argument('--value-importance-exponent', type=float, default=.5)
-    p.add_argument('--updates-per-step', type=int, default=1)
+    p.add_argument('--updates-per-step', type=int, default=4)
     p.add_argument('--capacity', type=int, default=1000000)
     p.add_argument('--start-learning', type=int, default=5000)
-    p.add_argument('--eval-interval', type=int, default=20000)
+    p.add_argument('--eval-interval', type=int, default=50000)
     p.add_argument('--eval-count', type=int, default=100)
     p.add_argument('--eval-seed', type=int, default=73001)
     p.add_argument('--policy-eval-seed', type=int, default=83001)
@@ -205,30 +226,30 @@ def arguments():
     p.add_argument('--width', type=int, default=128)
     p.add_argument('--layers', type=int, default=2)
     p.add_argument('--neighbors', type=int, default=2)
-    p.add_argument('--samples', type=int, default=8)
+    p.add_argument('--samples', type=int, default=4)
     p.add_argument('--search-steps', type=int, default=2)
     p.add_argument('--search-rate', type=float, default=.1)
     p.add_argument('--thrust-delta', type=float, default=300.)
     p.add_argument('--collision-penalty', type=float, default=50.)
-    p.add_argument('--feedback', type=float, default=1.)
-    p.add_argument('--feedback-start', type=int, default=0)
-    p.add_argument('--feedback-ramp', type=int, default=0)
+    p.add_argument('--feedback', type=float, default=1./300.)
+    p.add_argument('--feedback-start', type=int, default=50000)
+    p.add_argument('--feedback-ramp', type=int, default=50000)
     p.add_argument('--no-action-interaction', action='store_true')
     p.add_argument('--lr', type=float, default=1e-4)
-    p.add_argument('--policy-lr-end', type=float)
+    p.add_argument('--policy-lr-end', type=float, default=2.5e-5)
     p.add_argument('--policy-lr-decay-start', type=int, default=500000)
     p.add_argument('--policy-lr-decay-steps', type=int, default=500000)
-    p.add_argument('--target-tau', type=float, default=.005)
-    p.add_argument('--temperature-start', type=float, default=10.)
-    p.add_argument('--temperature-end', type=float, default=1.)
-    p.add_argument('--endpoint-noise-start', type=float, default=0.)
-    p.add_argument('--endpoint-noise-end', type=float, default=0.)
+    p.add_argument('--target-tau', type=float, default=.02)
+    p.add_argument('--temperature-start', type=float, default=1.)
+    p.add_argument('--temperature-end', type=float, default=.05)
+    p.add_argument('--endpoint-noise-start', type=float, default=200.)
+    p.add_argument('--endpoint-noise-end', type=float, default=50.)
     p.add_argument('--device', default='cuda')
     p.add_argument('--resume')
     p.add_argument('--registry', help='Frozen common-study registry; required for formal training.')
     p.add_argument('--init-from')
     p.add_argument('--exploration-steps', type=int, default=100000)
-    p.add_argument('--temperature-steps', type=int, default=800000)
+    p.add_argument('--temperature-steps', type=int, default=100000)
     return p.parse_args()
 
 
@@ -370,7 +391,8 @@ def main():
                 evaluation = evaluate(model, task, args.eval_count, args.eval_seed, args.policy_eval_seed, args.device)
                 counts = learning_counts(run['method'], transitions, vars(args), learner.updates)
                 evaluation.update(transitions=transitions, updates=learner.updates, update_counts=counts,
-                                  run_id=run['id'], role='validation', research_stage=args.stage)
+                                  run_id=run['id'], policy_id=policy_digest(model.state_dict()),
+                                  role='validation', research_stage=args.stage)
                 improved = evaluation['success_rate'] > best
                 best = max(best, evaluation['success_rate'])
                 checkpoint = dict(**learner.payload(), transitions=transitions, task=asdict(task),
@@ -385,8 +407,7 @@ def main():
                                                      outcomes=outcomes.cpu(), episodes=episode_count)
                 save(out/'last.pt', checkpoint)
                 del checkpoint
-                with (out/'evaluations.jsonl').open('a', encoding='utf-8') as stream:
-                    stream.write(json.dumps(evaluation)+'\n')
+                append_evaluation(out, evaluation)
                 print(json.dumps(dict(event='development_evaluation', **{k:v for k,v in evaluation.items() if k != 'rows'})), flush=True)
                 next_eval = ((transitions//args.eval_interval)+1)*args.eval_interval
         final = dict(status='completed', transitions=transitions, updates=learner.updates,

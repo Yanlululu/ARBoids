@@ -8,7 +8,6 @@ from .environment import TaskConfig
 from .networks import CITF, ModelConfig
 from .baselines import PublicBaseline
 from .train import evaluate, write_json
-from . import IMPLEMENTATION_VERSION
 from .protocol import (load_registry, validate_checkpoint, checkpoint_identity, method_of,
                        evaluation_identity, attach_identity, validate_result)
 
@@ -40,7 +39,6 @@ def main():
     model, method, task = None, 'boids', TaskConfig(thrust_delta=300. if args.thrust_delta is None else args.thrust_delta,
                                                   collision_penalty=50. if args.collision_penalty is None else args.collision_penalty)
     checkpoint_metadata = None
-    checkpoint_compatibility = None
     if args.checkpoint:
         payload = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
         method = method_of(payload['arguments'])
@@ -74,7 +72,6 @@ def main():
     result = evaluate(model, task, args.count, args.scene_seed, args.policy_seed, args.device)
     result.update(method=method, task=asdict(task), checkpoint=args.checkpoint,
                   checkpoint_metadata=checkpoint_metadata,
-                  checkpoint_compatibility=checkpoint_compatibility,
                   inference_model_config=asdict(model.cfg) if isinstance(model, CITF) else None,
                   scene_seed=args.scene_seed, policy_seed=args.policy_seed, research_stage=args.stage,
                   code_directory=str(Path(__file__).resolve().parents[1]))

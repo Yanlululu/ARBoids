@@ -15,12 +15,12 @@ class ModelConfig:
     width: int = 128
     heads: int = 4
     layers: int = 2
-    samples: int = 8
+    samples: int = 4
     search_steps: int = 2
     search_rate: float = .1
     thrust_delta: float = 300.
     action_interaction: bool = True
-    feedback: float = 1.
+    feedback: float = 1./300.
     neighbors: int = 2
 
     def __post_init__(self):
@@ -379,22 +379,26 @@ class TeamCritic(nn.Module):
                 nn.init.zeros_(self.interaction_readout[-1].weight)
                 nn.init.zeros_(self.interaction_readout[-1].bias)
         else:
-            # The ablation retains an equally deep, near-equal-capacity local
-            # action branch. Every candidate-dependent input belongs to i.
-            # State geometry can summarize neighbors, but their current
-            # candidate commands never enter this branch.
+            # Match capacity by widening the original own-action value trunk,
+            # not by adding a second competing own-action residual. Preserve
+            # its initial function and the shared initialization stream.
+            w, pair_width = cfg.width, cfg.width//2
+            attention_parameters = (8*w*w+23*w+pair_width*(13+cfg.heads)+cfg.heads)
+            extra = (cfg.layers*attention_parameters+pair_width*pair_width+14*pair_width
+                     +(w+pair_width)*pair_width+2*w+5*pair_width+2)
+            hidden = 4*w+round(extra/(cfg.layers*(2*w+1)))
             with torch.random.fork_rng(devices=[]):
                 torch.random.default_generator.manual_seed(torch.initial_seed()+104729*critic_index)
-                self.local_control_layers = nn.ModuleList([
-                    LocalBlock(cfg.width) for _ in range(cfg.layers)])
-                pair_width = cfg.width//2
-                self.local_control_context = nn.Sequential(nn.Linear(12, pair_width), nn.SiLU(),
-                                                           nn.Linear(pair_width, pair_width), nn.SiLU())
-                self.local_control_readout = nn.Sequential(nn.LayerNorm(cfg.width+pair_width),
-                                                          nn.Linear(cfg.width+pair_width, cfg.width//2),
-                                                          nn.SiLU(), nn.Linear(cfg.width//2, 2))
-                nn.init.zeros_(self.local_control_readout[-1].weight)
-                nn.init.zeros_(self.local_control_readout[-1].bias)
+                for layer in self.layers:
+                    original_up, original_down = layer.ff[0], layer.ff[2]
+                    up, down = nn.Linear(w, hidden), nn.Linear(hidden, w)
+                    with torch.no_grad():
+                        up.weight[:4*w].copy_(original_up.weight)
+                        up.bias[:4*w].copy_(original_up.bias)
+                        down.weight.zero_()
+                        down.weight[:, :4*w].copy_(original_down.weight)
+                        down.bias.copy_(original_down.bias)
+                    layer.ff = nn.Sequential(up, nn.SiLU(), down)
 
     def encode(self, x):
         pair = relative_geometry(x)
@@ -436,7 +440,13 @@ class TeamCritic(nn.Module):
             diagonal = torch.eye(n, dtype=torch.bool, device=u.device)[None]
             allowed = (nearest_other(edge[:, :n, :n], self.neighbors)
                        if n > self.neighbors+1 else ~diagonal)
-            interaction = pair_value.masked_fill(~allowed, 0.).sum(-1)/min(self.neighbors, n-1)
+            permitted = pair_value.masked_fill(~allowed, 0.)
+            # Split the two signs with one shared branch choice. At zero,
+            # retain the mean-response derivative without activating both
+            # positive and negative parts of the same response.
+            negative = torch.where(permitted < 0., permitted, torch.zeros_like(permitted))
+            interaction = ((permitted-negative).sum(-1)/min(self.neighbors, n-1)
+                           +negative.amin(-1))
             # This local response is zero when its neighbors keep their
             # rule commands. It remains active when this receiving vessel
             # itself keeps Boids while another vessel changes its command.
@@ -452,17 +462,6 @@ class TeamCritic(nn.Module):
                 remote = interaction[:, None, :].expand(-1, n, -1)
                 remote = remote.masked_fill(~outside, torch.inf).amin(-1).clamp_max(0.)
                 q = q+remote
-        else:
-            h = action_state[:, :n]
-            for layer in self.local_control_layers:
-                h = layer(h)
-            diagonal = torch.eye(n, dtype=torch.bool, device=u.device)[None]
-            allowed = (nearest_other(pair[:, :n, :n], self.neighbors)
-                       if n > self.neighbors+1 else ~diagonal)
-            geometry = pair[:, :n, :n].masked_fill(~allowed[..., None], 0.).sum(-2)/min(self.neighbors, n-1)
-            local_features = self.local_control_context(torch.cat((geometry, u/1000., rule/1000.), -1))
-            response = self.local_control_readout(torch.cat((h, local_features), -1))
-            q = q+(response*((u-rule)/1000.)).sum(-1)
         if individual:
             return q.reshape(batch, count, n) if multiple else q
         q = q.mean(-1)

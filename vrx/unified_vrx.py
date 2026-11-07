@@ -20,6 +20,8 @@ from unified.environment import FleetEnv, TaskConfig, execute
 from unified.networks import CITF, ModelConfig
 from unified.baselines import PublicBaseline
 from unified.train import seed_policy
+from unified.protocol import (load_registry, validate_checkpoint, checkpoint_identity,
+                              evaluation_identity, vrx_source_identity)
 from run_experiment import Trial
 from mappo_controller import synchronize_kinematics
 
@@ -43,7 +45,20 @@ class UnifiedTrial(Trial):
                 or payload['arguments']['seed'] != 2101 or args.scene_seed != 74002
                 or args.policy_seed != 84002 or args.scene_index not in range(100)):
             raise ValueError('Formal VRX uses the registered fixed-budget final main-training checkpoint.')
+        registry = None
+        if args.research_stage == 'formal':
+            if not args.registry:
+                raise ValueError('Formal VRX requires the common study registry.')
+            registry = load_registry(args.registry)
+        method = 'full' if args.controller == 'CITF' else 'arboids'
+        validate_checkpoint(payload, registry, method, payload['arguments']['seed'],
+                            1000000 if registry is not None else None)
+        self.checkpoint_identity = checkpoint_identity(args.checkpoint, payload)
+        self.adapter_source = vrx_source_identity(Path(__file__).parent)
         task = replace(TaskConfig(**payload['task']), agility=args.agility)
+        self.result_identity = (None if registry is None else
+            evaluation_identity(registry, method, payload['arguments']['seed'], self.checkpoint_identity,
+                                asdict(task), args.scene_seed, args.policy_seed, 100, kind='vrx'))
         if task.defenders != 3 or task.duration != 60. or task.control_dt != .2:
             raise ValueError('The VRX checkpoint must use the common three-vessel main task.')
         if args.controller == 'CITF':
@@ -78,6 +93,8 @@ class UnifiedTrial(Trial):
 
     def protocol_metadata(self):
         return dict(research_stage=self.args.research_stage, implementation_version=IMPLEMENTATION_VERSION,
+                    identity=self.result_identity, checkpoint_metadata=self.checkpoint_identity,
+                    adapter_source=self.adapter_source,
                     code_directory=str(Path(sys.modules['unified'].__file__).resolve().parents[1]),
                     scene_seed=self.args.scene_seed, scene_index=self.args.scene_index,
                     policy_seed=self.args.policy_seed+self.args.scene_index,

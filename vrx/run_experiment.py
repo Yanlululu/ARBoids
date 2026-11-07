@@ -115,13 +115,15 @@ class Trial(ExperimentManager):
         if not history or stamp > history[-1][0]:
             history.append((float(stamp), np.asarray(position).copy(), float(yaw)))
 
-    def terminal_snapshot(self):
+    def terminal_snapshot(self, deadline=None):
         """Interpolate observed poses at one shared time, without extrapolation."""
         histories = self.terminal_pose_history
         if any(not history for history in histories):
             return None
         latest = np.array([history[-1][0] for history in histories])
         stamp = float(latest.min())
+        if deadline is not None:
+            stamp = min(stamp, deadline)
         if any(history[0][0] > stamp for history in histories):
             return None
         positions, yaws, spans = [], [], []
@@ -315,6 +317,7 @@ def main():
     parser.add_argument('--scene-index', type=int, default=0)
     parser.add_argument('--policy-seed', type=int, default=84002)
     parser.add_argument('--research-stage', choices=['development', 'formal'], default='formal')
+    parser.add_argument('--registry', help='Common study registry for formal unified controllers.')
     parser.add_argument('--setting', type=int, choices=[0, 1], default=1)
     parser.add_argument('--num-robots', '--num_robots', dest='num_robots', type=int, default=4)
     parser.add_argument('--agility', type=float, default=2.25)
@@ -423,6 +426,7 @@ def main():
                     trial.startup_tick(output, launch_env)
                 rclpy.spin_once(trial.node, timeout_sec=0.05)
             start_sim = initial_snapshot['stamp']
+            stop_sim = start_sim + trial.total_time
             last_terminal_stamp = None
             next_action = 0.
             next_frame = 0.
@@ -435,7 +439,7 @@ def main():
                     raise TimeoutError('Trial exceeded wall-clock limit')
                 if np.any(time.monotonic() - trial.last_received > 15.):
                     raise TimeoutError('A vessel stopped publishing pose feedback')
-                snapshot = trial.terminal_snapshot()
+                snapshot = trial.terminal_snapshot(stop_sim if unified else None)
                 if snapshot is None or (last_terminal_stamp is not None and snapshot['stamp'] <= last_terminal_stamp):
                     if snapshot is not None and hasattr(trial, 'poll_control'):
                         trial.poll_control(snapshot['stamp']-start_sim)
@@ -443,6 +447,8 @@ def main():
                 last_terminal_stamp = snapshot['stamp']
                 positions = snapshot['positions']
                 elapsed = snapshot['stamp'] - start_sim
+                if unified and snapshot['stamp'] == stop_sim:
+                    elapsed = trial.total_time
                 defender_distances = np.linalg.norm(positions[1:, None] - positions[None, 1:], axis=-1)
                 np.fill_diagonal(defender_distances, np.inf)
                 collision_now = (defender_distances <= trial.collision_r if args.termination_rule == 'paper'

@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--scene-seed', type=int, default=74002)
     parser.add_argument('--policy-seed', type=int, default=84002)
     parser.add_argument('--research-stage', choices=['development', 'formal'], default='formal')
+    parser.add_argument('--registry', help='Common study registry required by formal unified batches.')
     parser.add_argument('--episodes', type=int, default=10)
     parser.add_argument('--setting', type=int, choices=[0, 1], default=1)
     parser.add_argument('--seed', type=int, default=20000)
@@ -35,6 +36,34 @@ def main():
     if unified and args.research_stage == 'formal' and (args.episodes != 100
             or args.scene_seed != 74002 or args.policy_seed != 84002):
         parser.error('Formal unified VRX retains all 100 registered scenes with seeds 74002/84002.')
+    identity, adapter = None, None
+    if unified:
+        sys.path.insert(0, os.environ.get('CITF_CODE_ROOT', str(Path(__file__).resolve().parents[1]/'citf'/'code')))
+        from unified.protocol import (load_registry, read_endpoint, evaluation_identity, vrx_source_identity,
+                                      vrx_rows, outcome_metrics, attach_identity, validate_result, digest)
+        from unified.train import write_json
+        adapter = vrx_source_identity(Path(__file__).parent)
+        if args.research_stage == 'formal':
+            if not args.registry:
+                parser.error('Formal unified VRX requires --registry from the numeric study.')
+            if (args.setting != 0 or args.termination_rule != 'paper' or args.duration != 60.
+                    or args.agility != 2.25):
+                parser.error('Formal unified VRX uses open-water setting 0, paper events, 60 s and agility 2.25.')
+            registry = load_registry(args.registry)
+            method = 'full' if args.controller == 'CITF' else 'arboids'
+            endpoint = read_endpoint(args.checkpoint, registry, method, 2101)
+            identity = evaluation_identity(registry, method, 2101, endpoint,
+                dict(registry['task'], agility=2.25), args.scene_seed, args.policy_seed, 100, kind='vrx')
+            protocol = dict(registry_id=registry['id'], adapter_source=adapter,
+                            task=identity['task'], scene_seed=74002, policy_seed=84002, episodes=100)
+            protocol['id'] = digest(protocol)
+            protocol_path = args.output_dir.parent/'vrx_protocol.json'
+            protocol_path.parent.mkdir(parents=True, exist_ok=True)
+            if protocol_path.exists():
+                if json.loads(protocol_path.read_text(encoding='utf-8')) != protocol:
+                    raise ValueError('Both VRX methods must retain the same frozen adapter source and task.')
+            else:
+                write_json(protocol_path, protocol)
     args.output_dir.mkdir(parents=True, exist_ok=False)
     results = []
     for i in range(args.episodes):
@@ -52,6 +81,8 @@ def main():
         if unified:
             command += ['--scene-seed', str(args.scene_seed), '--scene-index', str(i),
                         '--policy-seed', str(args.policy_seed), '--research-stage', args.research_stage]
+            if args.registry:
+                command += ['--registry', str(Path(args.registry).resolve())]
         if args.capture_first and i == 0:
             command.append('--capture-frames')
         if args.assets_dir:
@@ -85,6 +116,17 @@ def main():
                        control_deadline_misses=sum(r['control_deadline_misses'] for r in results),
                        discarded_late_outputs=sum(r['discarded_late_outputs'] for r in results),
                        control_steps=sum(r['control_steps'] for r in results))
+        if identity is not None:
+            rows = vrx_rows(results, identity, adapter)
+            summary.update(outcome_metrics(rows, args.episodes, args.scene_seed, identity['task']['duration']),
+                           rows=rows, adapter_source=adapter, vrx_protocol_id=protocol['id'])
+            attach_identity(summary, identity)
+            validate_result(summary, identity)
+        else:
+            capture_seconds = [r['simulation_seconds'] for r in results if r['outcome_code'] == 3]
+            summary.update(mean_termination_seconds=sum(r['simulation_seconds'] for r in results)/len(results),
+                           capture_count=len(capture_seconds),
+                           mean_capture_seconds=sum(capture_seconds)/len(capture_seconds) if capture_seconds else None)
         timing = {'inference_seconds': [], 'control_seconds': []}
         cancelled = 0
         for result in results:

@@ -1,5 +1,5 @@
 {
-  "document_revision": "unified-dynamics-20261107-r3",
+  "document_revision": "unified-integrated-worst-response-20261107-r22",
   "basis": "User-selected CITF_最终统一稿_论文与研究方案.zip",
   "author_method": "CITF",
   "roles": {
@@ -36,28 +36,66 @@
     },
     "CITF-no-action-interaction": {
       "implementation": "unified.train --no-action-interaction",
-      "definition": "Retrain with action-separable Q, same state encoder, generation, search and feedback",
-      "status": "implemented; training pending"
+      "definition": "Retrain by widening the original own-action LocalBlock hidden layers from512 to1072; retain original512 units and output bias; random new inputs and zero new output columns preserve the initial function; keep state encoder, generation, search, feedback and per-vessel twin-Q minima",
+      "status": "widened units have effective gradients; shared initialization and own-action independence verified; development repetitions in progress",
+      "critic_parameters": {
+        "full": 857044,
+        "no_action": 856810,
+        "difference_percent": 0.02730314896318042
+      }
     },
     "CITF-no-generator-feedback": {
       "implementation": "unified.train --feedback 0",
       "definition": "Retrain without generator optimization feedback; retain base generator learning, search and endpoint updates",
-      "status": "implemented; training pending"
+      "status": "implemented; base and feedback gradient acceptance passed; development repetitions in progress"
     },
     "ARBoids": {
       "role": "published_baseline",
       "implementation": "unified.train_baseline --method arboids",
-      "architecture": "author ActorAdap/CriticSAC; width 512; common task and actuator mapping; from scratch"
+      "architecture": "author ActorAdap/CriticSAC; width 512; common task and actuator mapping; from scratch",
+      "training_recipe": {
+        "updates_per_joint_transition": 1,
+        "updates_at_1M": 950001,
+        "target_entropy": -3,
+        "batch": 4096,
+        "width": 512,
+        "lr": 0.0001,
+        "gamma": 0.99,
+        "target_tau": 0.005
+      },
+      "identity": "author networks and method structure retrained in the common task; fixed physical normalization, own previous actual action and remaining time included"
     },
     "RP": {
       "role": "published_baseline",
       "implementation": "unified.train_baseline --method rp",
-      "architecture": "author ActorSAC/CriticSAC; width 512; residual sum; from scratch"
+      "architecture": "author ActorSAC/CriticSAC; width 512; residual sum; from scratch",
+      "training_recipe": {
+        "updates_per_joint_transition": 1,
+        "updates_at_1M": 950001,
+        "target_entropy": -2,
+        "batch": 4096,
+        "width": 512,
+        "lr": 0.0001,
+        "gamma": 0.99,
+        "target_tau": 0.005
+      },
+      "identity": "author networks and method structure retrained in the common task; fixed physical normalization, own previous actual action and remaining time included"
     },
     "SAC": {
       "role": "published_baseline",
       "implementation": "unified.train_baseline --method sac",
-      "architecture": "author ActorSAC/CriticSAC; width 512; no Boids action input; from scratch"
+      "architecture": "author ActorSAC/CriticSAC; width 512; no Boids action input; from scratch",
+      "training_recipe": {
+        "updates_per_joint_transition": 1,
+        "updates_at_1M": 950001,
+        "target_entropy": -2,
+        "batch": 4096,
+        "width": 512,
+        "lr": 0.0001,
+        "gamma": 0.99,
+        "target_tau": 0.005
+      },
+      "identity": "author networks and method structure retrained in the common task; fixed physical normalization, own previous actual action and remaining time included"
     },
     "Boids": {
       "role": "published_baseline",

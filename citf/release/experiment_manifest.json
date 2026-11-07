@@ -1,8 +1,8 @@
 {
   "method": "CITF",
-  "revision": "unified-capacity-matched-control-20261107-r20",
+  "revision": "unified-integrated-worst-response-20261107-r22",
   "basis": "D:/ARBoids/fromCHAT/CITF_最终统一稿_论文与研究方案.zip",
-  "scientific_status": "Development: full architecture retains r18; no-action control now near-equal capacity. Pool-objective r19 rejected after100k83/95 versus95/94; all partial runs retained. Two fresh full and two capacity-matched no-action runs test feedback plateau1/300 after100k; existing zero-feedback3-defender computation unchanged. Formal study not started.",
+  "scientific_status": "Development r21 worst-teammate response adopted after matched frozen-weight prescribed scope; six fresh1M full/no-action/no-feedback runs active. Local r22 integrates existing baseline and formal-interface repairs. Formal study not started.",
   "implementation": "code/unified",
   "protocol": {
     "defenders": 3,
@@ -15,8 +15,13 @@
     "thrust_min": -500,
     "thrust_max": 1000,
     "thrust_increment": 300,
-    "main_agility": 2.0,
-    "apf_support_center_distance": 15
+    "main_agility": 2,
+    "apf_support_center_distance": 15,
+    "result_metrics": {
+      "version": "exclusive-outcomes-capture-time-v1",
+      "termination_time": "all episodes",
+      "capture_time": "capture-only mean plus capture_count and capture_rate; null when none"
+    }
   },
   "main_methods": [
     "CITF",
@@ -40,6 +45,15 @@
       "aggregation": "five training-seed mean and sample standard deviation; paired full-minus-ablation differences",
       "additional_episodes": 0,
       "registered_before_formal_training": true
+    },
+    "registry_contract": "unified.protocol: complete recipe, source and model content, actual optimizer state steps, task, scenarios, metric version and effective critic capacity within5%",
+    "resume": "restore the saved total budget unless explicitly identical; require complete state and earlier validation nodes; repair only an unwritten final validation node from its checkpoint",
+    "review_acceptance": {
+      "version": "unified-integrated-worst-response-20261107-r22",
+      "checks": 10,
+      "status": "passed",
+      "entry": "tools/verify_unified_repairs.py",
+      "scope": "deterministic implementation acceptance; follow-up covers widened local gradients, actual Adam steps, resume budget, endpoint validation identity, VRX directory order and exact horizon; no research runs added"
     }
   },
   "core": {
@@ -47,7 +61,7 @@
     "shared_scalar_for_two_thrusters": true,
     "source": "shared local endpoint jointly trained through actual team-action value",
     "generator": "autoregressive endpoint atoms plus Beta",
-    "value": "Per-vessel actual-return twin critics: own-action local values, Transformer-conditioned directed teammate responses averaged over nearest2, plus minimum of zero and existing interaction responses outside self+nearest2. Mean per-vessel twin minima drives all selection and policy objectives.",
+    "value": "Per-vessel actual-return twin critics: own-action local value plus mean positive nearest2 directed teammate responses and most adverse negative response; add minimum of zero and responses outside self+nearest2. Shared sign split selects only nonnegative derivative at zero. All control and learning use mean per-vessel twin minima.",
     "solver": "finite projected gradient steps",
     "feedback": "weighted joint distribution fitting with independent base generator learning",
     "spatial_aggregation": "defender self+attacker+nearest2 teammates; attacker self+nearest3 defenders; prefix nearest2 already generated defenders; whole-fleet joint scoring and choice"
@@ -56,7 +70,7 @@
     "seed": 1101,
     "scene_seed": 73001,
     "scenarios": 100,
-    "full_run": "dev_full_1101_v23_teammate_response",
+    "full_run": "dev_full_1101_v27_worst_response",
     "baseline_run": "dev_arboids_1101_v9",
     "transitions": 1000000,
     "envs": 64,
@@ -65,12 +79,12 @@
     "baseline_individual_batch": 4096,
     "state_frame": "per-vessel body frame with current state and action relational attention",
     "mechanism_runs": [
-      "dev_no_action_1101_v21_local_pair_value",
-      "dev_no_action_1102_v21_local_pair_value",
-      "dev_no_feedback_1101_v23_teammate_response",
-      "dev_no_feedback_1102_v23_teammate_response"
+      "dev_no_action_1101_v27_wide_local",
+      "dev_no_feedback_1101_v27_worst_response",
+      "dev_no_action_1102_v27_wide_local",
+      "dev_no_feedback_1102_v27_worst_response"
     ],
-    "source_snapshot": "code_v23",
+    "source_snapshot": "code_v27",
     "endpoint_noise_N": [
       200,
       50
@@ -83,22 +97,21 @@
     "temperature_steps": 100000,
     "boids_success": 87,
     "collision_penalty": 50,
-    "candidate_run": "dev_full_1101_v23_teammate_response",
-    "candidate_source": "/root/autodl-tmp/citf-unified-20261106/code_v23",
+    "candidate_run": "dev_full_1101_v27_worst_response",
+    "candidate_source": "/root/autodl-tmp/citf-unified-20261106/code_v27",
     "candidate_adjustments": {
-      "relative_to": "v22/r16 same physical task, rewards, endpoint, generator, nearest2 neighborhoods, search, feedback, replay and schedules",
-      "value_response": "LayerNorm plus192-to64-to2 directed response head on receiving-vessel action-Transformer context and the shared64-dimensional current pair encoding; dot with teammate(u_j-b_j)/1000; average over nearest2 other defenders",
-      "reference_property": "interaction vanishes when relevant teammates keep executable Boids; remains responsive to teammate changes when the receiving vessel keeps Boids",
-      "supervision": "actual per-vessel TD returns only",
-      "status": "Two fresh full1M runs started; fixed250k26-condition scope registered; new mechanism benefit pending."
+      "relative_to": "r18 plus feedback plateau1/300",
+      "value_response": "Per-vessel actual-return twin critics: own-action local value plus mean positive nearest2 directed teammate responses and most adverse negative response; add minimum of zero and responses outside self+nearest2. Shared sign split selects only nonnegative derivative at zero. All control and learning use mean per-vessel twin minima.",
+      "control": "Widen original two local FF hidden layers512->1072, preserving initial local function; critic856810 versus857044 parameters",
+      "status": "Six fresh matched1M development runs active; fixed250k26-condition full scope registered; formal recipe pending actual mechanism and stability evidence"
     },
     "second_seed_runs": [
       "dev_full_1102_v23_teammate_response"
     ],
     "samples": 4,
-    "feedback": 0.01,
+    "feedback": 0.0033333333333333335,
     "feedback_start": 50000,
-    "feedback_ramp": 150000,
+    "feedback_ramp": 50000,
     "previous_recipe_comparison": {
       "source_snapshot": "code_v9",
       "fixed_budget": 1000000,
@@ -171,10 +184,8 @@
       "reason": "Explicitly restore attacker relative heading and yaw rate in the simplified local endpoint; v14 restarts from zero."
     },
     "active_full_comparisons": [
-      "dev_full_1101_v21_local_pair_value",
-      "dev_full_1102_v21_local_pair_value",
-      "dev_full_1101_v23_teammate_response",
-      "dev_full_1102_v23_teammate_response"
+      "dev_full_1101_v27_worst_response",
+      "dev_full_1102_v27_worst_response"
     ],
     "completed_v11_endpoints": {
       "transitions": 1000000,
@@ -223,8 +234,8 @@
       "dev_full_1101_v20_entity_return": 300128,
       "dev_full_1102_v20_entity_return": 300128
     },
-    "mechanism_source_snapshot": "code_v19",
-    "mechanism_full_reference_run": "dev_full_1101_v21_local_pair_value",
+    "mechanism_source_snapshot": "code_v27",
+    "mechanism_full_reference_run": "dev_full_1101_v27_worst_response",
     "v18_development_team7_100k": {
       "scene_seed": 73005,
       "policy_seed": 83001,
@@ -936,8 +947,8 @@
         "breach": 0
       }
     },
-    "inference_source_snapshot": "code_v23",
-    "training_source_snapshot": "code_v23",
+    "inference_source_snapshot": "code_v27",
+    "training_source_snapshot": "code_v27",
     "v21_main_250k": {
       "seeds": [
         1101,
@@ -1380,7 +1391,7 @@
           "no_feedback": 91.7
         },
         "1102": {
-          "full": 96.0,
+          "full": 96,
           "no_action": 86.55,
           "no_feedback": 94.5
         }
@@ -1974,7 +1985,7 @@
         3
       ]
     },
-    "current_inference_source": "code_v24/r18; compatible development training source code_v23/r17 with three defenders",
+    "current_inference_source": "code_v27",
     "v24_team7_500k": {
       "status": "waiting_for_fixed500k",
       "pid": 431315,
@@ -1987,7 +1998,7 @@
       ]
     },
     "v24_scope_final": {
-      "status": "waiting_for_registered_checkpoint",
+      "status": "cancelled_superseded_source",
       "pid": 431314,
       "path": "/root/autodl-tmp/citf-unified-20261106/development_scope_v24_final",
       "fixed_transitions": 1000000,
@@ -1995,7 +2006,8 @@
       "seeds": [
         1101,
         1102
-      ]
+      ],
+      "completed_conditions": 0
     },
     "v23_main_250k": {
       "seeds": [
@@ -2086,7 +2098,7 @@
       "decision": "No distribution collapse observed; no entropy/concentration/temperature change. Trial initial-pool objective to align base generation with best-of-pool selection."
     },
     "pool_objective_candidate": {
-      "status": "training_not_adopted",
+      "status": "retired_not_adopted_after100k",
       "source": "code_v25/unified-candidate-pool-learning-20261107-r19",
       "runs": [
         "dev_full_1101_v25_pool_objective",
@@ -2105,7 +2117,7 @@
       "change": "Base generator objective E[max(initial iid K candidates and two fixed anchors)], score-function SUM with leave-one-sample-out maximum baselines. Optimized configurations remain exclusively in explicit feedback.",
       "other_components": "same r18 architecture, endpoint objective, actual-return TD, replay, search, schedules and parameters",
       "matched_ablation_requirement": "Both ablations require fresh training with this base objective if adopted; old controls cannot be reused for r19.",
-      "authoritative_local_method": "r18 until actual improvement is established"
+      "authoritative_local_method": "r21 worst-response architecture; original expected-single-candidate base objective"
     },
     "v23_feedback_200k": {
       "seeds": [
@@ -2150,7 +2162,7 @@
     "capacity_matched_control_candidate": {
       "source": "code_v26",
       "version": "unified-capacity-matched-control-20261107-r20",
-      "status": "adopted control definition; fresh matched runs started",
+      "status": "retired separate-residual control after100k50/75; not used to establish mechanism gains",
       "parent": "r18 expected-single-candidate learner; rejected r19 pool objective removed",
       "full_method_unchanged": true,
       "control": "two per-token LocalBlocks and own-action response, state-only neighbor geometry; no other current candidate action",
@@ -2159,7 +2171,11 @@
       "critic_parameters": {
         "full": 857044,
         "no_action": 850764
-      }
+      },
+      "stopped_transitions": [
+        111136,
+        111008
+      ]
     },
     "pool_objective_first50k": {
       "source": "code_v25/r19",
@@ -2241,20 +2257,361 @@
         "path": "development_scope_v26",
         "pid": 433330,
         "transitions": 250000,
-        "conditions": 26
+        "conditions": 26,
+        "status": "cancelled_superseded_source_no_conditions_completed"
       },
-      "status": "training; new feedback schedule not yet selected for formal recipe"
+      "status": "completed_fixed150k_decision_retired_for_r21",
+      "stopped_transitions": [
+        156080,
+        155312
+      ],
+      "main_success": {
+        "50000": [
+          53,
+          86
+        ],
+        "100000": [
+          95,
+          94
+        ],
+        "150000": [
+          97,
+          100
+        ]
+      },
+      "same150k_original_feedback": [
+        92,
+        100
+      ],
+      "same150k_no_feedback": [
+        98,
+        99
+      ],
+      "decision": "Plateau improves first-seed150k by5 over prior0.01; average feedback gain at150k is0pp. Retain reduced feedback in fresh r21 matched comparison; no mechanism claim from this node."
+    },
+    "wide_local_control": {
+      "source": "code_v27",
+      "version": "unified-worst-teammate-response-20261107-r21",
+      "pids": [
+        434636,
+        434637
+      ],
+      "hidden": 1072,
+      "critic_parameters": 856810,
+      "full_critic_parameters": 857044,
+      "initialization": "original512 units retained; random new input weights and zero new output columns",
+      "feedback": 0.0033333333333333335,
+      "status": "fresh1M training; full and no-feedback r21 also launched",
+      "main_nodes": {
+        "50000": [
+          21,
+          86
+        ],
+        "100000": [
+          71,
+          96
+        ],
+        "150000": [
+          90,
+          97
+        ]
+      },
+      "same150k_smaller_reference": [
+        83,
+        96
+      ]
+    },
+    "worst_response_candidate": {
+      "fixed500k_original": {
+        "main": [
+          99,
+          100
+        ],
+        "team7": [
+          18,
+          23
+        ]
+      },
+      "initial_clamp": {
+        "main": [
+          99,
+          100
+        ],
+        "team7": [
+          26,
+          30
+        ],
+        "scope": "development_scope_v23_worst_teammate",
+        "evaluated_conditions": 24,
+        "reused_team2": false
+      },
+      "consistent_gradient": {
+        "main": [
+          99,
+          100
+        ],
+        "team7": [
+          27,
+          32
+        ],
+        "scope": "development_scope_v23_worst_consistent",
+        "scope_pid": 434771,
+        "status": "completed_adopted",
+        "team_curve_250k": {
+          "1101": [
+            99,
+            100,
+            94,
+            86,
+            64,
+            51
+          ],
+          "1102": [
+            100,
+            100,
+            95,
+            85,
+            68,
+            41
+          ]
+        },
+        "team_mean_success_percent": 81.91666666666667,
+        "reference_team_mean_success_percent": 79.58333333333333,
+        "team_success_gain": 28,
+        "team_scenarios": 1200,
+        "rescues": [
+          38,
+          10
+        ],
+        "harms": [
+          12,
+          8
+        ],
+        "agility_curve_250k": {
+          "1101": [
+            99,
+            100,
+            100,
+            99,
+            99,
+            98,
+            98
+          ],
+          "1102": [
+            99,
+            99,
+            98,
+            98,
+            98,
+            97,
+            95
+          ]
+        },
+        "agility_mean_success_percent": 98.35714285714286,
+        "reference_agility_mean_success_percent": 98.28571428571429,
+        "team2_reused_reason": "Same frozen weights: corrected operator identical in both value and action derivative for two vessels"
+      },
+      "definition": "mean positive permitted pair response plus minimum negative response; at zero use only nonnegative branch; existing remote response summary retained"
+    },
+    "v27_training": {
+      "source": "code_v27",
+      "version": "unified-worst-teammate-response-20261107-r21",
+      "budget": 1000000,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "full_pids": [
+        435154,
+        435156
+      ],
+      "no_feedback_pids": [
+        435155,
+        435157
+      ],
+      "no_action_pids": [
+        434636,
+        434637
+      ],
+      "fresh_all_six": true,
+      "scope": {
+        "path": "development_scope_v27",
+        "pid": 435299,
+        "transitions": 250000,
+        "conditions": 26,
+        "all_fresh_including_team2": true
+      },
+      "status": "training"
+    },
+    "v23_superseded_training_retirement": {
+      "full_transitions": [
+        574576,
+        575152
+      ],
+      "full_last_evaluation": 550000,
+      "full_success": [
+        100,
+        100
+      ],
+      "no_feedback_transitions": [
+        490704,
+        491216
+      ],
+      "no_feedback_last_evaluation": 450000,
+      "no_feedback_success": [
+        100,
+        98
+      ],
+      "reason": "New local aggregation changes three-vessel training; new matched full and feedback controls launched",
+      "retained": "all curves, adverse outcomes and complete saved partial-budget states"
+    },
+    "v27_main_50k": {
+      "full_success": [
+        85,
+        82
+      ],
+      "full_collision": [
+        0,
+        0
+      ],
+      "full_breach": [
+        15,
+        18
+      ],
+      "no_feedback_success": [
+        85,
+        82
+      ],
+      "same50000_reference_full_success": [
+        53,
+        86
+      ],
+      "mean_gain_over_reference_pp": 14,
+      "feedback_active": false
+    },
+    "v27_learning_effect_50k": {
+      "actual_replay_states_per_seed": 512,
+      "seeds": [
+        1101,
+        1102
+      ],
+      "generated_strictly_beats_anchors_fraction": [
+        0.001953125,
+        0.28515625
+      ],
+      "search_improved_fraction": [
+        0.380859375,
+        0.537109375
+      ],
+      "mean_search_value_gain": [
+        0.0273945611,
+        0.1308736205
+      ],
+      "mean_selected_action_change_N": [
+        14.1154404,
+        41.0817108
+      ],
+      "median_selected_action_change_N": [
+        0.0,
+        0.0
+      ],
+      "base_gradient_norm": [
+        0.0008935455,
+        0.0028995732
+      ],
+      "hypothetical_plateau_feedback_gradient_norm": [
+        0.0887172893,
+        0.046683874
+      ],
+      "gradient_cosine": [
+        -0.4049140811,
+        -0.9612975717
+      ],
+      "mean_endpoint_distance_N": [
+        495.792847,
+        550.676636
+      ],
+      "temperature": 0.525,
+      "actual_feedback_weight_at_source": 0.0,
+      "interpretation": "Early initial candidates often lose to fixed anchors; search changes executed selection on a subset. Maximum feedback gradient is large relative to the weak base gradient at this pre-feedback checkpoint; schedule and mechanism judgment await100k/150k matched actual control. No parameter update or extra environment rollout in this diagnostic."
+    },
+    "exact_author_reference": {
+      "source": "code_baseline_b3",
+      "version": "unified-integrated-worst-response-20261107-r22",
+      "run": "dev_arboids_1101_b3_exact_author",
+      "pid": 436312,
+      "seed": 1101,
+      "registered_transitions": 1000000,
+      "expected_updates": 950001,
+      "target_entropy": -3.0,
+      "update_ratio": 1.0,
+      "batch": 4096,
+      "width": 512,
+      "warmup": 50000,
+      "status": "training",
+      "same_task_and_development_scenes": true
+    },
+    "v27_matched_100k": {
+      "seeds": [
+        1101,
+        1102
+      ],
+      "full_success": [
+        99,
+        95
+      ],
+      "no_action_success": [
+        71,
+        96
+      ],
+      "no_feedback_success": [
+        98,
+        81
+      ],
+      "action_gain_pp": [
+        28,
+        -1
+      ],
+      "feedback_gain_pp": [
+        1,
+        14
+      ],
+      "action_rescues": [
+        28,
+        4
+      ],
+      "action_harms": [
+        0,
+        5
+      ],
+      "feedback_rescues": [
+        2,
+        16
+      ],
+      "feedback_harms": [
+        1,
+        2
+      ],
+      "mean_action_gain_pp": 13.5,
+      "mean_feedback_gain_pp": 7.5,
+      "all_two_node_action_gain_pp": 21.75,
+      "all_two_node_feedback_gain_pp": 3.75,
+      "full_mean_capture_seconds": [
+        8.29092251,
+        8.6300148
+      ],
+      "status": "positive fixed100k mechanism result; continue150k/full budget and250k scope, retain negative second-seed action difference"
     }
   },
   "generalization": {
     "attacker_agility": [
       1.5,
       1.75,
-      2.0,
+      2,
       2.25,
       2.5,
       2.75,
-      3.0
+      3
     ],
     "defenders": [
       2,
@@ -2281,7 +2638,8 @@
     "common_scenarios": 100,
     "defenders": 3,
     "agility": 2.25,
-    "model_seeds": 1
+    "model_seeds": 1,
+    "identity": "same study registry, first formal seed, both 100-episode banks; freeze shared adapter source before either batch"
   },
   "learning_attacker": {
     "phases": [
@@ -2294,7 +2652,9 @@
     "transitions_per_phase": 500000,
     "first_phase_reused": true,
     "additional_transitions": 2000000,
-    "final_apf_recheck": true
+    "final_apf_recheck": true,
+    "defender_recipe": "inherit complete main recipe; cumulative defender clock for policy learning rate, temperature, feedback and exploration",
+    "chain_identity": "previous completed 500k checkpoint content; retain both learners and optimizers; clear active replay and synchronize targets"
   },
   "pending": [
     "stable complete-method gain across development repeats",
@@ -2307,16 +2667,36 @@
     "source": "third_party/arboids_release/train/configs/train.yaml",
     "width": 512,
     "batch": 4096,
+    "capacity": 1000000,
     "start_learning": 50000,
     "lr": 0.0001,
-    "temperature_loss": "alpha-space as in author SAC.py",
-    "stochastic_entropy_dimensions": 2,
     "envs": 64,
-    "updates_per_collection": 64,
-    "optimizer_updates_per_team_transition": 1.0,
-    "development_reference": "dev_arboids_1101_b2_author_updates",
-    "development_source": "code_baseline_b2",
-    "development_pid": 432124
+    "gamma": 0.99,
+    "target_tau": 0.005,
+    "updates_per_joint_transition": 1,
+    "target_entropy": {
+      "arboids": -3,
+      "rp": -2,
+      "sac": -2
+    },
+    "temperature_loss": "alpha-space as in author SAC.py",
+    "replay_unit": "individual transition",
+    "budget_unit": "joint transition",
+    "update_ledger": "max(0, valid_joint_transitions - start_learning + 1)",
+    "complete_updates_at_1M": 950001,
+    "formal_initialization": "from scratch",
+    "historical_development_reference": {
+      "run": "dev_arboids_1101_b2_author_updates",
+      "source": "code_baseline_b2",
+      "target_entropy": -2,
+      "updates_per_collection": 64,
+      "status": "retained development reference; not the r21 author recipe"
+    },
+    "development_100k": {
+      "success": 94,
+      "collision": 6,
+      "breach": 0
+    }
   },
   "dynamics_integration": "old-heading world-to-body; Euler update of body velocity and heading; new-heading body-to-world",
   "retired_development": "v1-v8 used the inherited frame-update ordering; retained as development history"

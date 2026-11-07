@@ -14,7 +14,6 @@ import sys
 import time
 
 from .train import write_json
-from . import IMPLEMENTATION_VERSION
 from .environment import TaskConfig
 from .protocol import (BASELINE_RECIPE, FULL_KEYS, build_registry, load_registry, registered_arguments,
                        run_identity, read_endpoint, evaluation_identity, validate_result, validate_learning_curve)
@@ -91,7 +90,7 @@ def main():
                         or record['transitions'] != 1000000 or record.get('updates') != endpoint['updates']
                         or record.get('update_counts') != endpoint['update_counts']):
                     raise ValueError(f'{out} has a different completed training budget.')
-                validate_learning_curve(out/'evaluations.jsonl', expected_run)
+                validate_learning_curve(out/'evaluations.jsonl', expected_run, endpoint=endpoint)
                 continue
             command = [sys.executable, '-u', '-m', 'unified.train' if full else 'unified.train_baseline',
                        '--out', str(out), '--steps', '1000000', '--seed', str(seed), '--stage', 'formal',
@@ -144,7 +143,7 @@ def main():
             endpoint = directory/'last.pt'
             endpoints[str(endpoint)] = read_endpoint(endpoint, registry, method, seed)
             run = run_identity(registered_arguments(registry, method, seed), registry['task'], registry)
-            validate_learning_curve(directory/'evaluations.jsonl', run)
+            validate_learning_curve(directory/'evaluations.jsonl', run, endpoint=endpoints[str(endpoint)])
             status = json.loads((directory/'status.json').read_text())
             if (status.get('status') != 'completed' or status.get('run_id') != run['id']
                     or status.get('update_counts') != endpoints[str(endpoint)]['update_counts']):
