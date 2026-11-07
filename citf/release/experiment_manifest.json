@@ -2,7 +2,7 @@
   "method": "CITF",
   "revision": "unified-warmup-robust-td-20261107-r25",
   "basis": "D:/ARBoids/fromCHAT/CITF_最终统一稿_论文与研究方案.zip",
-  "scientific_status": "r25 first150k99/97 after100k99/95. Same-recipe no-action/no-feedback each two fresh repetitions now training. Full runs continue registered250k scope and later learning budget; no formal study launched.",
+  "scientific_status": "r25 matched full and two ablations continue. Dense-fleet collisions limit current capabilities; matched actual-replay relative-action representation refits, early reviewed VRX and a short learned-opponent segment now run alongside the registered numerical comparisons. Formal held-out study not launched.",
   "implementation": "code/unified",
   "protocol": {
     "defenders": 3,
@@ -3855,6 +3855,91 @@
       "conditions": 13,
       "source": "code_baseline_b3",
       "status": "waiting_for_registered_checkpoint"
+    },
+    "adapter_control_150k": {
+      "root": "adapter_control_v30_150k",
+      "status": "completed",
+      "sources": [
+        1101,
+        1102
+      ],
+      "source_transitions": 150000,
+      "initial_main": [
+        99,
+        98
+      ],
+      "optimized_main": [
+        99,
+        97
+      ],
+      "initial_team7": [
+        49,
+        49
+      ],
+      "optimized_team7": [
+        51,
+        50
+      ],
+      "team7_collisions": [
+        49,
+        50
+      ],
+      "team7_rescues": [
+        2,
+        3
+      ],
+      "team7_harms": [
+        0,
+        2
+      ],
+      "purpose": "Choose actual interaction/search versus generator absorption priorities; no new formal ablation."
+    },
+    "relative_action_refinement": {
+      "root": "relative_action_refinement_v30_150k",
+      "pid": 457958,
+      "status": "running",
+      "sources": [
+        1101,
+        1102
+      ],
+      "source_transitions": 150000,
+      "variants": [
+        "ordinary_refit",
+        "relative_action_refit"
+      ],
+      "critic_updates_per_variant": 1000,
+      "additional_training_transitions": 0,
+      "training_defenders": 3,
+      "conditions": [
+        "main",
+        "team7",
+        "agility3"
+      ],
+      "adopted": false
+    },
+    "early_vrx": {
+      "root": "development_vrx_v30_150k",
+      "pid": 447495,
+      "status": "running",
+      "full_transitions": 150000,
+      "baseline_transitions": 400000,
+      "episodes_per_method": 10,
+      "scene_seed": 73002,
+      "policy_seed": 83002,
+      "full_successes": 10,
+      "full_mean_capture_seconds": 7.91,
+      "full_deadline_misses": 2,
+      "full_control_cycles": 398
+    },
+    "early_opponent": {
+      "root": "development_opponent_v30_attacker50k",
+      "pid": 452711,
+      "status": "training",
+      "defender_source_transitions": 150000,
+      "attacker_segment_transitions": 50000,
+      "scene_seed": 73003,
+      "policy_seed": 83003,
+      "decision": "Use actual learned-opponent outcomes to choose further attacker learning or short defender adaptation; preserve formal five-stage budgets."
     }
   },
   "generalization": {
