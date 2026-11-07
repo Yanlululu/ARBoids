@@ -137,6 +137,13 @@ class Learner:
             target[continuing] += self.gamma*torch.minimum(first, second)
         return target
 
+    def generator_base_objective(self, x, result):
+        scores = result['initial_scores']/100.
+        baseline = (scores.sum(-1, keepdim=True)-scores)/(self.model.cfg.samples-1)
+        advantage = (scores-baseline).detach()
+        logp = self.model.generator.log_prob(x, result['a'], result['b'], result['initial'])
+        return -(advantage*logp).mean()
+
     def update(self, batch, temperature=1., feedback_scale=1., policy_batch=None, robust_value=True):
         if temperature <= 0:
             raise ValueError('Configuration weights need a positive temperature.')
@@ -191,12 +198,7 @@ class Learner:
             endpoint_loss = self.endpoint_objective(x, a, weights, value)
             endpoint_loss.backward()
 
-        initial = result['initial']
-        base_scores = result['initial_scores']/100.
-        baseline = (base_scores.sum(-1, keepdim=True)-base_scores)/(self.model.cfg.samples-1)
-        advantage = (base_scores-baseline).detach()
-        base_logp = self.model.generator.log_prob(x, result['a'], result['b'], initial)
-        base_loss = -(advantage*base_logp).mean()
+        base_loss = self.generator_base_objective(x, result)
         feedback_loss = base_loss.new_zeros(())
         feedback_strength = self.model.cfg.feedback*feedback_scale
         if feedback_strength:

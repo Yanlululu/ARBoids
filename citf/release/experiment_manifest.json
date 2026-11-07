@@ -2,7 +2,7 @@
   "method": "CITF",
   "revision": "unified-warmup-robust-td-20261107-r25",
   "basis": "D:/ARBoids/fromCHAT/CITF_最终统一稿_论文与研究方案.zip",
-  "scientific_status": "r25 continues toward1M with common250k mechanism differences +11.3/+2.6pp and fixed500k team7=45/52. Balanced interaction normalization completed without sustained gain and was not adopted. Next finite candidate aligns per-receiver values to the common actual team return while sharing the adverse pair term during training. Formal study not launched.",
+  "scientific_status": "r25 continues toward1M, both750k full runs100/100. Joint-team-return finite study completed: team7 +4pp at200k with main/agility costs, retained but not adopted. Next full candidate improves autoregressive continuous-generator gradients under the original r25 value and feedback objectives. Formal study not launched.",
   "implementation": "code/unified",
   "protocol": {
     "defenders": 3,
@@ -223,11 +223,11 @@
       }
     },
     "active_development_source": {
-      "release_root": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_20261108_joint_team_return",
-      "release_id": "20261108-joint-team-return-candidate",
-      "source_files": 45,
+      "release_root": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_20261108_pathwise_generator",
+      "release_id": "20261108-pathwise-generator-candidate",
+      "source_files": 46,
       "base_review_release": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_20261108_r25_complete",
-      "main_method": "r25 unchanged; candidate only through registered study entry",
+      "main_method": "r25 unchanged; candidates only through their registered study entries",
       "existing_processes_preserved": [
         436312,
         445382,
@@ -4539,7 +4539,7 @@
     "decision": "175k gains did not persist at200k; retain all nodes and complete state; no long normalization branch"
   },
   "joint_team_return_online_development": {
-    "status": "running",
+    "status": "completed_development_candidate_retained",
     "entry": "tools/train_joint_team_return.py",
     "source_transitions": 150000,
     "additional_transitions": 50000,
@@ -4569,6 +4569,90 @@
       471747
     ],
     "release_root": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_20261108_joint_team_return",
-    "release_id": "20261108-joint-team-return-candidate"
+    "release_id": "20261108-joint-team-return-candidate",
+    "results_175k": [
+      [
+        97,
+        50,
+        92
+      ],
+      [
+        95,
+        53,
+        97
+      ]
+    ],
+    "ordinary_175k": [
+      [
+        98,
+        51,
+        99
+      ],
+      [
+        99,
+        45,
+        94
+      ]
+    ],
+    "results_200k": [
+      [
+        97,
+        52,
+        95
+      ],
+      [
+        98,
+        54,
+        97
+      ]
+    ],
+    "ordinary_200k": [
+      [
+        99,
+        51,
+        98
+      ],
+      [
+        99,
+        47,
+        96
+      ]
+    ],
+    "decision": "repeated team7 improvement +3.5pp at175k and +4pp at200k with main/agility tradeoffs; retain complete state, not adopted"
+  },
+  "pathwise_generator_online_development": {
+    "status": "running",
+    "entry": "tools/train_pathwise_generator.py",
+    "source_transitions": 150000,
+    "additional_transitions": 50000,
+    "seeds": [
+      1101,
+      1102
+    ],
+    "evaluation_transitions": [
+      175000,
+      200000
+    ],
+    "ordinary_reference": "shared_team_online_v30_150k/{seed}_ordinary",
+    "condition_order": [
+      "main",
+      "team7",
+      "agility3"
+    ],
+    "episodes_per_condition": 100,
+    "value_target": "original r25 individual-return TD and aggregation",
+    "generator_objective": "unchanged expected single-configuration Q; continuous Beta path derivatives through physical actions and prefixes plus categorical score gradient",
+    "feedback": "original optimized-configuration joint likelihood",
+    "additional_training_candidates_per_policy_update": 4,
+    "deployment_candidates_unchanged": true,
+    "parameters_added": 0,
+    "formal_matrix_expanded": false,
+    "output": "/root/autodl-tmp/citf-unified-20261106/pathwise_generator_v30_150k",
+    "pids": [
+      472657,
+      472658
+    ],
+    "release_root": "/root/autodl-tmp/citf-unified-20261106/reviewed_release_20261108_pathwise_generator",
+    "release_id": "20261108-pathwise-generator-candidate"
   }
 }
